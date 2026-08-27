@@ -1,0 +1,57 @@
+"""顶层节点的统一执行边界。
+
+观测层只记录节点生命周期；本模块负责把未处理的节点异常转换成
+可供 LangGraph 继续收束的运行状态。这样错误处理不会反向依赖日志或
+报告渲染实现，也不会让每个节点各自复制一套 try/except。
+"""
+
+import asyncio
+import inspect
+from collections.abc import Callable
+from typing import Any, cast
+
+from deepsearch_agent.observability.events.models import make_node_event
+from deepsearch_agent.reporting import render_error_report
+from deepsearch_agent.schemas import RunError, RunLifecycle
+from deepsearch_agent.state import ResearchState, restore_state_models, validate_state_invariants
+
+
+async def execute_node(
+    state: dict[str, Any],
+    *,
+    stage: str,
+    node: Callable[[dict[str, Any]], Any],
+) -> dict[str, Any]:
+    """执行一个顶层节点，并将普通异常转换为终止状态。
+
+    取消和键盘中断必须继续向上传播，不能被当成业务失败吞掉；其余异常
+    统一生成 ``RunError``，返回最小失败状态，由图中的最终渲染节点负责
+    结束本次运行。
+    """
+    try:
+        restore_state_models(state)
+        value = node(state)
+        if inspect.isawaitable(value):
+            value = await value
+        result = dict(value)
+        validate_state_invariants(state, result)
+        return result
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        raise
+    except Exception as exc:
+        error = RunError.from_exception(stage, exc)
+        # 失败事件进入状态供最终运行记录使用；生命周期日志由
+        # observability.instrumentation 单独负责，避免职责重复。
+        event = make_node_event(
+            stage,
+            "failed",
+            error=error.message,
+            payload={"code": error.code, "retryable": error.retryable},
+        )
+        return {
+            "run": RunLifecycle(phase="failed", terminal_reason="node_failed", error=error),
+            "answer_mode": "research_incomplete",
+            "supervisor_next": "render_final_report",
+            "report": render_error_report(cast(ResearchState, state), error),
+            "node_events": [event],
+        }
