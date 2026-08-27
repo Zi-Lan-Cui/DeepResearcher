@@ -4,11 +4,15 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from deepsearch_agent.agents.researcher.state import (
+    DirectionRunState,
+    ToolExecutionContext,
+    ToolExecutor,
+)
 from deepsearch_agent.config import AgentConfig
 from deepsearch_agent.context import ContextPolicy
 from deepsearch_agent.evidence.models import Evidence
@@ -50,42 +54,6 @@ Complete 只表示你已完成本方向的有界执行，不能表示整项研�
 【完成标准】只有当当前方向已经获得足以支撑局部问题的 Evidence，或预算/来源条件已经没有合理的下一步时，
 才调用 ResearchDirectionComplete。answered_points 和 conclusion 只能总结当前 Evidence；remaining_gaps
 只是给 Supervisor 的局部线索，不是整项研究的全局判断。"""
-
-
-@dataclass
-class _DirectionRunState:
-    """方向研究循环中由决策工具直接更新的状态。"""
-
-    evidences: list[Evidence] = field(default_factory=list)
-    source_refs: list[str] = field(default_factory=list)
-    queries: list[str] = field(default_factory=list)
-    read_urls: list[str] = field(default_factory=list)
-    candidates: dict[str, SearchCandidate] = field(default_factory=dict)
-    selected_candidate_ids: set[str] = field(default_factory=set)
-    skipped: list[str] = field(default_factory=list)
-    failures: list[str] = field(default_factory=list)
-    answered_points: list[str] = field(default_factory=list)
-    remaining_gaps: list[str] = field(default_factory=list)
-    conclusion: str = ""
-    stop_reason: str = "step_budget_exhausted"
-    stop_detail: str = "方向级探索步数预算已耗尽。"
-
-
-@dataclass(frozen=True)
-class ToolExecutionContext:
-    """一次工具执行的上下文；各执行器共享但不修改它。"""
-
-    task: SubTask
-    decision: ResearchDirectionDecision
-    tool_call_id: str
-    messages: list[BaseMessage]
-    run_state: _DirectionRunState
-    event_context: dict[str, object]
-    claim_url: Callable[[str], Awaitable[bool]]
-    on_url_already_attempted: Callable[[str], None] | None
-
-
-ToolExecutor = Callable[[ToolExecutionContext], Awaitable[bool]]
 
 
 class ResearchAgent:
@@ -134,7 +102,7 @@ class ResearchAgent:
     ) -> ResearchAgentResult:
         """运行有界 Observe → Decide → Act 循环，返回方向级研究结论与轨迹。"""
         messages = self._initial_messages(task)
-        run_state = _DirectionRunState()
+        run_state = DirectionRunState()
         event_context = {
             "task_id": task["id"],
             "worker_id": task.get("worker_id", task["id"]),
@@ -181,7 +149,7 @@ class ResearchAgent:
     @staticmethod
     def _apply_decision(
         decision: ResearchDirectionDecision,
-        run_state: _DirectionRunState,
+        run_state: DirectionRunState,
     ) -> bool:
         """应用方向决策；返回 True 表示本方向不再执行下一步。"""
         run_state.remaining_gaps = list(
@@ -362,7 +330,7 @@ class ResearchAgent:
         )
         return False
 
-    def _working_set_snapshot(self, run_state: _DirectionRunState) -> dict[str, object]:
+    def _working_set_snapshot(self, run_state: DirectionRunState) -> dict[str, object]:
         """构造工作集轻量快照；完整 Evidence 仍通过 ReadSources 返回。"""
         return {
             "active_evidence": [
@@ -387,7 +355,7 @@ class ResearchAgent:
         task: SubTask,
         decision: ResearchDirectionDecision,
         *,
-        run_state: _DirectionRunState,
+        run_state: DirectionRunState,
         messages: list[BaseMessage],
         tool_call_id: str,
         event_context: dict[str, object],
@@ -468,7 +436,7 @@ class ResearchAgent:
         messages: list[BaseMessage],
         task: SubTask,
         *,
-        run_state: _DirectionRunState,
+        run_state: DirectionRunState,
     ) -> tuple[ResearchDirectionDecision, str]:
         """基于已有消息历史做决策，并保留模型原始 AIMessage。"""
         observation = {
@@ -632,7 +600,7 @@ class ResearchAgent:
         task: SubTask,
         *,
         status: Literal["completed", "failed", "cancelled"],
-        run_state: _DirectionRunState,
+        run_state: DirectionRunState,
     ) -> ResearchAgentResult:
         task_result = ResearchDirectionResult(
             task_id=task["id"],

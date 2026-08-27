@@ -6,12 +6,16 @@ Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import ClassVar
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel, Field, ValidationError
 
+from deepsearch_agent.agents.writer.state import (
+    GenerationResult,
+    PreparedEvidence,
+    ValidatedDraft,
+)
 from deepsearch_agent.config import AgentConfig
 from deepsearch_agent.context import ContextPolicy
 from deepsearch_agent.evidence.models import Evidence
@@ -27,9 +31,7 @@ from deepsearch_agent.reporting.validation import (
     validate_and_bind,
 )
 from deepsearch_agent.schemas import (
-    Citation,
     MarkdownReportDraft,
-    ParagraphBinding,
     ResearchProgress,
     ReviewProgress,
     RunLifecycle,
@@ -58,33 +60,6 @@ class CompleteReport(BaseModel):
 
     selected_evidence_ids: list[str] = Field(min_length=1)
     markdown: str = Field(min_length=1)
-
-
-@dataclass(frozen=True)
-class _PreparedEvidence:
-    """Writer 可用 Evidence 的索引和面向模型的紧凑目录。"""
-
-    by_id: dict[str, Evidence]
-    catalogue: str
-
-
-@dataclass(frozen=True)
-class _ValidatedDraft:
-    """通过本地引用协议校验、可交给渲染层的草稿。"""
-
-    body: str
-    paragraph_bindings: list[ParagraphBinding]
-    citations: list[Citation]
-    selected_evidence_ids: list[str]
-
-
-@dataclass(frozen=True)
-class _GenerationResult:
-    """生成循环的最终结果；失败时保留最后草稿和诊断。"""
-
-    draft: _ValidatedDraft | None
-    last_markdown: str
-    validation_error: str
 
 
 class ReportWriter:
@@ -177,13 +152,13 @@ class ReportWriter:
             writer=WriterProgress(status="completed", attempts=1),
         ).state_update()
 
-    def _prepare_evidence(self, evidences: list[Evidence]) -> _PreparedEvidence:
+    def _prepare_evidence(self, evidences: list[Evidence]) -> PreparedEvidence:
         """过滤不满足可信等级的材料，并建立稳定的 Evidence ID 索引。"""
         usable = [item for item in evidences if self._meets_minimum_support(item.support)]
         by_id = {
             str(item.evidence_id or f"来源{index}"): item for index, item in enumerate(usable, 1)
         }
-        return _PreparedEvidence(by_id=by_id, catalogue=self._evidence_catalogue(by_id))
+        return PreparedEvidence(by_id=by_id, catalogue=self._evidence_catalogue(by_id))
 
     def _render_insufficient_evidence(
         self,
@@ -234,7 +209,7 @@ class ReportWriter:
         directive: WriterDirective,
         evidence_catalogue: str,
         evidence_by_id: dict[str, Evidence],
-    ) -> _GenerationResult:
+    ) -> GenerationResult:
         """让 Writer 先按需读取 Evidence，再提交一次完整草稿。"""
         last_markdown = ""
         last_error = ""
@@ -312,7 +287,7 @@ class ReportWriter:
                         "normalized_markdown": validated.body,
                     },
                 )
-                return _GenerationResult(validated, last_markdown, "")
+                return GenerationResult(validated, last_markdown, "")
             if call["name"] != "ReadEvidence":
                 last_error = (
                     f"Writer 调用了未知工具：{call['name']}。只能调用 ReadEvidence 或 CompleteReport；"
@@ -336,7 +311,7 @@ class ReportWriter:
             )
         if not last_error:
             last_error = "Writer 工具轮次预算耗尽，仍未提交有效报告。"
-        return _GenerationResult(None, last_markdown, last_error)
+        return GenerationResult(None, last_markdown, last_error)
 
     def _execute_read_tool(
         self,
@@ -461,7 +436,7 @@ class ReportWriter:
         read_evidence: dict[str, Evidence],
         *,
         available_evidence: dict[str, Evidence],
-    ) -> _ValidatedDraft:
+    ) -> ValidatedDraft:
         """校验引用，并区分不存在与尚未读取的 Evidence。"""
         cited_ids = extract_cite_ids(draft.markdown)
         unknown_ids = [item for item in cited_ids if item not in available_evidence]
@@ -482,7 +457,7 @@ class ReportWriter:
         body, bindings, citations = validate_and_bind(draft.markdown, read_evidence)
         if not selected_ids:
             raise DraftProtocolError("Writer 没有声明或实际引用任何 Evidence。")
-        return _ValidatedDraft(
+        return ValidatedDraft(
             body=body,
             paragraph_bindings=bindings,
             citations=citations,
@@ -513,7 +488,7 @@ class ReportWriter:
     def _render_exhausted_result(
         self,
         state: ResearchState,
-        generation: _GenerationResult,
+        generation: GenerationResult,
     ) -> dict[str, object]:
         error = generation.validation_error or "模型没有产出可解析的引用标记。"
         self._emit(
@@ -542,7 +517,7 @@ class ReportWriter:
         self,
         *,
         state: ResearchState,
-        draft: _ValidatedDraft,
+        draft: ValidatedDraft,
         evidence_count: int,
     ) -> dict[str, object]:
         source_count = len({item.url for item in draft.citations if item.url})
