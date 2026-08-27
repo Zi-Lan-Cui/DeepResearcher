@@ -2,13 +2,45 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 from langchain_core.messages import BaseMessage
 
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import ResearchDirectionDecision
 from deepsearch_agent.state import SubTask
+from deepsearch_agent.tools import SearchTool, SourceReaderTool
 from deepsearch_agent.tools.research_models import SearchCandidate
+
+
+class ResearchAgentState(TypedDict, total=False):
+    """ResearchAgent 子图可保存、可恢复的业务状态。"""
+
+    messages: list[BaseMessage]
+    task: SubTask
+    candidates: dict[str, SearchCandidate]
+    evidences: list[Evidence]
+    source_refs: list[str]
+    queries: list[str]
+    read_urls: list[str]
+    skipped: list[str]
+    failures: list[str]
+    answered_points: list[str]
+    remaining_gaps: list[str]
+    conclusion: str
+    status: str
+    stop_reason: str
+
+
+@dataclass(frozen=True)
+class ResearchRuntimeContext:
+    """不进入 State 的 ResearchAgent 运行时依赖。"""
+
+    search_tool: SearchTool
+    reader_tool: SourceReaderTool
+    claim_url: Callable[[str], Awaitable[bool]]
+    on_url_already_attempted: Callable[[str], None] | None = None
+    event_context: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
