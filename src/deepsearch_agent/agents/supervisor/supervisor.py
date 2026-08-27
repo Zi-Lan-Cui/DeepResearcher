@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import BaseModel, ValidationError
 
 from deepsearch_agent.agents.researcher import ResearchAgent
-from deepsearch_agent.agents.supervisor_state import (
+from deepsearch_agent.agents.supervisor.state import (
     RunUrlReservations,
     TaskExecution,
     WorkingState,
