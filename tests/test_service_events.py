@@ -51,6 +51,18 @@ async def test_take_pending_returns_all_in_order_and_drains(sink):
     assert [item["seq"] for item in sink.take_pending("run-2")] == [4]  # 排水后 seq 不回绕
 
 
+async def test_late_subscriber_receives_unflushed_backlog_then_live(sink):
+    """已写入未 flush 的事件对新订阅者不再是黑洞：backlog → 实时无缝拼接。"""
+    sink.open("run-7")
+    sink.write({"run_id": "run-7", "event_type": "before", "payload": {}})  # 无订阅者时写入
+    _, queue = sink.subscribe("run-7")
+    sink.write({"run_id": "run-7", "event_type": "after", "payload": {}})
+    received = [await _get_message(queue), await _get_message(queue)]
+    assert [item["event_type"] for item in received] == ["before", "after"]
+    assert [item["seq"] for item in received] == [1, 2]
+    assert [item["seq"] for item in sink.take_pending("run-7")] == [1, 2]  # backlog 不动 pending
+
+
 async def test_overflow_drops_oldest_and_injects_truncation_marker():
     sink = FanoutSink(asyncio.get_running_loop(), queue_maxsize=2)
     sink.open("run-3")

@@ -1,3 +1,4 @@
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
@@ -11,8 +12,10 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
-async def session():
-    engine = make_engine("sqlite+aiosqlite:///:memory:")
+async def session(tmp_path):
+    # 文件库（NullPool）而非 :memory:+StaticPool：与 test_service_runs 同理，
+    # 规避 aiosqlite 线程在循环关闭后的迟到回调竞态。
+    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'db.test.db'}")
     await init_db(engine)
     factory = make_session_factory(engine)
     async with factory() as s:

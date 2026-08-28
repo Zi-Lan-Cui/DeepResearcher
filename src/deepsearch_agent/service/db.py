@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from deepsearch_agent.service.models import Base
 
@@ -28,6 +28,12 @@ def make_engine(database_url: str) -> AsyncEngine:
     if database_url.startswith("sqlite"):
         if ":memory:" in database_url:
             kwargs["poolclass"] = StaticPool
+        else:
+            # 文件库用 NullPool：连接随 session 归还即关（await 完成），
+            # 不依赖 dispose 回收池——dispose 之后 aiosqlite 工作线程的迟到
+            # 回调会在已关闭循环上 call_soon_threadsafe（测试里表现为归因到
+            # 后续用例的 UnhandledThreadException 竞态告警）。
+            kwargs["poolclass"] = NullPool
         if "aiosqlite" in database_url:
             kwargs["connect_args"] = {"check_same_thread": False}
     engine = create_async_engine(database_url, **kwargs)
