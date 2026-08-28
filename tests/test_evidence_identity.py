@@ -1,6 +1,4 @@
-from langchain_core.messages import AIMessage
-
-from deepsearch_agent.agents.researcher import ResearchAgent
+from deepsearch_agent.agents.researcher.tools import build_researcher_tools
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.state import StateInvariantError, merge_evidences
 
@@ -37,23 +35,8 @@ def test_merge_evidences_rejects_conflicting_duplicate_id():
         raise AssertionError("相同 Evidence ID 的不同内容必须被拒绝")
 
 
-def test_direction_complete_decision_is_bounded_before_schema_validation():
-    response = AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": "ResearchDirectionComplete",
-                "id": "complete-1",
-                "args": {
-                    "reason": "已有足够材料",
-                    "answered_points": ["p1", "p2", "p3", "p4", "p5"],
-                    "remaining_gaps": ["g1", "g2", "g3", "g4", "g5"],
-                },
-            }
-        ],
-    )
+def test_researcher_registers_completion_as_a_standard_tool():
+    tools = {item.name: item for item in build_researcher_tools()}
 
-    decision = ResearchAgent._parse_direction_decision(response)
-
-    assert decision.answered_points == ["p1", "p2", "p3", "p4"]
-    assert decision.remaining_gaps == ["g1", "g2", "g3", "g4"]
+    assert "ResearchDirectionComplete" in tools
+    assert "ReadSources" in tools

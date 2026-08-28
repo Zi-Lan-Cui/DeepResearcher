@@ -16,7 +16,13 @@ from deepsearch_agent.llm import LLMConfigurationError
 from deepsearch_agent.observability.events.models import NodeEvent
 from deepsearch_agent.orchestration import graph, nodes
 from deepsearch_agent.orchestration.execution_boundary import execute_node
-from deepsearch_agent.orchestration.graph import _route_after_reflection, build_graph
+from deepsearch_agent.orchestration.graph import build_graph
+from deepsearch_agent.routing import (
+    NodeName,
+    route_after_reflection,
+    route_after_supervisor,
+    route_after_writer,
+)
 from deepsearch_agent.schemas import (
     Citation,
     ClarificationDecision,
@@ -28,6 +34,7 @@ from deepsearch_agent.schemas import (
     RunLifecycle,
     WriterProgress,
 )
+from deepsearch_agent.state import validate_state_invariants
 from deepsearch_agent.tools.errors import ToolRequestError
 
 
@@ -168,6 +175,8 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert result["run"].terminal_reason == "node_failed"
     assert result["run"].error.stage == "broken"
     assert "boom" in result["report"]
+    # 边界的失败产物自身必须通过与节点产物相同的不变量校验（回归锁）。
+    validate_state_invariants({}, result)
 
 
 def test_state_invariant_violation_becomes_run_error():
@@ -372,8 +381,29 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
 
 
 def test_approved_reflection_bypasses_supervisor_and_renders_final_report():
-    assert _route_after_reflection({"review": {"status": "approved"}}) == "render_final_report"
-    assert _route_after_reflection({"review": {"status": "rejected"}}) == "supervisor"
+    assert route_after_reflection({"review": {"status": "approved"}}) == NodeName.RENDER_FINAL_REPORT
+    assert route_after_reflection({"review": {"status": "rejected"}}) == NodeName.SUPERVISOR
+
+
+def test_terminal_phase_trunk_overrides_every_business_handoff():
+    """主干规则：节点声明 rendering/failed 后，无论业务字段写的是什么去向都收束到渲染。"""
+    exhausted_writer = {
+        "run": {"phase": "rendering"},
+        "writer": {"status": "exhausted"},
+    }
+    assert route_after_writer(exhausted_writer) == NodeName.RENDER_FINAL_REPORT
+    assert route_after_writer({"run": {"phase": "reviewing"}, "writer": {"status": "completed"}}) == (
+        NodeName.REFLECTION
+    )
+    # 审阅还在等回流，但 Supervisor 宣告终止 → 仍然去渲染
+    assert route_after_reflection(
+        {"run": {"phase": "rendering"}, "review": {"status": "rejected"}}
+    ) == NodeName.RENDER_FINAL_REPORT
+    # supervisor_next 的业务交接在正常态生效
+    assert route_after_supervisor({"supervisor_next": NodeName.WRITER}) == NodeName.WRITER
+    assert route_after_supervisor(
+        {"run": {"phase": "failed"}, "supervisor_next": NodeName.WRITER}
+    ) == NodeName.RENDER_FINAL_REPORT
 
 
 def test_clarify_preserves_open_question_and_only_adds_research_brief(monkeypatch):
@@ -406,3 +436,21 @@ def test_clarify_stops_only_for_material_user_choice(monkeypatch):
 
     assert result["answer_mode"] == "clarification_needed"
     assert "具体作品" in result["report"]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

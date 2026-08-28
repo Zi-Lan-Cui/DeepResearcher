@@ -12,9 +12,9 @@ from deepsearch_agent.tools.errors import (
     ToolParseError,
     ToolRequestError,
 )
-from deepsearch_agent.tools.fetcher import WebFetcher
-from deepsearch_agent.tools.http_client import HttpClient
 from deepsearch_agent.tools.search import SearchClient
+from deepsearch_agent.tools.sources import WebFetcher
+from deepsearch_agent.tools.transport import HttpClient
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,7 @@ def _run_parser_inline(monkeypatch):
     async def run_inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    monkeypatch.setattr("deepsearch_agent.tools.fetcher.asyncio.to_thread", run_inline)
+    monkeypatch.setattr("deepsearch_agent.tools.sources.fetcher.asyncio.to_thread", run_inline)
 
 
 class FakeHttpClient:
@@ -189,3 +189,280 @@ def test_http_client_raises_typed_error_after_retries():
     config = SearchConfig(retry_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
     with pytest.raises(ToolRequestError):
         asyncio.run(HttpClient(config, FailingClient()).arequest("GET", "https://example.com"))
+
+
+class _StatusClient:
+    """总是返回指定状态码与响应头的假客户端。"""
+
+    def __init__(self, status: int, headers: dict[str, str] | None = None):
+        self.status = status
+        self.headers = headers or {}
+
+    async def request(self, *args, **kwargs):
+        return httpx.Response(
+            self.status, headers=self.headers, request=httpx.Request("GET", "https://example.com")
+        )
+
+
+def _collect_sleeps(monkeypatch):
+    import deepsearch_agent.tools.transport.http_client as http_client_module
+
+    sleeps: list[float] = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(http_client_module.asyncio, "sleep", record_sleep)
+    return sleeps
+
+
+def test_http_client_prefers_retry_after_over_local_backoff(monkeypatch):
+    """429 的 Retry-After 优先于本地指数曲线，且不被 retry_max_seconds 截断。"""
+    sleeps = _collect_sleeps(monkeypatch)
+    config = SearchConfig(
+        retry_attempts=2, retry_initial_seconds=1.0, retry_max_seconds=10.0,
+        retry_after_max_seconds=60.0,
+    )
+    client = HttpClient(config, _StatusClient(429, {"Retry-After": "30"}))
+    with pytest.raises(ToolRequestError):
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert len(sleeps) == 1
+    # 基准 30s，允许最多 +25% jitter
+    assert 30.0 <= sleeps[0] <= 37.5
+
+
+def test_http_client_caps_retry_after_at_independent_limit(monkeypatch):
+    """服务端要求过长等待时按 retry_after_max_seconds 截断，避免病态挂起。"""
+    sleeps = _collect_sleeps(monkeypatch)
+    config = SearchConfig(
+        retry_attempts=2, retry_initial_seconds=1.0, retry_max_seconds=10.0,
+        retry_after_max_seconds=45.0,
+    )
+    client = HttpClient(config, _StatusClient(503, {"Retry-After": "3600"}))
+    with pytest.raises(ToolRequestError):
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert 45.0 <= sleeps[0] <= 56.25
+
+
+def test_http_client_parses_http_date_retry_after(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=12)
+    sleeps = _collect_sleeps(monkeypatch)
+    config = SearchConfig(
+        retry_attempts=2, retry_initial_seconds=1.0, retry_max_seconds=10.0,
+        retry_after_max_seconds=60.0,
+    )
+    client = HttpClient(config, _StatusClient(429, {"Retry-After": format_datetime(when)}))
+    with pytest.raises(ToolRequestError):
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert 0 < sleeps[0] <= 15 + 15 * 0.25
+
+
+def test_http_client_keeps_exponential_backoff_without_retry_after(monkeypatch):
+    """无 Retry-After 时保持原指数曲线（外加至多 25% jitter）。"""
+    sleeps = _collect_sleeps(monkeypatch)
+    config = SearchConfig(
+        retry_attempts=3, retry_initial_seconds=2.0, retry_max_seconds=10.0,
+    )
+    client = HttpClient(config, _StatusClient(500))
+    with pytest.raises(ToolRequestError):
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert len(sleeps) == 2
+    assert 2.0 <= sleeps[0] <= 2.5
+    assert 4.0 <= sleeps[1] <= 5.0
+
+
+def test_parse_retry_after_rejects_garbage():
+    from deepsearch_agent.tools.transport import parse_retry_after
+
+    assert parse_retry_after(None) is None
+    assert parse_retry_after("") is None
+    assert parse_retry_after("not-a-date") is None
+    assert parse_retry_after("7") == 7.0
+
+
+def test_http_client_records_rate_limit_reset_on_429(monkeypatch):
+    """429 重试耗尽后，错误携带约 30s（Retry-After 优先）的单调恢复点。"""
+    _collect_sleeps(monkeypatch)
+    import time as _time
+
+    config = SearchConfig(retry_attempts=2, retry_initial_seconds=0, retry_max_seconds=0)
+    client = HttpClient(config, _StatusClient(429, {"Retry-After": "30"}))
+    with pytest.raises(ToolRequestError) as caught:
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert _time.monotonic() + 29 <= caught.value.rate_limit_reset_ts <= _time.monotonic() + 31
+
+
+def test_http_client_uses_default_window_for_429_without_header(monkeypatch):
+    _collect_sleeps(monkeypatch)
+    import time as _time
+
+    config = SearchConfig(retry_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
+    client = HttpClient(config, _StatusClient(429))
+    with pytest.raises(ToolRequestError) as caught:
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert _time.monotonic() + 29 <= caught.value.rate_limit_reset_ts <= _time.monotonic() + 31
+
+
+def test_http_client_no_reset_ts_for_non_rate_limit_failure(monkeypatch):
+    _collect_sleeps(monkeypatch)
+    config = SearchConfig(retry_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
+    client = HttpClient(config, _StatusClient(500))
+    with pytest.raises(ToolRequestError) as caught:
+        asyncio.run(client.arequest("GET", "https://example.com"))
+
+    assert caught.value.rate_limit_reset_ts is None
+
+
+class _RateLimitedProvider:
+    """记录调用次数的假 provider；always_limited 时只抛非限流的普通错误。"""
+
+    def __init__(self, error: ToolRequestError):
+        self.error = error
+        self.calls = 0
+
+    async def asearch(self, query: str, limit: int):
+        self.calls += 1
+        raise self.error
+
+
+def _client_with_fake_provider(monkeypatch, provider):
+    import time as _time
+
+    client = SearchClient(SearchConfig(provider="baidu", baidu_api_key="test"))
+    monkeypatch.setattr(client, "_provider", lambda: provider)
+    return client, _time
+
+
+def test_search_client_breaker_opens_after_rate_limited_failure(monkeypatch):
+    """provider 报限流后，窗口内的后续查询直接快速失败，不再触网。"""
+    import time as _time
+
+    error = ToolRequestError("请求失败（重试 3 次）")
+    error.rate_limit_reset_ts = _time.monotonic() + 30
+    provider = _RateLimitedProvider(error)
+    client, _ = _client_with_fake_provider(monkeypatch, provider)
+
+    with pytest.raises(ToolRequestError):
+        asyncio.run(client.asearch("第一个查询"))
+    assert provider.calls == 1
+
+    with pytest.raises(ToolRequestError, match="已被限流") as caught:
+        asyncio.run(client.asearch("第二个查询"))
+    assert provider.calls == 1  # 第二个查询没有出网
+    assert caught.value.retryable is False
+    assert "约 30 秒后恢复" in str(caught.value) or "秒后恢复" in str(caught.value)
+
+
+def test_search_client_breaker_expires_and_admits_probe(monkeypatch):
+    """恢复窗口到期后，下一个请求放行做探针；成功则恢复正常。"""
+    import time as _time
+
+    error = ToolRequestError("请求失败")
+    error.rate_limit_reset_ts = _time.monotonic() + 30
+    provider = _RateLimitedProvider(error)
+    client, _ = _client_with_fake_provider(monkeypatch, provider)
+
+    with pytest.raises(ToolRequestError):
+        asyncio.run(client.asearch("q1"))
+    # 模拟窗口已过
+    client._rate_limit_deadlines["baidu"] = _time.monotonic() - 1
+    with pytest.raises(ToolRequestError):  # provider 仍然失败（非限流路径会重新开窗判断）
+        asyncio.run(client.asearch("q2"))
+    assert provider.calls == 2  # 探针请求真的出网了
+
+
+def test_search_client_ignores_plain_failures_for_breaker(monkeypatch):
+    """不带恢复点的普通失败（如 401）不开断路器。"""
+    provider = _RateLimitedProvider(ToolRequestError("HTTP 401", retryable=False))
+    client, _ = _client_with_fake_provider(monkeypatch, provider)
+
+    for _ in range(2):
+        with pytest.raises(ToolRequestError, match="401"):
+            asyncio.run(client.asearch("q"))
+    assert provider.calls == 2
+    assert client._rate_limit_deadlines == {}
+
+
+class _ConcurrencyTrackingProvider:
+    """记录并发峰值的假 provider；每个调用短暂挂起以制造重叠。"""
+
+    def __init__(self):
+        self.in_flight = 0
+        self.peak = 0
+        self.calls = 0
+
+    async def asearch(self, query: str, limit: int):
+        import asyncio
+
+        self.in_flight += 1
+        self.calls += 1
+        self.peak = max(self.peak, self.in_flight)
+        await asyncio.sleep(0.01)
+        self.in_flight -= 1
+        return []
+
+
+def test_search_client_caps_provider_concurrency(monkeypatch):
+    """跨 worker 并发查询被收敛到 max_concurrent_requests 路在飞。"""
+    provider = _ConcurrencyTrackingProvider()
+    config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
+    client = SearchClient(config)
+    monkeypatch.setattr(client, "_provider", lambda: provider)
+
+    async def run():
+        await asyncio.gather(*(client.asearch(f"q{i}") for i in range(8)))
+
+    asyncio.run(run())
+    assert provider.calls == 8
+    assert provider.peak <= 2
+
+
+def test_search_client_queued_request_bails_when_breaker_opens(monkeypatch):
+    """拿到并发许可后复查断路：排队期间被别的请求开窗，则不出网。"""
+    import time as _time
+
+    release = asyncio.Event()
+    opened = asyncio.Event()
+
+    class BlockingThenRateLimited:
+        def __init__(self):
+            self.calls = 0
+
+        async def asearch(self, query, limit):
+            self.calls += 1
+            if self.calls == 1:
+                await release.wait()  # 占住唯一许可,让第二个请求排队
+                error = ToolRequestError("请求失败（重试 3 次）")
+                error.rate_limit_reset_ts = _time.monotonic() + 30
+                raise error
+            opened.set()
+            return []
+
+    provider = BlockingThenRateLimited()
+    config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=1)
+    client = SearchClient(config)
+    monkeypatch.setattr(client, "_provider", lambda: provider)
+
+    async def run():
+        first = asyncio.create_task(client.asearch("q1"))
+        await asyncio.sleep(0)  # 让 first 进入 provider 并占住许可
+        second = asyncio.create_task(client.asearch("q2"))  # 卡在信号量上
+        await asyncio.sleep(0)
+        release.set()  # first 结束并开断路器；second 拿到许可后复查 → 快速失败
+        with pytest.raises(ToolRequestError):
+            await first
+        with pytest.raises(ToolRequestError, match="已被限流"):
+            await second
+
+    asyncio.run(run())
+    assert provider.calls == 1  # 第二个请求复查断路后未出网
+    assert not opened.is_set()
