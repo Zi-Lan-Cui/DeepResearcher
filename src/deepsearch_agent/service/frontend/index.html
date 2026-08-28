@@ -1,11 +1,348 @@
 <!doctype html>
 <html lang="zh">
-  <head>
-    <meta charset="utf-8" />
-    <title>DeepSearch</title>
-  </head>
-  <body>
-    <!-- 占位页：WP7 将替换为完整单文件前端（登录/进度流/报告渲染）。 -->
-    <p>service frontend pending WP7</p>
-  </body>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DeepSearch · 深度研究</title>
+<!-- marked 仅用于报告渲染；CDN 不可达时回退 <pre> 原文显示，功能不中断。 -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js" onerror="window.__marked_failed=1"></script>
+<style>
+  :root { --fg:#1c1e21; --mut:#68707a; --bd:#e3e6ea; --ac:#2563eb; --bg:#f7f8fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.65 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+         color:var(--fg); background:var(--bg); }
+  header { display:flex; align-items:center; justify-content:space-between;
+           padding:12px 20px; background:#fff; border-bottom:1px solid var(--bd); }
+  header b { font-size:17px; }
+  main { max-width:860px; margin:20px auto; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:18px; margin-bottom:16px; }
+  textarea { width:100%; min-height:88px; resize:vertical; padding:10px; border:1px solid var(--bd);
+             border-radius:8px; font:inherit; }
+  button { background:var(--ac); color:#fff; border:0; border-radius:8px; padding:9px 18px;
+           font:inherit; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--fg); border:1px solid var(--bd); }
+  button:disabled { opacity:.5; cursor:default; }
+  input { padding:9px 10px; border:1px solid var(--bd); border-radius:8px; font:inherit; width:100%; }
+  .row { display:flex; gap:10px; align-items:center; }
+  .muted { color:var(--mut); font-size:13px; }
+  .err { color:#b42318; }
+  #progress { font-size:14px; max-height:340px; overflow-y:auto; }
+  #progress .ln { padding:2px 0; border-bottom:1px dashed #f0f1f3; }
+  #progress .ln.warn { color:#b42318; }
+  .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); }
+  .badge.running,.badge.queued { color:#92400e; background:#fef3c7; border-color:#fde68a; }
+  .badge.completed { color:#166534; background:#dcfce7; border-color:#bbf7d0; }
+  .badge.failed,.badge.cancelled { color:#b42318; background:#fee2e2; border-color:#fecaca; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--bd); }
+  td.q { max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .report { background:#fff; }
+  .report .md { line-height:1.8; }
+  .report .md h1 { font-size:22px; } .report .md h2 { font-size:18px; }
+  .src { font-size:13.5px; color:var(--mut); }
+  .src a { color:var(--ac); text-decoration:none; word-break:break-all; }
+  .hide { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <b>DeepSearch</b>
+  <span class="row">
+    <span id="whoami" class="muted"></span>
+    <button id="logout" class="secondary hide">退出</button>
+  </span>
+</header>
+<main>
+  <!-- 登录 / 注册 -->
+  <section id="view-auth" class="card hide">
+    <div class="row" style="justify-content:center;gap:24px;margin-bottom:14px">
+      <button id="tab-login" class="secondary">登录</button><button id="tab-register" class="secondary">注册</button>
+    </div>
+    <div style="max-width:360px;margin:0 auto">
+      <p>邮箱 <input id="auth-email" type="email" autocomplete="username" /></p>
+      <p>密码 <input id="auth-password" type="password" autocomplete="current-password" /></p>
+      <p class="muted">密码至少 8 位。</p>
+      <button id="auth-submit" style="width:100%">登录</button>
+      <p id="auth-error" class="err"></p>
+    </div>
+  </section>
+
+  <!-- 首页：提问 + 我的运行 -->
+  <section id="view-home" class="hide">
+    <div class="card">
+      <textarea id="query" placeholder="提出一个值得深挖的研究问题，例如：性善论和性恶论哪一个更正确？"></textarea>
+      <div class="row" style="margin-top:10px;justify-content:space-between">
+        <span id="quota-hint" class="muted"></span>
+        <button id="submit">开始研究</button>
+      </div>
+      <p id="home-error" class="err"></p>
+    </div>
+    <div class="card">
+      <b>我的研究</b>
+      <table id="runs-table">
+        <thead><tr><th>问题</th><th>状态</th><th>证据/来源</th><th>时间</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="runs-empty" class="muted">还没有研究记录。</p>
+    </div>
+  </section>
+
+  <!-- 运行详情：进度 / 报告 -->
+  <section id="view-run" class="hide">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b id="run-title">研究进行中</b>
+        <span class="row">
+          <span id="run-status" class="badge queued">queued</span>
+          <button id="run-cancel" class="secondary">取消</button>
+          <button id="run-back" class="secondary">返回</button>
+        </span>
+      </div>
+      <p class="muted" id="run-query"></p>
+    </div>
+    <div class="card">
+      <b>实时进度</b>
+      <div id="progress"></div>
+    </div>
+    <div class="card report hide" id="report-card">
+      <b>研究报告</b>
+      <div id="report" class="md"></div>
+      <hr />
+      <b class="src">来源</b>
+      <div id="sources" class="src"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+/* ---------- 基础设施 ---------- */
+const tokenKey = "deepsearch.token";
+const $ = (id) => document.getElementById(id);
+let lastSeq = 0;        // SSE 去重水位：重连/回放都只会重发旧 seq，单调消费即可
+let streamAbort = null; // 当前 SSE 的 AbortController
+
+function authHeaders(extra) {
+  const t = localStorage.getItem(tokenKey);
+  return Object.assign(t ? { Authorization: "Bearer " + t } : {}, extra || {});
+}
+
+async function api(path, options) {
+  const resp = await fetch(path, Object.assign({ headers: authHeaders({ "Content-Type": "application/json" }) }, options));
+  if (resp.status === 401 && path !== "/api/login" && path !== "/api/register") {
+    logout();
+    throw new Error("登录已过期，请重新登录。");
+  }
+  const body = resp.status === 204 ? null : await resp.json().catch(() => null);
+  if (!resp.ok) {
+    throw new Error((body && body.detail) || ("请求失败（" + resp.status + "）"));
+  }
+  return body;
+}
+
+function logout() {
+  localStorage.removeItem(tokenKey);
+  if (streamAbort) streamAbort.abort();
+  location.hash = "#/";
+  showView();
+}
+
+function show(el) { document.querySelectorAll("main > section").forEach(s => s.classList.add("hide")); el.classList.remove("hide"); }
+
+/* ---------- 视图路由（hash 极简版） ---------- */
+async function showView() {
+  const m = location.hash.match(/^#\/run\/(.+)$/);
+  const loggedIn = !!localStorage.getItem(tokenKey);
+  if (m) { renderRun(m[1]); return; }
+  if (!loggedIn) { show($("view-auth")); return; }
+  show($("view-home"));
+  try {
+    const me = await api("/api/me");
+    $("whoami").textContent = me.email;
+    $("logout").classList.remove("hide");
+    await refreshRuns();
+  } catch (e) { $("whoami").textContent = ""; }
+}
+window.addEventListener("hashchange", showView);
+
+/* ---------- 登录/注册 ---------- */
+let authMode = "login";
+function setAuthMode(mode) {
+  authMode = mode;
+  $("auth-submit").textContent = mode === "login" ? "登录" : "注册";
+  $("tab-login").disabled = mode === "login";
+  $("tab-register").disabled = mode !== "login";
+  $("auth-error").textContent = "";
+}
+$("tab-login").onclick = () => setAuthMode("login");
+$("tab-register").onclick = () => setAuthMode("register");
+$("auth-submit").onclick = async () => {
+  $("auth-error").textContent = "";
+  try {
+    const r = await api("/api/" + authMode, {
+      method: "POST",
+      body: JSON.stringify({ email: $("auth-email").value, password: $("auth-password").value }),
+    });
+    localStorage.setItem(tokenKey, r.token);
+    location.hash = "#/";
+    showView();
+  } catch (e) { $("auth-error").textContent = e.message; }
+};
+$("auth-password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("auth-submit").click(); });
+$("logout").onclick = logout;
+
+/* ---------- 首页 ---------- */
+$("submit").onclick = async () => {
+  const query = $("query").value.trim();
+  $("home-error").textContent = "";
+  if (!query) { $("home-error").textContent = "问题不能为空。"; return; }
+  $("submit").disabled = true;
+  try {
+    const r = await api("/api/runs", { method: "POST", body: JSON.stringify({ query }) });
+    location.hash = "#/run/" + r.run_id;
+  } catch (e) { $("home-error").textContent = e.message; }
+  $("submit").disabled = false;
+};
+
+async function refreshRuns() {
+  let runs = [];
+  try { runs = await api("/api/runs"); } catch (e) { return; }
+  const tbody = $("runs-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  $("runs-empty").classList.toggle("hide", runs.length > 0);
+  for (const run of runs) {
+    const tr = document.createElement("tr");
+    const time = run.created_at ? new Date(run.created_at).toLocaleString() : "";
+    tr.innerHTML =
+      '<td class="q"></td><td><span class="badge ' + run.status + '"></span></td>' +
+      "<td>" + run.evidence_count + " / " + run.source_count + "</td>" +
+      '<td class="muted">' + time + "</td>";
+    tr.querySelector(".q").textContent = run.query;
+    tr.querySelector(".badge").textContent = run.status;
+    const open = document.createElement("button");
+    open.className = "secondary"; open.textContent = "查看";
+    open.onclick = () => { location.hash = "#/run/" + run.id; };
+    tr.appendChild(open);
+    tbody.appendChild(tr);
+  }
+}
+setInterval(() => { if ($("view-home").classList.contains("hide") === false) refreshRuns(); }, 5000);
+
+/* ---------- 运行详情 + SSE 消费 ---------- */
+function progressLine(text, warn) {
+  const div = document.createElement("div");
+  div.className = "ln" + (warn ? " warn" : "");
+  div.textContent = text;
+  $("progress").appendChild(div);
+  $("progress").scrollTop = $("progress").scrollHeight;
+}
+
+function handleFrame(event, data) {
+  if (typeof data.seq === "number") {
+    if (data.seq <= lastSeq) return; // 回放/重连去重
+    lastSeq = data.seq;
+  }
+  if (event === "tick") progressLine(data.text);
+  else if (event === "error") progressLine(data.text, true);
+  else if (event === "status") setStatus(data.status);
+  else if (event === "done") { setStatus(data.status); onRunDone(data); }
+}
+
+function setStatus(status) {
+  const badge = $("run-status");
+  badge.className = "badge " + status;
+  badge.textContent = status;
+  $("run-cancel").disabled = ["completed", "failed", "cancelled"].includes(status);
+}
+
+async function onRunDone(data) {
+  if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+  $("report-card").classList.remove("hide");
+  let detail;
+  try { detail = await api("/api/runs/" + currentRunId); } catch (e) { return; }
+  const md = detail.report_markdown || detail.error_message || "（无报告内容）";
+  if (window.marked && !window.__marked_failed) $("report").innerHTML = marked.parse(md);
+  else { const pre = document.createElement("pre"); pre.textContent = md; $("report").replaceChildren(pre); }
+  $("sources").innerHTML = "";
+  for (const c of detail.citations || []) {
+    const p = document.createElement("p");
+    p.textContent = c.title + " — ";
+    const a = document.createElement("a");
+    a.href = c.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = c.url;
+    p.appendChild(a);
+    if (c.quote) { const q = document.createElement("i"); q.textContent = "「" + c.quote + "」"; p.appendChild(document.createElement("br")); p.appendChild(q); }
+    $("sources").appendChild(p);
+  }
+}
+
+async function consumeStream(runId) {
+  // EventSource 无法携带 Authorization 头 → 用 fetch 流式解析 SSE（~20 行）。
+  const ctrl = new AbortController();
+  streamAbort = ctrl;
+  for (;;) {
+    if (ctrl.signal.aborted) return;
+    try {
+      const resp = await fetch("/api/runs/" + runId + "/events", { headers: authHeaders(), signal: ctrl.signal });
+      if (resp.status === 401) { logout(); return; }
+      const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buf = "";
+      let sawDone = false;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          if (block.startsWith(":")) continue; // ping
+          let event = "message", data = "{}";
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event: ")) event = line.slice(7).trim();
+            else if (line.startsWith("data: ")) data = line.slice(6);
+          }
+          let payload; try { payload = JSON.parse(data); } catch { continue; }
+          handleFrame(event, payload);
+          if (event === "done") sawDone = true;
+        }
+      }
+      if (sawDone || ctrl.signal.aborted) return;
+      await new Promise((r) => setTimeout(r, 1000)); // 断线自动重连（服务端 seq 去重保证不重不漏）
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+
+let currentRunId = null;
+async function renderRun(runId) {
+  currentRunId = runId;
+  if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+  lastSeq = 0;
+  $("progress").innerHTML = "";
+  $("report-card").classList.add("hide");
+  $("run-cancel").disabled = false;
+  show($("view-run"));
+  let detail;
+  try { detail = await api("/api/runs/" + runId); } catch (e) { progressLine(e.message, true); return; }
+  $("run-query").textContent = detail.query;
+  $("run-title").textContent = "研究：" + detail.query.slice(0, 40);
+  setStatus(detail.status);
+  if (["completed", "failed", "cancelled"].includes(detail.status)) { onRunDone({ status: detail.status }); return; }
+  consumeStream(runId); // 进行中：订阅实时流（服务端会先回放已落库段）
+}
+
+$("run-back").onclick = () => { location.hash = "#/"; };
+$("run-cancel").onclick = async () => {
+  $("run-cancel").disabled = true;
+  try { await api("/api/runs/" + currentRunId + "/cancel", { method: "POST" }); }
+  catch (e) { progressLine(e.message, true); $("run-cancel").disabled = false; }
+  // 状态收敛交给 SSE 的 done 帧，不做乐观更新。
+};
+
+/* ---------- 启动 ---------- */
+if (!localStorage.getItem(tokenKey)) setAuthMode("login");
+showView();
+</script>
+</body>
 </html>
