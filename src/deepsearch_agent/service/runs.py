@@ -19,7 +19,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
 from deepsearch_agent.config import Settings
 from deepsearch_agent.observability import JsonlSink
@@ -116,20 +116,44 @@ class RunManager:
     # ---- 启动/停机 ----
 
     async def reconcile_startup(self) -> int:
-        """上个进程死掉时残留的 queued/running 一律收敛为 failed。"""
+        """上个进程死掉时残留的 queued/running 一律收敛为 failed。
+
+        同时为每个孤儿 run 补一条持久化的 run_done 事件：它们的进程已蒸发，
+        事件表天然缺少收尾帧——不补，前端打开历史详情页的 SSE 回放永远等不到
+        done，会陷入无限重连。
+        """
         async with self._session_factory() as session:
-            result = await session.execute(
-                update(Run)
-                .where(Run.status.in_(("queued", "running")))
-                .values(
-                    status="failed",
-                    terminal_reason="server_restart",
-                    error_message="进程重启导致运行中断，请重新发起。",
-                    finished_at=_utcnow(),
+            stale = (
+                await session.scalars(select(Run).where(Run.status.in_(("queued", "running"))))
+            ).all()
+            for run in stale:
+                run.status = "failed"
+                run.terminal_reason = "server_restart"
+                run.error_message = "进程重启导致运行中断，请重新发起。"
+                run.finished_at = _utcnow()
+                max_seq = await session.scalar(
+                    select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id)
                 )
-            )
+                done_record = {
+                    "run_id": run.id,
+                    "event_type": "run_done",
+                    "seq": int(max_seq or 0) + 1,
+                    "payload": {
+                        "status": "failed",
+                        "answer_mode": run.answer_mode or "",
+                        "report_available": False,
+                    },
+                }
+                session.add(
+                    RunEvent(
+                        run_id=run.id,
+                        seq=done_record["seq"],
+                        event_type="run_done",
+                        record=done_record,
+                    )
+                )
             await session.commit()
-            return int(result.rowcount or 0)
+            return len(stale)
 
     async def shutdown(self) -> None:
         for task in list(self._tasks.values()):

@@ -247,3 +247,23 @@ async def test_reconcile_startup_converts_stale_rows(manager):
         run = await _row(manager, run_id)
         assert run.status == expected
     assert (await _row(manager, "run-stale-a")).terminal_reason == "server_restart"
+    # 孤儿 run 的事件流必须有合成 done 收尾，否则历史详情页 SSE 无限重连。
+    async with manager.session_factory() as session:
+        orphans = (
+            await session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id.in_(("run-stale-a", "run-stale-b")),
+                    RunEvent.event_type == "run_done",
+                )
+            )
+        ).all()
+        completed_done = (
+            await session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == "run-done", RunEvent.event_type == "run_done"
+                )
+            )
+        ).all()
+    assert len(orphans) == 2
+    assert all(event.record["payload"]["status"] == "failed" for event in orphans)
+    assert completed_done == []  # 非孤儿不补
