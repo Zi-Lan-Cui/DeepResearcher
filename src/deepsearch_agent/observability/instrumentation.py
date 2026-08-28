@@ -7,7 +7,12 @@ from typing import Any
 from deepsearch_agent.observability.events.models import make_node_event
 from deepsearch_agent.observability.events.sink import JsonlSink
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import bind_context, current_context, new_id
+from deepsearch_agent.observability.tracing.context import (
+    SpanContext,
+    bind_context,
+    current_span_context,
+    new_id,
+)
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.schemas import RunError
 
@@ -31,32 +36,28 @@ def instrument_node(
             run_id=state.get("run_id"), session_id=state.get("session_id"), node_id=name
         ):
             log.info("node_started", extra={"node": name})
-            context = current_context()
             if event_sink is not None:
                 event_sink.write(
                     make_node_event(
                         name,
                         "started",
-                        trace_id=context.trace_id if context else None,
-                        span_id=context.span_id if context else None,
-                        run_id=context.run_id if context else None,
-                        session_id=context.session_id if context else None,
                         node_id=name,
                         payload={"query_chars": len(str(state.get("query", "")))},
                     )
                 )
             try:
+                span_link: SpanContext | None = None
                 with (
                     trace_recorder.span(name)
                     if trace_recorder is not None
-                    else _null_context() as span_id
+                    else _null_context()
                 ):
+                    # 节点生命周期事件统一归属节点 span;span 进入即冻结身份。
+                    span_link = current_span_context()
                     value = node(state)
                     if inspect.isawaitable(value):
                         value = await value
                     result = dict(value)
-                    context = current_context()
-                    trace_id = context.trace_id if context else None
                 duration_ms = (time.perf_counter() - started) * 1000
                 output = _node_result_summary(result, max_text_chars=max_text_chars)
                 log.info(
@@ -69,10 +70,7 @@ def instrument_node(
                 event = make_node_event(
                     name,
                     "completed",
-                    trace_id=trace_id,
-                    span_id=span_id,
-                    run_id=context.run_id if context else None,
-                    session_id=context.session_id if context else None,
+                    link=span_link,
                     node_id=name,
                     duration_ms=duration_ms,
                     payload=output,
@@ -84,14 +82,10 @@ def instrument_node(
             except (asyncio.CancelledError, KeyboardInterrupt) as exc:
                 duration_ms = (time.perf_counter() - started) * 1000
                 log.info("node_cancelled duration_ms=%.2f", duration_ms, extra={"node": name})
-                context = current_context()
                 event = make_node_event(
                     name,
                     "cancelled",
-                    trace_id=context.trace_id if context else None,
-                    span_id=context.span_id if context else None,
-                    run_id=context.run_id if context else None,
-                    session_id=context.session_id if context else None,
+                    link=span_link,
                     node_id=name,
                     duration_ms=duration_ms,
                     error=str(exc),
@@ -103,18 +97,14 @@ def instrument_node(
             except Exception as exc:
                 duration_ms = (time.perf_counter() - started) * 1000
                 log.exception("node_failed duration_ms=%.2f", duration_ms, extra={"node": name})
-                context = current_context()
                 run_error = RunError.from_exception(name, exc)
                 event = make_node_event(
                     name,
                     "failed",
-                    trace_id=context.trace_id if context else None,
-                    span_id=context.span_id if context else None,
+                    link=span_link,
+                    node_id=name,
                     duration_ms=duration_ms,
                     error=str(exc) or exc.__class__.__name__,
-                    run_id=context.run_id if context else None,
-                    session_id=context.session_id if context else None,
-                    node_id=name,
                     payload={
                         "code": run_error.code,
                         "retryable": run_error.retryable,
