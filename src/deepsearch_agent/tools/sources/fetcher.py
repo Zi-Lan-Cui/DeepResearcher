@@ -17,7 +17,7 @@ from deepsearch_agent.parsers import (
     parse_text,
 )
 from deepsearch_agent.tools.errors import SourceUnavailableError
-from deepsearch_agent.tools.http_client import HttpClient
+from deepsearch_agent.tools.transport.http_client import HttpClient
 
 _CHALLENGE_TITLE_MARKERS = ("验证码", "安全验证", "访问验证", "just a moment", "security check")
 _LOGIN_TITLE_MARKERS = ("登录", "sign in", "log in")

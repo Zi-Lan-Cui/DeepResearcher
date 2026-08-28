@@ -31,7 +31,7 @@ async def main() -> None:
                 event_sink=event_sink,
                 trace_recorder=trace_recorder,
                 http_client=http_client,
-            ).ainvoke({"query": query, "run_id": run_id, "session_id": "cli", "raw_documents": []})
+            ).ainvoke({"query": query, "run_id": run_id, "session_id": "cli"})
     finally:
         await http_client.aclose()
     print(result["report"])

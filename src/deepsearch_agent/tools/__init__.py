@@ -8,15 +8,17 @@ from deepsearch_agent.tools.errors import (
     ToolParseError,
     ToolRequestError,
 )
-from deepsearch_agent.tools.fetcher import WebFetcher
-from deepsearch_agent.tools.http_client import HttpClient
-from deepsearch_agent.tools.search import SearchClient, SearchResult
+from deepsearch_agent.tools.search import SearchClient, SearchResult, SearchTool
+from deepsearch_agent.tools.sources import SourceReaderTool, WebFetcher
+from deepsearch_agent.tools.transport import HttpClient
 
 __all__ = [
     "HttpClient",
     "ParsedDocument",
     "SearchClient",
     "SearchResult",
+    "SearchTool",
+    "SourceReaderTool",
     "SourceUnavailableError",
     "ToolConfigurationError",
     "ToolError",
@@ -24,7 +26,3 @@ __all__ = [
     "ToolRequestError",
     "WebFetcher",
 ]
-from deepsearch_agent.tools.source_reader import SourceReaderTool
-from deepsearch_agent.tools.web_search import SearchTool
-
-__all__ = ["SearchTool", "SourceReaderTool"]

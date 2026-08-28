@@ -6,12 +6,17 @@ from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 from deepsearch_agent.observability.events import JsonlSink, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import current_context
+from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools.errors import ToolConfigurationError
-from deepsearch_agent.tools.research_models import SearchFailure, SearchToolResult, failed_search
-from deepsearch_agent.tools.search import SearchClient, SearchResult
+from deepsearch_agent.tools.search.client import SearchClient
+from deepsearch_agent.tools.search.models import (
+    SearchFailure,
+    SearchResult,
+    SearchToolResult,
+    failed_search,
+)
 
 
 class SearchTool:
@@ -38,8 +43,7 @@ class SearchTool:
 
     async def arun_queries(self, task: SubTask, *, queries: list[str]) -> SearchToolResult:
         started = time.perf_counter()
-        span_id = None
-        outer_context = current_context()
+        link: SpanContext | None = None
         search_queries = list(
             dict.fromkeys(query.strip() for query in queries if query.strip())
         ) or [task["question"]]
@@ -57,13 +61,10 @@ class SearchTool:
                 make_tool_event(
                     "search",
                     "started",
-                    trace_id=outer_context.trace_id if outer_context else None,
-                    span_id=outer_context.span_id if outer_context else None,
                     payload={**task_context, "queries": search_queries},
                 )
             )
         try:
-            context = None
             cached_queries: dict[str, list[SearchResult]] = {}
             missing_queries: list[str] = []
             async with self._query_cache_lock:
@@ -73,12 +74,12 @@ class SearchTool:
                     else:
                         missing_queries.append(query)
             if self.trace_recorder is not None:
-                with self.trace_recorder.span("search", kind="tool") as span_id:
+                with self.trace_recorder.span("search", kind="tool"):
+                    link = current_span_context()  # search 事件归属 tool span,即使写出点在 with 之外
                     batches = await asyncio.gather(
                         *(self.client.asearch(query) for query in missing_queries),
                         return_exceptions=True,
                     )
-                    context = current_context()
             else:
                 batches = await asyncio.gather(
                     *(self.client.asearch(query) for query in missing_queries),
@@ -118,8 +119,7 @@ class SearchTool:
                     make_tool_event(
                         "search",
                         "completed",
-                        trace_id=context.trace_id if context else None,
-                        span_id=span_id,
+                        link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
                             **task_context,
@@ -153,7 +153,7 @@ class SearchTool:
                     make_tool_event(
                         "search",
                         "failed",
-                        span_id=span_id,
+                        link=link,
                         error=str(exc),
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={**task_context, "queries": search_queries},

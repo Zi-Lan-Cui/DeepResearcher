@@ -5,8 +5,8 @@ from typing import Protocol
 
 from deepsearch_agent.config import SearchConfig
 from deepsearch_agent.tools.errors import ToolParseError, ToolRequestError
-from deepsearch_agent.tools.http_client import HttpClient
-from deepsearch_agent.tools.search import SearchResult
+from deepsearch_agent.tools.search.models import SearchResult
+from deepsearch_agent.tools.transport.http_client import HttpClient
 
 
 class SearchProvider(Protocol):
