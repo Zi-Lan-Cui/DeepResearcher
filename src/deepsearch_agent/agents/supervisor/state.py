@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, field
 
 from langchain_core.messages import ToolMessage
 
@@ -13,8 +13,20 @@ from deepsearch_agent.schemas import (
     ResearchDirectionResult,
     ResearchProgress,
     ResearchToolResult,
+    StopReason,
 )
 from deepsearch_agent.state import ResearchState, SubTask, section
+
+
+@dataclass
+class SupervisorRuntimeContext:
+    """本次 Supervisor Agent 运行的依赖和可变工作状态。"""
+
+    working: "WorkingState"
+    url_reservations: "RunUrlReservations"
+    delegate_research: Callable[[str], Awaitable[dict[str, object]]]
+    round_no: int = 0
+    tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class RunUrlReservations:
@@ -159,7 +171,7 @@ class WorkingState:
         self.sufficient = False
         self.partial_ready = False
         self.report_brief: ReportBrief | None = None
-        self.stop_reason = ""
+        self.stop_reason: StopReason | None = None
 
     @property
     def next_task_index(self) -> int:

@@ -7,10 +7,8 @@ from typing import TypedDict
 from langchain_core.messages import BaseMessage
 
 from deepsearch_agent.evidence.models import Evidence
-from deepsearch_agent.schemas import ResearchDirectionDecision
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools import SearchTool, SourceReaderTool
-from deepsearch_agent.tools.research_models import SearchCandidate
+from deepsearch_agent.tools.search.models import SearchCandidate
 
 
 class ResearchAgentState(TypedDict, total=False):
@@ -32,13 +30,14 @@ class ResearchAgentState(TypedDict, total=False):
     stop_reason: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class ResearchRuntimeContext:
     """不进入 State 的 ResearchAgent 运行时依赖。"""
 
-    search_tool: SearchTool
-    reader_tool: SourceReaderTool
-    claim_url: Callable[[str], Awaitable[bool]]
+    task: SubTask
+    run_state: "DirectionRunState"
+    search_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
+    read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
     on_url_already_attempted: Callable[[str], None] | None = None
     event_context: dict[str, object] = field(default_factory=dict)
 
@@ -58,18 +57,3 @@ class DirectionRunState:
     conclusion: str = ""
     stop_reason: str = "step_budget_exhausted"
     stop_detail: str = "方向级探索步数预算已耗尽。"
-
-
-@dataclass(frozen=True)
-class ToolExecutionContext:
-    task: SubTask
-    decision: ResearchDirectionDecision
-    tool_call_id: str
-    messages: list[BaseMessage]
-    run_state: DirectionRunState
-    event_context: dict[str, object]
-    claim_url: Callable[[str], Awaitable[bool]]
-    on_url_already_attempted: Callable[[str], None] | None
-
-
-ToolExecutor = Callable[[ToolExecutionContext], Awaitable[bool]]

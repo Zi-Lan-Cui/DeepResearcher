@@ -4,34 +4,34 @@ Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引
 编号渲染与参考来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
 """
 
-import json
-from collections.abc import Callable, Mapping, Sequence
-from typing import ClassVar
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from pydantic import BaseModel, Field, ValidationError
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 
+from deepsearch_agent.agents.middleware import (
+    AGENT_RECURSION_LIMIT,
+    MiddlewareProfile,
+    SubmissionGuard,
+    build_agent_middleware,
+)
 from deepsearch_agent.agents.writer.state import (
-    GenerationResult,
     PreparedEvidence,
     ValidatedDraft,
+    WriterRuntimeContext,
 )
+from deepsearch_agent.agents.writer.tools import build_writer_tools
 from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.context import ContextPolicy
+from deepsearch_agent.errors import WriterGenerationError
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
-from deepsearch_agent.observability.events import make_audit_event
+from deepsearch_agent.observability.events import bounded_content, emit_agent_event
 from deepsearch_agent.observability.events.sink import JsonlSink
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import current_context
-from deepsearch_agent.orchestration.errors import WriterGenerationError
-from deepsearch_agent.reporting.validation import (
-    DraftProtocolError,
-    extract_cite_ids,
-    validate_and_bind,
-)
+from deepsearch_agent.reporting.validation import extract_cite_ids, validate_and_bind
 from deepsearch_agent.schemas import (
-    MarkdownReportDraft,
     ResearchProgress,
     ReviewProgress,
     RunLifecycle,
@@ -42,24 +42,56 @@ from deepsearch_agent.schemas import (
 from deepsearch_agent.state import ResearchState, section
 
 _SUPPORT_RANK = {"insufficient": 0, "partial": 1, "direct": 2}
+# 模型违反协议直接输出正文时的救回下限：短于该长度或没有 cite 标记的
+# 收尾文本按闲聊/致歉处理，不视为报告草稿。
+_INLINE_DRAFT_MIN_CHARS = 300
 
 
-class ReadEvidence(BaseModel):
-    """Writer 请求查看目录中 Evidence 的完整内容。"""
-
-    allow_parallel: ClassVar[bool] = False
-
-    evidence_ids: list[str] = Field(min_length=1, max_length=5)
-    reason: str = Field(min_length=1, description="说明这些证据与当前报告段落的关系。")
-
-
-class CompleteReport(BaseModel):
-    """Writer 确认已读取足够证据并提交报告草稿。"""
-
-    allow_parallel: ClassVar[bool] = False
-
-    selected_evidence_ids: list[str] = Field(min_length=1)
-    markdown: str = Field(min_length=1)
+_WRITER_SYSTEM_PROMPT = "\n".join(
+    [
+    "【角色与边界】",
+    "你是深度研究报告作者。Supervisor 已完成充分性判断并提供报告任务书；"
+    "你必须按其 covered_topics、required_points 与 caveats 写作，"
+    "而不重新决定是否研究或要求补材料。",
+    "【引用协议（必须遵守）】",
+    "凡是来自 Evidence 的可验证事实、数字、观点归属、具体案例，都必须在对应句子或段落末尾写"
+    "[[cite:evidence_id1,evidence_id2]]。cite 内只能使用输入中已有的 evidence_id，最多三个，以逗号分隔。",
+    "先从 Evidence 目录按研究方向、claim 与问题相关性选择要读取的 Evidence，调用 ReadEvidence 获取完整内容；"
+    "只有读取返回的 evidence_id 才能引用。材料足够后必须调用 CompleteReport，"
+    "将真正支撑正文的 evidence_id 填入 selected_evidence_ids。",
+    "CompleteReport 是唯一的结束信号；在调用 CompleteReport 之前，不要直接输出报告文本。"
+    "每轮只能调用一个工具。若上一次工具调用收到错误反馈，必须根据反馈修正后再次调用工具。",
+    "不要手写 [来源N]，不要把 cite 放入代码围栏、行内代码或 URL。",
+    "正确示例：Evidence 给出‘e1：某作品于 2020 年发行’，应写："
+    "该作品于 2020 年发行。[[cite:e1]]",
+    "不要写：该作品于 2020 年发行。[来源1]；"
+    "不要写：该作品于 2020 年发行。[[cite:未知来源]]。",
+    "【写作要求】",
+    "只使用给定的已验证 Evidence 写成围绕用户问题展开的正式中文研究报告，"
+    "不能按来源逐条罗列资料，也不能写成只有结论句的资料摘要。",
+    "你不能凭目录中的 claim 补写 quote 未提供的细节；需要完整依据时先调用 ReadEvidence。",
+    "如果研究状态为 incomplete 或报告生成模式为 partial，必须在报告中明确说明覆盖范围、未解决问题和证据限制；"
+    "不要把局部证据写成完整综述，不要用模型内部知识填补缺口。",
+    "除非 Evidence 明显不足，输出 3 到 4 个有信息量的小节；每节 2 到 4 个完整段落。"
+    "报告应先直接回应问题，再形成清楚的论证链：界定讨论对象、解释证据与问题的关系、"
+    "比较不同情况或观点，并说明适用范围与限制。",
+    "每个段落通常用 2 到 5 句完成一个完整论点，而不是把单条 Evidence 改写成一句话。"
+    "目标是约 1,000 到 1,800 个中文字；不得用重复、空泛修辞或外部知识凑篇幅。"
+    "省略与问题无关的 Evidence。",
+    "直接输出 Markdown 正文：可按论证需要使用 ##/### 标题、列表、引用块和表格；"
+    "只有确实存在可比较的多个对象或维度时才使用表格，表格之后必须有解释，不能为排版而造表。",
+    "不要输出 # 一级标题、‘研究问题’、‘参考来源’或文末参考文献，这些由本地程序统一生成。",
+    "纯粹的衔接、范围说明或方法限制可以不加 cite，但绝不能新增外部事实。"
+    "不得编造、不得扩大事实的时间、范围或条件；不能把推荐、题材特征自动写成价值证明。",
+    "段落必须可独立阅读、自然衔接，并解释引用 Evidence 在本段论证中的作用。",
+    "【输出前最后检查】",
+    "1. selected_evidence_ids 非空且只含 evidence_id；"
+    "2. 每个 cite 标记使用 selected_evidence_ids 中的 evidence_id；"
+    "3. 每个 cite 必须是完整的 [[cite:id]]；"
+    "4. 不输出‘参考来源’小节；"
+    "5. 不用无引用的外部知识补全事实。",
+    ]
+)
 
 
 class ReportWriter:
@@ -78,7 +110,7 @@ class ReportWriter:
         render_incomplete: Callable[[ResearchState], str],
         event_sink: JsonlSink | None = None,
         artifact_max_text_chars: int = 1_000,
-        context_policy: ContextPolicy | None = None,
+        context_window_tokens: int = 32_768,
     ):
         if llm is None:
             raise LLMConfigurationError("ReportWriter 需要已装配的 LLMInvoker。")
@@ -86,12 +118,30 @@ class ReportWriter:
         self.config = config
         self._render_incomplete = render_incomplete
         self._event_sink = event_sink
-        self.context_policy = context_policy or ContextPolicy()
         self._artifact_max_text_chars = artifact_max_text_chars
         self._logger = get_logger("deepsearch_agent.agents.writer")
-        self._decision_runnable = llm.bind_tools(
-            [ReadEvidence, CompleteReport],
-            tool_choice="any",
+        self._agent_loop = create_agent(
+            model=cast(Any, self.llm),
+            tools=build_writer_tools(),
+            system_prompt=_WRITER_SYSTEM_PROMPT,
+            context_schema=WriterRuntimeContext,
+            middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
+                agent_name="Writer",
+                model=getattr(self.llm, "chat_model", None),
+                max_turns=self.config.writer_max_turns,
+                context_window_tokens=context_window_tokens,
+                # 提交前输出纯文本不算结束：踢回重试，耗尽后由 _recover_inline_draft 兜底。
+                submission_guard=SubmissionGuard(
+                    nudge_message=(
+                        "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
+                        "请立即调用 CompleteReport，把完整 Markdown 正文作为参数提交，"
+                        "并在 selected_evidence_ids 填入真正支撑正文的已读 evidence_id。"
+                    ),
+                    submitted_probe=lambda ctx: getattr(ctx, "validated_draft", None) is not None,
+                ),
+                emit=self._emit,
+            ))),
+            name="writer",
         )
 
     async def run(self, state: ResearchState) -> dict[str, object]:
@@ -112,19 +162,117 @@ class ReportWriter:
         if not prepared.by_id:
             return self._render_insufficient_evidence(state, evidences)
 
-        generation = await self._generate_agent_validated_draft(
+        runtime = self._writer_runtime_context(prepared.by_id)
+        messages = self._build_generation_messages(
             state=state,
             directive=directive,
             evidence_catalogue=prepared.catalogue,
-            evidence_by_id=prepared.by_id,
         )
-        if generation.draft is None:
-            return self._render_exhausted_result(state, generation)
+        try:
+            result = await self._agent_loop.ainvoke(
+                cast(Any, {"messages": messages}),
+                context=runtime,
+                config={"recursion_limit": AGENT_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            result = {"messages": []}
+            runtime.last_error = runtime.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
+        if runtime.validated_draft is None:
+            self._recover_inline_draft(runtime, result.get("messages", []))
+        if runtime.validated_draft is None:
+            return self._render_exhausted_result(
+                state,
+                last_markdown=runtime.last_markdown
+                or self._last_submitted_markdown(result.get("messages", [])),
+                error=runtime.last_error or "Writer 未提交有效报告。",
+            )
+        self._emit(
+            "writer_draft_validated",
+            {
+                "read_evidence_ids": sorted(runtime.read_evidence_ids),
+                "selected_evidence_ids": runtime.validated_draft.selected_evidence_ids,
+                "normalized_markdown": runtime.validated_draft.body,
+            },
+        )
         return self._render_ready_result(
             state=state,
-            draft=generation.draft,
+            draft=runtime.validated_draft,
             evidence_count=len(prepared.by_id),
         )
+
+    def _writer_runtime_context(self, evidence_by_id: dict[str, Evidence]) -> WriterRuntimeContext:
+        return WriterRuntimeContext(
+            evidence_by_id=evidence_by_id,
+            emit=self._emit,
+            read_evidence_ids=set(),
+            read_batch_size=self.config.writer_read_batch_size,
+            max_selected_evidence=self.config.writer_max_selected_evidence,
+            max_markdown_chars=self.config.writer_max_markdown_chars,
+            artifact_max_text_chars=self._artifact_max_text_chars,
+        )
+
+    @staticmethod
+    def _last_submitted_markdown(messages: Sequence[BaseMessage]) -> str:
+        for message in reversed(messages):
+            if isinstance(message, AIMessage):
+                for call in message.tool_calls or []:
+                    if call["name"] == "CompleteReport":
+                        return str(call.get("args", {}).get("markdown", ""))
+        return ""
+
+    def _recover_inline_draft(
+        self, runtime: WriterRuntimeContext, messages: Sequence[BaseMessage]
+    ) -> None:
+        """救回跳过 CompleteReport、把报告直接写成收尾正文的草稿。
+
+        只有通过与 CompleteReport 完全相同的本地引用校验才算有效提交；
+        校验失败时至少把正文保留进 last_markdown，不再整篇丢弃。
+        """
+        for message in reversed(list(messages)):
+            if not isinstance(message, AIMessage) or message.tool_calls:
+                continue
+            text = str(message.text or "")
+            if len(text) < _INLINE_DRAFT_MIN_CHARS or "[[cite:" not in text.lower():
+                continue
+            runtime.last_markdown = text
+            if len(text) > runtime.max_markdown_chars:
+                runtime.last_error = (
+                    f"模型直接输出的正文超过上限 {runtime.max_markdown_chars} 字符，未予救回。"
+                )
+                self._emit("writer_inline_draft_rejected", {"error": runtime.last_error})
+                return
+            try:
+                body, bindings, citations = validate_and_bind(
+                    text,
+                    {
+                        item: runtime.evidence_by_id[item]
+                        for item in runtime.read_evidence_ids
+                        if item in runtime.evidence_by_id
+                    },
+                )
+            except ValueError as exc:
+                runtime.last_error = f"模型直接输出正文而未提交，本地引用校验亦未通过：{exc}"
+                self._emit("writer_inline_draft_rejected", {"error": str(exc), "markdown": text})
+                return
+            cited = extract_cite_ids(text)
+            selected = [
+                item
+                for item in dict.fromkeys(sorted(cited))
+                if item in runtime.read_evidence_ids
+            ]
+            if not selected:
+                runtime.last_error = "模型直接输出的正文未引用任何已读取 Evidence。"
+                self._emit("writer_inline_draft_rejected", {"error": runtime.last_error})
+                return
+            runtime.validated_draft = ValidatedDraft(body, bindings, citations, selected)
+            self._emit(
+                "writer_inline_draft_recovered",
+                {
+                    "selected_evidence_ids": selected,
+                    "markdown": text,
+                },
+            )
+            return
 
     def _render_quick_answer(self, state: ResearchState) -> dict[str, object]:
         lines = [
@@ -202,210 +350,6 @@ class ReportWriter:
             else WriterDirective.model_validate(directive)
         )
 
-    async def _generate_agent_validated_draft(
-        self,
-        *,
-        state: ResearchState,
-        directive: WriterDirective,
-        evidence_catalogue: str,
-        evidence_by_id: dict[str, Evidence],
-    ) -> GenerationResult:
-        """让 Writer 先按需读取 Evidence，再提交一次完整草稿。"""
-        last_markdown = ""
-        last_error = ""
-        messages: list[BaseMessage] = self._build_generation_messages(
-            state=state,
-            directive=directive,
-            evidence_catalogue=evidence_catalogue,
-        )
-        read_ids: set[str] = set()
-        read_evidence: dict[str, Evidence] = {}
-        for turn in range(1, self.config.writer_max_turns + 1):
-            prepared_messages = await self.context_policy.aprepare(messages, agent="writer")
-            response = await self._decision_runnable.ainvoke(prepared_messages)
-            if not isinstance(response, AIMessage):
-                raise WriterGenerationError("Writer 工具模型没有返回有效的 AIMessage。")
-            calls = response.tool_calls or []
-            messages.append(response)
-            call = self._parse_single_tool_call(messages, calls, turn=turn)
-            if call is None:
-                continue
-            if call["name"] == "CompleteReport":
-                try:
-                    completed = CompleteReport.model_validate(call.get("args", {}))
-                except ValidationError as exc:
-                    last_error = f"CompleteReport 参数无效：{exc}"
-                    self._reject_call(
-                        messages,
-                        call,
-                        f"{last_error}\n{self._citation_retry_note(last_error)}",
-                    )
-                    continue
-                if len(completed.selected_evidence_ids) > self.config.writer_max_selected_evidence:
-                    last_error = (
-                        "CompleteReport 选择的 Evidence 数量超过配置上限："
-                        f"{self.config.writer_max_selected_evidence}。"
-                    )
-                    self._reject_call(messages, call, last_error)
-                    continue
-                if len(completed.markdown) > self.config.writer_max_markdown_chars:
-                    last_error = (
-                        "CompleteReport Markdown 超过配置上限："
-                        f"{self.config.writer_max_markdown_chars} 字符。"
-                    )
-                    self._reject_call(messages, call, last_error)
-                    continue
-                draft = MarkdownReportDraft(
-                    markdown=completed.markdown,
-                    selected_evidence_ids=completed.selected_evidence_ids,
-                )
-                last_markdown = draft.markdown
-                try:
-                    validated = self._validate_draft(
-                        draft,
-                        read_evidence,
-                        available_evidence=evidence_by_id,
-                    )
-                except ValueError as exc:
-                    last_error = str(exc)
-                    self._emit(
-                        "writer_citation_validation_failed",
-                        {"turn": turn, "error": last_error, "markdown": last_markdown},
-                    )
-                    self._reject_call(
-                        messages,
-                        call,
-                        f"{last_error}\n{self._citation_retry_note(last_error)}",
-                    )
-                    continue
-                self._emit(
-                    "writer_draft_validated",
-                    {
-                        "turn": turn,
-                        "read_evidence_ids": sorted(read_ids),
-                        "selected_evidence_ids": validated.selected_evidence_ids,
-                        "normalized_markdown": validated.body,
-                    },
-                )
-                return GenerationResult(validated, last_markdown, "")
-            if call["name"] != "ReadEvidence":
-                last_error = (
-                    f"Writer 调用了未知工具：{call['name']}。只能调用 ReadEvidence 或 CompleteReport；"
-                    "请重新选择一个合法工具。"
-                )
-                self._emit("writer_tool_protocol_error", {"turn": turn, "error": last_error})
-                self._reject_call(messages, call, last_error)
-                continue
-            tool_result = self._execute_read_tool(
-                call,
-                evidence_by_id=evidence_by_id,
-                read_ids=read_ids,
-                read_evidence=read_evidence,
-            )
-            messages.append(
-                ToolMessage(
-                    content=json.dumps(tool_result, ensure_ascii=False),
-                    name="ReadEvidence",
-                    tool_call_id=call["id"],
-                )
-            )
-        if not last_error:
-            last_error = "Writer 工具轮次预算耗尽，仍未提交有效报告。"
-        return GenerationResult(None, last_markdown, last_error)
-
-    def _execute_read_tool(
-        self,
-        call: Mapping[str, object],
-        *,
-        evidence_by_id: dict[str, Evidence],
-        read_ids: set[str],
-        read_evidence: dict[str, Evidence],
-    ) -> dict[str, object]:
-        """解析并执行一次 ReadEvidence 调用，返回可写入 ToolMessage 的结果。"""
-        try:
-            request = ReadEvidence.model_validate(call.get("args", {}))
-        except ValidationError as exc:
-            return {"error": f"ReadEvidence 参数无效：{exc}"}
-        return self._read_evidence(
-            request.evidence_ids,
-            evidence_by_id=evidence_by_id,
-            read_ids=read_ids,
-            read_evidence=read_evidence,
-        )
-
-    def _parse_single_tool_call(
-        self,
-        messages: list[BaseMessage],
-        calls: Sequence[Mapping[str, object]],
-        *,
-        turn: int,
-    ) -> Mapping[str, object] | None:
-        """校验单轮工具协议；失败时把可修复错误写回对话并返回 None。"""
-        if not calls:
-            error = "Writer 没有调用工具。必须调用 ReadEvidence 或 CompleteReport，不能直接输出普通文本。"
-            self._emit("writer_tool_protocol_error", {"turn": turn, "error": error})
-            self._reject_call(messages, None, error)
-            return None
-        if len(calls) != 1:
-            names = ", ".join(str(item.get("name", "unknown")) for item in calls)
-            error = (
-                f"Writer 一轮返回了多个工具调用（{names}）。每轮只能选择一个工具；"
-                "请重新选择：需要材料时调用 ReadEvidence，材料足够时调用 CompleteReport。"
-            )
-            self._emit("writer_tool_protocol_error", {"turn": turn, "error": error})
-            for item in calls:
-                messages.append(
-                    ToolMessage(
-                        content=error,
-                        name=str(item.get("name", "unknown")),
-                        tool_call_id=str(item.get("id", "")),
-                    )
-                )
-            return None
-        return calls[0]
-
-    @staticmethod
-    def _reject_call(
-        messages: list[BaseMessage],
-        call: Mapping[str, object] | None,
-        error: str,
-    ) -> None:
-        """把工具协议错误写回对话，避免重复发送完整错误内容。"""
-        if call is not None:
-            messages.append(
-                ToolMessage(
-                    content=error,
-                    name=str(call.get("name", "unknown")),
-                    tool_call_id=str(call.get("id", "")),
-                )
-            )
-        else:
-            messages.append(HumanMessage(content="请调用合法工具，并根据错误提示修正后重试。"))
-
-    def _read_evidence(
-        self,
-        requested_ids: list[str],
-        *,
-        evidence_by_id: dict[str, Evidence],
-        read_ids: set[str],
-        read_evidence: dict[str, Evidence],
-    ) -> dict[str, object]:
-        ids = list(dict.fromkeys(requested_ids))[: self.config.writer_read_batch_size]
-        unknown = [item for item in ids if item not in evidence_by_id]
-        for evidence_id in ids:
-            if evidence_id in evidence_by_id:
-                read_ids.add(evidence_id)
-                read_evidence[evidence_id] = evidence_by_id[evidence_id]
-        self._emit(
-            "writer_evidence_read",
-            {"requested_ids": requested_ids, "read_ids": ids, "unknown_ids": unknown},
-        )
-        return {
-            "evidence": [evidence_by_id[item].model_dump() for item in ids if item in evidence_by_id],
-            "unknown_ids": unknown,
-            "read_count": len(read_ids),
-        }
-
     def _build_generation_messages(
         self,
         *,
@@ -413,11 +357,11 @@ class ReportWriter:
         directive: WriterDirective,
         evidence_catalogue: str,
     ) -> list[BaseMessage]:
-        system_prompt = self._system_prompt()
+        revision_note = ""
         if directive.revision_instructions:
             feedback = "；".join(directive.revision_instructions)[: self.config.writer_feedback_chars]
-            system_prompt += (
-                "\n【上一稿审阅意见】以下意见已经由 Supervisor 判定为应通过改写处理；"
+            revision_note = (
+                "【上一稿审阅意见】以下意见已经由 Supervisor 判定为应通过改写处理；"
                 f"必须修正其中的 fatal 问题：{feedback}"
             )
         user_prompt = (
@@ -428,76 +372,22 @@ class ReportWriter:
             f"上一稿（如有，必须在其基础上修订）：\n{directive.previous_draft}\n"
             f"可选 Evidence 目录：\n{evidence_catalogue}"
         )
-        return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
-
-    def _validate_draft(
-        self,
-        draft: MarkdownReportDraft,
-        read_evidence: dict[str, Evidence],
-        *,
-        available_evidence: dict[str, Evidence],
-    ) -> ValidatedDraft:
-        """校验引用，并区分不存在与尚未读取的 Evidence。"""
-        cited_ids = extract_cite_ids(draft.markdown)
-        unknown_ids = [item for item in cited_ids if item not in available_evidence]
-        if unknown_ids:
-            raise DraftProtocolError(
-                "cite 使用了不存在的 Evidence："
-                f"{', '.join(sorted(unknown_ids))}。"
-            )
-        unread_ids = [item for item in cited_ids if item not in read_evidence]
-        if unread_ids:
-            raise DraftProtocolError(
-                "cite 使用了尚未读取的 Evidence："
-                f"{', '.join(sorted(unread_ids))}。请先调用 ReadEvidence 读取这些 ID。"
-            )
-        selected_ids = self._selected_evidence_ids(
-            draft.selected_evidence_ids, cited_ids, read_evidence
-        )
-        body, bindings, citations = validate_and_bind(draft.markdown, read_evidence)
-        if not selected_ids:
-            raise DraftProtocolError("Writer 没有声明或实际引用任何 Evidence。")
-        return ValidatedDraft(
-            body=body,
-            paragraph_bindings=bindings,
-            citations=citations,
-            selected_evidence_ids=selected_ids,
-        )
-
-    @staticmethod
-    def _selected_evidence_ids(
-        declared_ids: list[str],
-        cited_ids: set[str],
-        evidence_by_id: dict[str, Evidence],
-    ) -> list[str]:
-        """正文有效 cite 是最终事实绑定；声明列表仅作为模型工作集提示。"""
-        selected = list(
-            dict.fromkeys(
-                evidence_id.strip()
-                for evidence_id in declared_ids
-                if evidence_id.strip() in evidence_by_id
-            )
-        )
-        selected.extend(
-            evidence_id
-            for evidence_id in cited_ids
-            if evidence_id in evidence_by_id and evidence_id not in selected
-        )
-        return selected
+        return [HumanMessage(content="\n".join(part for part in [revision_note, user_prompt] if part))]
 
     def _render_exhausted_result(
         self,
         state: ResearchState,
-        generation: GenerationResult,
+        *,
+        last_markdown: str,
+        error: str,
     ) -> dict[str, object]:
-        error = generation.validation_error or "模型没有产出可解析的引用标记。"
         self._emit(
             "writer_exhausted",
             {
                 "attempts": self.config.writer_max_turns,
                 "failure_kind": "citation_protocol",
                 "error": error,
-                "markdown": generation.last_markdown,
+                "markdown": last_markdown,
             },
         )
         return WriterResult(
@@ -509,7 +399,7 @@ class ReportWriter:
                 feedback=error,
                 selected_evidence_ids=[],
             ),
-            writer_draft=generation.last_markdown,
+            writer_draft=last_markdown,
             review=ReviewProgress(status="pending"),
         ).state_update()
 
@@ -579,71 +469,11 @@ class ReportWriter:
 
     def _emit(self, event_type: str, payload: dict[str, object]) -> None:
         """记录 Writer 生命周期元数据，并为长文本保留受限预览。"""
-        context = current_context()
-        content_keys = {"markdown", "normalized_markdown", "report"}
-        event_payload = {key: value for key, value in payload.items() if key not in content_keys}
-        for key in content_keys:
-            if key in payload:
-                value = str(payload[key])
-                event_payload[f"{key}_chars"] = len(value)
-                event_payload[f"{key}_preview"] = value[: self._artifact_max_text_chars]
-        event = make_audit_event(
+        emit_agent_event(
+            self._event_sink,
+            self._logger,
             event_type,
-            trace_id=context.trace_id if context else None,
-            span_id=context.span_id if context else None,
-            run_id=context.run_id if context else None,
-            session_id=context.session_id if context else None,
-            node_id=context.node_id if context else "writer",
+            bounded_content(payload, max_text_chars=self._artifact_max_text_chars),
             component="writer",
-            payload=event_payload,
-        )
-        if self._event_sink is not None:
-            self._event_sink.write(event)
-        self._logger.info("%s payload=%s", event_type, event_payload)
-
-    def _system_prompt(self) -> str:
-        return "\n".join(
-            [
-                "【角色与边界】",
-                "你是深度研究报告作者。Supervisor 已完成充分性判断并提供报告任务书；"
-                "你必须按其 covered_topics、required_points 与 caveats 写作，"
-                "而不重新决定是否研究或要求补材料。",
-                "【引用协议（必须遵守）】",
-                "凡是来自 Evidence 的可验证事实、数字、观点归属、具体案例，都必须在对应句子或段落末尾写"
-                "[[cite:evidence_id1,evidence_id2]]。cite 内只能使用输入中已有的 evidence_id，最多三个，以逗号分隔。",
-                "先从 Evidence 目录按研究方向、claim 与问题相关性选择要读取的 Evidence，调用 ReadEvidence 获取完整内容；"
-                "只有读取返回的 evidence_id 才能引用。材料足够后必须调用 CompleteReport，"
-                "将真正支撑正文的 evidence_id 填入 selected_evidence_ids。",
-                "CompleteReport 是唯一的结束信号；在调用 CompleteReport 之前，不要直接输出报告文本。"
-                "每轮只能调用一个工具。若上一次工具调用收到错误反馈，必须根据反馈修正后再次调用工具。",
-                "不要手写 [来源N]，不要把 cite 放入代码围栏、行内代码或 URL。",
-                "正确示例：Evidence 给出‘e1：某作品于 2020 年发行’，应写："
-                "该作品于 2020 年发行。[[cite:e1]]",
-                "不要写：该作品于 2020 年发行。[来源1]；"
-                "不要写：该作品于 2020 年发行。[[cite:未知来源]]。",
-                "【写作要求】",
-                "只使用给定的已验证 Evidence 写成围绕用户问题展开的正式中文研究报告，"
-                "不能按来源逐条罗列资料，也不能写成只有结论句的资料摘要。",
-                "你不能凭目录中的 claim 补写 quote 未提供的细节；需要完整依据时先调用 ReadEvidence。",
-                "如果研究状态为 incomplete 或报告生成模式为 partial，必须在报告中明确说明覆盖范围、未解决问题和证据限制；"
-                "不要把局部证据写成完整综述，不要用模型内部知识填补缺口。",
-                "除非 Evidence 明显不足，输出 3 到 4 个有信息量的小节；每节 2 到 4 个完整段落。"
-                "报告应先直接回应问题，再形成清楚的论证链：界定讨论对象、解释证据与问题的关系、"
-                "比较不同情况或观点，并说明适用范围与限制。",
-                "每个段落通常用 2 到 5 句完成一个完整论点，而不是把单条 Evidence 改写成一句话。"
-                "目标是约 1,000 到 1,800 个中文字；不得用重复、空泛修辞或外部知识凑篇幅。"
-                "省略与问题无关的 Evidence。",
-                "直接输出 Markdown 正文：可按论证需要使用 ##/### 标题、列表、引用块和表格；"
-                "只有确实存在可比较的多个对象或维度时才使用表格，表格之后必须有解释，不能为排版而造表。",
-                "不要输出 # 一级标题、‘研究问题’、‘参考来源’或文末参考文献，这些由本地程序统一生成。",
-                "纯粹的衔接、范围说明或方法限制可以不加 cite，但绝不能新增外部事实。"
-                "不得编造、不得扩大事实的时间、范围或条件；不能把推荐、题材特征自动写成价值证明。",
-                "段落必须可独立阅读、自然衔接，并解释引用 Evidence 在本段论证中的作用。",
-                "【输出前最后检查】",
-                "1. selected_evidence_ids 非空且只含 evidence_id；"
-                "2. 每个 cite 标记使用 selected_evidence_ids 中的 evidence_id；"
-                "3. 每个 cite 必须是完整的 [[cite:id]]；"
-                "4. 不输出‘参考来源’小节；"
-                "5. 不用无引用的外部知识补全事实。",
-            ]
+            node_fallback="writer",
         )
