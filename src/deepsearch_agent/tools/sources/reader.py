@@ -7,7 +7,7 @@ from deepsearch_agent.evidence import EvidenceExtractor
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import current_context
+from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.parsers.models import ParsedDocument
 from deepsearch_agent.state import SubTask
@@ -16,9 +16,9 @@ from deepsearch_agent.tools.errors import (
     ToolConfigurationError,
     ToolParseError,
 )
-from deepsearch_agent.tools.fetcher import WebFetcher
-from deepsearch_agent.tools.research_models import SourceReaderToolResult, failed_read, skipped_read
-from deepsearch_agent.tools.search import SearchResult
+from deepsearch_agent.tools.search.models import SearchResult
+from deepsearch_agent.tools.sources.fetcher import WebFetcher
+from deepsearch_agent.tools.sources.models import SourceReaderToolResult, failed_read, skipped_read
 
 
 class SourceReaderTool:
@@ -65,8 +65,6 @@ class SourceReaderTool:
 
     async def arun(self, task: SubTask, result: SearchResult) -> SourceReaderToolResult:
         started = time.perf_counter()
-        span_id = None
-        outer_context = current_context()
         task_context = {
             "task_id": task["id"],
             "worker_id": task.get("worker_id", task["id"]),
@@ -80,21 +78,21 @@ class SourceReaderTool:
                     "fetch",
                     "started",
                     event_name="source_fetch_started",
-                    trace_id=outer_context.trace_id if outer_context else None,
-                    span_id=outer_context.span_id if outer_context else None,
                     payload={**task_context, "requested_url": result.get("url", "")},
                 )
             )
+        link = current_span_context()
         try:
-            context = outer_context
             if self.trace_recorder is not None:
-                with self.trace_recorder.span("fetch", kind="tool") as span_id:
+                with self.trace_recorder.span("fetch", kind="tool"):
+                    # fetch 事件全部归属 fetch span；span 内取一次身份，
+                    # 失败路径同样带着它（span 已结束仍要能关联）。
+                    link = current_span_context()
                     document = await self.fetcher.afetch(
                         result.get("url", ""),
                         fetch_timeout=self.fetch_timeout,
                         parse_timeout=self.parse_timeout,
                     )
-                    context = current_context()
             else:
                 document = await self.fetcher.afetch(
                     result.get("url", ""),
@@ -121,8 +119,7 @@ class SourceReaderTool:
                         "fetch",
                         "completed",
                         event_name="source_fetch_completed",
-                        trace_id=context.trace_id if context else None,
-                        span_id=span_id,
+                        link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
                             **task_context,
@@ -143,8 +140,7 @@ class SourceReaderTool:
                         "evidence_extract",
                         "started",
                         event_name="evidence_extraction_started",
-                        trace_id=context.trace_id if context else None,
-                        span_id=span_id,
+                        link=link,
                         payload={
                             "task_id": task["id"],
                             "source_url": source_url,
@@ -174,8 +170,7 @@ class SourceReaderTool:
                             "evidence_extract",
                             "failed",
                             event_name="evidence_extraction_failed",
-                            trace_id=context.trace_id if context else None,
-                            span_id=span_id,
+                            link=link,
                             duration_ms=(time.perf_counter() - started) * 1000,
                             error=str(exc),
                             payload={"task_id": task["id"], "source_url": source_url},
@@ -205,8 +200,7 @@ class SourceReaderTool:
                             "evidence_extract",
                             "skipped",
                             event_name="evidence_validation_skipped",
-                            trace_id=context.trace_id if context else None,
-                            span_id=span_id,
+                            link=link,
                             duration_ms=(time.perf_counter() - started) * 1000,
                             error=reason,
                             payload={
@@ -246,8 +240,7 @@ class SourceReaderTool:
                         "evidence_extract",
                         "completed",
                         event_name="source_reader_completed",
-                        trace_id=context.trace_id if context else None,
-                        span_id=span_id,
+                        link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
                             "task_id": task["id"],
@@ -282,8 +275,7 @@ class SourceReaderTool:
                 self.event_sink.write(
                     make_tool_event(
                         "source_reader", "failed", event_name="source_timeout",
-                        trace_id=outer_context.trace_id if outer_context else None,
-                        span_id=span_id,
+                        link=link,
                         error=stage,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
@@ -300,8 +292,7 @@ class SourceReaderTool:
                 result,
                 fetch_error=str(exc),
                 started=started,
-                trace_id=context.trace_id if context else None,
-                span_id=span_id,
+                link=link,
             )
             if fallback is not None:
                 return fallback
@@ -316,8 +307,7 @@ class SourceReaderTool:
                     make_tool_event(
                         "fetch",
                         "skipped",
-                        trace_id=context.trace_id if context else None,
-                        span_id=span_id,
+                        link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         error=str(exc),
                         payload={
@@ -339,8 +329,7 @@ class SourceReaderTool:
                 result,
                 fetch_error=str(exc),
                 started=started,
-                trace_id=context.trace_id if context else None,
-                span_id=span_id,
+                link=link,
             )
             if fallback is not None:
                 return fallback
@@ -352,8 +341,7 @@ class SourceReaderTool:
                     make_tool_event(
                         "fetch",
                         "failed",
-                        trace_id=context.trace_id if context else None,
-                        span_id=span_id,
+                        link=link,
                         error=str(exc),
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
@@ -371,8 +359,7 @@ class SourceReaderTool:
         *,
         fetch_error: str,
         started: float,
-        trace_id: str | None,
-        span_id: str | None,
+        link: SpanContext,
     ) -> SourceReaderToolResult | None:
         """网页读取失败时，谨慎使用搜索提供商返回的内容。
 
@@ -420,8 +407,7 @@ class SourceReaderTool:
                 make_tool_event(
                     "source_content_fallback",
                     "started",
-                    trace_id=trace_id,
-                    span_id=span_id,
+                    link=link,
                     payload={
                         "task_id": task["id"],
                         "source_url": source_url,
@@ -455,8 +441,7 @@ class SourceReaderTool:
                     make_tool_event(
                         "source_content_fallback",
                         "failed",
-                        trace_id=trace_id,
-                        span_id=span_id,
+                        link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         error=str(exc),
                         payload={
@@ -484,8 +469,7 @@ class SourceReaderTool:
                     make_tool_event(
                         "source_content_fallback",
                         "skipped",
-                        trace_id=trace_id,
-                        span_id=span_id,
+                        link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
                             "task_id": task["id"],
@@ -507,8 +491,7 @@ class SourceReaderTool:
                 make_tool_event(
                     "source_content_fallback",
                     "completed",
-                    trace_id=trace_id,
-                    span_id=span_id,
+                    link=link,
                     duration_ms=(time.perf_counter() - started) * 1000,
                     payload={
                         "task_id": task["id"],

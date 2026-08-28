@@ -16,6 +16,8 @@ class ToolRequestError(ToolError):
 
     code = "tool_request"
     retryable = True
+    # 传输层在 429/503 时写入的本地单调时钟恢复点；None 表示不是配额型失败。
+    rate_limit_reset_ts: float | None = None
 
 
 class ToolParseError(ToolError):

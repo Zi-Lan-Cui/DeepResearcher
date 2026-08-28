@@ -1,12 +1,22 @@
-"""研究子 Agent 的输入输出契约。"""
+"""搜索层的输入输出契约。"""
 
-from typing import Literal
+from typing import Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field
 
-from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools.search import SearchResult
+
+
+class SearchResult(TypedDict, total=False):
+    """供应商无关的候选结果结构。"""
+
+    title: str
+    url: str
+    snippet: NotRequired[str]
+    raw_content: NotRequired[str]
+    content_provider: NotRequired[str]
+    score: NotRequired[float]
+    published_at: NotRequired[str]
 
 
 class SearchCandidate(BaseModel):
@@ -38,17 +48,6 @@ class SearchToolResult(BaseModel):
     error: str = ""
 
 
-class SourceReaderToolResult(BaseModel):
-    """单来源读取与 Evidence 抽取工具的稳定返回契约。"""
-
-    task_id: str
-    status: Literal["completed", "failed", "skipped"]
-    evidences: list[Evidence] = Field(default_factory=list)
-    source_url: str = ""
-    error: str = ""
-    reason_code: str = ""
-
-
 def failed_search(
     task: SubTask,
     error: Exception,
@@ -67,20 +66,4 @@ def failed_search(
         queries=search_queries,
         failures=details,
         error=str(error)[:500],
-    )
-
-
-def failed_read(task: SubTask, error: Exception) -> SourceReaderToolResult:
-    return SourceReaderToolResult(task_id=task["id"], status="failed", error=str(error)[:500])
-
-
-def skipped_read(
-    task: SubTask, *, source_url: str, reason_code: str, reason: str
-) -> SourceReaderToolResult:
-    return SourceReaderToolResult(
-        task_id=task["id"],
-        status="skipped",
-        source_url=source_url,
-        reason_code=reason_code,
-        error=reason[:500],
     )
