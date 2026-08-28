@@ -99,7 +99,12 @@ class FanoutSink:
     # ---- 订阅 ----
 
     def subscribe(self, run_id: str) -> tuple[int, asyncio.Queue]:
-        """先 subscribe 再回放 DB：封死 POST→GET 之间的丢事件竞态。"""
+        """先 subscribe 再回放 DB：封死 POST→GET 之间的丢事件竞态。
+
+        新订阅者先收到 pending 积压（已写入但尚未 flush 到 DB 的事件）——否则
+        这半截区间（DB 回放够不到、队列又错过投递）对迟到者是黑洞。三段拼接：
+        DB 回放（旧）→ backlog（积压）→ 实时（新），统一按 seq 去重。
+        """
         queue: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize)
         with self._lock:
             if run_id not in self._open:
@@ -107,6 +112,11 @@ class FanoutSink:
                 return -1, queue
             key = next(self._keys)
             self._subs[run_id][key] = queue
+            for record in self._pending.get(run_id, []):
+                try:
+                    queue.put_nowait(record)
+                except asyncio.QueueFull:  # 积压都塞不下说明客户端已死，交给溢出/回放兜底
+                    break
         return key, queue
 
     def unsubscribe(self, run_id: str, key: int) -> None:
