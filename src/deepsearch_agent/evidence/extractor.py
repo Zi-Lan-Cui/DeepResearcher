@@ -14,10 +14,39 @@ from deepsearch_agent.evidence.validator import validate_evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker, ainvoke_structured
 from deepsearch_agent.observability.events import JsonlSink, make_audit_event, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import current_context
 from deepsearch_agent.parsers.models import DocumentBlock, ParsedDocument
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools.search import SearchResult
+from deepsearch_agent.tools.search.models import SearchResult
+
+_EXTRACTION_SYSTEM_PROMPT = (
+    "【运行背景】你是深度研究流水线的 Evidence 抽取器。输入是某个来源的局部原文与一个研究子问题；"
+    "你的输出会被 Writer 和审阅器当作唯一允许引用的事实基础。"
+    "【任务目标】挑选能直接回答该子问题的少量原文证据，并把每条证据压缩为可核验的 claim 与逐字 quote。"
+    "【判定标准】quote 必须逐字来自给定原文，且应包含使 claim 成立的主体、条件、数字、时间、范围与限制。"
+    "claim 只能忠实改写 quote，不得补充背景知识、评价、因果、常识推断或标题中未被正文支持的信息。"
+    "若原文只有标题、导航、验证码、无关内容，或无法直接支撑子问题，返回空 evidences；空结果优于猜测。"
+    "【输出约束】只返回 JSON object，不要输出 Markdown、代码围栏或解释。JSON 示例："
+    '{"evidences":[{"claim":"原文支持的结论","quote":"原文逐字引文",'
+    '"support":"direct","confidence":0.8}]}'
+    '；没有足够证据时返回：{"evidences":[]}。'
+)
+
+# 摘要回退模式：输入不是页面全文而是搜索提供方给出的转述摘要。放宽的是
+# “什么样的句子值得提取”（单句即可成证、不要求信息完备），
+# quote 逐字性由确定性 validator 独立保证，此处不承诺也不放松。
+_SUMMARY_EXTRACTION_SYSTEM_PROMPT = (
+    "【运行背景】你是深度研究流水线的 Evidence 抽取器。输入是搜索提供方提供的来源内容摘要"
+    "（不是页面全文）与一个研究子问题；你的输出会被作为 partial 级部分证据使用。"
+    "【任务目标】从摘要中提取与研究子问题直接相关的可核验事实：quote 取摘要自身的完整句子（逐字），"
+    "claim 是该句的忠实转写。"
+    "【判定标准】不要求摘要具备全文式的信息完备性；一句能明确表达观点归属、概念关系、事实或评价的话"
+    "即可构成一条证据；不得补充摘要之外的评价、因果或背景知识。"
+    "support 一律填 partial。若摘要与子问题无关或是导航、空泛内容，返回空 evidences；空结果优于硬凑。"
+    "【输出约束】只返回 JSON object，不要输出 Markdown、代码围栏或解释。JSON 示例："
+    '{"evidences":[{"claim":"摘要支持的结论","quote":"摘要中的完整句子",'
+    '"support":"partial","confidence":0.7}]}'
+    '；没有足够证据时返回：{"evidences":[]}。'
+)
 
 
 class EvidenceExtractor:
@@ -119,10 +148,13 @@ class EvidenceExtractor:
                     seen_quotes.add(quote_key)
                 except ValueError as exc:
                     validation_rejected_count += 1
+                    # 只记数量与头部预览；整段 block_id 列表会淹没日志。
+                    block_ids = [block.get("block_id", "") for block in chunk]
                     self.logger.warning(
-                        "evidence_candidate_rejected task=%s chunk_blocks=%s reason=%s quote_chars=%d",
+                        "evidence_candidate_rejected task=%s chunk_blocks=%d chunk_head=%s reason=%s quote_chars=%d",
                         task["id"],
-                        [block.get("block_id", "") for block in chunk],
+                        len(block_ids),
+                        block_ids[:3],
                         exc,
                         len(item.quote),
                     )
@@ -169,14 +201,11 @@ class EvidenceExtractor:
                 chunk_ids = [block.get("block_id", "") for block in chunk]
                 started = asyncio.get_running_loop().time()
                 if self.event_sink is not None:
-                    context = current_context()
                     self.event_sink.write(
                         make_tool_event(
                             "evidence_extract",
                             "started",
                             event_name="evidence_chunk_started",
-                            trace_id=context.trace_id if context else None,
-                            span_id=context.span_id if context else None,
                             payload={"task_id": task["id"], "chunk_index": index, "chunk_count": len(chunks), "block_ids": chunk_ids},
                         )
                     )
@@ -195,13 +224,10 @@ class EvidenceExtractor:
                         task["id"], index, len(chunks), elapsed * 1000, type(exc).__name__, exc,
                     )
                     if self.event_sink is not None:
-                        context = current_context()
                         self.event_sink.write(
                             make_tool_event(
                                 "evidence_extract", "failed",
                                 event_name="evidence_chunk_failed",
-                                trace_id=context.trace_id if context else None,
-                                span_id=context.span_id if context else None,
                                 duration_ms=elapsed * 1000, error=str(exc),
                                 payload={"task_id": task["id"], "chunk_index": index, "chunk_count": len(chunks), "block_ids": chunk_ids, "error_type": type(exc).__name__},
                             )
@@ -224,15 +250,10 @@ class EvidenceExtractor:
                     len(extracted.evidences),
                 )
                 if self.event_sink is not None:
-                    context = current_context()
                     self.event_sink.write(
                         make_audit_event(
                             "evidence_llm_response",
-                            trace_id=context.trace_id if context else None,
-                            span_id=context.span_id if context else None,
-                            run_id=context.run_id if context else None,
-                            session_id=context.session_id if context else None,
-                            node_id=context.node_id if context else "evidence_extract",
+                            node_id_fallback="evidence_extract",
                             component="evidence_extractor",
                             payload={
                                 "task_id": task["id"],
@@ -249,13 +270,10 @@ class EvidenceExtractor:
                     )
                 elapsed = asyncio.get_running_loop().time() - started
                 if self.event_sink is not None:
-                    context = current_context()
                     self.event_sink.write(
                         make_tool_event(
                             "evidence_extract", "completed",
                             event_name="evidence_chunk_completed",
-                            trace_id=context.trace_id if context else None,
-                            span_id=context.span_id if context else None,
                             duration_ms=elapsed * 1000,
                             payload={"task_id": task["id"], "chunk_index": index, "chunk_count": len(chunks), "block_ids": chunk_ids, "candidate_count": len(extracted.evidences)},
                         )
@@ -350,18 +368,12 @@ class EvidenceExtractor:
             f"[{block['block_id']}] {' > '.join(block.get('heading_path', []))}\n{block['text']}"
             for block in selected
         )
-        system_prompt = (
-            "【运行背景】你是深度研究流水线的 Evidence 抽取器。输入是某个来源的局部原文与一个研究子问题；"
-            "你的输出会被 Writer 和审阅器当作唯一允许引用的事实基础。"
-            "【任务目标】挑选能直接回答该子问题的少量原文证据，并把每条证据压缩为可核验的 claim 与逐字 quote。"
-            "【判定标准】quote 必须逐字来自给定原文，且应包含使 claim 成立的主体、条件、数字、时间、范围与限制。"
-            "claim 只能忠实改写 quote，不得补充背景知识、评价、因果、常识推断或标题中未被正文支持的信息。"
-            "若原文只有标题、导航、验证码、无关内容，或无法直接支撑子问题，返回空 evidences；空结果优于猜测。"
-            "【输出约束】只返回 JSON object，不要输出 Markdown、代码围栏或解释。JSON 示例："
-            '{"evidences":[{"claim":"原文支持的结论","quote":"原文逐字引文",'
-            '"support":"direct","confidence":0.8}]}'
-            '；没有足够证据时返回：{"evidences":[]}。'
-        )
+        # 摘要回退文档放宽“claim 所需信息完整度”，但 quote 逐字校验（validator）不变：
+        # 放松的是“什么样的句子值得提取”，不放松“事实必须来自给定文本”。
+        if str(document.get("retrieval_method", "origin_fetch")) == "search_summary":
+            system_prompt = _SUMMARY_EXTRACTION_SYSTEM_PROMPT
+        else:
+            system_prompt = _EXTRACTION_SYSTEM_PROMPT
         if max_evidences is not None:
             system_prompt += (
                 f"最多返回 {max_evidences} 条 Evidence；优先选择最直接回答当前子问题、"
