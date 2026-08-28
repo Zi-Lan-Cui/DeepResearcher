@@ -56,7 +56,7 @@ Python 版本由 `.python-version` 固定为 3.13；`pyproject.toml` 声明兼�
 运行回归测试和静态检查：
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q -p pytest_asyncio.plugin
 uv run ruff check src tests
 uv run pyright
 ```
