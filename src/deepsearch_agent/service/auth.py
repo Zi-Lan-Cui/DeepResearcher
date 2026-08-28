@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Any
 
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerifyMismatchError
-from fastapi import Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import HTTPException, Request
 
 from deepsearch_agent.service.models import User
 
@@ -80,20 +79,16 @@ class TokenCodec:
             raise TokenError("无效或已过期的登录凭证。") from exc
 
 
-_bearer = HTTPBearer(auto_error=False)
-
-
 def make_current_user(codec: TokenCodec, session_factory: Callable[[], Any]):
-    """构造带依赖闭包的 current_user：路由层 ``Depends(...)`` 直接用它。"""
+    """构造 current_user 依赖：手解 Authorization 头（P0 不依赖 OpenAPI securityScheme，
+    换来 lifespan 之后可按 state 组装、无 HTTPBearer 闭包绑定问题）。"""
 
-    async def current_user(
-        request: Request,
-        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-    ):
-        if credentials is None:
+    async def current_user(request: Request) -> User:
+        header = request.headers.get("authorization", "")
+        if not header.lower().startswith("bearer "):
             raise HTTPException(status_code=401, detail="请先登录。")
         try:
-            user_id = codec.decode(credentials.credentials)
+            user_id = codec.decode(header[7:].strip())
         except TokenError:
             raise HTTPException(status_code=401, detail="请先登录。") from None
         async with session_factory() as session:
