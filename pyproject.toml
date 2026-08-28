@@ -43,13 +43,29 @@ known-first-party = ["deepsearch_agent"]
 
 [tool.pyright]
 include = ["src"]
-exclude = ["**/__pycache__",".venv","**/.*","evals", "scripts", "tests"]
+exclude = ["**/__pycache__",".venv","**/.*","evals", "scripts", "tests","**/node_modules"]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 reportMissingImports = "error"
 reportMissingTypeStubs = "none"
+
+# tests 用结构化、故意不完整的 fake 注入生产具体类型，这是刻意的测试设计而非缺陷。
+# include/exclude 只约束项目扫描；VSCode 插件对“打开的文件”永远即时分析，
+# 唯一能按目录差异化的是这个 executionEnvironments：对 tests 静默形态类噪音，
+# 保留 reportMissingImports / 未定义名等真错误，src 不受影响仍全量严格。
+[[tool.pyright.executionEnvironments]]
+root = "./tests"
+reportMissingImports = "error"
+reportArgumentType = "none"
+reportAttributeAccessIssue = "none"
+reportAssignmentType = "none"
+reportOperatorIssue = "none"
+reportOptionalOperand = "none"
+reportGeneralTypeIssues = "none"
+reportIndexIssue = "none"
+reportTypedDictNotRequiredAccess = "none"
 
 [tool.coverage.run]
 branch = true
