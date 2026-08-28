@@ -1,0 +1,21 @@
+# P0 服务只依赖 Postgres；应用本体用 uv run python server.py 直接起。
+# 将来拆 worker / 多副本时，这个文件是编排的生长点。
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-deepsearch}
+      POSTGRES_USER: ${POSTGRES_USER:-deepsearch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepsearch}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepsearch} -d ${POSTGRES_DB:-deepsearch}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
