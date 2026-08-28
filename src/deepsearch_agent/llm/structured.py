@@ -26,11 +26,16 @@ class LLMInvoker:
         self._model = model
         self._retry = retry
 
-    def bind_tools(self, tools: list[type[BaseModel]], **kwargs: Any):
+    @property
+    def chat_model(self) -> BaseChatModel:
+        """返回已完成装配的底层模型，供 LangChain 内置中间件使用。"""
+        return self._model
+
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any):
         """绑定工具并统一接入 LLM 的传输重试策略。
 
-        Agent 不应访问 ``_model``；底层模型替换、重试和后续观测都由此
-        公开边界集中处理。
+        Agent 可以把 ``LLMInvoker`` 直接作为统一模型传给 LangChain Agent；
+        底层模型替换和传输重试由此公开边界集中处理。
         """
         runnable = self._model.bind_tools(tools, **kwargs)
         return with_transport_retry(runnable, self._retry)

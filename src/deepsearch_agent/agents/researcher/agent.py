@@ -4,40 +4,35 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain.agents import create_agent
+from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 
+from deepsearch_agent.agents.middleware import (
+    AGENT_RECURSION_LIMIT,
+    MiddlewareProfile,
+    build_agent_middleware,
+)
 from deepsearch_agent.agents.researcher.state import (
     DirectionRunState,
-    ToolExecutionContext,
-    ToolExecutor,
+    ResearchRuntimeContext,
 )
+from deepsearch_agent.agents.researcher.tools import build_researcher_tools
 from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.context import ContextPolicy
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
-from deepsearch_agent.observability.events import JsonlSink, make_audit_event
+from deepsearch_agent.observability.events import JsonlSink, emit_agent_event
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import current_context
 from deepsearch_agent.schemas import (
-    ForgetEvidence,
-    ReadSources,
-    ReadWorkingSet,
     ResearchAgentResult,
-    ResearchDirectionComplete,
-    ResearchDirectionDecision,
     ResearchDirectionResult,
-    SearchSources,
 )
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools import SearchTool, SourceReaderTool
-from deepsearch_agent.tools.research_models import (
-    SearchCandidate,
-    SearchToolResult,
-    SourceReaderToolResult,
-)
-from deepsearch_agent.tools.search import SearchResult
+from deepsearch_agent.tools.search.models import SearchCandidate, SearchResult, SearchToolResult
+from deepsearch_agent.tools.sources.models import SourceReaderToolResult
 
 _RESEARCHER_SYSTEM_PROMPT = """【身份】你是深度研究系统中的方向级 ResearchAgent。Supervisor 已把一个具体研究方向委派给你。
 【职责】你可自主选择下一轮检索式、判断该方向是否已被证据回答，或在没有可信路径时止损。
@@ -67,7 +62,7 @@ class ResearchAgent:
         search_tool: SearchTool,
         reader_tool: SourceReaderTool,
         event_sink: JsonlSink | None = None,
-        context_policy: ContextPolicy | None = None,
+        context_window_tokens: int = 32_768,
     ):
         if llm is None:
             raise LLMConfigurationError("ResearchAgent 需要已装配的 LLMInvoker。")
@@ -78,20 +73,22 @@ class ResearchAgent:
         self.search_tool = search_tool
         self.reader_tool = reader_tool
         self.event_sink = event_sink
-        self.context_policy = context_policy or ContextPolicy()
         self.logger = get_logger("deepsearch_agent.agents.researcher")
-        self._decision_runnable = llm.bind_tools(
-            [SearchSources, ReadSources, ReadWorkingSet, ForgetEvidence, ResearchDirectionComplete],
-            tool_choice="any",
-            parallel_tool_calls=False,
+        self._agent_loop = create_agent(
+            model=cast(Any, self.llm),
+            tools=build_researcher_tools(),
+            system_prompt=_RESEARCHER_SYSTEM_PROMPT,
+            context_schema=ResearchRuntimeContext,
+            middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
+                agent_name="ResearchAgent",
+                model=getattr(self.llm, "chat_model", None),
+                max_turns=self.config.research_agent_max_turns + 1,
+                context_window_tokens=context_window_tokens,
+                retry_tools=[(["SearchSources"], "SearchSources"), (["ReadSources"], "ReadSources")],
+                emit=self._emit,
+            ))),
+            name="researcher",
         )
-        self._tool_executors: dict[str, ToolExecutor] = {
-            "search": self._execute_search,
-            "read": self._execute_read,
-            "inspect": self._execute_inspect,
-            "forget": self._execute_forget,
-            "complete": self._execute_complete,
-        }
 
     async def run(
         self,
@@ -100,8 +97,7 @@ class ResearchAgent:
         claim_url: Callable[[str], Awaitable[bool]],
         on_url_already_attempted: Callable[[str], None] | None = None,
     ) -> ResearchAgentResult:
-        """运行有界 Observe → Decide → Act 循环，返回方向级研究结论与轨迹。"""
-        messages = self._initial_messages(task)
+        """运行方向级 Agent loop，返回方向级研究结论与轨迹。"""
         run_state = DirectionRunState()
         event_context = {
             "task_id": task["id"],
@@ -110,121 +106,106 @@ class ResearchAgent:
             "parent_task_id": task.get("parent_task_id", ""),
             "operation_id": task.get("operation_id", task["id"]),
         }
-        for _turn in range(1, self.config.research_agent_max_turns + 1):
-            try:
-                decision, decision_call_id = await self._decide(
-                    messages,
-                    task,
-                    run_state=run_state,
-                )
-            except Exception as exc:
-                run_state.failures.append(f"direction_decision_failed: {exc}")
-                run_state.stop_reason = "direction_decision_failed"
-                run_state.stop_detail = str(exc)
-                return self._result(
-                    task,
-                    status="failed",
-                    run_state=run_state,
-                )
+        runtime = self._runtime_context(
+            task,
+            run_state,
+            event_context,
+            claim_url=claim_url,
+            on_url_already_attempted=on_url_already_attempted,
+        )
+        messages = self._initial_messages(task)
+        status: Literal["completed", "failed", "cancelled"] = "completed"
+        try:
+            await self._agent_loop.ainvoke(
+                cast(Any, {"messages": messages}),
+                context=runtime,
+                config={"recursion_limit": AGENT_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            run_state.stop_reason = "step_budget_exhausted"
+            run_state.stop_detail = "方向级 Agent 回合预算已耗尽。"
+        except asyncio.CancelledError:
+            status = "cancelled"
+            run_state.stop_reason = "cancelled"
+            run_state.stop_detail = "方向级 Agent 被取消。"
+            raise
+        except Exception as exc:
+            status = "failed"
+            run_state.failures.append(f"direction_agent_failed: {exc}")
+            run_state.stop_reason = "direction_agent_failed"
+            run_state.stop_detail = str(exc)
+        return self._result(
+            task,
+            status=status,
+            run_state=run_state,
+        )
 
-            execution_context = ToolExecutionContext(
-                task=task,
-                decision=decision,
-                tool_call_id=decision_call_id,
-                messages=messages,
+    def _runtime_context(
+        self,
+        task: SubTask,
+        run_state: DirectionRunState,
+        event_context: dict[str, object],
+        *,
+        claim_url: Callable[[str], Awaitable[bool]],
+        on_url_already_attempted: Callable[[str], None] | None,
+    ) -> ResearchRuntimeContext:
+        async def search_sources(queries: list[str], reason: str) -> dict[str, object]:
+            return await self._search_sources(
+                task, queries, reason, run_state=run_state, event_context=event_context
+            )
+
+        async def read_sources(candidate_ids: list[str], reason: str) -> dict[str, object]:
+            return await self._read_sources(
+                task,
+                candidate_ids,
+                reason,
                 run_state=run_state,
                 event_context=event_context,
                 claim_url=claim_url,
                 on_url_already_attempted=on_url_already_attempted,
             )
-            executor = self._tool_executors[decision.action]
-            if await executor(execution_context):
-                break
-        return self._result(
-            task,
-            status="completed",
+
+        return ResearchRuntimeContext(
+            task=task,
             run_state=run_state,
+            search_sources=search_sources,
+            read_sources=read_sources,
+            on_url_already_attempted=on_url_already_attempted,
+            event_context=event_context,
         )
 
-    @staticmethod
-    def _apply_decision(
-        decision: ResearchDirectionDecision,
+    async def _read_sources(
+        self,
+        task: SubTask,
+        candidate_ids: list[str],
+        reason: str,
+        *,
         run_state: DirectionRunState,
-    ) -> bool:
-        """应用方向决策；返回 True 表示本方向不再执行下一步。"""
-        run_state.remaining_gaps = list(
-            dict.fromkeys(gap.strip() for gap in decision.remaining_gaps if gap.strip())
-        )
-        if decision.action == "complete":
-            if run_state.evidences:
-                run_state.answered_points = decision.answered_points
-                run_state.conclusion = decision.conclusion.strip()
-                run_state.stop_reason = "complete"
-                run_state.stop_detail = decision.reason
-            else:
-                run_state.stop_reason = "blocked_without_evidence"
-                run_state.stop_detail = decision.reason
-                if not run_state.remaining_gaps:
-                    run_state.remaining_gaps = [
-                        "方向级 Agent 在没有可验证 Evidence 时宣称完成。"
-                    ]
-            return True
-        return False
-
-    async def _execute_complete(self, context: ToolExecutionContext) -> bool:
-        """接受 ResearchDirectionComplete，并结束当前方向。"""
-        stopped = self._apply_decision(context.decision, context.run_state)
-        context.messages.append(
-            self._tool_message(
-                "direction_decision_accepted",
-                {"decision": context.decision.model_dump()},
-                tool_call_id=context.tool_call_id,
-                name="ResearchDirectionComplete",
-            )
-        )
-        return stopped
-
-    async def _execute_search(self, context: ToolExecutionContext) -> bool:
-        """执行 SearchSources；搜索结果由工具消息交回模型。"""
-        await self._search_sources(
-            context.task,
-            context.decision,
-            run_state=context.run_state,
-            messages=context.messages,
-            tool_call_id=context.tool_call_id,
-            event_context=context.event_context,
-        )
-        return False
-
-    async def _execute_read(self, context: ToolExecutionContext) -> bool:
-        """执行 ReadSources；仅读取模型选中的候选来源。"""
-        run_state = context.run_state
-        selected = [
-            run_state.candidates[candidate_id]
-            for candidate_id in context.decision.candidate_ids
-            if candidate_id in run_state.candidates
-        ]
-        unknown_ids = [
-            candidate_id
-            for candidate_id in context.decision.candidate_ids
-            if candidate_id not in run_state.candidates
-        ]
+        event_context: dict[str, object],
+        claim_url: Callable[[str], Awaitable[bool]],
+        on_url_already_attempted: Callable[[str], None] | None,
+    ) -> dict[str, object]:
+        """读取模型选中的候选来源，并返回紧凑的工具结果。"""
+        del reason
+        selected_ids = list(dict.fromkeys(candidate_ids))
+        selected = [run_state.candidates[item] for item in selected_ids if item in run_state.candidates]
+        unknown_ids = [item for item in selected_ids if item not in run_state.candidates]
         if unknown_ids:
             run_state.failures.append(f"unknown_candidate_ids: {', '.join(unknown_ids)}")
         candidates: list[SearchCandidate] = []
         for candidate in selected:
             if candidate.candidate_id in run_state.selected_candidate_ids:
                 continue
-            if not await context.claim_url(candidate.url):
-                if context.on_url_already_attempted:
-                    context.on_url_already_attempted(candidate.url)
+            if not await claim_url(candidate.url):
+                if on_url_already_attempted:
+                    on_url_already_attempted(candidate.url)
                 run_state.skipped.append("url_already_attempted")
                 continue
             run_state.selected_candidate_ids.add(candidate.candidate_id)
             run_state.read_urls.append(candidate.url)
             candidates.append(candidate)
 
-        read_results = await self._read_candidates(context.task, candidates)
+        read_results = await self._read_candidates(task, candidates)
         accepted_evidence: list[Evidence] = []
         for candidate, read_result in zip(candidates, read_results, strict=True):
             url = candidate.url
@@ -232,10 +213,7 @@ class ResearchAgent:
                 raise read_result
             if isinstance(read_result, Exception):
                 run_state.failures.append(f"{url}: {read_result}")
-                self._emit(
-                    "source_read_failed",
-                    {**context.event_context, "research_direction": context.task["question"], "url": url, "error": str(read_result)[:500]},
-                )
+                self._emit("source_read_failed", {**event_context, "research_direction": task["question"], "url": url, "error": str(read_result)[:500]})
                 continue
             result = SourceReaderToolResult.model_validate(read_result)
             if result.status == "completed":
@@ -246,135 +224,43 @@ class ResearchAgent:
                 if accepted and result.source_url:
                     run_state.source_refs.append(result.source_url)
             elif result.status == "skipped":
-                reason = result.reason_code or "unknown"
-                run_state.skipped.append(reason)
-                self._emit(
-                    "source_read_skipped",
-                    {**context.event_context, "research_direction": context.task["question"], "url": url, "reason_code": reason},
-                )
+                reason_code = result.reason_code or "unknown"
+                run_state.skipped.append(reason_code)
+                self._emit("source_read_skipped", {**event_context, "research_direction": task["question"], "url": url, "reason_code": reason_code})
             else:
                 error = result.error or "read_failed"
                 run_state.failures.append(f"{url}: {error}")
-                self._emit(
-                    "source_read_failed",
-                    {**context.event_context, "research_direction": context.task["question"], "url": url, "error": error},
-                )
-        context.messages.append(
-            self._tool_message(
-                "sources_read_completed",
-                {
-                    "candidate_ids": context.decision.candidate_ids,
-                    "read_candidate_count": len(candidates),
-                    "unknown_candidate_ids": unknown_ids,
-                    "evidence": [
-                        {
-                            "claim": item.claim,
-                            "quote": item.quote[: self.config.research_observation_quote_chars],
-                            "source": item.source_url,
-                            "support": item.support,
-                        }
-                        for item in accepted_evidence
-                    ],
-                    "total_evidence_count": len(run_state.evidences),
-                    "skip_reasons": sorted(set(run_state.skipped)),
-                    "recent_failures": run_state.failures[-4:],
-                },
-                tool_call_id=context.tool_call_id,
-                name="ReadSources",
-            )
-        )
-        return False
-
-    async def _execute_inspect(self, context: ToolExecutionContext) -> bool:
-        """返回当前方向工作集摘要，不改变研究状态。"""
-        context.messages.append(
-            self._tool_message(
-                "working_set_snapshot",
-                self._working_set_snapshot(context.run_state),
-                tool_call_id=context.tool_call_id,
-                name="ReadWorkingSet",
-            )
-        )
-        return False
-
-    async def _execute_forget(self, context: ToolExecutionContext) -> bool:
-        """释放当前方向工作集中的 Evidence，但保留其全局可追溯记录。"""
-        requested = list(dict.fromkeys(context.decision.evidence_ids))
-        existing_ids = {item.evidence_id for item in context.run_state.evidences}
-        before = len(context.run_state.evidences)
-        forgotten = set(requested) & existing_ids
-        context.run_state.evidences = [
-            item for item in context.run_state.evidences if item.evidence_id not in forgotten
-        ]
-        removed = before - len(context.run_state.evidences)
-        context.messages.append(
-            self._tool_message(
-                "working_set_updated",
-                {
-                    "forgotten_evidence_ids": [
-                        evidence_id
-                        for evidence_id in requested
-                        if evidence_id in forgotten
-                    ],
-                    "unknown_evidence_ids": [
-                        evidence_id
-                        for evidence_id in requested
-                        if evidence_id not in existing_ids
-                    ],
-                    "removed_count": removed,
-                    **self._working_set_snapshot(context.run_state),
-                },
-                tool_call_id=context.tool_call_id,
-                name="ForgetEvidence",
-            )
-        )
-        return False
-
-    def _working_set_snapshot(self, run_state: DirectionRunState) -> dict[str, object]:
-        """构造工作集轻量快照；完整 Evidence 仍通过 ReadSources 返回。"""
+                self._emit("source_read_failed", {**event_context, "research_direction": task["question"], "url": url, "error": error})
         return {
-            "active_evidence": [
-                {
-                    "evidence_id": item.evidence_id,
-                    "claim": item.claim,
-                    "support": item.support,
-                    "confidence": item.confidence,
-                }
-                for item in run_state.evidences
+            "candidate_ids": selected_ids,
+            "read_candidate_count": len(candidates),
+            "unknown_candidate_ids": unknown_ids,
+            "evidence": [
+                {"claim": item.claim, "quote": item.quote[: self.config.research_observation_quote_chars], "source": item.source_url, "support": item.support}
+                for item in accepted_evidence
             ],
-            "active_evidence_count": len(run_state.evidences),
-            "evidence_capacity_remaining": max(
-                0,
-                self.config.research_agent_max_evidences_per_direction
-                - len(run_state.evidences),
-            ),
+            "total_evidence_count": len(run_state.evidences),
+            "skip_reasons": sorted(set(run_state.skipped)),
+            "recent_failures": run_state.failures[-4:],
         }
 
     async def _search_sources(
         self,
         task: SubTask,
-        decision: ResearchDirectionDecision,
+        proposed_queries: list[str],
+        reason: str,
         *,
         run_state: DirectionRunState,
-        messages: list[BaseMessage],
-        tool_call_id: str,
         event_context: dict[str, object],
-    ) -> None:
+    ) -> dict[str, object]:
         """搜索并返回候选目录；此方法不读取任何来源。"""
+        del reason
         remaining = self.config.research_agent_max_queries - len(run_state.queries)
-        new_queries = self._new_queries(decision.queries, run_state.queries)[: max(0, remaining)]
+        new_queries = self._new_queries(proposed_queries, run_state.queries)[: max(0, remaining)]
         if not new_queries:
             error = "没有新的可执行检索式；请基于已有候选读取来源或调用 Complete。"
             run_state.failures.append(f"no_novel_queries: {error}")
-            messages.append(
-                self._tool_message(
-                    "search_skipped",
-                    {"reason": "no_novel_queries", "proposed_queries": decision.queries},
-                    tool_call_id=tool_call_id,
-                    name="SearchSources",
-                )
-            )
-            return
+            return {"status": "skipped", "reason": "no_novel_queries", "proposed_queries": proposed_queries}
         run_state.queries.extend(new_queries)
         result = SearchToolResult.model_validate(
             await self.search_tool.arun_queries(task, queries=new_queries)
@@ -396,15 +282,7 @@ class ResearchAgent:
         if result.status != "completed":
             error = result.error or "search_failed"
             run_state.failures.append(f"search: {error}")
-            messages.append(
-                self._tool_message(
-                    "search_failed",
-                    {"queries": new_queries, "error": error},
-                    tool_call_id=tool_call_id,
-                    name="SearchSources",
-                )
-            )
-            return
+            return {"status": "failed", "queries": new_queries, "error": error}
 
         candidates: list[dict[str, object]] = []
         for item in result.results:
@@ -422,144 +300,35 @@ class ResearchAgent:
             )
             run_state.candidates[candidate_id] = candidate
             candidates.append(candidate.model_dump())
-        messages.append(
-            self._tool_message(
-                "search_sources_completed",
-                {"queries": new_queries, "candidates": candidates},
-                tool_call_id=tool_call_id,
-                name="SearchSources",
-            )
-        )
-
-    async def _decide(
-        self,
-        messages: list[BaseMessage],
-        task: SubTask,
-        *,
-        run_state: DirectionRunState,
-    ) -> tuple[ResearchDirectionDecision, str]:
-        """基于已有消息历史做决策，并保留模型原始 AIMessage。"""
-        observation = {
-            "research_direction": task["question"],
-            "remaining_budget": {
-                "queries": max(0, self.config.research_agent_max_queries - len(run_state.queries)),
-                "sources_read": len(run_state.read_urls),
-                "evidence": max(
-                    0,
-                    self.config.research_agent_max_evidences_per_direction
-                    - len(run_state.evidences),
-                ),
-            },
-        }
-        messages.append(
-            HumanMessage(
-                content=(
-                    "【系统研究观察；不是用户补充】\n" + json.dumps(observation, ensure_ascii=False)
-                )
-            )
-        )
-        prepared_messages = await self.context_policy.aprepare(messages, agent="researcher")
-        response = await self._decision_runnable.ainvoke(prepared_messages)
-        messages.append(response)
-        decision = self._parse_direction_decision(response)
-        call_id = str(response.tool_calls[0].get("id", ""))
-        if not call_id:
-            raise ValueError("ResearchAgent 工具调用缺少 id。")
-        return decision, call_id
+        return {"status": "completed", "queries": new_queries, "candidates": candidates}
 
     def _emit(self, event_type: str, payload: dict[str, object]) -> None:
         """写入方向级 Agent 事件；事件只包含诊断元数据，不包含完整正文。"""
-        self.logger.info("%s payload=%s", event_type, payload)
-        if self.event_sink is None:
-            return
-        context = current_context()
-        self.event_sink.write(
-            make_audit_event(
-                event_type,
-                trace_id=context.trace_id if context else None,
-                span_id=context.span_id if context else None,
-                run_id=context.run_id if context else None,
-                session_id=context.session_id if context else None,
-                node_id=context.node_id if context else "research_agent",
-                component="research_agent",
-                payload=payload,
-            )
+        emit_agent_event(
+            self.event_sink,
+            self.logger,
+            event_type,
+            payload,
+            component="research_agent",
+            node_fallback="research_agent",
         )
 
-    @staticmethod
-    def _parse_direction_decision(response: AIMessage) -> ResearchDirectionDecision:
-        """把方向级工具调用归一化为内部决策，不让自由文本进入执行循环。"""
-        calls = response.tool_calls or []
-        if len(calls) != 1:
-            raise ValueError("ResearchAgent 必须且只能调用一个方向决策工具。")
-        call = calls[0]
-        args = call.get("args") or {}
-        if call["name"] == "SearchSources":
-            # 超出列表上限时保留有序的前 N 项，避免已有 Evidence 因总结字段
-            # 过长而整项方向失败。
-            args = {**args, "queries": list(args.get("queries") or [])[:2]}
-            action = SearchSources.model_validate(args)
-            return ResearchDirectionDecision(
-                action="search",
-                reason=action.reason,
-                queries=action.queries,
-            )
-        if call["name"] == "ReadSources":
-            args = {**args, "candidate_ids": list(args.get("candidate_ids") or [])[:8]}
-            action = ReadSources.model_validate(args)
-            return ResearchDirectionDecision(
-                action="read",
-                reason=action.reason,
-                candidate_ids=action.candidate_ids,
-            )
-        if call["name"] == "ReadWorkingSet":
-            action = ReadWorkingSet.model_validate(args)
-            return ResearchDirectionDecision(action="inspect", reason=action.reason)
-        if call["name"] == "ForgetEvidence":
-            args = {**args, "evidence_ids": list(args.get("evidence_ids") or [])[:8]}
-            action = ForgetEvidence.model_validate(args)
-            return ResearchDirectionDecision(
-                action="forget", reason=action.reason, evidence_ids=action.evidence_ids
-            )
-        if call["name"] == "ResearchDirectionComplete":
-            args = {
-                **args,
-                "answered_points": list(args.get("answered_points") or [])[:4],
-                "remaining_gaps": list(args.get("remaining_gaps") or [])[:4],
-            }
-            action = ResearchDirectionComplete.model_validate(args)
-            return ResearchDirectionDecision(
-                action="complete",
-                reason=action.reason,
-                answered_points=action.answered_points,
-                conclusion=action.conclusion,
-                remaining_gaps=action.remaining_gaps,
-            )
-        raise ValueError(f"ResearchAgent 调用了未知决策工具：{call['name']}")
-
-    @staticmethod
-    def _initial_messages(task: SubTask) -> list[BaseMessage]:
+    def _initial_messages(self, task: SubTask) -> list[BaseMessage]:
+        observation = {
+            "research_direction": task["question"],
+            "remaining_budget": {
+                "queries": self.config.research_agent_max_queries,
+                "evidence": self.config.research_agent_max_evidences_per_direction,
+                "turns": self.config.research_agent_max_turns,
+            },
+        }
         return [
-            SystemMessage(content=_RESEARCHER_SYSTEM_PROMPT),
             HumanMessage(content=f"【委派研究方向】\n{task['question']}"),
-        ]
-
-    @staticmethod
-    def _tool_message(
-        event: str,
-        payload: dict[str, object],
-        *,
-        tool_call_id: str,
-        name: str,
-    ) -> ToolMessage:
-        return ToolMessage(
-            content=(
-                "【系统工具执行结果；不是用户补充】\n"
-                + json.dumps({"event": event, **payload}, ensure_ascii=False)
+            HumanMessage(
+                content="【系统研究观察；不是用户补充】\n"
+                + json.dumps(observation, ensure_ascii=False)
             ),
-            name=name,
-            tool_call_id=tool_call_id,
-        )
+        ]
 
     async def _read_candidates(self, task: SubTask, candidates: list[SearchCandidate]) -> list[object]:
         semaphore = asyncio.Semaphore(self.config.research_agent_read_concurrency)

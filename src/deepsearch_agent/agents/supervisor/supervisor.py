@@ -7,39 +7,43 @@
 
 import asyncio
 import json
-from collections.abc import Mapping
-from typing import TypeVar, cast
+from typing import Any, cast
 from urllib.parse import parse_qsl, urldefrag, urlencode, urlsplit, urlunsplit
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from pydantic import BaseModel, ValidationError
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from deepsearch_agent.agents.middleware import (
+    AGENT_RECURSION_LIMIT,
+    LIMIT_MESSAGE_MARKER,
+    MiddlewareProfile,
+    build_agent_middleware,
+)
 from deepsearch_agent.agents.researcher import ResearchAgent
 from deepsearch_agent.agents.supervisor.state import (
     RunUrlReservations,
+    SupervisorRuntimeContext,
     TaskExecution,
     WorkingState,
 )
+from deepsearch_agent.agents.supervisor.tools import (
+    build_supervisor_tools,
+)
 from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.context import ContextPolicy
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
-from deepsearch_agent.observability.events import JsonlSink, make_audit_event
+from deepsearch_agent.observability.events import JsonlSink, emit_agent_event
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.observability.tracing.context import current_context
+from deepsearch_agent.routing import NodeName
 from deepsearch_agent.schemas import (
     CoveredTopic,
-    ForgetEvidence,
-    ReadWorkingSet,
     ReportBrief,
     ResearchAgentResult,
-    ResearchComplete,
-    ResearchDelegate,
     ResearchDirectionResult,
     ResearchProgress,
-    ResearchReady,
     ReviewProgress,
     RunLifecycle,
+    StopReason,
     SupervisorStateUpdate,
     WriterDirective,
     WriterProgress,
@@ -64,19 +68,19 @@ _SUPERVISOR_SYSTEM_PROMPT = """【身份】你是深度研究系统的 Superviso
   只有轮次耗尽或没有新方向时，才把这份部分报告交给 Writer；Writer 必须诚实说明未覆盖主题、证据限制和剩余缺口。
  - ReadWorkingSet：查看当前活跃 Evidence 的轻量摘要和数量；不返回完整 quote。
  - ForgetEvidence：将重复、偏题或当前阶段不需要的 Evidence 从活跃工作集中释放；不删除全局 Evidence 档案。
+【预算约束】ResearchDelegate 受本轮派发配额与总轮次预算双重限制。若工具返回 status=blocked、
+reason=round_budget_exhausted，或被本轮配额拦截：不要再尝试派发或读取工作集，
+立即基于现有 Evidence 调用 ResearchComplete（足以成文）或 ResearchReady（可出部分报告）收尾。
 ResearchComplete 与 ResearchReady 不能在同一轮同时使用；如果连一篇有证据支撑的基本报告都无法形成，继续派发 ResearchDelegate。
 ResearchAgent 返回的 remaining_gaps 只是局部观察，不是全局结论。你必须综合原问题、所有方向结果和全部
 Evidence 自己判断覆盖度；核心主题均覆盖时调用 ResearchComplete；核心主题尚未全部覆盖但已有清晰论证主线时调用 ResearchReady。"""
 
-_ToolModelT = TypeVar("_ToolModelT", bound=BaseModel)
-
-_TOOL_PARALLEL_ALLOWED = {
-    ResearchDelegate.__name__: ResearchDelegate.allow_parallel,
-    ResearchReady.__name__: ResearchReady.allow_parallel,
-    ResearchComplete.__name__: ResearchComplete.allow_parallel,
-    ReadWorkingSet.__name__: ReadWorkingSet.allow_parallel,
-    ForgetEvidence.__name__: ForgetEvidence.allow_parallel,
-}
+def _model_call_limit_hit(messages: list[BaseMessage]) -> bool:
+    """判断本次 Agent 运行是否被 ModelCallLimitMiddleware 掐断而非模型正常收尾。"""
+    return any(
+        isinstance(message, AIMessage) and LIMIT_MESSAGE_MARKER in str(message.content)
+        for message in messages[-3:]
+    )
 
 
 class ResearchSupervisor:
@@ -89,7 +93,7 @@ class ResearchSupervisor:
         *,
         research_agent: ResearchAgent,
         event_sink: JsonlSink | None = None,
-        context_policy: ContextPolicy | None = None,
+        context_window_tokens: int = 32_768,
     ):
         if llm is None:
             raise LLMConfigurationError("ResearchSupervisor 需要已装配的 LLMInvoker。")
@@ -99,18 +103,27 @@ class ResearchSupervisor:
         self.config = config
         self.research_agent = research_agent
         self.event_sink = event_sink
-        self.context_policy = context_policy or ContextPolicy()
         self.logger = get_logger("deepsearch_agent.agents.supervisor")
         self._worker_limit = asyncio.Semaphore(config.max_parallel_workers)
-        self._decision_runnable = llm.bind_tools(
-            [
-                ResearchDelegate,
-                ResearchReady,
-                ResearchComplete,
-                ReadWorkingSet,
-                ForgetEvidence,
-            ],
-            tool_choice="any",
+        self._agent_loop = create_agent(
+            model=cast(Any, llm),
+            tools=build_supervisor_tools(),
+            system_prompt=_SUPERVISOR_SYSTEM_PROMPT,
+            context_schema=SupervisorRuntimeContext,
+            middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
+                agent_name="Supervisor",
+                model=getattr(self.llm, "chat_model", None),
+                # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
+                # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
+                # 轮次配额由 remaining_rounds 提示 + delegate() 的本地 hard check 执行。
+                max_turns=config.max_subtasks_per_round + 5,
+                context_window_tokens=context_window_tokens,
+                retry_tools=[(["ResearchDelegate"], "ResearchDelegate")],
+                serial_tools={"ReadWorkingSet", "ForgetEvidence", "ResearchComplete", "ResearchReady"},
+                tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
+                emit=self._emit_audit_event,
+            ))),
+            name="supervisor",
         )
 
     @staticmethod
@@ -122,7 +135,6 @@ class ResearchSupervisor:
         if history:
             return history
         return [
-            SystemMessage(content=_SUPERVISOR_SYSTEM_PROMPT),
             HumanMessage(
                 content=(
                     "【研究委托】\n"
@@ -136,7 +148,7 @@ class ResearchSupervisor:
                         ensure_ascii=False,
                     )
                 )
-            ),
+            )
         ]
 
     async def run(self, state: ResearchState) -> dict[str, object]:
@@ -161,8 +173,112 @@ class ResearchSupervisor:
                 return {**update.state_update(), "supervisor_messages": history[history_start:]}
             self._append_review_rejection(state, history)
 
-        update = await self._coordinate_research_rounds(state, history)
+        update = await self._run_agent_loop(state, history)
         return {**update.state_update(), "supervisor_messages": history[history_start:]}
+
+    async def _run_agent_loop(
+        self,
+        state: ResearchState,
+        history: list[BaseMessage],
+    ) -> SupervisorStateUpdate:
+        """运行 Supervisor 标准 Agent；工具通过运行时上下文修改 WorkingState。"""
+        url_reservations = RunUrlReservations(
+            state.get("attempted_source_urls", []),
+            normalize_url=self._normalize_source_url,
+        )
+        working = WorkingState(state, dedup_key=self._task_deduplication_key)
+        research = section(state, "research", ResearchProgress)
+        round_no = research.current_round + 1
+        working.current_round = round_no
+        self._append_research_observation(
+            history,
+            {"remaining_rounds": max(0, self.config.max_research_rounds - research.current_round)},
+        )
+
+        async def delegate(topic: str) -> dict[str, object]:
+            if round_no > self.config.max_research_rounds:
+                working.stop_reason = StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED
+                return {
+                    "status": "blocked",
+                    "reason": "round_budget_exhausted",
+                    "instruction": "研究轮次预算已耗尽；请基于现有 Evidence 立即调用 ResearchComplete 或 ResearchReady。",
+                }
+            async with runtime.tool_lock:
+                task_index = working.next_task_index
+                task: SubTask = {
+                    "id": f"task-{task_index:04d}",
+                    "question": topic,
+                    "round": round_no,
+                    "sequence": task_index,
+                    "type": "search",
+                    "status": "pending",
+                    "assigned_agent": "research_agent",
+                    "worker_id": f"research-agent-{task_index:04d}",
+                    "worker_index": task_index,
+                    "parent_task_id": "",
+                    "operation_id": f"research-task-{task_index:04d}",
+                }
+                new_tasks = working.filter_new_tasks(
+                    [task], max_tasks=self.config.max_subtasks_per_round
+                )
+            if not new_tasks:
+                working.stop_reason = StopReason.NO_NEW_TASKS
+                return {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
+            execution = await self._execute_research_task(
+                new_tasks[0],
+                tool_call_id=f"delegate-{new_tasks[0]['id']}",
+                url_reservations=url_reservations,
+            )
+            async with runtime.tool_lock:
+                working.absorb(execution)
+            return {
+                "status": execution.task_result.execution_status,
+                "research_direction": execution.task_result.research_direction,
+                "coverage_status": execution.task_result.coverage_status,
+                "evidence_count": execution.task_result.evidence_count,
+                "source_count": execution.task_result.source_count,
+                "answered_points": execution.task_result.answered_points,
+                "remaining_gaps": execution.task_result.remaining_gaps,
+                "conclusion": execution.task_result.conclusion,
+                "failures": execution.task_result.failures,
+                "evidence": [item.claim for item in execution.evidences],
+            }
+
+        runtime = SupervisorRuntimeContext(
+            working=working,
+            url_reservations=url_reservations,
+            delegate_research=delegate,
+            round_no=round_no,
+        )
+        prepared = history
+        try:
+            result = await cast(Any, self._agent_loop).ainvoke(
+                cast(Any, {"messages": prepared}),
+                context=runtime,
+                config={"recursion_limit": AGENT_RECURSION_LIMIT},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            working.stop_reason = StopReason.AGENT_FAILED
+            working.coverage_gaps.append(str(exc)[: self.config.supervisor_preview_chars])
+        else:
+            generated = result.get("messages", []) if isinstance(result, dict) else []
+            history.extend(generated[len(prepared) :])
+            if (
+                not working.sufficient
+                and working.stop_reason is None
+                and _model_call_limit_hit(generated)
+            ):
+                # 真实终止原因是模型调用天花板，不得再兜底标成轮次耗尽。
+                working.stop_reason = StopReason.MODEL_CALL_LIMIT_EXCEEDED
+        self._emit_round_completed(
+            round_no,
+            len([item for item in working.task_results if item.round == round_no]),
+            working,
+            outcome=working.stop_reason or "agent_loop_completed",
+        )
+        return self._final_update(state, working, url_reservations)
 
     def _append_review_rejection(self, state: ResearchState, history: list[BaseMessage]) -> None:
         """把审阅拒绝作为消息注入历史；如何响应留给工具循环里的模型。"""
@@ -188,344 +304,16 @@ class ResearchSupervisor:
             )
         )
 
-    async def _coordinate_research_rounds(
-        self,
-        state: ResearchState,
-        history: list[BaseMessage],
-    ) -> SupervisorStateUpdate:
-        """工具调用循环：每轮观察 → 模型决策 → 执行工具，直到终止或预算耗尽。"""
-        url_reservations = RunUrlReservations(
-            state.get("attempted_source_urls", []),
-            normalize_url=self._normalize_source_url,
-        )
-        working = WorkingState(state, dedup_key=self._task_deduplication_key)
-
-        research = section(state, "research", ResearchProgress)
-        current_round = research.current_round
-        remaining_rounds = max(0, self.config.max_research_rounds - current_round)
-        if section(state, "review", ReviewProgress).status == "rejected":
-            # 审阅恢复与研究轮次预算正交：即使研究轮次已耗尽，模型也至少获得
-            # “决策 + 一次补研究后的再决策”机会；改写（ResearchComplete）不消耗研究预算。
-            remaining_rounds = max(
-                remaining_rounds,
-                self.config.max_post_review_recovery_cycles + 1,
-            )
-        if remaining_rounds == 0:
-            working.stop_reason = "global_round_budget_exhausted"
-            self._emit_research_stopped(current_round, working)
-            return self._final_update(state, working, url_reservations)
-
-        for round_no in range(current_round + 1, current_round + 1 + remaining_rounds):
-            working.current_round = round_no
-            self._emit_audit_event(
-                "research_round_started",
-                {"round": round_no, "remaining_rounds": remaining_rounds - (round_no - current_round - 1)},
-            )
-            # 观察只携带历史中不可推导的增量；Evidence 与方向结果由工具消息承载，
-            # 委托与审阅回流也在各自消息中，不在此重复投影。
-            self._append_research_observation(
-                history,
-                {
-                    "remaining_rounds": remaining_rounds - (round_no - current_round - 1),
-                    "coverage_gaps": working.coverage_gaps,
-                },
-            )
-            prepared_history = await self.context_policy.aprepare(history, agent="supervisor")
-            response = await self._decision_runnable.ainvoke(prepared_history)
-
-            calls = response.tool_calls or []
-            if not calls:
-                working.stop_reason = "no_tool_calls"
-                self._emit_round_completed(round_no, 0, working, outcome="no_tool_calls")
-                self._emit_research_stopped(round_no, working)
-                break
-            history.append(response)
-            if not self._accept_tool_call_batch(calls, history):
-                self._emit_round_completed(round_no, 0, working, outcome="rejected_tool_batch")
-                continue
-
-            self._emit_audit_event(
-                "supervisor_tool_calls",
-                {
-                    "round": round_no,
-                    "calls": [
-                        {"name": item["name"], "args": str(item["args"])[:300]}
-                        for item in calls
-                    ],
-                },
-            )
-
-            parsed_working_set = self._parse_tool_call(response, "ReadWorkingSet", ReadWorkingSet)
-            if parsed_working_set is not None:
-                _, call_id = parsed_working_set
-                history.append(
-                    ToolMessage(
-                        content=json.dumps(self._working_set_snapshot(working), ensure_ascii=False),
-                        name="ReadWorkingSet",
-                        tool_call_id=call_id,
-                    )
-                )
-                self._emit_round_completed(round_no, 0, working, outcome="read_working_set")
-                continue
-
-            parsed_forget = self._parse_tool_call(response, "ForgetEvidence", ForgetEvidence)
-            if parsed_forget is not None:
-                request, call_id = parsed_forget
-                forgotten = working.release_evidence(request.evidence_ids)
-                history.append(
-                    ToolMessage(
-                        content=json.dumps(
-                            {
-                                "forgotten_evidence_ids": forgotten,
-                                "unknown_evidence_ids": [
-                                    item for item in request.evidence_ids if item not in forgotten
-                                ],
-                                **self._working_set_snapshot(working),
-                            },
-                            ensure_ascii=False,
-                        ),
-                        name="ForgetEvidence",
-                        tool_call_id=call_id,
-                    )
-                )
-                self._emit_round_completed(round_no, 0, working, outcome="forget_evidence")
-                continue
-
-            parsed_completion = self._parse_tool_call(
-                response, "ResearchComplete", ResearchComplete
-            )
-            if parsed_completion is not None:
-                completion, call_id = parsed_completion
-                history.append(
-                    ToolMessage(
-                        content="ResearchComplete 已接受，进入写作。",
-                        name="ResearchComplete",
-                        tool_call_id=call_id,
-                    )
-                )
-                self._apply_completion(completion, working, round_no)
-                self._emit_round_completed(round_no, 0, working, outcome="research_complete")
-                break
-
-            parsed_ready = self._parse_tool_call(response, "ResearchReady", ResearchReady)
-            if parsed_ready is not None:
-                ready, ready_call_id = parsed_ready
-                self._apply_ready(ready, working, round_no)
-                history.append(
-                    ToolMessage(
-                        content="ResearchReady 已记录；仍有研究预算时请继续补充研究",
-                        name="ResearchReady",
-                        tool_call_id=ready_call_id,
-                    )
-                )
-                self._emit_round_completed(round_no, 0, working, outcome="research_ready")
-                continue
-
-            executed = await self._execute_tool_calls(
-                response,
-                round_no=round_no,
-                working=working,
-                history=history,
-                url_reservations=url_reservations,
-            )
-            if not executed:
-                working.stop_reason = "no_new_tasks"
-                self._emit_round_completed(round_no, 0, working, outcome="no_new_tasks")
-                self._emit_research_stopped(round_no, working)
-                break
-            self._emit_round_completed(round_no, executed, working, outcome="research_tasks")
-
-        return self._final_update(state, working, url_reservations)
 
     def _append_research_observation(
         self,
         history: list[BaseMessage],
         payload: dict[str, object],
     ) -> None:
-        """把轮次预算等历史不可推导的增量作为观察注入。"""
+        """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
         history.append(
-            HumanMessage(content=("【研究管理观察】\n" + json.dumps(payload, ensure_ascii=False)))
+            HumanMessage(content="【研究管理观察】\n" + json.dumps(payload, ensure_ascii=False))
         )
-
-    @staticmethod
-    def _accept_tool_call_batch(
-        calls: list[Mapping[str, object]],
-        history: list[BaseMessage],
-    ) -> bool:
-        """执行并行策略校验；拒绝批次中的所有调用并逐个回填错误。"""
-        if len(calls) <= 1 or all(
-            call.get("id")
-            and _TOOL_PARALLEL_ALLOWED.get(str(call.get("name", "")), False)
-            for call in calls
-        ):
-            return True
-        error = "本轮包含不允许并行的工具调用；本轮所有调用均未执行，请下一轮只调用一个工具。"
-        for call in calls:
-            history.append(
-                ToolMessage(
-                    content=error,
-                    name=str(call.get("name", "unknown")),
-                    tool_call_id=str(call.get("id", "")),
-                )
-            )
-        return False
-
-    @staticmethod
-    def _parse_tool_call(
-        response: AIMessage,
-        name: str,
-        model: type[_ToolModelT],
-    ) -> tuple[_ToolModelT, str] | None:
-        """解析指定工具调用；契约不成立时返回 None，不阻断循环。"""
-        for tool_call in response.tool_calls or []:
-            if tool_call["name"] == name:
-                try:
-                    call_id = tool_call.get("id")
-                    if not call_id:
-                        return None
-                    return model.model_validate(tool_call.get("args") or {}), call_id
-                except ValidationError:
-                    return None
-        return None
-
-    @staticmethod
-    def _materialize_delegate_tasks(
-        response: AIMessage,
-        *,
-        round_no: int,
-        next_index: int,
-    ) -> list[tuple[SubTask, str]]:
-        """从 tool_calls 提取方向任务；任务序号与 Supervisor 轮次分开保存。"""
-        tasks: list[tuple[SubTask, str]] = []
-        for index, item in enumerate(response.tool_calls or []):
-            if item["name"] != "ResearchDelegate":
-                continue
-            args = item.get("args") or {}
-            question = str(args.get("research_topic", "")).strip()
-            if not question:
-                continue
-            task_index = next_index + index
-            tasks.append((
-                {
-                    "id": f"task-{task_index:04d}",
-                    "question": question,
-                    "round": round_no,
-                    "sequence": task_index,
-                    "type": "search",
-                    "status": "pending",
-                    "assigned_agent": "research_agent",
-                    "worker_id": f"research-agent-{task_index:04d}",
-                    "worker_index": task_index,
-                    "parent_task_id": "",
-                    "operation_id": f"research-task-{task_index:04d}",
-                }, str(item["id"])))
-        return tasks
-
-    async def _execute_tool_calls(
-        self,
-        response: AIMessage,
-        *,
-        round_no: int,
-        working: WorkingState,
-        history: list[BaseMessage],
-        url_reservations: RunUrlReservations,
-    ) -> int:
-        """执行模型派发的 ResearchDelegate；返回实际执行的方向数（0 表示全部被去重）。"""
-        task_entries = self._materialize_delegate_tasks(
-            response,
-            round_no=round_no,
-            next_index=working.next_task_index,
-        )
-        tasks = [task for task, _ in task_entries]
-        call_ids = {task["id"]: call_id for task, call_id in task_entries}
-        materialized_call_ids = set(call_ids.values())
-        for call in response.tool_calls or []:
-            call_id = str(call.get("id", ""))
-            if call_id not in materialized_call_ids:
-                history.append(
-                    ToolMessage(
-                        content="该工具调用参数无效或无法转换为 ResearchDelegate，已跳过。",
-                        name=str(call.get("name", "unknown")),
-                        tool_call_id=call_id,
-                    )
-                )
-        new_tasks = working.filter_new_tasks(
-            tasks, max_tasks=self.config.max_subtasks_per_round
-        )
-        executed_ids = {task["id"] for task in new_tasks}
-        for task, call_id in task_entries:
-            if task["id"] not in executed_ids:
-                history.append(
-                    ToolMessage(
-                        content="该研究方向与历史任务重复或超出本轮任务上限，已跳过。",
-                        name="ResearchDelegate",
-                        tool_call_id=call_id,
-                    )
-                )
-        if not new_tasks:
-            return 0
-        batch = await asyncio.gather(
-            *(
-                self._execute_research_task(
-                    task,
-                    tool_call_id=call_ids[task["id"]],
-                    url_reservations=url_reservations,
-                )
-                for task in new_tasks
-            ),
-            return_exceptions=True,
-        )
-        for task, outcome in zip(new_tasks, batch, strict=True):
-            if isinstance(outcome, asyncio.CancelledError):
-                raise outcome
-            if isinstance(outcome, BaseException):
-                execution = TaskExecution.failed_for(
-                    task,
-                    round_no,
-                    str(outcome)[:500],
-                    tool_call_id=call_ids[task["id"]],
-                )
-            else:
-                execution = outcome
-            history.append(execution.message)
-            working.absorb(execution)
-        return len(new_tasks)
-
-    def _apply_completion(
-        self,
-        completion: ResearchComplete,
-        working: WorkingState,
-        round_no: int,
-    ) -> None:
-        """处理终止信号：有证据进入写作；零证据由程序护栏降级，不空手成文。"""
-        working.report_brief = completion.report_brief
-        if working.active_evidences():
-            working.sufficient = True
-            working.stop_reason = "supervisor_sufficient"
-        else:
-            working.stop_reason = "sufficient_without_evidence"
-            working.coverage_gaps.append("Supervisor 判定材料充分，但当前没有可交付的 Evidence。")
-        self._emit_research_stopped(round_no, working)
-
-    def _apply_ready(
-        self,
-        ready: ResearchReady,
-        working: WorkingState,
-        round_no: int,
-    ) -> None:
-        """记录模型判断的部分就绪状态；没有 Evidence 时仍由本地护栏拒绝。
-
-        该状态只是候选标记，不结束当前 Supervisor 研究循环。
-        """
-        working.report_brief = ready.report_brief
-        if working.evidences:
-            working.partial_ready = True
-            self._emit_audit_event(
-                "research_partial_ready_candidate",
-                {"round": round_no, "reason": ready.reason},
-            )
-        else:
-            working.coverage_gaps.append("Supervisor 判断可以形成部分报告，但当前没有可交付的 Evidence。")
 
     async def _execute_research_task(
         self,
@@ -614,7 +402,7 @@ class ResearchSupervisor:
             "research_stopped",
             {
                 "round": round_no,
-                "reason": working.stop_reason,
+                "reason": str(working.stop_reason or ""),
                 "evidence_count": len(working.evidences),
             },
         )
@@ -657,17 +445,14 @@ class ResearchSupervisor:
         url_reservations: RunUrlReservations,
     ) -> SupervisorStateUpdate:
         """把工作状态转为 State 增量与路由决策。"""
-        if not working.sufficient and not working.stop_reason:
-            working.stop_reason = "round_budget_exhausted"
+        if not working.sufficient and working.stop_reason is None:
+            working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
         meets_material_floor = self._meets_partial_report_threshold(working)
         # ResearchReady 提供语义判断，但不能绕过本地最低材料安全线；预算耗尽时，
         # 达到安全线即可兜底进入 Writer，并由 Writer 明确披露未完成部分。
         can_generate_partial = meets_material_floor and (
-            working.partial_ready or working.stop_reason in {
-                "round_budget_exhausted",
-                "global_round_budget_exhausted",
-                "no_new_tasks",
-            }
+            working.partial_ready
+            or (working.stop_reason is not None and working.stop_reason.allows_partial_report)
         )
         if working.partial_ready and not meets_material_floor:
             working.coverage_gaps.append(
@@ -693,7 +478,7 @@ class ResearchSupervisor:
             active_evidence_ids=sorted(working.active_evidence_ids),
             run=RunLifecycle(
                 phase="writing" if can_continue_to_writer else "rendering",
-                terminal_reason="" if can_continue_to_writer else working.stop_reason,
+                terminal_reason="" if can_continue_to_writer else str(working.stop_reason or ""),
             ),
             research=ResearchProgress(
                 status=research_status,
@@ -710,7 +495,7 @@ class ResearchSupervisor:
                     else self._describe_research_stop(working.stop_reason, working.coverage_gaps)
                 ),
             ),
-            supervisor_next="writer" if can_write else "render_final_report",
+            supervisor_next=NodeName.WRITER if can_write else NodeName.RENDER_FINAL_REPORT,
         )
 
     def _build_writer_directive(
@@ -799,18 +584,16 @@ class ResearchSupervisor:
         )
 
     @staticmethod
-    def _describe_research_stop(stop_reason: str, coverage_gaps: list[str]) -> str:
-        """把研究无法继续的原因保留给最终不完整报告与事件诊断。"""
+    def _describe_research_stop(stop_reason: StopReason | None, coverage_gaps: list[str]) -> str:
+        """把研究无法继续的原因保留给最终不完整报告与事件诊断。
+
+        文案单一来源在 ``StopReason.description``；这里只补充逐次运行的
+        具体缺口细节（coverage_gaps），不再各自维护字符串清单。
+        """
         detail = next(
             (gap for gap in reversed(coverage_gaps) if gap.strip()), "未形成可验证的完整覆盖。"
         )
-        prefix = {
-            "sufficient_without_evidence": "充分性决策与 Evidence 状态矛盾。",
-            "no_new_tasks": "没有可去重的新研究任务。",
-            "no_tool_calls": "Supervisor 模型既未派发研究任务，也未给出充分性决策。",
-            "round_budget_exhausted": "研究轮次预算已耗尽。",
-            "global_round_budget_exhausted": "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
-        }.get(stop_reason, "Supervisor 未确认现有材料足以形成完整研究报告。")
+        prefix = stop_reason.description if stop_reason else "Supervisor 未确认现有材料足以形成完整研究报告。"
         return f"{prefix} {detail}"
 
     def _emit_audit_event(
@@ -820,21 +603,13 @@ class ResearchSupervisor:
         *,
         component: str = "supervisor",
     ) -> None:
-        self.logger.info("%s payload=%s", event_type, payload)
-        if self.event_sink is None:
-            return
-        context = current_context()
-        self.event_sink.write(
-            make_audit_event(
-                event_type,
-                trace_id=context.trace_id if context else None,
-                span_id=context.span_id if context else None,
-                run_id=context.run_id if context else None,
-                session_id=context.session_id if context else None,
-                node_id=context.node_id if context else "supervisor",
-                payload=payload,
-                component=component,
-            )
+        emit_agent_event(
+            self.event_sink,
+            self.logger,
+            event_type,
+            payload,
+            component=component,
+            node_fallback="supervisor",
         )
 
     @staticmethod
