@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from deepsearch_agent.observability.events.models import make_node_event
 from deepsearch_agent.reporting import render_error_report
+from deepsearch_agent.routing import NodeName
 from deepsearch_agent.schemas import RunError, RunLifecycle
 from deepsearch_agent.state import ResearchState, restore_state_models, validate_state_invariants
 
@@ -48,10 +49,15 @@ async def execute_node(
             error=error.message,
             payload={"code": error.code, "retryable": error.retryable},
         )
-        return {
+        failure: dict[str, Any] = {
             "run": RunLifecycle(phase="failed", terminal_reason="node_failed", error=error),
             "answer_mode": "research_incomplete",
-            "supervisor_next": "render_final_report",
+            "supervisor_next": NodeName.RENDER_FINAL_REPORT,
             "report": render_error_report(cast(ResearchState, state), error),
             "node_events": [event],
         }
+        # 边界的产物与节点产物过同一条不变量校验。此处校验不通过说明
+        # 错误路径本身被改坏，是边界的 bug——向上抛出，绝不静默降级，
+        # 否则“能兜住一切异常”的假象会掩盖唯一不能出错的那条路径。
+        validate_state_invariants(state, failure)
+        return failure

@@ -16,13 +16,13 @@ from pydantic import BaseModel
 from deepsearch_agent.errors import AgentError
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.observability.events.models import NodeEvent
+from deepsearch_agent.routing import NodeName
 from deepsearch_agent.schemas import (
     Citation,
     ParagraphBinding,
     ReportBrief,
     ResearchDirectionResult,
     ResearchProgress,
-    ReviewIssue,
     ReviewProgress,
     RunLifecycle,
     WriterDirective,
@@ -122,7 +122,7 @@ class ResearchState(TypedDict, total=False):
     report_brief: ReportBrief | None
     writer_directive: WriterDirective | None
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
-    supervisor_next: Literal["writer", "render_final_report"]
+    supervisor_next: NodeName
 
     writer_draft: str
     # Writer 产出的 evidence_id 键草稿(含 [[cite:evidence_id]] 标记);
@@ -160,7 +160,6 @@ def restore_state_models(state: dict[str, object]) -> None:
     list_models = (
         ("evidences", Evidence),
         ("task_results", ResearchDirectionResult),
-        ("review_issues", ReviewIssue),
         ("citations", Citation),
         ("paragraph_bindings", ParagraphBinding),
         ("node_events", NodeEvent),

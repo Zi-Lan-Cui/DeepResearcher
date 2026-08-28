@@ -5,7 +5,7 @@ from deepsearch_agent.schemas import ResearchProgress, ReviewProgress, RunLifecy
 from deepsearch_agent.state import ResearchState, section
 
 
-async def render_final_report_node(state: ResearchState, _llm):
+async def render_final_report_node(state: ResearchState):
     """流水线终点：统一处理成功、澄清和各类失败路径。"""
     run = section(state, "run", RunLifecycle)
     research = section(state, "research", ResearchProgress)
