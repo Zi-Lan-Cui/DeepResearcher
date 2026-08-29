@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -210,7 +211,11 @@ class RunManager:
 
     # ---- token 级预览（ephemeral 旁路；事实仍是落库的聚合帧） ----
 
-    _DELTA_FLUSH_CHARS = 60
+    # 预览的交付节奏按"人眼流式"定，不按省事件定：实测网关约 25ms/字，
+    # 8 字≈200ms 一帧；回合文本常不足 60 字，大阈值会把整个回合憋到
+    # 流末尾一次性吐出——观感上等于没有流式（第一版就是这么错的）。
+    _DELTA_FLUSH_CHARS = 8
+    _DELTA_FLUSH_SECONDS = 0.12
     # 只有这两个 agent 的模型文本对用户可见（白名单，不是黑名单）；
     # 匹配不到归属的 chunk 一律静默并记一次观测日志，便于按真实
     # checkpoint_ns 形态扩表。
@@ -224,6 +229,7 @@ class RunManager:
         """
         final_state: dict = {}
         buffers: dict[str, list[str]] = {}
+        last_flush: dict[str, float] = {}
         try:
             async for mode, chunk in graph.astream(
                 inputs, stream_mode=["values", "messages"]
@@ -231,6 +237,11 @@ class RunManager:
                 if mode == "values":
                     if isinstance(chunk, dict):
                         final_state = chunk
+                    # 超步边界 = 该步模型文本已终结：全部预览落屏，
+                    # 聚合帧替换前不留未交付的碎尾巴。
+                    for channel, parts in buffers.items():
+                        self._flush_channel(run_id, channel, parts)
+                    buffers.clear()
                     continue
                 if mode != "messages":
                     continue
@@ -240,9 +251,14 @@ class RunManager:
                 channel, text = delta
                 parts = buffers.setdefault(channel, [])
                 parts.append(text)
-                if sum(len(part) for part in parts) >= self._DELTA_FLUSH_CHARS:
+                now = time.monotonic()
+                if (
+                    sum(len(part) for part in parts) >= self._DELTA_FLUSH_CHARS
+                    or now - last_flush.get(channel, 0.0) >= self._DELTA_FLUSH_SECONDS
+                ):
                     self._flush_channel(run_id, channel, parts)
                     buffers[channel] = []
+                    last_flush[channel] = now
         finally:
             for channel, parts in buffers.items():
                 self._flush_channel(run_id, channel, parts)
