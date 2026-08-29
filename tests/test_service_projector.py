@@ -47,17 +47,22 @@ def test_node_failed_uses_safe_text_only():
     assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
 
 
-def test_direction_search_completed_shows_direction_and_count():
-    long_direction = "性" * 100
+def test_direction_search_becomes_task_update_without_direction_text():
+    """方向文案只在开卡时出口一次；update 行只报数量，防刷屏且不重复长标题。"""
     frame = project(
         _record(
             "direction_search_completed",
-            {"research_direction": long_direction, "candidate_count": 5, "queries": ["x"]},
+            {"task_id": "task-0001", "research_direction": "x" * 200, "candidate_count": 5},
         )
     )
-    assert frame.data["text"].count("性") == 60  # 截到 60 字
-    assert "5 条候选来源" in frame.data["text"]
-    assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
+    assert frame.event == "task_update"
+    assert frame.data["task"] == "task-0001"
+    assert frame.data["text"] == "检索完成：5 条候选来源"
+    assert "xxxx" not in json.dumps(frame.data, ensure_ascii=False)
+
+
+def test_task_frames_require_task_id():
+    assert project(_record("direction_search_completed", {"candidate_count": 5})) is None
 
 
 def test_research_round_completed_counts():
@@ -89,18 +94,63 @@ def test_research_stopped_tolerates_unknown_reason():
 
 
 @pytest.mark.parametrize(
-    ("event_type", "label"),
-    [("supervisor_model_turn", "研究规划"), ("writer_model_turn", "报告撰写"),
-     ("researcher_model_turn", "方向检索")],
+    "event_type", ["supervisor_model_turn", "writer_model_turn", "researcher_model_turn"]
 )
-def test_model_turn_generic_line(event_type, label):
-    frame = project(_record(event_type, {"turn": 3, "tool_names": ["SearchSources"]}))
-    assert frame.data["text"] == f"{label}中（第 3 轮）"
-    assert "SearchSources" not in json.dumps(frame.data, ensure_ascii=False)
+def test_model_turn_events_are_silent(event_type):
+    """轮次计数是内部预算视角，不再面向用户（第 N 轮刷屏曾被指不友好）。"""
+    assert project(_record(event_type, {"turn": 3, "tool_names": ["SearchSources"]})) is None
+
+
+def test_research_task_card_lifecycle():
+    opened = project(
+        _record("research_task_started", {"task_id": "task-0001", "question": "性善论的论证结构" + "。" * 200})
+    )
+    assert opened.event == "task_open"
+    assert opened.data["task"] == "task-0001"
+    assert len(opened.data["title"]) == 140  # 标题截断
+    reading = project(_record("source_fetch_completed", {"task_id": "task-0001"}))
+    assert (reading.event, reading.data["text"]) == ("task_update", "来源读取完成")
+    extracting = project(
+        _record("evidence_chunk_completed", {"task_id": "task-0001", "candidate_count": 4})
+    )
+    assert extracting.data["text"] == "证据抽取 +4"
+    done = project(
+        _record(
+            "research_task_completed",
+            {
+                "task_id": "task-0001",
+                "execution_status": "completed",
+                "evidence_count": 7,
+                "source_count": 3,
+            },
+        )
+    )
+    assert (done.event, done.data["status"], done.data["summary"]) == (
+        "task_done",
+        "completed",
+        "证据 7 · 来源 3",
+    )
+
+
+def test_writer_collapses_to_single_card():
+    opened = project(_record("node_started", node="writer"))
+    assert (opened.event, opened.data["task"], opened.data["title"]) == (
+        "task_open",
+        "_writer",
+        "撰写报告",
+    )
+    ready = project(_record("writer_draft_ready", {}))
+    assert (ready.event, ready.data["text"]) == ("task_update", "草稿完成，进入审阅")
+    finished = project(_record("writer_agent_finished", {"stop_reason": "final_response"}))
+    assert (finished.event, finished.data["status"]) == ("task_done", "done")
+    exhausted = project(_record("writer_agent_finished", {"stop_reason": "model_call_limit_exceeded"}))
+    assert exhausted.data["status"] == "warn"
 
 
 def test_agent_finished_events_are_silent():
-    assert project(_record("writer_agent_finished", {"stop_reason": "final_response"})) is None
+    """supervisor/researcher 的收尾帧不进用户视图（writer 的走卡片收束）。"""
+    assert project(_record("supervisor_agent_finished", {"stop_reason": "final_response"})) is None
+    assert project(_record("researcher_agent_finished", {"stop_reason": "model_call_limit_exceeded"})) is None
 
 
 def test_delegate_completed_maps_silent_planner_outcomes():

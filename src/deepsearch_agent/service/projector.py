@@ -5,12 +5,19 @@
 绝不整包转发 payload；``error``/``*_preview``/``prompt``/``queries`` 全列表等
 敏感键在代码层面就没有进入路径。
 
-SSE 帧词汇表（与前端、RunManager 合成事件共用）：
+SSE 帧词汇表（与前端、RunManager 合成事件共用）。呈现原则：用户看整体，
+不被细节淹没——
 
-- ``tick``   进度文案行
-- ``status`` 运行状态变化（RunManager 合成）
-- ``error``  需要用户知道的异常提示（仅安全文案）
-- ``done``   终态，data 带 {status, answer_mode, report_available}
+- ``tick``     全局时间线一行（规划器/阶段级叙述）
+- ``task_open``  开一张方向卡 {task, title}
+- ``task_update`` 卡片第二行滚动一条动作 {task, text}
+- ``task_done``   卡片收束 {task, status, summary}
+- ``status``   运行状态变化（RunManager 合成）
+- ``error``    需要用户知道的异常提示（仅安全文案）
+- ``done``     终态，data 带 {status, answer_mode, report_available}
+
+各 agent 的 model_turn 计数**不再面向用户**（第 N 轮是内部预算视角），
+writer 收敛为一张普通卡。
 """
 
 from __future__ import annotations
@@ -24,23 +31,28 @@ from deepsearch_agent.schemas import StopReason
 
 TRUNCATED_EVENT = "stream_truncated"
 
-_MODEL_TURN_SUFFIX = "_model_turn"
+# 无真实 task_id 的阶段也用卡片通道呈现（前端统一一套渲染）。
+_WRITER_CARD_ID = "_writer"
 
-# 中文播报文案。改动无需回归引擎——这是展示层词汇，与事件生产者解耦。
 _NODE_NARRATION: dict[str, str] = {
     NodeName.ROUTER: "正在理解问题…",
     NodeName.CLARIFY: "正在澄清研究范围…",
     NodeName.QUICK_ANSWER: "正在准备即时回答…",
     NodeName.SUPERVISOR: "正在拆解研究任务…",
-    NodeName.WRITER: "正在撰写报告…",
     NodeName.REFLECTION: "正在审阅报告…",
     NodeName.RENDER_FINAL_REPORT: "正在生成最终报告…",
 }
 
-_TURN_AGENT_LABELS: dict[str, str] = {
-    "supervisor": "研究规划",
-    "writer": "报告撰写",
-    "researcher": "方向检索",
+# 卡片第二行动作文案：{event_type: 模板函数}
+_TASK_UPDATES: dict[str, str] = {
+    "source_fetch_started": "读取来源中…",
+    "source_fetch_completed": "来源读取完成",
+    "source_reader_completed": "来源读取完成",
+    "evidence_chunk_completed": "证据抽取 +{candidate_count}",
+    "evidence_extraction_failed": "部分来源抽取失败",
+    "source_timeout": "来源读取超时",
+    "source_read_failed": "某来源不可读，已跳过",
+    "source_read_skipped": "来源重复，已跳过",
 }
 
 
@@ -60,6 +72,51 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         payload = {}
     seq = record.get("seq")
 
+    # ---- 方向卡生命周期 ----
+    if event_type == "research_task_started":
+        title = _text(payload.get("question") or payload.get("research_direction"), 140)
+        return _task("task_open", seq, payload, title)
+    if event_type == "research_task_completed":
+        summary = "证据 {} · 来源 {}".format(
+            _int(payload.get("evidence_count")), _int(payload.get("source_count"))
+        )
+        return _task(
+            "task_done",
+            seq,
+            payload,
+            {"status": _text(payload.get("execution_status"), 16) or "done", "summary": summary},
+        )
+    if event_type == "research_task_failed":
+        return _task("task_done", seq, payload, {"status": "failed", "summary": "研究未成功"})
+    if event_type in _TASK_UPDATES:
+        text = _TASK_UPDATES[event_type]
+        if "{candidate_count}" in text:
+            text = text.format(candidate_count=_int(payload.get("candidate_count")))
+        return _task("task_update", seq, payload, {"text": text})
+    if event_type == "direction_search_completed":
+        text = "检索完成：{} 条候选来源".format(_int(payload.get("candidate_count")))
+        return _task("task_update", seq, payload, {"text": text})
+
+    # ---- Writer：一张普通卡，轮次噪声不出口 ----
+    if event_type == "node_started" and record.get("node") == NodeName.WRITER:
+        frame = _frame(
+            "task_open", seq, {"task": _WRITER_CARD_ID, "title": "撰写报告"}
+        )
+        return frame
+    if event_type == "writer_draft_ready":
+        return _frame(
+            "task_update", seq, {"task": _WRITER_CARD_ID, "text": "草稿完成，进入审阅"}
+        )
+    if event_type == "writer_agent_finished":
+        stop = str(payload.get("stop_reason") or "")
+        status = "done" if stop == "final_response" else "warn"
+        return _frame(
+            "task_done",
+            seq,
+            {"task": _WRITER_CARD_ID, "status": status, "summary": ""},
+        )
+
+    # ---- 全局时间线（整体视角）----
     if event_type == "node_started":
         node = record.get("node")
         text = _NODE_NARRATION.get(node, f"{node} 开始") if isinstance(node, str) else None
@@ -70,11 +127,6 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return _frame("error", seq, {"text": f"{node} 阶段执行失败" if isinstance(node, str) else "某阶段执行失败"})
     if event_type == "node_cancelled":
         return _tick(seq, "该阶段已取消")
-
-    if event_type == "direction_search_completed":
-        direction = _text(payload.get("research_direction"), 60)
-        count = _int(payload.get("candidate_count"))
-        return _tick(seq, f"检索『{direction}』完成：{count} 条候选来源")
     if event_type == "research_round_completed":
         return _tick(
             seq,
@@ -88,10 +140,6 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == "research_stopped":
         return _tick(seq, f"研究提前结束：{_stop_reason_text(payload.get('reason'))}")
-    if event_type in {"source_fetch_completed", "source_reader_completed"}:
-        return _tick(seq, "来源读取完成")
-    if event_type == "evidence_chunk_completed":
-        return _tick(seq, f"证据抽取：候选 {_int(payload.get('candidate_count'))} 条")
     if event_type == "delegate_completed":
         # 规划器被静默消化的工具调用（重复方向/预算闸口）——让“空轮次”在直播里可见。
         status = str(payload.get("status", ""))
@@ -100,15 +148,6 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         if status == "blocked":
             return _tick(seq, "研究轮次预算耗尽，规划器开始收束")
         return None
-    if event_type == "writer_draft_ready":
-        return _tick(seq, "报告草稿完成，进入审阅")
-
-    if event_type.endswith(_MODEL_TURN_SUFFIX):
-        agent = event_type[: -len(_MODEL_TURN_SUFFIX)]
-        label = _TURN_AGENT_LABELS.get(agent)
-        if label is None:
-            return None
-        return _tick(seq, f"{label}中（第 {_int(payload.get('turn'))} 轮）")
 
     if event_type == TRUNCATED_EVENT:
         return _frame("error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"})
@@ -128,6 +167,21 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             },
         )
     return None
+
+
+def _task(
+    event: str, seq: Any, payload: Mapping[str, Any], extra: str | dict
+) -> SseFrame | None:
+    """带 task_id 的帧统一从这里出；缺 task_id 的（异常生产者）静默丢弃。"""
+    task = _text(payload.get("task_id"), 64)
+    if not task:
+        return None
+    data = {"task": task}
+    if isinstance(extra, str):
+        data["title"] = extra
+    else:
+        data.update(extra)
+    return _frame(event, seq, data)
 
 
 def _tick(seq: Any, text: str | None) -> SseFrame | None:
