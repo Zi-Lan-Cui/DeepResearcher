@@ -775,3 +775,84 @@ def test_over_limit_submit_recovers_with_self_explaining_error(tmp_path):
     assert events.count("writer_evidence_read") == 1
     assert result["writer"].status == "completed"
     assert "[[cite:e1]]" in result["report_draft"]
+
+
+class _BulkReadThenWriteLLM:
+    """模拟模型的合理用法：一次请求多于批量上限的 id，靠显式截断信号补齐。"""
+
+    def bind_tools(self, _tools, **_kwargs):
+        return self
+
+    async def ainvoke(self, messages, **_kwargs):
+        from langchain_core.messages import AIMessage
+
+        history = "\n".join(str(message.content) for message in messages)
+        read_calls = history.count('"read_count"')
+        if read_calls == 0:
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "ReadEvidence",
+                    "args": {"evidence_ids": ["e1", "e2", "e3", "e4", "ghost-1"],
+                             "reason": "写作需要"},
+                    "id": "r1",
+                }],
+            )
+        if read_calls == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "ReadEvidence",
+                    "args": {"evidence_ids": ["e3", "e4"], "reason": "补齐截断"},
+                    "id": "r2",
+                }],
+            )
+        report = (
+            "## 一\n\n甲事实。[[cite:e1]] 乙事实。[[cite:e2]] "
+            "丙事实。[[cite:e3]] 丁事实。[[cite:e4]]"
+        )
+        return AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "CompleteReport",
+                "args": {"selected_evidence_ids": ["e1", "e2", "e3", "e4"], "markdown": report},
+                "id": "c1",
+            }],
+        )
+
+
+def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
+    """批量截断必须显式回传；编造 id 一次性报全且不吞配额（run-e10d1229 回归锁）。"""
+    import json
+
+    from deepsearch_agent.schemas import WriterDirective
+    from fakes import make_evidence
+
+    sink = JsonlSink(tmp_path / "events.jsonl")
+    state = {
+        "query": "测试",
+        "evidences": [make_evidence(f"e{i}", f"事实{i}") for i in range(1, 5)],
+        "writer_directive": WriterDirective(
+            query="测试",
+            report_brief=REPORT_BRIEF,
+            research_status="completed",
+            generation_mode="full",
+        ),
+    }
+    writer = ReportWriter(
+        _BulkReadThenWriteLLM(),
+        AgentConfig(writer_read_batch_size=2),
+        render_incomplete=lambda _s: "incomplete",
+        event_sink=sink,
+    )
+    result = asyncio.run(writer.run(state))
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    reads = [r for r in records if r["event_type"] == "writer_evidence_read"]
+    assert reads[0]["payload"]["truncated_ids"] == ["e3", "e4"]     # 截断显式
+    assert reads[0]["payload"]["unknown_ids"] == ["ghost-1"]        # 编造 id 被点名
+    assert reads[0]["payload"]["read_ids"] == ["e1", "e2"]          # 未知 id 不占配额
+    assert result["writer"].status == "completed"                   # 两步内自愈
