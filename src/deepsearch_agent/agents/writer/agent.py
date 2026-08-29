@@ -89,7 +89,10 @@ _WRITER_SYSTEM_PROMPT = "\n".join(
     "2. 每个 cite 标记使用 selected_evidence_ids 中的 evidence_id；"
     "3. 每个 cite 必须是完整的 [[cite:id]]；"
     "4. 不输出‘参考来源’小节；"
-    "5. 不用无引用的外部知识补全事实。",
+    "5. 不用无引用的外部知识补全事实；"
+    "6. selected_evidence_ids 不得超过工具说明的条数上限；"
+    "7. CompleteReport 被校验拒绝时，严格按错误消息指示修正后立即重新提交——"
+    "修 id 列表或压缩正文不需要更多证据，禁止再调用 ReadEvidence 浪费轮次。",
     ]
 )
 
