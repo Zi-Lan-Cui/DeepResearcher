@@ -42,7 +42,7 @@
   .src { font-size:13.5px; color:var(--mut); }
   .src a { color:var(--ac); text-decoration:none; word-break:break-all; }
   .src-item { padding:6px 8px; margin:4px 0; border-left:3px solid var(--bd); scroll-margin-top:70px; }
-  .src-item:target { background:#fef9c3; border-left-color:#eab308; }
+  .src-item:target, .src-item.flash { background:#fef9c3; border-left-color:#eab308; }
   .src-item blockquote { margin:2px 0 0; padding-left:10px; color:var(--mut); font-style:italic; }
   #report a[href^="#src-"] { color:var(--ac); text-decoration:none; cursor:pointer; }
   .hide { display:none !important; }
@@ -155,6 +155,10 @@ function show(el) { document.querySelectorAll("main > section").forEach(s => s.c
 
 /* ---------- 视图路由（hash 极简版） ---------- */
 async function showView() {
+  // 非路由 hash（锚点或外链分享）：归一化回 #/ 再正常路由，避免白屏或误切视图。
+  if (location.hash && !location.hash.startsWith("#/")) {
+    history.replaceState(null, "", location.pathname + location.search + "#/");
+  }
   const m = location.hash.match(/^#\/run\/(.+)$/);
   const loggedIn = !!localStorage.getItem(tokenKey);
   if (m) { renderRun(m[1]); return; }
@@ -407,6 +411,20 @@ $("run-cancel").onclick = async () => {
   catch (e) { progressLine(e.message, true); $("run-cancel").disabled = false; }
   // 状态收敛交给 SSE 的 done 帧，不做乐观更新。
 };
+
+/* 正文 [来源N] → 面板条目：不走 hash 导航（会与 #/ 路由打架导致切视图），
+   改为 preventDefault + JS 滚动 + 手动高亮。 */
+$("report").addEventListener("click", (e) => {
+  const link = e.target.closest && e.target.closest('a[href^="#src-"]');
+  if (!link) return;
+  e.preventDefault();
+  const target = document.getElementById(link.getAttribute("href").slice(1));
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("flash");
+  void target.offsetWidth;  // 重启动画：连点同一来源也能再次高亮
+  target.classList.add("flash");
+});
 
 /* ---------- 启动 ---------- */
 if (!localStorage.getItem(tokenKey)) setAuthMode("login");
