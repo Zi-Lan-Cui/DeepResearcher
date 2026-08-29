@@ -20,7 +20,7 @@ from deepsearch_agent.agents.researcher.state import (
     ResearchRuntimeContext,
 )
 from deepsearch_agent.agents.researcher.tools import build_researcher_tools
-from deepsearch_agent.config import AgentConfig
+from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, emit_agent_event
@@ -77,7 +77,9 @@ class ResearchAgent:
         self._agent_loop = create_agent(
             model=cast(Any, self.llm),
             tools=build_researcher_tools(),
-            system_prompt=_RESEARCHER_SYSTEM_PROMPT,
+            system_prompt=_RESEARCHER_SYSTEM_PROMPT
+            + "\n"
+            + language_directive(config.output_language),
             context_schema=ResearchRuntimeContext,
             middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
                 agent_name="ResearchAgent",

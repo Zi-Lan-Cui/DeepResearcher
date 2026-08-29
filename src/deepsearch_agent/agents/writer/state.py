@@ -14,7 +14,6 @@ class WriterRuntimeContext:
     evidence_by_id: dict[str, Evidence]
     read_evidence_ids: set[str]
     read_batch_size: int
-    max_selected_evidence: int
     max_markdown_chars: int
     emit: Callable[[str, dict[str, object]], None]
     validated_draft: "ValidatedDraft | None" = None

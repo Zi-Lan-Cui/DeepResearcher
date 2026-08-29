@@ -17,3 +17,6 @@ docs/
 
 # Runtime observability output
 var/
+
+# coverage artifacts
+.coverage

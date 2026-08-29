@@ -85,14 +85,14 @@ class AgentConfig:
     writer_max_turns: int = 8
     writer_feedback_chars: int = 800
     writer_minimum_support: WriterSupportLevel = "direct"
-    writer_max_selected_evidence: int = 24
     writer_max_markdown_chars: int = 24_000
     # 研究未完全覆盖时，达到该最低材料门槛仍允许 Writer 产出部分报告。
     partial_report_min_evidences: int = 1
     partial_report_min_sources: int = 1
-    # 单次 ReadEvidence 请求的最大返回数量。与 writer_max_selected_evidence 对齐：
-    # 一次调用即可读满引用预算，正常路径不会触发截断；截断信号仅作护栏。
-    writer_read_batch_size: int = 24
+    # 单次 ReadEvidence 每轮交付量（可一次请求至多 50 条，差额 not_read_ids 排队）。
+    # 引用总条数不设上限——writer_max_selected_evidence 已移除：它制造过两次
+    # 提交死循环，而聚焦度实际由"只能引用已读"+审阅把关，与条数无关。
+    writer_read_batch_size: int = 30
     max_subtasks_per_round: int = 12
     max_parallel_workers: int = 3
     supervisor_preview_chars: int = 300
@@ -120,6 +120,17 @@ class AgentConfig:
     research_query_chars: int = 180
     research_observation_quote_chars: int = 500
     research_failure_history_limit: int = 5
+    # 所有面向用户的自然语言输出（理由/旁白/任务描述/正文）的统一语言。
+    # 注入各 system prompt 的 language_directive() 使用；quote 永远保持原文。
+    output_language: str = "中文"
+
+
+def language_directive(language: str) -> str:
+    """生成注入各 agent/node system prompt 的语言纪律行。"""
+    return (
+        f"【语言】除专有名词、需引用的原文（quote 必须逐字保留其原始语言）与代码外，"
+        f"所有自然语言输出——包括判断理由、规划旁白、任务描述和正文——必须使用{language}。"
+    )
 
 
 @dataclass(frozen=True)
@@ -216,9 +227,6 @@ def _agent_config() -> AgentConfig:
                 {"insufficient", "partial", "direct"},
             ),
         ),
-        writer_max_selected_evidence=max(
-            1, _int_env("AGENT_WRITER_MAX_SELECTED_EVIDENCE", 24)
-        ),
         writer_max_markdown_chars=max(
             1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)
         ),
@@ -226,7 +234,7 @@ def _agent_config() -> AgentConfig:
             1, _int_env("AGENT_PARTIAL_REPORT_MIN_EVIDENCES", 1)
         ),
         partial_report_min_sources=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_SOURCES", 1)),
-        writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 24)),
+        writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
         max_subtasks_per_round=max(1, _int_env("AGENT_MAX_SUBTASKS_PER_ROUND", 12)),
         max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),
         supervisor_preview_chars=max(100, _int_env("AGENT_SUPERVISOR_PREVIEW_CHARS", 300)),
@@ -258,6 +266,7 @@ def _agent_config() -> AgentConfig:
             100, _int_env("AGENT_RESEARCH_OBSERVATION_QUOTE_CHARS", 500)
         ),
         research_failure_history_limit=max(1, _int_env("AGENT_RESEARCH_FAILURE_HISTORY_LIMIT", 5)),
+        output_language=_env("AGENT_OUTPUT_LANGUAGE", "中文") or "中文",
     )
 
 
