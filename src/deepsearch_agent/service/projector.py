@@ -9,6 +9,7 @@ SSE 帧词汇表（与前端、RunManager 合成事件共用）。呈现原则�
 不被细节淹没——
 
 - ``tick``     全局时间线一行（规划器/阶段级叙述）
+- ``stats``    运行指标（轮次/方向/证据计数）→ 前端渲染到标题区，不进结果流
 - ``task_open``  开一张方向卡 {task, title}
 - ``task_update`` 卡片第二行滚动一条动作 {task, text}
 - ``task_done``   卡片收束 {task, status, summary}
@@ -128,15 +129,17 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == "node_cancelled":
         return _tick(seq, "该阶段已取消")
     if event_type == "research_round_completed":
-        return _tick(
+        # 轮次统计是运行指标不是进度叙事——渲染到标题区指标条，不混进结果流。
+        return _frame(
+            "stats",
             seq,
-            "第 {} 轮研究完成：方向 {}/{}，新增证据 {}（累计 {}）".format(
-                _int(payload.get("round")),
-                _int(payload.get("completed_tasks")),
-                _int(payload.get("task_count")),
-                _int(payload.get("evidence_added")),
-                _int(payload.get("total_evidence_count")),
-            ),
+            {
+                "round": _int(payload.get("round")),
+                "tasks_completed": _int(payload.get("completed_tasks")),
+                "tasks_total": _int(payload.get("task_count")),
+                "evidence_added": _int(payload.get("evidence_added")),
+                "evidence_total": _int(payload.get("total_evidence_count")),
+            },
         )
     if event_type == "research_stopped":
         return _tick(seq, f"研究提前结束：{_stop_reason_text(payload.get('reason'))}")

@@ -47,6 +47,13 @@
   .tcard-details { display:none; list-style:none; margin:0; padding:0 12px 10px 28px;
                    font-size:12.5px; color:var(--mut); max-height:180px; overflow-y:auto; }
   .tcard.expanded .tcard-details { display:block; }
+  /* 运行指标条（轮次/方向/证据）：标题区独立位置，不混进结果流 */
+  #run-metrics { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  #run-metrics .chip { font-size:12.5px; padding:2px 10px; border-radius:99px;
+                       background:#eef2ff; color:#3730a3; border:1px solid #e0e7ff; }
+  /* 论文式引用角标：[来源N] → 上标小链接 */
+  #report sup.cite-ref { font-size:11px; line-height:0; }
+  #report sup.cite-ref a { color:var(--ac); text-decoration:none; font-weight:600; }
   .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); }
   .badge.running,.badge.queued { color:#92400e; background:#fef3c7; border-color:#fde68a; }
   .badge.completed { color:#166534; background:#dcfce7; border-color:#bbf7d0; }
@@ -121,11 +128,13 @@
         </span>
       </div>
       <p class="muted" id="run-query"></p>
+      <div id="run-metrics"></div>
     </div>
     <div class="card">
       <b>实时进度</b>
-      <div id="task-cards"></div>
       <div id="global-log"></div>
+      <div id="cards-caption" class="muted hide" style="margin-top:6px">研究方向（每个方框一条线，右侧 ▸ 展开动作明细）</div>
+      <div id="task-cards"></div>
     </div>
     <div class="card report hide" id="report-card">
       <b>研究报告</b>
@@ -266,28 +275,54 @@ function progressLine(text, warn) {
 }
 
 const taskCards = new Map();
+let taskSeq = 0;   // 编号只给真实方向卡（_writer 等阶段卡不占号）
 
 function ensureCard(id, title) {
   let card = taskCards.get(id);
   if (card) {
-    if (title) card.querySelector(".tcard-title").textContent = title;
+    if (title) {
+      const el = card.querySelector(".tcard-title");
+      el.textContent = card.dataset.label + title;
+      el.title = title;
+    }
     return card;
   }
+  const isStage = id.startsWith("_");
+  const label = isStage ? "" : "方向 " + (++taskSeq) + " · ";
   card = document.createElement("div");
   card.className = "tcard running";
+  card.dataset.label = label;
   const head = document.createElement("div"); head.className = "tcard-head";
-  const t = document.createElement("div"); t.className = "tcard-title"; t.textContent = title || "研究方向";
+  const t = document.createElement("div"); t.className = "tcard-title";
+  t.textContent = label + (title || "研究方向");
   t.title = title || "";
   const toggle = document.createElement("button"); toggle.className = "tcard-toggle"; toggle.textContent = "▸";
   toggle.title = "展开动作明细";
   toggle.onclick = () => card.classList.toggle("expanded");
   head.append(t, toggle);
-  const live = document.createElement("div"); live.className = "tcard-live";
+  const live = document.createElement("div"); live.className = "tcard-live"; live.textContent = "准备中…";
   const details = document.createElement("ul"); details.className = "tcard-details";
   card.append(head, live, details);
   $("task-cards").appendChild(card);
   taskCards.set(id, card);
+  if (!isStage) $("cards-caption").classList.remove("hide");
   return card;
+}
+
+function renderStats(data) {
+  const el = $("run-metrics");
+  el.innerHTML = "";
+  const chips = [
+    "第 " + data.round + " 轮",
+    "方向 " + data.tasks_completed + "/" + data.tasks_total,
+    "证据 +" + data.evidence_added + "（累计 " + data.evidence_total + "）",
+  ];
+  for (const text of chips) {
+    const span = document.createElement("span");
+    span.className = "chip";
+    span.textContent = text;
+    el.appendChild(span);
+  }
 }
 
 function cardAction(card, text) {
@@ -295,9 +330,12 @@ function cardAction(card, text) {
   live.textContent = text;
   live.classList.remove("anim"); void live.offsetWidth; live.classList.add("anim");
   const details = card.querySelector(".tcard-details");
-  const li = document.createElement("li"); li.textContent = text;
-  details.appendChild(li);
-  while (details.children.length > 80) details.removeChild(details.firstChild);
+  const last = details.lastElementChild;
+  if (!last || last.textContent !== text) {          // 连续重复动作只留一条
+    const li = document.createElement("li"); li.textContent = text;
+    details.appendChild(li);
+    while (details.children.length > 80) details.removeChild(details.firstChild);
+  }
   details.scrollTop = details.scrollHeight;
 }
 
@@ -309,6 +347,7 @@ function handleFrame(event, data) {
   if (event === "tick") progressLine(data.text);
   else if (event === "error") progressLine(data.text, true);
   else if (event === "status") setStatus(data.status);
+  else if (event === "stats") renderStats(data);
   else if (event === "task_open") ensureCard(data.task, data.title);
   else if (event === "task_update") {
     const card = ensureCard(data.task, "");           // 孤儿 update 兜底建卡
@@ -323,8 +362,11 @@ function handleFrame(event, data) {
 
 function resetProgressView() {
   taskCards.clear();
+  taskSeq = 0;
   $("task-cards").innerHTML = "";
   $("global-log").innerHTML = "";
+  $("run-metrics").innerHTML = "";
+  $("cards-caption").classList.add("hide");
 }
 
 function setStatus(status) {
@@ -373,7 +415,12 @@ function renderReport(md, fallbackCitations) {
   const [bodyMd, refMd] = splitReport(md);
   const reportEl = $("report");
   if (window.marked && !window.__marked_failed) {
-    const linkified = bodyMd.replace(/\[来源(\d+)\]/g, (_s, n) => `[来源${n}](#src-${n})`);
+    // 论文式角标：[来源N] → <sup>[N]</sup> 可点击上标（marked 透传内联 HTML；
+    // 渲染器只在散文里替换标记，代码区不含 [来源N]，无注入面）。
+    const linkified = bodyMd.replace(
+      /\[来源(\d+)\]/g,
+      (_s, n) => `<sup class="cite-ref"><a href="#src-${n}">[${n}]</a></sup>`,
+    );
     reportEl.innerHTML = marked.parse(linkified);
   } else {
     const pre = document.createElement("pre"); pre.textContent = md;

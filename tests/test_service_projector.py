@@ -65,7 +65,8 @@ def test_task_frames_require_task_id():
     assert project(_record("direction_search_completed", {"candidate_count": 5})) is None
 
 
-def test_research_round_completed_counts():
+def test_research_round_completed_maps_to_stats_frame():
+    """轮次统计进标题区指标条，不再混入结果流叙事。"""
     frame = project(
         _record(
             "research_round_completed",
@@ -78,7 +79,10 @@ def test_research_round_completed_counts():
             },
         )
     )
-    assert frame.data["text"] == "第 2 轮研究完成：方向 3/4，新增证据 6（累计 14）"
+    assert frame.event == "stats"
+    assert frame.data["round"] == 2
+    assert (frame.data["tasks_completed"], frame.data["tasks_total"]) == (3, 4)
+    assert (frame.data["evidence_added"], frame.data["evidence_total"]) == (6, 14)
 
 
 def test_research_stopped_maps_stop_reason_description():
