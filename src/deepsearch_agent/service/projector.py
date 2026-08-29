@@ -150,6 +150,14 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
                 "evidence_total": _int(payload.get("total_evidence_count")),
             },
         )
+    if event_type == "text_delta":
+        # 生产者是 RunManager 的 ephemeral 旁路；此处仍是唯一出口，
+        # channel 白名单二次校验 + 无 seq（不参与回放去重）。
+        channel = _text(payload.get("channel"), 24)
+        text = _text(payload.get("text"), 200)
+        if channel not in {"supervisor", "writer"} or not text:
+            return None
+        return SseFrame(event="text_delta", data={"channel": channel, "text": text})
     if event_type == TRUNCATED_EVENT:
         return _frame("error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"})
 

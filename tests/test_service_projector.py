@@ -238,6 +238,15 @@ def test_run_status_and_run_done_shape():
     assert set(done.data) == {"status", "answer_mode", "report_available", "seq"}
 
 
+def test_text_delta_whitelist_and_no_seq():
+    ok = project(_record("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"}))
+    assert (ok.event, ok.data) == ("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"})
+    # 白名单外的 channel、空文本、以及任何被禁字段都不出口
+    assert project(_record("text_delta", {"channel": "research_agent", "text": "x"})) is None
+    assert project(_record("text_delta", {"channel": "writer", "text": ""})) is None
+    assert "seq" not in ok.data and "SECRET" not in json.dumps(ok.data, ensure_ascii=False)
+
+
 def test_truncation_marker_becomes_error_frame():
     frame = project(_record("stream_truncated"))
     assert frame.event == "error"

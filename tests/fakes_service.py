@@ -49,7 +49,7 @@ class FakeGraph:
         self.ainvoke_inputs: list[dict] = []
         self._sink = None
 
-    async def ainvoke(self, state, **_kwargs):
+    async def _run(self, state):
         self.ainvoke_inputs.append(dict(state))
         for event in self.emit:
             if self._sink is not None:
@@ -59,6 +59,13 @@ class FakeGraph:
         if self.error is not None:
             raise self.error
         return self.result
+
+    async def ainvoke(self, state, **_kwargs):
+        return await self._run(state)
+
+    async def astream(self, state, **_kwargs):
+        # 假图只支持 values 模式（与 ainvoke 返回同一份最终状态）。
+        yield ("values", await self._run(state))
 
 
 def completed_result() -> dict:
