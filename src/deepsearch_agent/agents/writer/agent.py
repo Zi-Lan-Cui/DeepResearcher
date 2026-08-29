@@ -17,6 +17,7 @@ from deepsearch_agent.agents.middleware import (
     SubmissionGuard,
     build_agent_middleware,
 )
+from deepsearch_agent.agents.streaming import TextDeltaSink, ainvoke_agent_with_deltas
 from deepsearch_agent.agents.writer.state import (
     PreparedEvidence,
     ValidatedDraft,
@@ -108,7 +109,9 @@ class ReportWriter:
         event_sink: JsonlSink | None = None,
         artifact_max_text_chars: int = 1_000,
         context_window_tokens: int = 32_768,
+        delta_sink: TextDeltaSink | None = None,
     ):
+        self._delta_sink = delta_sink
         if llm is None:
             raise LLMConfigurationError("ReportWriter 需要已装配的 LLMInvoker。")
         self.llm = llm
@@ -173,10 +176,13 @@ class ReportWriter:
             evidence_catalogue=prepared.catalogue,
         )
         try:
-            result = await self._agent_loop.ainvoke(
+            result = await ainvoke_agent_with_deltas(
+                self._agent_loop,
                 cast(Any, {"messages": messages}),
                 context=runtime,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
+                channel="writer",
+                delta_sink=self._delta_sink,
             )
         except GraphRecursionError:
             result = {"messages": []}

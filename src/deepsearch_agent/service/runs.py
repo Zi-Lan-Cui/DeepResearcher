@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -65,7 +64,6 @@ class RunManager:
         self._quota_lock = asyncio.Lock()
         self._persisted: set[str] = set()
         self._done_published: set[str] = set()
-        self._seen_delta_sources: set[tuple[str, str]] = set()
 
     # ---- 受理 ----
 
@@ -178,10 +176,14 @@ class RunManager:
                 settings=self._settings_for(user_id),
                 event_sink=sink,
                 http_client=self._http_client,
+                delta_sink=self._make_delta_relay(run_id),
             )
             # run_id 必须显式进入输入（见模块不变式 1）。
-            result = await self._astream_run(
-                run_id, graph, {"query": query, "run_id": run_id, "session_id": run_id}
+            # token 预览不走这里的返回值路径：嵌套 agent 在引擎内部经
+            # delta_sink 接力（agents/streaming.py），外层 astream 的
+            # messages 模式对嵌套 Pregel 不可见（实测）。
+            result = await graph.ainvoke(
+                {"query": query, "run_id": run_id, "session_id": run_id}
             )
             await self._persist_terminal(run_id, result)
         except asyncio.CancelledError:
@@ -211,105 +213,30 @@ class RunManager:
 
     # ---- token 级预览（ephemeral 旁路；事实仍是落库的聚合帧） ----
 
-    # 预览的交付节奏按"人眼流式"定，不按省事件定：实测网关约 25ms/字，
-    # 8 字≈200ms 一帧；回合文本常不足 60 字，大阈值会把整个回合憋到
-    # 流末尾一次性吐出——观感上等于没有流式（第一版就是这么错的）。
-    _DELTA_FLUSH_CHARS = 8
-    _DELTA_FLUSH_SECONDS = 0.12
-    # 只有这两个 agent 的模型文本对用户可见（白名单，不是黑名单）；
-    # 匹配不到归属的 chunk 一律静默并记一次观测日志，便于按真实
-    # checkpoint_ns 形态扩表。
-    _DELTA_CHANNEL_MARKERS = (("supervisor", "supervisor"), ("writer", "writer"))
+    def _make_delta_relay(self, run_id: str):
+        """引擎 agent 调用点接力出的 (channel, text) → ephemeral SSE 帧。
 
-    async def _astream_run(self, run_id: str, graph: Any, inputs: dict) -> dict:
-        """values 模式取最终状态（与 ainvoke 等价），messages 模式引出 token 预览。
-
-        节点内部拿到的仍是装配完整的 AIMessage（回调旁路不改返回值路径），
-        因此日志/持久化/校验逻辑零改动。
+        逐 chunk 直发不缓冲：实测网关 ~25ms/字、每块 1-5 字，帧率与 token
+        同步才有"打字"感。channel 白名单（只放行 supervisor/writer）在
+        projector 把关——relay 不重复造闸门。
         """
-        final_state: dict = {}
-        buffers: dict[str, list[str]] = {}
-        last_flush: dict[str, float] = {}
-        try:
-            async for mode, chunk in graph.astream(
-                inputs, stream_mode=["values", "messages"]
-            ):
-                if mode == "values":
-                    if isinstance(chunk, dict):
-                        final_state = chunk
-                    # 超步边界 = 该步模型文本已终结：全部预览落屏，
-                    # 聚合帧替换前不留未交付的碎尾巴。
-                    for channel, parts in buffers.items():
-                        self._flush_channel(run_id, channel, parts)
-                    buffers.clear()
-                    continue
-                if mode != "messages":
-                    continue
-                delta = self._extract_text_delta(chunk)
-                if delta is None:
-                    continue
-                channel, text = delta
-                parts = buffers.setdefault(channel, [])
-                parts.append(text)
-                now = time.monotonic()
-                if (
-                    sum(len(part) for part in parts) >= self._DELTA_FLUSH_CHARS
-                    or now - last_flush.get(channel, 0.0) >= self._DELTA_FLUSH_SECONDS
-                ):
-                    self._flush_channel(run_id, channel, parts)
-                    buffers[channel] = []
-                    last_flush[channel] = now
-        finally:
-            for channel, parts in buffers.items():
-                self._flush_channel(run_id, channel, parts)
-        return final_state
 
-    def _extract_text_delta(self, chunk: Any) -> tuple[str, str] | None:
-        try:
-            message, metadata = chunk
-        except (TypeError, ValueError):
-            return None
-        if not isinstance(metadata, Mapping):
-            return None
-        node = metadata.get("langgraph_node")
-        ns = str(metadata.get("checkpoint_ns", ""))
-        if node != "model":
-            return None
-        channel = next(
-            (name for name, marker in self._DELTA_CHANNEL_MARKERS if marker in ns), None
-        )
-        if channel is None:
-            self._log_unmatched_delta(node, ns)
-            return None
-        blocks = getattr(message, "content_blocks", None) or []
-        text = "".join(
-            str(block.get("text", ""))
-            for block in blocks
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-        # tool_call_chunk / 推理块 type 不是 text，天然被排除在预览之外。
-        return (channel, text) if text else None
+        def relay(channel: str, text: str) -> None:
+            if not text:
+                return
+            try:
+                self._fanout.publish_ephemeral(
+                    run_id,
+                    {
+                        "run_id": run_id,
+                        "event_type": "text_delta",
+                        "payload": {"channel": channel, "text": text[:200]},
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 预览通道永不反噬 agent 执行
+                logger.debug("delta_relay_publish_failed run_id=%s", run_id, exc_info=True)
 
-    def _flush_channel(self, run_id: str, channel: str, parts: list[str]) -> None:
-        text = "".join(parts)
-        if not text:
-            return
-        self._fanout.publish_ephemeral(
-            run_id,
-            {
-                "run_id": run_id,
-                "event_type": "text_delta",
-                "payload": {"channel": channel, "text": text},
-            },
-        )
-
-    def _log_unmatched_delta(self, node: Any, ns: str) -> None:
-        key = (str(node), ns.split(":")[0])
-        if key not in self._seen_delta_sources:
-            self._seen_delta_sources.add(key)
-            # INFO 且每种来源只记一次：首局真跑需要看到真实 metadata 形态，
-            # 以便校准 _DELTA_CHANNEL_MARKERS 白名单；之后可降回 debug。
-            logger.info("text_delta_unmatched_source node=%s ns_prefix=%s", node, key[1])
+        return relay
 
     # ---- 持久化 ----
 

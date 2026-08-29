@@ -82,8 +82,14 @@ def build_graph(
     event_sink=None,
     trace_recorder: TraceRecorder | None = None,
     http_client: HttpClient | None = None,
+    delta_sink=None,
 ):
-    """装配完整研究应用；必需模型和联网工具缺失时立即失败。"""
+    """装配完整研究应用；必需模型和联网工具缺失时立即失败。
+
+    delta_sink 是 token 预览旁路（channel,text）回调，透传给各 agent loop；
+    因嵌套 Pregel 的 token 流对外层 messages 模式不可见，预览只能在 agent
+    自身调用点接力（见 agents/streaming.py）。None 时全程走 ainvoke，零变化。
+    """
     settings = settings or get_settings()
     llm = llm or build_llm(settings)
 
@@ -124,6 +130,7 @@ def build_graph(
         event_sink=event_sink,
         artifact_max_text_chars=settings.observability.max_text_chars,
         context_window_tokens=settings.llm.context_window_tokens,
+        delta_sink=delta_sink,
     )
     writer_graph = build_writer_graph(writer_agent.run)
     research_agent = ResearchAgent(
@@ -140,6 +147,7 @@ def build_graph(
         research_agent=research_agent,
         event_sink=event_sink,
         context_window_tokens=settings.llm.context_window_tokens,
+        delta_sink=delta_sink,
     )
     graph = StateGraph(ResearchState)
     graph.add_node(
