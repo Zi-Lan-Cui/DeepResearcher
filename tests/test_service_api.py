@@ -266,7 +266,9 @@ async def test_sse_live_backlog_and_gate_release(client):
     frames = await reader
     events = [event for event, _ in frames]
     assert events[-1] == "done"
-    assert "第 1 轮研究完成：方向 2/2，新增证据 3（累计 3）" in _tick_events(frames)
+    stats = [data for event, data in frames if event == "stats"]
+    assert stats and stats[0]["round"] == 1
+    assert stats[0]["evidence_total"] == 3
 
 
 async def test_static_frontend_served(client):
