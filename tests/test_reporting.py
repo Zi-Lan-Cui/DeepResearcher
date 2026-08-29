@@ -57,6 +57,56 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
     assert "https://example.com/one" in report
 
 
+def test_render_final_report_strips_writer_authored_reference_section():
+    """Writer 违令自写来源小节：程序剥除之，参考表以唯一追加段为准。
+
+    线上龙意象运行实锤：正文一次+结尾一次两份「来源」并存。剥除必须发生在
+    编号渲染之前——被剥段里的 [[cite:e1]] 不再抢占首现顺序，仅出现于此的
+    citation 依既有规则不进参考表。
+    """
+    citations = [
+        Citation(id="e1", url="https://example.com/one", title="来源一", quote="第一条。", claim="第一条"),
+        Citation(id="e2", url="https://example.com/two", title="来源二", quote="第二条。", claim="第二条"),
+    ]
+    report = render_final_report(
+        clarified_query="q",
+        current_round=1,
+        evidence_count=2,
+        body=(
+            "## 结论\n\n龙的形象综合。[[cite:e2]]\n\n"
+            "### 主要参考\n- 来源二：[[cite:e2]]\n- 来源一：[[cite:e1]]\n"
+        ),
+        citations=citations,
+    )
+    assert report.count("## 参考来源") == 1  # 只剩管道追加的那份
+    assert "主要参考" not in report
+    assert "### " not in report  # 被剥小节的标题也不残留
+    assert "「第二条。」" in report  # 正文标记正常入表
+    assert "「第一条。」" not in report  # 只在被剥小节出现的引用被剔除
+    assert "https://example.com/one" not in report
+
+
+def test_render_final_report_strip_stops_at_next_same_level_heading():
+    report = render_final_report(
+        clarified_query="q",
+        current_round=1,
+        evidence_count=2,
+        body=(
+            "前言[[cite:e2]]\n\n## 参考来源\n- 旧[[cite:e1]]\n\n"
+            "## 补充论证\n这里还要引用[[cite:e1]]收尾。"
+        ),
+        citations=[
+            Citation(id="e1", url="https://example.com/one", title="来源一", quote="第一条。", claim="第一条"),
+            Citation(id="e2", url="https://example.com/two", title="来源二", quote="第二条。", claim="第二条"),
+        ],
+    )
+    assert "这里还要引用" in report  # 误剥会吃掉后文
+    assert report.count("## 参考来源") == 1
+    # e1 在存活正文中重新出现 → 依然合法入表（编号 2，因 e2 首现更早）
+    assert "「第一条。」" in report
+    assert report.index("前言") < report.index("这里还要引用")
+
+
 def test_render_final_report_ignores_cite_markers_inside_code():
     report = render_final_report(
         clarified_query="测试代码隔离",

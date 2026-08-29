@@ -13,6 +13,32 @@ from deepsearch_agent.reporting.validation import _CITE_MARKER, _FENCED_CODE, _I
 from deepsearch_agent.schemas import Citation, ResearchDirectionResult, ResearchProgress, RunError
 from deepsearch_agent.state import ResearchState, section
 
+# Writer 提示词禁止自写来源列表，但违令必须程序兜底：整段剥除（连同其中
+# [[cite:…]] 标记，避免其抢占首现编号），编号权威只属于本模块的追加段。
+_REFERENCE_HEADING = re.compile(
+    r"^(#{2,3})[ \t]*(?:参考来源|引用来源|参考文献|引用列表|来源列表|参考文档|资料来源"
+    r"|主要参考(?:资料|文献)?|引用(?:的)?来源|来源参考"
+    r"|Sources?(?: and References?)?|References?|Bibliography)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_NEXT_HEADING = {2: re.compile(r"^#{1,2}[ \t]", re.MULTILINE), 3: re.compile(r"^#{1,3}[ \t]", re.MULTILINE)}
+
+
+def _strip_reference_section(body: str) -> str:
+    """剥除 Writer 草拟正文里自造的来源/参考文献小节（防御性兜底）。"""
+    pieces: list[str] = []
+    cursor = 0
+    for heading in _REFERENCE_HEADING.finditer(body):
+        before = body[cursor : heading.start()]
+        if before.count("```") % 2:  # 处于代码围栏内：宁可漏剥也不误剥
+            continue
+        next_heading = _NEXT_HEADING[len(heading.group(1))].search(body, heading.end())
+        end = next_heading.start() if next_heading else len(body)
+        pieces.append(before)
+        cursor = end
+    pieces.append(body[cursor:])
+    return "".join(pieces).strip()
+
 
 def render_final_report(
     *,
@@ -27,7 +53,7 @@ def render_final_report(
     编号按正文首次出现顺序分配；未在正文出现的 citation 不进入参考表
     （Writer 的声明列表只是工作集提示，不是最终事实绑定）。
     """
-    rendered_body, display_order, used_ids = _render_body_markers(body)
+    rendered_body, display_order, used_ids = _render_body_markers(_strip_reference_section(body))
     by_id = {item.id: item for item in citations}
     used_citations = [by_id[source_id] for source_id in display_order if source_id in by_id]
     display = {source_id: f"来源{index}" for index, source_id in enumerate(display_order, 1)}
