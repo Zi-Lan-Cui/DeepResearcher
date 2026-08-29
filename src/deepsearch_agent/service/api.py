@@ -275,6 +275,12 @@ def create_app(
                         continue
                     if item is CLOSE_STREAM:
                         return
+                    # ephemeral 预览帧无 seq：只走直播通道，不参与回放/去重。
+                    if item.get("event_type") == "text_delta":
+                        frame = project(item)
+                        if frame is not None:
+                            yield _sse(frame)
+                        continue
                     seq = item.get("seq")
                     if not isinstance(seq, int) or seq <= last_seq:
                         continue

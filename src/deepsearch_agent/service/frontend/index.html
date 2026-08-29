@@ -54,6 +54,7 @@
   .stage-body { padding:0 12px 10px; font-size:12.5px; color:var(--mut); }
   .stage-body .ln { padding:2px 0; }
   .stage-body .ln.warn { color:#b42318; }
+  .stage-body .ln.tentative { color:#64748b; font-style:italic; }
   /* 方向卡片：收窄成"子项"观感；running 淡绿 → done 灰白 */
   .tcard { border:1px solid var(--bd); border-radius:7px; margin:5px 0; background:#fff; }
   .tcard.running { background:#f0fdf4; border-color:#bbf7d0; }
@@ -338,7 +339,38 @@ function ensureStage(stage, title) {
   return block;
 }
 
+/* token 预览：delta 追加进 tentative 行（斜体）；该 stage 的聚合帧（带 seq、
+   已落库、可回放）一旦到达即删除预览行、换成正式文本。掉线丢 delta 无碍。 */
+const tentative = new Map();
+
+function deltaAppend(channel, text) {
+  if (!text) return;
+  const block = ensureStage(channel);
+  let t = tentative.get(channel);
+  if (!t) {
+    const el = document.createElement("div");
+    el.className = "ln tentative";
+    block.querySelector(".stage-body").appendChild(el);
+    t = { el, text: "" };
+    tentative.set(channel, t);
+  }
+  t.text += text;
+  t.el.textContent = t.text;
+  const body = block.querySelector(".stage-body");
+  if (body.lastChild !== t.el) body.appendChild(t.el);  // 聚合行插入后预览保持在底
+}
+
+function finalizeTentative(stage) {
+  const t = tentative.get(stage);
+  if (t) { t.el.remove(); tentative.delete(stage); }
+}
+
+function clearAllTentative() {
+  for (const stage of [...tentative.keys()]) finalizeTentative(stage);
+}
+
 function stageNote(stage, text, warn) {
+  finalizeTentative(stage);
   if (!text) return;
   const body = ensureStage(stage).querySelector(".stage-body");
   const div = document.createElement("div");
@@ -423,7 +455,8 @@ function handleFrame(event, data) {
     if (data.seq <= lastSeq) return; // 回放/重连去重
     lastSeq = data.seq;
   }
-  if (event === "tick") progressLine(data.text);
+  if (event === "text_delta") deltaAppend(data.channel, data.text);
+  else if (event === "tick") progressLine(data.text);
   else if (event === "stage_open") ensureStage(data.stage, data.title);
   else if (event === "plan") stageNote(data.stage, data.text);
   else if (event === "stage_done") {
@@ -444,12 +477,13 @@ function handleFrame(event, data) {
     card.classList.add(data.status === "failed" ? "failed" : data.status === "warn" ? "warn" : "done");
     cardAction(card, (data.status === "failed" ? "✗ " : "✓ ") + (data.summary || "本步完成"));
     updateTaskCount();
-  } else if (event === "done") { setStatus(data.status, data); onRunDone(data); }
+  } else if (event === "done") { clearAllTentative(); setStatus(data.status, data); onRunDone(data); }
 }
 
 function resetProgressView() {
   taskCards.clear();
   stageBlocks.clear();
+  tentative.clear();
   taskSeq = 0;
   $("stages").innerHTML = "";
   $("global-log").innerHTML = "";

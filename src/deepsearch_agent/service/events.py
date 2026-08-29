@@ -124,6 +124,19 @@ class FanoutSink:
             self._subs.get(run_id, {}).pop(key, None)
             self._dropped.pop((run_id, key), None)
 
+    def publish_ephemeral(self, run_id: str, record: dict) -> None:
+        """只投递、不记账的旁路通道（token 级预览帧专用）。
+
+        ephemeral 帧不发 seq、不进 pending、永不落库/落文件：它承载的是观感
+        （逐字预览），事实由稍后的聚合帧（write 通道，带 seq 可回放）终审。
+        与正常帧共用同一订阅队列 → 单连接上的交错顺序天然成立；前端以
+        "聚合到达即替换预览" 收敛任何时序。订阅者掉线即丢失，属预期。
+        """
+        with self._lock:
+            if run_id not in self._open:
+                return
+            self._deliver_locked(run_id, dict(record))
+
     # ---- 持久化排水 ----
 
     def take_pending(self, run_id: str) -> list[dict]:
@@ -150,7 +163,12 @@ class FanoutSink:
                 marker = {
                     "event_type": _TRUNCATED_EVENT,
                     "run_id": run_id,
-                    "seq": dropped.get("seq") if isinstance(dropped, dict) else data["seq"],
+                    # ephemeral 帧没有 seq：丢的是谁就借用谁的编号，兜底 0。
+                    "seq": (
+                        dropped.get("seq")
+                        if isinstance(dropped, dict) and "seq" in dropped
+                        else data.get("seq", 0)
+                    ),
                     "payload": {},
                 }
                 try:
