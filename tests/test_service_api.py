@@ -197,8 +197,21 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
                     "payload": {},
                 },
                 {
+                    "event_type": "research_task_started",
+                    "payload": {"task_id": "task-0001", "question": "方向甲的局部事实"},
+                },
+                {
                     "event_type": "direction_search_completed",
-                    "payload": {"research_direction": "性善论溯源", "candidate_count": 5},
+                    "payload": {"task_id": "task-0001", "research_direction": "方向甲", "candidate_count": 5},
+                },
+                {
+                    "event_type": "research_task_completed",
+                    "payload": {
+                        "task_id": "task-0001",
+                        "execution_status": "completed",
+                        "evidence_count": 2,
+                        "source_count": 1,
+                    },
                 },
             ]
         )
@@ -211,9 +224,12 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
     frames = await read_sse(client, token, run_id)
     events = [event for event, _ in frames]
     assert events[-1] == "done"  # 不变式 3：done 恒为收尾
-    ticks = _tick_events(frames)
-    assert "正在拆解研究任务…" in ticks
-    assert any("性善论溯源" in line and "5 条候选来源" in line for line in ticks)
+    assert "正在拆解研究任务…" in _tick_events(frames)  # 全局时间线
+    by_event = {event: data for event, data in frames if event.startswith("task_")}
+    assert by_event["task_open"]["title"] == "方向甲的局部事实"
+    assert by_event["task_update"]["text"] == "检索完成：5 条候选来源"
+    assert by_event["task_done"]["summary"] == "证据 2 · 来源 1"
+    assert by_event["task_update"]["task"] == "task-0001"
     seqs = [data["seq"] for _, data in frames]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)  # 单调无重复
     done_data = frames[-1][1]

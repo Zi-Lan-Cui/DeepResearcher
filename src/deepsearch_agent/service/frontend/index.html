@@ -26,9 +26,27 @@
   .row { display:flex; gap:10px; align-items:center; }
   .muted { color:var(--mut); font-size:13px; }
   .err { color:#b42318; }
-  #progress { font-size:14px; max-height:340px; overflow-y:auto; }
-  #progress .ln { padding:2px 0; border-bottom:1px dashed #f0f1f3; }
-  #progress .ln.warn { color:#b42318; }
+  #global-log { font-size:13px; color:var(--mut); }
+  #global-log .ln { padding:2px 0; }
+  #global-log .ln.warn { color:#b42318; }
+  /* 方向卡片：running 淡绿 → done 灰白；第二行滚动，右侧箭头展开动作明细 */
+  .tcard { border:1px solid var(--bd); border-radius:8px; margin:8px 0; background:#fff; }
+  .tcard.running { background:#f0fdf4; border-color:#bbf7d0; }
+  .tcard.done { background:#f9fafb; color:var(--mut); }
+  .tcard.warn { background:#fffbeb; border-color:#fde68a; color:var(--mut); }
+  .tcard.failed { background:#fef2f2; border-color:#fecaca; color:#7f1d1d; }
+  .tcard-head { display:flex; align-items:center; gap:8px; padding:9px 12px; }
+  .tcard-title { flex:1; font-weight:600; font-size:14px; line-height:1.4;
+                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tcard-toggle { border:0; background:none; cursor:pointer; color:var(--mut);
+                  font-size:12px; padding:2px 8px; transition:transform .15s; }
+  .tcard.expanded .tcard-toggle { transform:rotate(90deg); }
+  .tcard-live { padding:0 12px 9px; font-size:13px; color:var(--mut); }
+  .tcard-live.anim { animation:slidein .35s ease; }
+  @keyframes slidein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  .tcard-details { display:none; list-style:none; margin:0; padding:0 12px 10px 28px;
+                   font-size:12.5px; color:var(--mut); max-height:180px; overflow-y:auto; }
+  .tcard.expanded .tcard-details { display:block; }
   .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); }
   .badge.running,.badge.queued { color:#92400e; background:#fef3c7; border-color:#fde68a; }
   .badge.completed { color:#166534; background:#dcfce7; border-color:#bbf7d0; }
@@ -106,7 +124,8 @@
     </div>
     <div class="card">
       <b>实时进度</b>
-      <div id="progress"></div>
+      <div id="task-cards"></div>
+      <div id="global-log"></div>
     </div>
     <div class="card report hide" id="report-card">
       <b>研究报告</b>
@@ -236,13 +255,50 @@ async function refreshRuns() {
 }
 setInterval(() => { if ($("view-home").classList.contains("hide") === false) refreshRuns(); }, 5000);
 
-/* ---------- 运行详情 + SSE 消费 ---------- */
+/* ---------- 进度呈现：全局时间线（supervisor 整体视角）+ 方向卡片（searcher 细节） ---------- */
 function progressLine(text, warn) {
   const div = document.createElement("div");
   div.className = "ln" + (warn ? " warn" : "");
   div.textContent = text;
-  $("progress").appendChild(div);
-  $("progress").scrollTop = $("progress").scrollHeight;
+  const log = $("global-log");
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+const taskCards = new Map();
+
+function ensureCard(id, title) {
+  let card = taskCards.get(id);
+  if (card) {
+    if (title) card.querySelector(".tcard-title").textContent = title;
+    return card;
+  }
+  card = document.createElement("div");
+  card.className = "tcard running";
+  const head = document.createElement("div"); head.className = "tcard-head";
+  const t = document.createElement("div"); t.className = "tcard-title"; t.textContent = title || "研究方向";
+  t.title = title || "";
+  const toggle = document.createElement("button"); toggle.className = "tcard-toggle"; toggle.textContent = "▸";
+  toggle.title = "展开动作明细";
+  toggle.onclick = () => card.classList.toggle("expanded");
+  head.append(t, toggle);
+  const live = document.createElement("div"); live.className = "tcard-live";
+  const details = document.createElement("ul"); details.className = "tcard-details";
+  card.append(head, live, details);
+  $("task-cards").appendChild(card);
+  taskCards.set(id, card);
+  return card;
+}
+
+function cardAction(card, text) {
+  const live = card.querySelector(".tcard-live");
+  live.textContent = text;
+  live.classList.remove("anim"); void live.offsetWidth; live.classList.add("anim");
+  const details = card.querySelector(".tcard-details");
+  const li = document.createElement("li"); li.textContent = text;
+  details.appendChild(li);
+  while (details.children.length > 80) details.removeChild(details.firstChild);
+  details.scrollTop = details.scrollHeight;
 }
 
 function handleFrame(event, data) {
@@ -253,7 +309,22 @@ function handleFrame(event, data) {
   if (event === "tick") progressLine(data.text);
   else if (event === "error") progressLine(data.text, true);
   else if (event === "status") setStatus(data.status);
-  else if (event === "done") { setStatus(data.status); onRunDone(data); }
+  else if (event === "task_open") ensureCard(data.task, data.title);
+  else if (event === "task_update") {
+    const card = ensureCard(data.task, "");           // 孤儿 update 兜底建卡
+    if (data.text) cardAction(card, data.text);
+  } else if (event === "task_done") {
+    const card = ensureCard(data.task, "");
+    card.classList.remove("running");
+    card.classList.add(data.status === "failed" ? "failed" : data.status === "warn" ? "warn" : "done");
+    cardAction(card, (data.status === "failed" ? "✗ " : "✓ ") + (data.summary || "完成"));
+  } else if (event === "done") { setStatus(data.status); onRunDone(data); }
+}
+
+function resetProgressView() {
+  taskCards.clear();
+  $("task-cards").innerHTML = "";
+  $("global-log").innerHTML = "";
 }
 
 function setStatus(status) {
@@ -391,7 +462,7 @@ async function renderRun(runId) {
   currentRunId = runId;
   if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   lastSeq = 0;
-  $("progress").innerHTML = "";
+  resetProgressView();
   $("report-card").classList.add("hide");
   $("run-cancel").disabled = false;
   show($("view-run"));
