@@ -103,6 +103,15 @@ def test_agent_finished_events_are_silent():
     assert project(_record("writer_agent_finished", {"stop_reason": "final_response"})) is None
 
 
+def test_delegate_completed_maps_silent_planner_outcomes():
+    skipped = project(_record("delegate_completed", {"status": "skipped", "reason": "duplicate_or_budget"}))
+    assert skipped.data["text"] == "发现重复研究方向，已跳过并调整计划"
+    blocked = project(_record("delegate_completed", {"status": "blocked", "reason": "round_budget_exhausted"}))
+    assert "预算耗尽" in blocked.data["text"]
+    # 正常完成的研究委托由研究员自己的事件播报，delegate 帧保持安静
+    assert project(_record("delegate_completed", {"status": "completed", "evidence_count": 5})) is None
+
+
 def test_run_status_and_run_done_shape():
     status = project(_record("run_status", {"status": "running"}))
     assert status.event == "status" and status.data["status"] == "running"

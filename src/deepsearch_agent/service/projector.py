@@ -92,6 +92,14 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return _tick(seq, "来源读取完成")
     if event_type == "evidence_chunk_completed":
         return _tick(seq, f"证据抽取：候选 {_int(payload.get('candidate_count'))} 条")
+    if event_type == "delegate_completed":
+        # 规划器被静默消化的工具调用（重复方向/预算闸口）——让“空轮次”在直播里可见。
+        status = str(payload.get("status", ""))
+        if status == "skipped":
+            return _tick(seq, "发现重复研究方向，已跳过并调整计划")
+        if status == "blocked":
+            return _tick(seq, "研究轮次预算耗尽，规划器开始收束")
+        return None
     if event_type == "writer_draft_ready":
         return _tick(seq, "报告草稿完成，进入审阅")
 

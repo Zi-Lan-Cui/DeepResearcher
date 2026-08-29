@@ -173,10 +173,19 @@ class WorkingState:
         self.report_brief: ReportBrief | None = None
         self.stop_reason: StopReason | None = None
 
-    @property
-    def next_task_index(self) -> int:
-        """分配独立的任务序号，不把研究轮次编码进任务 ID。"""
-        return max((item.task_index for item in self.task_results), default=0) + 1
+        self._task_counter: int = 0
+
+    def allocate_task_index(self) -> int:
+        """分配独立的任务序号，不把研究轮次编码进任务 ID。
+
+        序号必须在**分配时刻**（runtime.tool_lock 内）消费掉：从已完成结果反推的
+        派生值会被并行 delegate 的双方读到同一个 max+1，撞出的 task_id 让
+        merge_task_results 按 id 去重时静默吞掉一个方向的研究结果。
+        max(计数器, 已完成最大值)+1 同时兼容恢复执行时从快照重建的场景。
+        """
+        completed_max = max((item.task_index for item in self.task_results), default=0)
+        self._task_counter = max(self._task_counter, completed_max) + 1
+        return self._task_counter
 
     def filter_new_tasks(self, tasks: list[SubTask], *, max_tasks: int) -> list[SubTask]:
         """问题级去重并截断；task_id 冲突（恢复执行）同样跳过。"""

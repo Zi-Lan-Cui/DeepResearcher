@@ -116,7 +116,7 @@ class ResearchSupervisor:
                 # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
                 # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
                 # 轮次配额由 remaining_rounds 提示 + delegate() 的本地 hard check 执行。
-                max_turns=config.max_subtasks_per_round + 5,
+                max_turns=config.max_subtasks_per_round + 10,
                 context_window_tokens=context_window_tokens,
                 retry_tools=[(["ResearchDelegate"], "ResearchDelegate")],
                 serial_tools={"ReadWorkingSet", "ForgetEvidence", "ResearchComplete", "ResearchReady"},
@@ -196,15 +196,33 @@ class ResearchSupervisor:
         )
 
         async def delegate(topic: str) -> dict[str, object]:
+            def _reported(result: dict[str, object]) -> dict[str, object]:
+                # 规划器的工具调用若被静默消化（blocked/skipped），事件流里只会
+                # 看到连续两个 model_turn——delegate_started/completed 让“空轮次”可解释。
+                self._emit_audit_event(
+                    "delegate_completed",
+                    {
+                        "status": str(result.get("status", "")),
+                        "reason": str(result.get("reason", "")),
+                        "topic_chars": len(topic),
+                        "evidence_count": result.get("evidence_count"),
+                        "source_count": result.get("source_count"),
+                    },
+                )
+                return result
+
+            self._emit_audit_event("delegate_started", {"topic_chars": len(topic)})
             if round_no > self.config.max_research_rounds:
                 working.stop_reason = StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED
-                return {
-                    "status": "blocked",
-                    "reason": "round_budget_exhausted",
-                    "instruction": "研究轮次预算已耗尽；请基于现有 Evidence 立即调用 ResearchComplete 或 ResearchReady。",
-                }
+                return _reported(
+                    {
+                        "status": "blocked",
+                        "reason": "round_budget_exhausted",
+                        "instruction": "研究轮次预算已耗尽；请基于现有 Evidence 立即调用 ResearchComplete 或 ResearchReady。",
+                    }
+                )
             async with runtime.tool_lock:
-                task_index = working.next_task_index
+                task_index = working.allocate_task_index()
                 task: SubTask = {
                     "id": f"task-{task_index:04d}",
                     "question": topic,
@@ -223,7 +241,7 @@ class ResearchSupervisor:
                 )
             if not new_tasks:
                 working.stop_reason = StopReason.NO_NEW_TASKS
-                return {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
+                return _reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
             execution = await self._execute_research_task(
                 new_tasks[0],
                 tool_call_id=f"delegate-{new_tasks[0]['id']}",
@@ -231,18 +249,20 @@ class ResearchSupervisor:
             )
             async with runtime.tool_lock:
                 working.absorb(execution)
-            return {
-                "status": execution.task_result.execution_status,
-                "research_direction": execution.task_result.research_direction,
-                "coverage_status": execution.task_result.coverage_status,
-                "evidence_count": execution.task_result.evidence_count,
-                "source_count": execution.task_result.source_count,
-                "answered_points": execution.task_result.answered_points,
-                "remaining_gaps": execution.task_result.remaining_gaps,
-                "conclusion": execution.task_result.conclusion,
-                "failures": execution.task_result.failures,
-                "evidence": [item.claim for item in execution.evidences],
-            }
+            return _reported(
+                {
+                    "status": execution.task_result.execution_status,
+                    "research_direction": execution.task_result.research_direction,
+                    "coverage_status": execution.task_result.coverage_status,
+                    "evidence_count": execution.task_result.evidence_count,
+                    "source_count": execution.task_result.source_count,
+                    "answered_points": execution.task_result.answered_points,
+                    "remaining_gaps": execution.task_result.remaining_gaps,
+                    "conclusion": execution.task_result.conclusion,
+                    "failures": execution.task_result.failures,
+                    "evidence": [item.claim for item in execution.evidences],
+                }
+            )
 
         runtime = SupervisorRuntimeContext(
             working=working,

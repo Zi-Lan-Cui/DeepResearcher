@@ -124,6 +124,60 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
     assert all("直接事实" in message for message in tool_payloads)
 
 
+def test_concurrent_delegates_allocate_unique_task_ids_before_absorb():
+    """回归锁：序号必须分配即消耗，不能从已完成结果反推。
+
+    旧实现下第二个并行 delegate 在第一个 absorb 之前读到同一 max+1，
+    两个任务共享 task-0001，merge_task_results 按 task_id 去重静默吞掉
+    一个方向（线上龙意象运行实锤）。交错点用 fake 研究代理入口让出一次
+    事件循环来确定性复现。
+    """
+
+    class InterleavedResearchAgent(FixedResearchAgent):
+        async def run(self, task, **kwargs):
+            await asyncio.sleep(0)  # 放行另一路 delegate 走到序号分配
+            return await super().run(task, **kwargs)
+
+    supervisor = ResearchSupervisor(
+        SupervisorLLM(
+            delegate_topics=["方向A的事实", "方向B的事实"],
+            complete_args=_COMPLETE_ARGS,
+        ),
+        AgentConfig(max_research_rounds=2, max_parallel_workers=2),
+        research_agent=InterleavedResearchAgent(),
+    )
+    result = asyncio.run(
+        supervisor.run({"query": "研究问题", "clarified_query": "研究问题", "evidences": []})
+    )
+
+    task_ids = [
+        item.get("task_id") if isinstance(item, dict) else item.task_id
+        for item in result["task_results"]
+    ]
+    assert len(task_ids) == 2
+    assert len(set(task_ids)) == 2
+
+
+def test_delegate_emits_completed_event(tmp_path):
+    """delegate 的去/留决策必须可观测（否则规划器连续 turn 无法解释）。"""
+    from deepsearch_agent.observability.events import JsonlSink
+    from fakes import event_types
+
+    sink = JsonlSink(tmp_path / "events.jsonl")
+    supervisor = ResearchSupervisor(
+        SupervisorLLM(delegate_topics=["一个方向的事实"], complete_args=_COMPLETE_ARGS),
+        AgentConfig(max_research_rounds=2),
+        research_agent=FixedResearchAgent(),
+        event_sink=sink,
+    )
+    asyncio.run(
+        supervisor.run({"query": "研究问题", "clarified_query": "研究问题", "evidences": []})
+    )
+    types = event_types(tmp_path / "events.jsonl")
+    assert "delegate_started" in types
+    assert "delegate_completed" in types
+
+
 def test_supervisor_requires_research_agent_at_construction():
     with pytest.raises(ValueError, match="ResearchAgent"):
         ResearchSupervisor(
