@@ -370,7 +370,19 @@ function clearAllTentative() {
 }
 
 function stageNote(stage, text, warn) {
-  finalizeTentative(stage);
+  const t = tentative.get(stage);
+  if (t) {
+    if (text && t.text.length > text.length) {
+      // 聚合帧比流式预览短（事件侧有界化必然存在）：晋升预览为正式行，
+      // 不做"打字完成后突然截短"的替换。
+      t.el.classList.remove("tentative");
+      if (warn) t.el.classList.add("warn");
+      tentative.delete(stage);
+      return;
+    }
+    t.el.remove();
+    tentative.delete(stage);
+  }
   if (!text) return;
   const body = ensureStage(stage).querySelector(".stage-body");
   const div = document.createElement("div");
