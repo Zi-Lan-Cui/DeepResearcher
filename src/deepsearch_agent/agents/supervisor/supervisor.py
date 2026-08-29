@@ -20,6 +20,7 @@ from deepsearch_agent.agents.middleware import (
     build_agent_middleware,
 )
 from deepsearch_agent.agents.researcher import ResearchAgent
+from deepsearch_agent.agents.streaming import TextDeltaSink, ainvoke_agent_with_deltas
 from deepsearch_agent.agents.supervisor.state import (
     RunUrlReservations,
     SupervisorRuntimeContext,
@@ -96,7 +97,9 @@ class ResearchSupervisor:
         research_agent: ResearchAgent,
         event_sink: JsonlSink | None = None,
         context_window_tokens: int = 32_768,
+        delta_sink: TextDeltaSink | None = None,
     ):
+        self._delta_sink = delta_sink
         if llm is None:
             raise LLMConfigurationError("ResearchSupervisor 需要已装配的 LLMInvoker。")
         if research_agent is None:
@@ -276,10 +279,13 @@ class ResearchSupervisor:
         )
         prepared = history
         try:
-            result = await cast(Any, self._agent_loop).ainvoke(
+            result = await ainvoke_agent_with_deltas(
+                cast(Any, self._agent_loop),
                 cast(Any, {"messages": prepared}),
                 context=runtime,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
+                channel="supervisor",
+                delta_sink=self._delta_sink,
             )
         except asyncio.CancelledError:
             raise

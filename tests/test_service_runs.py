@@ -38,12 +38,14 @@ def _settings(tmp_path) -> Settings:
 class FakeGraph:
     """记录 ainvoke 输入；可选先发一条引擎事件、等待门控、返回结果或抛错。"""
 
-    def __init__(self, *, result=None, error=None, gate=None, emit_events=1):
+    def __init__(self, *, result=None, error=None, gate=None, emit_events=1, delta_texts=()):
         self.result = result or {}
         self.error = error
         self.gate = gate
         self.emit_events = emit_events
+        self.delta_texts = list(delta_texts)
         self.ainvoke_inputs: list[dict] = []
+        self._delta_sink = None
 
     async def _run(self, input):  # noqa: A002 - 与 LangGraph 契约同名
         self.ainvoke_inputs.append(dict(input))
@@ -51,6 +53,9 @@ class FakeGraph:
             self._sink.write(
                 {"run_id": input["run_id"], "event_type": f"engine_{i}", "payload": {}}
             )
+        if self._delta_sink is not None:
+            for channel, text in self.delta_texts:
+                self._delta_sink(channel, text)
         if self.gate is not None:
             await self.gate.wait()
         if self.error is not None:
@@ -59,9 +64,6 @@ class FakeGraph:
 
     async def ainvoke(self, input, **_kwargs):
         return await self._run(input)
-
-    async def astream(self, input, **_kwargs):
-        yield ("values", await self._run(input))
 
 
 def _completed_result():
@@ -100,10 +102,11 @@ async def manager(tmp_path):
     )
     holder: dict = {}
 
-    def graph_factory(*, settings, event_sink, http_client):
+    def graph_factory(*, settings, event_sink, http_client, delta_sink=None):
         holder["sink"] = event_sink
         graph = holder.get("graph") or FakeGraph()
         graph._sink = event_sink
+        graph._delta_sink = delta_sink
         return graph
 
     manager = RunManager(
@@ -276,40 +279,11 @@ async def test_reconcile_startup_converts_stale_rows(manager):
     assert completed_done == []  # 非孤儿不补
 
 
-class _StreamingGraph:
-    """messages 模式吐 (chunk, metadata)，values 收尾——模拟外层 astream。"""
-
-    def __init__(self, messages, result):
-        self._messages = messages
-        self._result = result
-
-    async def astream(self, inputs, stream_mode=(), **_kwargs):
-        assert "messages" in stream_mode and "values" in stream_mode
-        for chunk, metadata in self._messages:
-            yield ("messages", (chunk, metadata))
-        yield ("values", self._result)
-
-
-def _text_block(text):
-    return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
-
-
-def _tool_chunk(text):
-    return SimpleNamespace(content_blocks=[{"type": "tool_call_chunk", "args": text}])
-
-
-async def test_text_deltas_are_ephemeral_whitelisted_and_unpersisted(manager):
-    supervisor_meta = {"langgraph_node": "model", "checkpoint_ns": "supervisor:11"}
-    writer_meta = {"langgraph_node": "model", "checkpoint_ns": "writer:22"}
-    manager.holder["graph"] = _StreamingGraph(
-        [
-            (_text_block("先梳理缺口，"), supervisor_meta),
-            (_tool_chunk('{"markdown": "秘密正文"'), supervisor_meta),   # 工具参数不进预览
-            (_text_block("不该出现"), {"langgraph_node": "model",
-                                        "checkpoint_ns": "research_agent:3"}),  # 白名单外
-            (_text_block("写报告中…"), writer_meta),
-        ],
-        _completed_result(),
+async def test_delta_relay_forwards_ephemerically_without_seq_or_persistence(manager):
+    """relay 层：原样透传各 channel（白名单在 projector，不在 relay），无 seq、不落库。"""
+    manager.holder["graph"] = FakeGraph(
+        result=_completed_result(),
+        delta_texts=[("supervisor", "先梳理缺口，"), ("writer", "写报告中…"), ("research_agent", "内部片段")],
     )
     run_id = await manager.start(USER_ID, "q")
     _, queue = manager.fanout.subscribe(run_id)  # start 已登记任务但未开跑：必然先于 delta
@@ -324,6 +298,7 @@ async def test_text_deltas_are_ephemeral_whitelisted_and_unpersisted(manager):
     assert [d["payload"] for d in deltas] == [
         {"channel": "supervisor", "text": "先梳理缺口，"},
         {"channel": "writer", "text": "写报告中…"},
+        {"channel": "research_agent", "text": "内部片段"},   # relay 不过滤；projector 才拦
     ]
     assert all("seq" not in d for d in deltas)  # ephemeral：不占 seq
     async with manager.session_factory() as session:
@@ -335,13 +310,3 @@ async def test_text_deltas_are_ephemeral_whitelisted_and_unpersisted(manager):
             )
         ).all()
     assert persisted == []  # 也不落库；聚合帧通道不受影响
-
-
-async def test_extract_text_delta_rejects_malformed_chunks(manager):
-    assert manager._extract_text_delta("not-a-tuple") is None  # noqa: SLF001
-    assert manager._extract_text_delta(  # noqa: SLF001
-        (_text_block("x"), {"langgraph_node": "tools"})
-    ) is None
-    assert manager._extract_text_delta(  # noqa: SLF001
-        (SimpleNamespace(content_blocks=[]), {"langgraph_node": "model", "checkpoint_ns": "supervisor"})
-    ) is None
