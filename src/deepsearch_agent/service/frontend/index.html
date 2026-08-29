@@ -41,6 +41,10 @@
   .report .md h1 { font-size:22px; } .report .md h2 { font-size:18px; }
   .src { font-size:13.5px; color:var(--mut); }
   .src a { color:var(--ac); text-decoration:none; word-break:break-all; }
+  .src-item { padding:6px 8px; margin:4px 0; border-left:3px solid var(--bd); scroll-margin-top:70px; }
+  .src-item:target { background:#fef9c3; border-left-color:#eab308; }
+  .src-item blockquote { margin:2px 0 0; padding-left:10px; color:var(--mut); font-style:italic; }
+  #report a[href^="#src-"] { color:var(--ac); text-decoration:none; cursor:pointer; }
   .hide { display:none !important; }
 </style>
 </head>
@@ -108,7 +112,7 @@
       <b>研究报告</b>
       <div id="report" class="md"></div>
       <hr />
-      <b class="src">来源</b>
+      <b class="src" id="sources-title">参考来源</b>
       <div id="sources" class="src"></div>
     </div>
   </section>
@@ -261,17 +265,81 @@ async function onRunDone(data) {
   let detail;
   try { detail = await api("/api/runs/" + currentRunId); } catch (e) { return; }
   const md = detail.report_markdown || detail.error_message || "（无报告内容）";
-  if (window.marked && !window.__marked_failed) $("report").innerHTML = marked.parse(md);
-  else { const pre = document.createElement("pre"); pre.textContent = md; $("report").replaceChildren(pre); }
-  $("sources").innerHTML = "";
-  for (const c of detail.citations || []) {
-    const p = document.createElement("p");
-    p.textContent = c.title + " — ";
+  renderReport(md, detail.citations || []);
+}
+
+/* 参考来源表由管道生成、编号权威唯一：正文 [来源N] 与表条目一一对应。
+   前端把报告拆成正文/参考表两段——正文链接化渲染，来源面板带序号与锚点 id，
+   点击 [来源N] 即跳转。citations_json 仅作解析失败时的无编号兜底。 */
+function splitReport(md) {
+  const m = md.match(/^## 参考来源[ \t]*$/m);
+  if (!m) return [md, null];
+  return [md.slice(0, m.index), md.slice(m.index + m[0].length)];
+}
+
+function parseReferences(refMd) {
+  const items = [];
+  for (const raw of refMd.split("\n")) {
+    const line = raw.trim();
+    let m = line.match(/^- \[(来源(\d+))\]\s*(.*?):\s*(\S+)\s*$/);
+    if (m) {
+      items.push({ label: m[1], num: Number(m[2]), title: m[3], url: m[4], quote: "" });
+      continue;
+    }
+    m = line.match(/^- \[(来源(\d+))\]\s*(\S+)\s*$/);  // 无标题变体
+    if (m) { items.push({ label: m[1], num: Number(m[2]), title: m[4], url: m[4], quote: "" }); continue; }
+    m = line.match(/^>\s*「([\s\S]*)」\s*$/);
+    if (m && items.length) items[items.length - 1].quote = m[1];
+  }
+  return items;
+}
+
+function renderReport(md, fallbackCitations) {
+  const [bodyMd, refMd] = splitReport(md);
+  const reportEl = $("report");
+  if (window.marked && !window.__marked_failed) {
+    const linkified = bodyMd.replace(/\[来源(\d+)\]/g, (_s, n) => `[来源${n}](#src-${n})`);
+    reportEl.innerHTML = marked.parse(linkified);
+  } else {
+    const pre = document.createElement("pre"); pre.textContent = md;
+    reportEl.replaceChildren(pre);
+  }
+
+  const sourcesEl = $("sources");
+  sourcesEl.innerHTML = "";
+  const items = refMd ? parseReferences(refMd) : [];
+  if (!items.length) {
+    for (const c of fallbackCitations) {          // 兜底：老数据无表格式时列原始引用
+      const p = document.createElement("p");
+      p.textContent = c.title + " — ";
+      const a = document.createElement("a");
+      a.href = c.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = c.url;
+      p.appendChild(a);
+      if (c.quote) { const q = document.createElement("i"); q.textContent = "「" + c.quote + "」"; p.appendChild(document.createElement("br")); p.appendChild(q); }
+      sourcesEl.appendChild(p);
+    }
+    if (!fallbackCitations.length) $("sources-title").classList.add("hide");
+    return;
+  }
+  $("sources-title").classList.remove("hide");
+  for (const item of items) {
+    const div = document.createElement("div");
+    div.className = "src-item";
+    div.id = "src-" + item.num;                   // 正文 [来源N] 锚点落点
+    const head = document.createElement("div");
+    const label = document.createElement("b"); label.textContent = "[" + item.label + "] ";
+    head.appendChild(label);
+    if (item.title && item.title !== item.url) head.appendChild(document.createTextNode(item.title + " — "));
     const a = document.createElement("a");
-    a.href = c.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = c.url;
-    p.appendChild(a);
-    if (c.quote) { const q = document.createElement("i"); q.textContent = "「" + c.quote + "」"; p.appendChild(document.createElement("br")); p.appendChild(q); }
-    $("sources").appendChild(p);
+    a.href = item.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = item.url;
+    head.appendChild(a);
+    div.appendChild(head);
+    if (item.quote) {
+      const q = document.createElement("blockquote");
+      q.textContent = "「" + item.quote + "」";
+      div.appendChild(q);
+    }
+    sourcesEl.appendChild(div);
   }
 }
 
