@@ -72,9 +72,19 @@ def build_writer_tools():
         context.last_markdown = markdown
         try:
             if len(selected_evidence_ids) > context.max_selected_evidence:
-                raise ValueError("CompleteReport 选择的 Evidence 数量超过配置上限。")
+                # 报错必须自带修复指令：曾有无信息量的拒绝文案导致模型在最后一轮
+                # 去重读证据、预算耗尽（53 条证据选超 24 上限事故）。
+                raise ValueError(
+                    f"已选 {len(selected_evidence_ids)} 条 Evidence，超过上限 "
+                    f"{context.max_selected_evidence} 条。不要重新读取证据——只需把 "
+                    "selected_evidence_ids 缩减为正文真正依赖的最核心若干条"
+                    "（与正文 [[cite:...]] 标记一致），立即重新调用 CompleteReport。"
+                )
             if len(markdown) > context.max_markdown_chars:
-                raise ValueError("CompleteReport Markdown 超过配置上限。")
+                raise ValueError(
+                    f"Markdown 共 {len(markdown)} 字符，超过上限 {context.max_markdown_chars} 字符。"
+                    "请压缩正文（保留全部 [[cite:...]] 标记与结论），立即重新调用 CompleteReport。"
+                )
             cited_ids = extract_cite_ids(markdown)
             selected = list(
                 dict.fromkeys(

@@ -697,3 +697,81 @@ def test_writer_guard_bounded_then_recovery_catches(tmp_path):
     events = _event_types(tmp_path)
     assert events.count("writer_tool_loop_nudged") == 2
     assert "writer_inline_draft_recovered" in events
+
+
+class _OverSubmitThenFixLLM:
+    """复现 53>24 事故的选择路径：读一次证据→超上限提交→按报错缩减重交。
+
+    历史驱动：见到 read_count 才提交；第一次故意多选，收到「超过上限」后只修
+    selected_evidence_ids——若像事故那样回头再读证据，本测试会因证据读事件
+    >1 次而失败。
+    """
+
+    def bind_tools(self, _tools, **_kwargs):
+        return self
+
+    async def ainvoke(self, messages, **_kwargs):
+        from langchain_core.messages import AIMessage
+
+        history = "\n".join(str(message.content) for message in messages)
+        report = "## 一、先秦\n\n孟子认为人性本善。[[cite:e1]]"
+        if "read_count" not in history:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ReadEvidence",
+                        "args": {"evidence_ids": ["e1", "e2"], "reason": "写作需要"},
+                        "id": "r1",
+                    }
+                ],
+            )
+        if "超过上限" in history:
+            selected = ["e1"]
+        else:
+            selected = ["e1", "e2"]
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "CompleteReport",
+                    "args": {"selected_evidence_ids": selected, "markdown": report},
+                    "id": "c1",
+                }
+            ],
+        )
+
+
+def test_over_limit_submit_recovers_with_self_explaining_error(tmp_path):
+    """超限报错必须自带数字与「缩减重交、禁止重读」指令（事故回归锁）。"""
+    from deepsearch_agent.schemas import WriterDirective
+    from fakes import make_evidence
+
+    sink = JsonlSink(tmp_path / "events.jsonl")
+    state = {
+        "query": "测试",
+        "evidences": [
+            make_evidence("e1", "孟子主张性善"),
+            make_evidence("e2", "荀子主张性恶"),
+        ],
+        "writer_directive": WriterDirective(
+            query="测试",
+            report_brief=REPORT_BRIEF,
+            research_status="completed",
+            generation_mode="full",
+        ),
+    }
+    writer = ReportWriter(
+        _OverSubmitThenFixLLM(),
+        AgentConfig(writer_max_selected_evidence=1),
+        render_incomplete=lambda _s: "incomplete",
+        event_sink=sink,
+    )
+    result = asyncio.run(writer.run(state))
+
+    events = _event_types(tmp_path)
+    assert events.count("writer_citation_validation_failed") == 1
+    # 关键回归：失败后修列表重交，一步都没浪费在重读证据上
+    assert events.count("writer_evidence_read") == 1
+    assert result["writer"].status == "completed"
+    assert "[[cite:e1]]" in result["report_draft"]
