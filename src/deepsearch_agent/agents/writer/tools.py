@@ -9,15 +9,20 @@ from pydantic import BaseModel, Field
 from deepsearch_agent.agents.writer.state import ValidatedDraft, WriterRuntimeContext
 from deepsearch_agent.reporting.validation import extract_cite_ids, validate_and_bind
 
+# 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
+# 决定，差额走 not_read_ids 显式排队。引用总条数没有上限（原
+# writer_max_selected_evidence 已移除：它贡献过两次 writer 事故却从未保护过
+# 任何质量属性；聚焦度由提示词引导、由已读闸与审阅把关）。
+REQUEST_WINDOW_IDS = 50
+
 
 class ReadEvidence(BaseModel):
     """读取目录中 Evidence 的完整内容，以便引用其可验证细节。"""
 
     evidence_ids: list[str] = Field(
         min_length=1,
-        max_length=30,
-        description="要读取的 evidence_id 列表；每轮实际返回条数受批量上限约束，"
-        "未轮到的 id 会在 not_read_ids 中列出，引用前需再次调用补齐。",
+        max_length=REQUEST_WINDOW_IDS,
+        description="要读取的 evidence_id 列表；引用前必须先读取。",
     )
     reason: str = Field(min_length=1)
 
@@ -29,18 +34,33 @@ class CompleteReport(BaseModel):
     markdown: str = Field(min_length=1)
 
 
-def build_writer_tools():
-    @tool("ReadEvidence", args_schema=ReadEvidence)
+def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
+    """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。
+
+    引用总条数不设上限；约束只剩三条：cite 必须已读（本工具集）、
+    每轮交付 read_batch 条（差额 not_read_ids 排队）、正文有字符上限。
+    聚焦度是写作质量问题，交给系统提示词的引导与审阅把关。
+    """
+
+    @tool(
+        "ReadEvidence",
+        args_schema=ReadEvidence,
+        description=(
+            "获取目录中 Evidence 的完整内容并加入已读集。"
+            f"用法：先从目录选定要引用的条目，用一次调用批量读取全部"
+            f"（一次可请求至多 {REQUEST_WINDOW_IDS} 条，每轮交付 {read_batch} 条，"
+            "未交付的会列在 not_read_ids 中，下一轮补齐；不要按个位数小口读取）；"
+            f"工具轮次预算约 {turn_budget} 轮，读取应占 1-2 轮，其余留给写作与修正。"
+            "只有本工具返回过的 evidence_id 才能引用。"
+            "若返回含 not_read_ids/unknown_ids/hint，必须先按提示处理。"
+        ),
+    )
     def read_evidence(
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[WriterRuntimeContext],
     ) -> str:
-        """返回指定 Evidence 的完整内容，并将其加入本次 Writer 的已读工作集。
-
-        每轮最多读取 read_batch_size 条；未轮到读取的 id 会在 not_read_ids 中
-        显式列出——引用前必须先把它们读完。
-        """
+        """返回指定 Evidence 的完整内容，并将其加入本次 Writer 的已读工作集。"""
         del reason
         context = runtime.context
         requested = list(dict.fromkeys(evidence_ids))
@@ -91,7 +111,17 @@ def build_writer_tools():
         )
         return json.dumps(payload, ensure_ascii=False)
 
-    @tool("CompleteReport", args_schema=CompleteReport)
+    @tool(
+        "CompleteReport",
+        args_schema=CompleteReport,
+        description=(
+            "唯一的结束信号：写完草稿后必须经本工具提交，提交前不要直接输出报告正文。"
+            "selected_evidence_ids 数量不设上限，但必须全部来自 ReadEvidence 的返回、"
+            "且只列正文真正依赖的证据；markdown 为含 [[cite:evidence_id]] 标记的完整正文。"
+            "若返回校验失败，严格按错误消息修正后立即重新提交"
+            "——修正通常无需读取新证据，不要重复调用 ReadEvidence。"
+        ),
+    )
     def complete_report(
         selected_evidence_ids: list[str],
         markdown: str,
@@ -101,15 +131,6 @@ def build_writer_tools():
         context = runtime.context
         context.last_markdown = markdown
         try:
-            if len(selected_evidence_ids) > context.max_selected_evidence:
-                # 报错必须自带修复指令：曾有无信息量的拒绝文案导致模型在最后一轮
-                # 去重读证据、预算耗尽（53 条证据选超 24 上限事故）。
-                raise ValueError(
-                    f"已选 {len(selected_evidence_ids)} 条 Evidence，超过上限 "
-                    f"{context.max_selected_evidence} 条。不要重新读取证据——只需把 "
-                    "selected_evidence_ids 缩减为正文真正依赖的最核心若干条"
-                    "（与正文 [[cite:...]] 标记一致），立即重新调用 CompleteReport。"
-                )
             if len(markdown) > context.max_markdown_chars:
                 raise ValueError(
                     f"Markdown 共 {len(markdown)} 字符，超过上限 {context.max_markdown_chars} 字符。"

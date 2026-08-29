@@ -23,7 +23,7 @@ from deepsearch_agent.agents.writer.state import (
     WriterRuntimeContext,
 )
 from deepsearch_agent.agents.writer.tools import build_writer_tools
-from deepsearch_agent.config import AgentConfig
+from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.errors import WriterGenerationError
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
@@ -56,18 +56,15 @@ _WRITER_SYSTEM_PROMPT = "\n".join(
     "【引用协议（必须遵守）】",
     "凡是来自 Evidence 的可验证事实、数字、观点归属、具体案例，都必须在对应句子或段落末尾写"
     "[[cite:evidence_id1,evidence_id2]]。cite 内只能使用输入中已有的 evidence_id，最多三个，以逗号分隔。",
-    "先从 Evidence 目录按研究方向、claim 与问题相关性选择要读取的 Evidence，调用 ReadEvidence 获取完整内容；"
-    "只有读取返回的 evidence_id 才能引用。材料足够后必须调用 CompleteReport，"
-    "将真正支撑正文的 evidence_id 填入 selected_evidence_ids。",
-    "CompleteReport 是唯一的结束信号；在调用 CompleteReport 之前，不要直接输出报告文本。"
-    "每轮只能调用一个工具。若上一次工具调用收到错误反馈，必须根据反馈修正后再次调用工具。",
+    "正文只能引用已通过工具读取过完整内容的 Evidence；不得凭目录中的 claim 补写细节。"
+    "工具的选择、批量与轮次规则以各工具自身的说明为准。",
     "不要手写 [来源N]，不要把 cite 放入代码围栏、行内代码或 URL。",
     "正确示例：Evidence 给出‘e1：某作品于 2020 年发行’，应写："
     "该作品于 2020 年发行。[[cite:e1]]",
     "不要写：该作品于 2020 年发行。[来源1]；"
     "不要写：该作品于 2020 年发行。[[cite:未知来源]]。",
     "【写作要求】",
-    "只使用给定的已验证 Evidence 写成围绕用户问题展开的正式中文研究报告，"
+    "只使用给定的已验证 Evidence 写成围绕用户问题展开的正式__LANG__研究报告，"
     "不能按来源逐条罗列资料，也不能写成只有结论句的资料摘要。",
     "你不能凭目录中的 claim 补写 quote 未提供的细节；需要完整依据时先调用 ReadEvidence。",
     "如果研究状态为 incomplete 或报告生成模式为 partial，必须在报告中明确说明覆盖范围、未解决问题和证据限制；"
@@ -76,7 +73,7 @@ _WRITER_SYSTEM_PROMPT = "\n".join(
     "报告应先直接回应问题，再形成清楚的论证链：界定讨论对象、解释证据与问题的关系、"
     "比较不同情况或观点，并说明适用范围与限制。",
     "每个段落通常用 2 到 5 句完成一个完整论点，而不是把单条 Evidence 改写成一句话。"
-    "目标是约 1,000 到 1,800 个中文字；不得用重复、空泛修辞或外部知识凑篇幅。"
+    "目标是约 1,000 到 1,800 个__LANG__字符；不得用重复、空泛修辞或外部知识凑篇幅。"
     "省略与问题无关的 Evidence。",
     "直接输出 Markdown 正文：可按论证需要使用 ##/### 标题、列表、引用块和表格；"
     "只有确实存在可比较的多个对象或维度时才使用表格，表格之后必须有解释，不能为排版而造表。",
@@ -89,10 +86,7 @@ _WRITER_SYSTEM_PROMPT = "\n".join(
     "2. 每个 cite 标记使用 selected_evidence_ids 中的 evidence_id；"
     "3. 每个 cite 必须是完整的 [[cite:id]]；"
     "4. 不输出‘参考来源’小节；"
-    "5. 不用无引用的外部知识补全事实；"
-    "6. selected_evidence_ids 不得超过工具说明的条数上限；"
-    "7. CompleteReport 被校验拒绝时，严格按错误消息指示修正后立即重新提交——"
-    "修 id 列表或压缩正文不需要更多证据，禁止再调用 ReadEvidence 浪费轮次。",
+    "5. 不用无引用的外部知识补全事实。",
     ]
 )
 
@@ -125,8 +119,15 @@ class ReportWriter:
         self._logger = get_logger("deepsearch_agent.agents.writer")
         self._agent_loop = create_agent(
             model=cast(Any, self.llm),
-            tools=build_writer_tools(),
-            system_prompt=_WRITER_SYSTEM_PROMPT,
+            tools=build_writer_tools(
+                turn_budget=config.writer_max_turns,
+                read_batch=config.writer_read_batch_size,
+            ),
+            system_prompt=_WRITER_SYSTEM_PROMPT.replace(
+                "__LANG__", config.output_language
+            )
+            + "\n"
+            + language_directive(config.output_language),
             context_schema=WriterRuntimeContext,
             middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
                 agent_name="Writer",
@@ -209,7 +210,6 @@ class ReportWriter:
             emit=self._emit,
             read_evidence_ids=set(),
             read_batch_size=self.config.writer_read_batch_size,
-            max_selected_evidence=self.config.writer_max_selected_evidence,
             max_markdown_chars=self.config.writer_max_markdown_chars,
             artifact_max_text_chars=self._artifact_max_text_chars,
         )

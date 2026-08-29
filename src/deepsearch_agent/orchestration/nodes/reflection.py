@@ -2,6 +2,7 @@
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from deepsearch_agent.config import get_settings, language_directive
 from deepsearch_agent.llm import ainvoke_structured
 from deepsearch_agent.schemas import Citation, ParagraphBinding, ReflectionDecision, ReviewProgress
 from deepsearch_agent.state import section
@@ -56,7 +57,8 @@ async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
                     "若报告已谨慎写为‘获得某种认可的线索’，至多是 warning，不应阻断。"
                     "不要为非核心的合理机制归纳制造 fatal，例如‘选择影响好感’概括为互动叙事的一部分。"
                     "如果全文只是孤立来源事实清单、没有围绕研究问题形成组织和结论，即使逐条有引用也应标 fatal。"
-                    "feedback 概括整体结论；每个 issue 写明对应段落、原因和可选修订建议。"
+                    "feedback 概括整体结论；每个 issue 写明对应段落、原因和可选修订建议。\n"
+                    + language_directive(get_settings().agent.output_language)
                 )
             ),
             HumanMessage(

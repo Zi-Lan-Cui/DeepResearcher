@@ -2,6 +2,7 @@
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from deepsearch_agent.config import get_settings, language_directive
 from deepsearch_agent.llm import ainvoke_structured
 from deepsearch_agent.schemas import ClarificationDecision, RunLifecycle
 
@@ -22,7 +23,8 @@ async def clarify(state, llm, *, invoke_structured=ainvoke_structured):
                     "才设置 needs_user_input=true 并提出一个简短问题。"
                     "范围宽、带价值判断、需要多维分析，或术语可先给工作定义的题目，都应直接继续研究。"
                     "如果可以继续，needs_user_input=false；intent_summary 写用户真正想了解什么，"
-                    "research_focus 列出不超过四个应覆盖的角度。"
+                    "research_focus 列出不超过四个应覆盖的角度。\n"
+                    + language_directive(get_settings().agent.output_language)
                 )
             ),
             HumanMessage(content=query),

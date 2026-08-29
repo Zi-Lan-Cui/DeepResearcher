@@ -29,7 +29,7 @@ from deepsearch_agent.agents.supervisor.state import (
 from deepsearch_agent.agents.supervisor.tools import (
     build_supervisor_tools,
 )
-from deepsearch_agent.config import AgentConfig
+from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, emit_agent_event
@@ -110,7 +110,9 @@ class ResearchSupervisor:
         self._agent_loop = create_agent(
             model=cast(Any, llm),
             tools=build_supervisor_tools(),
-            system_prompt=_SUPERVISOR_SYSTEM_PROMPT,
+            system_prompt=_SUPERVISOR_SYSTEM_PROMPT
+            + "\n"
+            + language_directive(config.output_language),
             context_schema=SupervisorRuntimeContext,
             middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
                 agent_name="Supervisor",

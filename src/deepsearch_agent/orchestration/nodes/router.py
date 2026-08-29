@@ -2,6 +2,7 @@
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from deepsearch_agent.config import get_settings, language_directive
 from deepsearch_agent.llm import ainvoke_structured
 from deepsearch_agent.schemas import RouteDecision, RunLifecycle
 
@@ -17,7 +18,8 @@ async def router(state, llm, *, invoke_structured=ainvoke_structured):
                     content=(
                         "你是研究请求路由器。明确、低风险、单一事实问题才走 quick_answer。"
                         "涉及多个对象、比较、影响力、推荐、历史、趋势、因果或需要来源核验的问题必须走 deep_research。"
-                        "不确定时宁可选择 deep_research；不能把模型内部知识包装成研究结论。"
+                        "不确定时宁可选择 deep_research；不能把模型内部知识包装成研究结论。\n"
+                        + language_directive(get_settings().agent.output_language)
                     )
                 ),
                 HumanMessage(content=query),
