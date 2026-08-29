@@ -8,7 +8,8 @@
 SSE 帧词汇表（与前端、RunManager 合成事件共用）。呈现原则：用户看整体，
 不被细节淹没——
 
-- ``tick``     全局时间线一行（规划器/阶段级叙述）
+- ``tick``     全局时间线一行（管线阶段叙述）
+- ``plan``     Supervisor 决策区一行（规划叙述/派发理由/跳过/停止原因）→ 前端渲染进 supervisor 框
 - ``stats``    运行指标（轮次/方向/证据计数）→ 前端渲染到标题区，不进结果流
 - ``task_open``  开一张方向卡 {task, title}
 - ``task_update`` 卡片第二行滚动一条动作 {task, text}
@@ -39,7 +40,6 @@ _NODE_NARRATION: dict[str, str] = {
     NodeName.ROUTER: "正在理解问题…",
     NodeName.CLARIFY: "正在澄清研究范围…",
     NodeName.QUICK_ANSWER: "正在准备即时回答…",
-    NodeName.SUPERVISOR: "正在拆解研究任务…",
     NodeName.REFLECTION: "正在审阅报告…",
     NodeName.RENDER_FINAL_REPORT: "正在生成最终报告…",
 }
@@ -114,12 +114,14 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return _frame(
             "task_done",
             seq,
-            {"task": _WRITER_CARD_ID, "status": status, "summary": ""},
+            {"task": _WRITER_CARD_ID, "status": status, "summary": "草稿已交付" if status == "done" else "写作轮次耗尽"},
         )
 
-    # ---- 全局时间线（整体视角）----
+    # ---- 全局时间线（管线阶段）----
     if event_type == "node_started":
         node = record.get("node")
+        if node == NodeName.SUPERVISOR:
+            return _frame("plan", seq, {"text": "开始拆解研究任务…"})
         text = _NODE_NARRATION.get(node, f"{node} 开始") if isinstance(node, str) else None
         return _tick(seq, text)
     if event_type == "node_failed":
@@ -142,15 +144,19 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             },
         )
     if event_type == "research_stopped":
-        return _tick(seq, f"研究提前结束：{_stop_reason_text(payload.get('reason'))}")
+        return _frame("plan", seq, {"text": f"研究提前结束：{_stop_reason_text(payload.get('reason'))}"})
     if event_type == "delegate_completed":
         # 规划器被静默消化的工具调用（重复方向/预算闸口）——让“空轮次”在直播里可见。
         status = str(payload.get("status", ""))
         if status == "skipped":
-            return _tick(seq, "发现重复研究方向，已跳过并调整计划")
+            return _frame("plan", seq, {"text": "发现重复研究方向，已跳过并调整计划"})
         if status == "blocked":
-            return _tick(seq, "研究轮次预算耗尽，规划器开始收束")
+            return _frame("plan", seq, {"text": "研究轮次预算耗尽，开始收束"})
         return None
+    if event_type == "supervisor_model_turn":
+        # Supervisor 的规划文本出口：模型写了字才显示（多数轮只发 tool_call，安静）。
+        thought = _text(payload.get("content_preview"), 200)
+        return _frame("plan", seq, {"text": thought}) if thought else None
 
     if event_type == TRUNCATED_EVENT:
         return _frame("error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"})

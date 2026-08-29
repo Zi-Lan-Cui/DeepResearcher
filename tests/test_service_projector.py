@@ -25,10 +25,10 @@ def _record(event_type, payload=None, **top):
 
 
 def test_node_started_maps_to_chinese_narration():
-    frame = project(_record("node_started", node="supervisor"))
+    frame = project(_record("node_started", node="clarify"))
     assert frame is not None
     assert frame.event == "tick"
-    assert frame.data["text"] == "正在拆解研究任务…"
+    assert frame.data["text"] == "正在澄清研究范围…"
     assert frame.data["seq"] == 7
 
 
@@ -97,12 +97,43 @@ def test_research_stopped_tolerates_unknown_reason():
     assert frame.data["text"].endswith("made-up")
 
 
-@pytest.mark.parametrize(
-    "event_type", ["supervisor_model_turn", "writer_model_turn", "researcher_model_turn"]
-)
-def test_model_turn_events_are_silent(event_type):
-    """轮次计数是内部预算视角，不再面向用户（第 N 轮刷屏曾被指不友好）。"""
+@pytest.mark.parametrize("event_type", ["writer_model_turn", "researcher_model_turn"])
+def test_non_supervisor_model_turn_events_are_silent(event_type):
+    """轮次计数是内部预算视角；writer/researcher 的 turn 一律不出口。"""
     assert project(_record(event_type, {"turn": 3, "tool_names": ["SearchSources"]})) is None
+
+
+def test_supervisor_turn_exports_only_written_thought():
+    """Supervisor 写了规划文字才可见；只发 tool_call 的轮（preview 空）保持安静。
+
+    不用 _record：DENIED_FIELDS 注入会覆盖 content_preview，这里要精确控制它。
+    """
+    base = {
+        "event_type": "supervisor_model_turn",
+        "run_id": "r",
+        "seq": 7,
+        "payload": {
+            "turn": 2,
+            "content_preview": "",
+            "tool_names": ["ResearchDelegate"],
+            "queries": ["SECRET-query"],
+        },
+    }
+    assert project(base) is None
+    base["payload"]["content_preview"] = "现有证据缺少法家视角，补派一个方向。"
+    thought = project(base)
+    assert thought.event == "plan"
+    assert thought.data["text"] == "现有证据缺少法家视角，补派一个方向。"
+    # 除文字外不携带其他 payload（tool_names/queries 仍在被禁面）
+    assert set(thought.data) == {"text", "seq"}
+    assert "SECRET" not in json.dumps(thought.data, ensure_ascii=False)
+
+
+def test_node_started_supervisor_routes_to_plan():
+    frame = project(_record("node_started", node="supervisor"))
+    assert (frame.event, frame.data["text"]) == ("plan", "开始拆解研究任务…")
+    # 其余阶段仍是全局 tick
+    assert project(_record("node_started", node="clarify")).event == "tick"
 
 
 def test_research_task_card_lifecycle():
@@ -198,7 +229,6 @@ def test_truncation_marker_becomes_error_frame():
         "source_reader_completed",
         "evidence_chunk_completed",
         "writer_draft_ready",
-        "supervisor_model_turn",
         "run_status",
         "run_done",
         "stream_truncated",

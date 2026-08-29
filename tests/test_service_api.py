@@ -224,7 +224,7 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
     frames = await read_sse(client, token, run_id)
     events = [event for event, _ in frames]
     assert events[-1] == "done"  # 不变式 3：done 恒为收尾
-    assert "正在拆解研究任务…" in _tick_events(frames)  # 全局时间线
+    assert "开始拆解研究任务…" in [data["text"] for event, data in frames if event == "plan"]
     by_event = {event: data for event, data in frames if event.startswith("task_")}
     assert by_event["task_open"]["title"] == "方向甲的局部事实"
     assert by_event["task_update"]["text"] == "检索完成：5 条候选来源"

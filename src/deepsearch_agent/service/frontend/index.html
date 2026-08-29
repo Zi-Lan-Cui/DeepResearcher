@@ -26,24 +26,37 @@
   .row { display:flex; gap:10px; align-items:center; }
   .muted { color:var(--mut); font-size:13px; }
   .err { color:#b42318; }
-  #global-log { font-size:13px; color:var(--mut); }
-  #global-log .ln { padding:2px 0; }
+  #global-log { font-size:12.5px; color:var(--mut); padding-bottom:6px; border-bottom:1px dashed var(--bd); }
+  #global-log .ln { padding:1px 0; }
   #global-log .ln.warn { color:#b42318; }
-  /* 方向卡片：running 淡绿 → done 灰白；第二行滚动，右侧箭头展开动作明细 */
-  .tcard { border:1px solid var(--bd); border-radius:8px; margin:8px 0; background:#fff; }
+  /* supervisor 存在感：规划器是外框（含标题行），方向卡缩为其中的子项行 */
+  #supervisor-zone { border:1px solid var(--bd); border-radius:8px; margin-top:8px; background:#fcfcfd; }
+  #supervisor-zone > .zone-head { display:flex; align-items:center; gap:8px; padding:7px 12px;
+                                  font-weight:600; font-size:14px; color:var(--mut);
+                                  border-bottom:1px dashed var(--bd); }
+  #supervisor-zone > .zone-head .dot { width:7px; height:7px; border-radius:99px; background:#22c55e; }
+  #supervisor-zone.idle > .zone-head .dot { background:var(--bd); }
+  #plan-notes { font-size:12.5px; color:var(--mut); padding:6px 12px; }
+  #plan-notes .ln { padding:2px 0; }
+  #plan-notes .ln.warn { color:#b42318; }
+  #plan-notes:empty { display:none; }
+  #task-cards { padding:4px 8px 8px; }
+  /* 方向卡片：收窄成"子项"观感；running 淡绿 → done 灰白 */
+  .tcard { border:1px solid var(--bd); border-radius:7px; margin:5px 0; background:#fff; }
   .tcard.running { background:#f0fdf4; border-color:#bbf7d0; }
   .tcard.done { background:#f9fafb; color:var(--mut); }
   .tcard.warn { background:#fffbeb; border-color:#fde68a; color:var(--mut); }
   .tcard.failed { background:#fef2f2; border-color:#fecaca; color:#7f1d1d; }
-  .tcard-head { display:flex; align-items:center; gap:8px; padding:9px 12px; }
-  .tcard-title { flex:1; font-weight:600; font-size:14px; line-height:1.4;
+  .tcard-head { display:flex; align-items:center; gap:8px; padding:5px 10px; }
+  .tcard-title { flex:1; font-weight:600; font-size:13px; line-height:1.45;
                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tcard-toggle { border:0; background:none; cursor:pointer; color:var(--mut);
-                  font-size:12px; padding:2px 8px; transition:transform .15s; }
+                  font-size:11px; padding:2px 6px; transition:transform .15s; }
   .tcard.expanded .tcard-toggle { transform:rotate(90deg); }
-  .tcard-live { padding:0 12px 9px; font-size:13px; color:var(--mut); }
+  .tcard-live { padding:0 10px 6px; font-size:12.5px; color:var(--mut); }
   .tcard-live.anim { animation:slidein .35s ease; }
   @keyframes slidein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  .tcard-meta { font-size:12px; color:var(--mut); white-space:nowrap; }
   .tcard-details { display:none; list-style:none; margin:0; padding:0 12px 10px 28px;
                    font-size:12.5px; color:var(--mut); max-height:180px; overflow-y:auto; }
   .tcard.expanded .tcard-details { display:block; }
@@ -133,8 +146,12 @@
     <div class="card">
       <b>实时进度</b>
       <div id="global-log"></div>
-      <div id="cards-caption" class="muted hide" style="margin-top:6px">研究方向（每个方框一条线，右侧 ▸ 展开动作明细）</div>
-      <div id="task-cards"></div>
+      <div id="supervisor-zone" class="idle">
+        <div class="zone-head"><span class="dot"></span><span id="zone-title">研究规划</span></div>
+        <div id="plan-notes"></div>
+        <div id="task-cards"></div>
+      </div>
+      <div id="stage-cards"></div>
     </div>
     <div class="card report hide" id="report-card">
       <b>研究报告</b>
@@ -277,6 +294,25 @@ function progressLine(text, warn) {
 const taskCards = new Map();
 let taskSeq = 0;   // 编号只给真实方向卡（_writer 等阶段卡不占号）
 
+function refreshZone() {
+  const zone = $("supervisor-zone");
+  const anyRunning = zone.querySelector(".tcard.running") !== null;
+  zone.classList.toggle("idle", !anyRunning);
+  $("zone-title").textContent = "Supervisor · 研究规划"
+    + (taskSeq ? "（已派 " + taskSeq + " 个方向" + (anyRunning ? "，执行中…" : "）") : "");
+}
+
+function planNote(text, warn) {
+  if (!text) return;
+  const div = document.createElement("div");
+  div.className = "ln" + (warn ? " warn" : "");
+  div.textContent = text;
+  const notes = $("plan-notes");
+  notes.appendChild(div);
+  while (notes.children.length > 30) notes.removeChild(notes.firstChild);
+  notes.scrollTop = notes.scrollHeight;
+}
+
 function ensureCard(id, title) {
   let card = taskCards.get(id);
   if (card) {
@@ -303,9 +339,9 @@ function ensureCard(id, title) {
   const live = document.createElement("div"); live.className = "tcard-live"; live.textContent = "准备中…";
   const details = document.createElement("ul"); details.className = "tcard-details";
   card.append(head, live, details);
-  $("task-cards").appendChild(card);
+  (isStage ? $("stage-cards") : $("task-cards")).appendChild(card);
   taskCards.set(id, card);
-  if (!isStage) $("cards-caption").classList.remove("hide");
+  if (!isStage) refreshZone();
   return card;
 }
 
@@ -345,6 +381,7 @@ function handleFrame(event, data) {
     lastSeq = data.seq;
   }
   if (event === "tick") progressLine(data.text);
+  else if (event === "plan") planNote(data.text);
   else if (event === "error") progressLine(data.text, true);
   else if (event === "status") setStatus(data.status);
   else if (event === "stats") renderStats(data);
@@ -356,7 +393,8 @@ function handleFrame(event, data) {
     const card = ensureCard(data.task, "");
     card.classList.remove("running");
     card.classList.add(data.status === "failed" ? "failed" : data.status === "warn" ? "warn" : "done");
-    cardAction(card, (data.status === "failed" ? "✗ " : "✓ ") + (data.summary || "完成"));
+    cardAction(card, (data.status === "failed" ? "✗ " : "✓ ") + (data.summary || "本步完成"));
+    refreshZone();
   } else if (event === "done") { setStatus(data.status); onRunDone(data); }
 }
 
@@ -364,9 +402,11 @@ function resetProgressView() {
   taskCards.clear();
   taskSeq = 0;
   $("task-cards").innerHTML = "";
+  $("stage-cards").innerHTML = "";
   $("global-log").innerHTML = "";
+  $("plan-notes").innerHTML = "";
   $("run-metrics").innerHTML = "";
-  $("cards-caption").classList.add("hide");
+  refreshZone();
 }
 
 function setStatus(status) {
