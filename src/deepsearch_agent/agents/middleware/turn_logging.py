@@ -17,7 +17,10 @@ _LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 # ModelCallLimitMiddleware(exit_behavior="end") 注入的收尾消息以此开头；
 # Agent 业务层可用它区分“被预算掐断”与“模型自行收尾”。
 LIMIT_MESSAGE_MARKER = _LIMIT_MESSAGE_MARKER
-_PREVIEW_CHARS = 200
+# supervisor 的回合文字会经 plan 帧直接上屏，并与逐字流式同源：
+# 预览若比流式短，聚合替换瞬间会出现肉眼可见的"打字完被截断"。
+# 800 是单回合旁白的展示上限（事件体积仍受 observability 有界化约束）。
+_PREVIEW_CHARS = 800
 
 
 class TurnLoggingMiddleware(AgentMiddleware):

@@ -130,7 +130,8 @@ def build_graph(
         event_sink=event_sink,
         artifact_max_text_chars=settings.observability.max_text_chars,
         context_window_tokens=settings.llm.context_window_tokens,
-        delta_sink=delta_sink,
+        # writer 不接流式：报告正文走工具参数（本就被预览通道丢弃），
+        # 散文字幕无叙事价值，用户只需要"草稿通过校验"的聚合结果。
     )
     writer_graph = build_writer_graph(writer_agent.run)
     research_agent = ResearchAgent(

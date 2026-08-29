@@ -107,7 +107,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，开始收束")
         return None
     if event_type == "supervisor_model_turn":
-        thought = _text(payload.get("content_preview"), 200)
+        thought = _text(payload.get("content_preview"), 800)  # 与 _PREVIEW_CHARS 对齐
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
     if event_type == "writer_draft_ready":
         return _plan(seq, NodeName.WRITER, "草稿完成，进入审阅")
@@ -151,11 +151,13 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             },
         )
     if event_type == "text_delta":
-        # 生产者是 RunManager 的 ephemeral 旁路；此处仍是唯一出口，
-        # channel 白名单二次校验 + 无 seq（不参与回放去重）。
+        # 生产者是 RunManager 的 relay（引擎 agent 调用点接力）；此处仍是唯一出口。
+        # 只放行 supervisor：writer 正文走工具参数（tool_call_chunk 本就被丢），
+        # 其散文字幕对用户无叙事价值，review/reflection 是结构化调用不经流式——
+        # 两者都只应看到最终聚合结果。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)
-        if channel not in {"supervisor", "writer"} or not text:
+        if channel != "supervisor" or not text:
             return None
         return SseFrame(event="text_delta", data={"channel": channel, "text": text})
     if event_type == TRUNCATED_EVENT:

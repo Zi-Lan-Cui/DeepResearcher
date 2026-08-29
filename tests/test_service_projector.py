@@ -241,9 +241,11 @@ def test_run_status_and_run_done_shape():
 def test_text_delta_whitelist_and_no_seq():
     ok = project(_record("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"}))
     assert (ok.event, ok.data) == ("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"})
-    # 白名单外的 channel、空文本、以及任何被禁字段都不出口
+    # 只有 supervisor 的思考值得逐字预览；writer（正文是工具参数、散文字幕无价值）、
+    # research_agent 与空文本一律不出口
     assert project(_record("text_delta", {"channel": "research_agent", "text": "x"})) is None
-    assert project(_record("text_delta", {"channel": "writer", "text": ""})) is None
+    assert project(_record("text_delta", {"channel": "writer", "text": "写报告中"})) is None
+    assert project(_record("text_delta", {"channel": "supervisor", "text": ""})) is None
     assert "seq" not in ok.data and "SECRET" not in json.dumps(ok.data, ensure_ascii=False)
 
 
