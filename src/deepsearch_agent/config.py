@@ -90,8 +90,9 @@ class AgentConfig:
     # 研究未完全覆盖时，达到该最低材料门槛仍允许 Writer 产出部分报告。
     partial_report_min_evidences: int = 1
     partial_report_min_sources: int = 1
-    # 单次 ReadEvidence 请求的最大返回数量；不限制 Writer 在整个运行中的读取总量。
-    writer_read_batch_size: int = 15
+    # 单次 ReadEvidence 请求的最大返回数量。与 writer_max_selected_evidence 对齐：
+    # 一次调用即可读满引用预算，正常路径不会触发截断；截断信号仅作护栏。
+    writer_read_batch_size: int = 24
     max_subtasks_per_round: int = 12
     max_parallel_workers: int = 3
     supervisor_preview_chars: int = 300
@@ -225,7 +226,7 @@ def _agent_config() -> AgentConfig:
             1, _int_env("AGENT_PARTIAL_REPORT_MIN_EVIDENCES", 1)
         ),
         partial_report_min_sources=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_SOURCES", 1)),
-        writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 15)),
+        writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 24)),
         max_subtasks_per_round=max(1, _int_env("AGENT_MAX_SUBTASKS_PER_ROUND", 12)),
         max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),
         supervisor_preview_chars=max(100, _int_env("AGENT_SUPERVISOR_PREVIEW_CHARS", 300)),
