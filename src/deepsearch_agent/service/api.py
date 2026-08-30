@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.orchestration.graph import build_graph
@@ -166,7 +167,13 @@ def create_app(
                 raise HTTPException(status_code=409, detail="该邮箱已注册。")
             user = User(email=email, password_hash=hash_password(body.password))
             session.add(user)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                # 查重只是快速路径，真正守门的是 UNIQUE 索引：并发的第二个
+                # 同名注册会走到这里（不修则 500）。配额那种跨行不变量才需要
+                # 应用锁；单列唯一交给数据库，我们只负责把冲突翻成 409。
+                raise HTTPException(status_code=409, detail="该邮箱已注册。") from None
             token = state.codec.encode(user.id)
             return JSONResponse(
                 status_code=201,
