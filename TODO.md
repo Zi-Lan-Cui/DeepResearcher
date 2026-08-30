@@ -34,7 +34,7 @@
 ### 降级与恢复（四步走，进度 1/4）
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
-- [ ] ② resume 驱动：reconcile 不再判死有未完成 checkpoint 的 run → 重投 `_execute`（`graph.astream(None, config)` 从断点续跑）；`resuming` 状态上 SSE；**FanoutSink seq 计数器从 `max(RunEvent.seq)+1` 恢复**（否则回放去重失效——已知坑）；取消对 resume 中任务生效。
+- [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
 - [ ] ③ 副作用幂等：搜索/抓取结果缓存（content hash、query 去重——即 P1-A 旧账），否则每次恢复重付断点节点的钱。
 - [ ] ④ clarify `interrupt()` + resume API（`awaiting_input` 状态、配额不占、前端输入框）——与②共用全部基建。
 - [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
