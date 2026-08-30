@@ -16,7 +16,7 @@ from deepsearch_agent.config import (
 from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
 from deepsearch_agent.service.events import CLOSE_STREAM as CLOSE_STREAM_FLAG
 from deepsearch_agent.service.events import FanoutSink
-from deepsearch_agent.service.models import Run, RunEvent
+from deepsearch_agent.service.models import Run, RunEvent, User
 from deepsearch_agent.service.runs import QuotaExceededError, RunManager
 from deepsearch_agent.service.settings import ServiceConfig
 
@@ -38,20 +38,27 @@ def _settings(tmp_path) -> Settings:
 class FakeGraph:
     """记录 ainvoke 输入；可选先发一条引擎事件、等待门控、返回结果或抛错。"""
 
-    def __init__(self, *, result=None, error=None, gate=None, emit_events=1, stream_messages=()):
+    def __init__(self, *, result=None, error=None, gate=None, emit_events=1, stream_messages=(),
+                 resume_run_id="run-resume"):
         self.result = result or {}
         self.error = error
         self.gate = gate
         self.emit_events = emit_events
+        self.resume_run_id = resume_run_id
         self.stream_messages = list(stream_messages)  # [(namespace_tuple, text)]
         self.ainvoke_inputs: list[dict] = []
         self.seen_configs: list[dict] = []
+        self.none_inputs = 0
 
     async def _run(self, input):  # noqa: A002 - 与 LangGraph 契约同名
-        self.ainvoke_inputs.append(dict(input))
+        run_id = input["run_id"] if input is not None else self.resume_run_id
+        if input is None:          # resume 形态：astream(None)，thread_id 定位断点
+            self.none_inputs += 1
+        else:
+            self.ainvoke_inputs.append(dict(input))
         for i in range(self.emit_events):
             self._sink.write(
-                {"run_id": input["run_id"], "event_type": f"engine_{i}", "payload": {}}
+                {"run_id": run_id, "event_type": f"engine_{i}", "payload": {}}
             )
         if self.gate is not None:
             await self.gate.wait()
@@ -265,8 +272,8 @@ async def test_reconcile_startup_converts_stale_rows(manager):
             ]
         )
         await session.commit()
-    changed = await manager.reconcile_startup()
-    assert changed == 2
+    killed, resumable = await manager.reconcile_startup()
+    assert (killed, resumable) == (2, [])  # 无 checkpointer → 全部判死（既往行为）
     for run_id, expected in (("run-stale-a", "failed"), ("run-stale-b", "failed"), ("run-done", "completed")):
         run = await _row(manager, run_id)
         assert run.status == expected
@@ -340,3 +347,79 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         ).all()
     assert persisted == []
     assert (await _row(manager, run_id)).status == "completed"  # values 根命名空间取回终态
+
+
+class FakeSaver:
+    """triage 用的假 checkpointer：只有 alive 集合内的 thread 存在断点。"""
+
+    def __init__(self, alive):
+        self.alive = set(alive)
+        self.queried = []
+
+    async def aget_tuple(self, config):
+        thread_id = config["configurable"]["thread_id"]
+        self.queried.append(thread_id)
+        return object() if thread_id in self.alive else None
+
+
+async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
+    """②全链路：分诊(判死/复活) → seq 续号 → astream(None) 续跑 → 新事件落库。"""
+    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'resume.db'}")
+    await init_db(engine)
+    factory = make_session_factory(engine)
+    async with factory() as session:
+        session.add(User(id=USER_ID, email="r@test", password_hash="h"))
+        session.add(Run(id="run-orphan", user_id=USER_ID, query="孤而可活", status="running"))
+        session.add(Run(id="run-dead", user_id=USER_ID, query="无据可活", status="queued"))
+        for i in range(1, 6):  # 上一世留下的 seq 1..5
+            session.add(RunEvent(run_id="run-orphan", seq=i, event_type=f"engine_{i}", record={"seq": i}))
+        await session.commit()
+
+    holder: dict = {}
+
+    def graph_factory(*, settings, event_sink, http_client, checkpointer=None):
+        graph = FakeGraph(result=_completed_result(), emit_events=3, resume_run_id="run-orphan")
+        graph._sink = event_sink
+        holder["graph"] = graph
+        return graph
+
+    manager = RunManager(
+        settings=_settings(tmp_path),
+        session_factory=factory,
+        config=ServiceConfig(
+            database_url="unused", jwt_secret="s" * 40,
+            service_log_dir=tmp_path, jsonl_events=False,
+        ),
+        fanout=FanoutSink(asyncio.get_running_loop()),
+        http_client=SimpleNamespace(),
+        graph_factory=graph_factory,
+        checkpointer=FakeSaver({"run-orphan"}),
+    )
+    killed, resumable = await manager.reconcile_startup()
+    assert killed == 1
+    assert resumable == [("run-orphan", USER_ID, "孤而可活")]
+    async with factory() as session:
+        assert (await session.get(Run, "run-dead")).status == "failed"
+        assert (await session.get(Run, "run-orphan")).status == "running"  # 未判死
+
+    assert await manager.resume_runs(resumable) == 1
+    task = manager._tasks.get("run-orphan")  # noqa: SLF001
+    assert task is not None
+    await task
+
+    assert holder["graph"].none_inputs == 1  # 续跑用 astream(None)
+    async with factory() as session:
+        seqs = list(
+            (await session.scalars(
+                select(RunEvent.seq).where(RunEvent.run_id == "run-orphan").order_by(RunEvent.seq)
+            )).all()
+        )
+        # 旧 1..5 → resuming=6 → engine×3=7..9 → run_done=10：跨世连续、无主键冲突
+        assert seqs == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        resuming = await session.get(RunEvent, ("run-orphan", 6))
+        assert resuming.record["payload"]["status"] == "resuming"  # 6 号帧确为续跑播报
+        run = await session.get(Run, "run-orphan")
+    assert run.status == "completed"
+    assert run.report_markdown.startswith("# 研究报告")
+    await engine.dispose()
+    await asyncio.sleep(0.1)

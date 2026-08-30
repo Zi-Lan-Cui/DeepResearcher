@@ -82,7 +82,7 @@
   #report sup.cite-ref { font-size:11px; line-height:0; }
   #report sup.cite-ref a { color:var(--ac); text-decoration:none; font-weight:600; }
   .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); white-space:nowrap; flex:none; }
-  .badge.running,.badge.queued { color:#92400e; background:#fef3c7; border-color:#fde68a; }
+  .badge.running,.badge.resuming,.badge.queued { color:#92400e; background:#fef3c7; border-color:#fde68a; }
   .badge.completed { color:#166534; background:#dcfce7; border-color:#bbf7d0; }
   .badge.degraded { color:#92400e; background:#fef3c7; border-color:#fde68a; }
   .badge.failed { color:#b42318; background:#fee2e2; border-color:#fecaca; }
@@ -537,8 +537,8 @@ function resetProgressView() {
 /* completed 只代表"产出了终稿"；writer 耗尽/研究不完美的残局报告降级显示，
    不再用一个绿色 completed 掩盖"没成功"。数据源：answer_mode/terminal_reason。 */
 const STATUS_LABEL = {
-  running: "进行中", queued: "排队中", completed: "已完成",
-  failed: "失败", cancelled: "已取消",
+  running: "进行中", resuming: "恢复续跑中", queued: "排队中",
+  completed: "已完成", failed: "失败", cancelled: "已取消",
 };
 
 function badgeFor(status, info) {
