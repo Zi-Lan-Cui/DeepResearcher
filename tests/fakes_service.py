@@ -63,6 +63,9 @@ class FakeGraph:
     async def ainvoke(self, state, **_kwargs):
         return await self._run(state)
 
+    async def astream(self, state, **_kwargs):
+        yield ((), "values", await self._run(state))
+
 
 def completed_result() -> dict:
     return {
