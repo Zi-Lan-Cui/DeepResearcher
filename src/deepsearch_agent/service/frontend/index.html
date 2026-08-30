@@ -81,11 +81,21 @@
   /* 论文式引用角标：[来源N] → 上标小链接 */
   #report sup.cite-ref { font-size:11px; line-height:0; }
   #report sup.cite-ref a { color:var(--ac); text-decoration:none; font-weight:600; }
-  .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); }
+  .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); white-space:nowrap; flex:none; }
   .badge.running,.badge.queued { color:#92400e; background:#fef3c7; border-color:#fde68a; }
   .badge.completed { color:#166534; background:#dcfce7; border-color:#bbf7d0; }
   .badge.degraded { color:#92400e; background:#fef3c7; border-color:#fde68a; }
-  .badge.failed,.badge.cancelled { color:#b42318; background:#fee2e2; border-color:#fecaca; }
+  .badge.failed { color:#b42318; background:#fee2e2; border-color:#fecaca; }
+  .badge.cancelled { color:#64748b; background:#f1f5f9; border-color:#e2e8f0; }  /* 主动取消不是事故，中性灰 */
+  /* 历史列表：整行可点的行式条目，替代表格+查看按钮 */
+  #runs-list { display:flex; flex-direction:column; }
+  .run-row { display:flex; align-items:center; gap:12px; padding:11px 10px;
+             border-bottom:1px solid #f0f1f3; border-radius:8px; cursor:pointer; }
+  .run-row:last-child { border-bottom:0; }
+  .run-row:hover { background:#f7f9fc; }
+  .run-q { flex:1; min-width:0; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .run-meta { color:var(--mut); font-size:12.5px; white-space:nowrap; }
+  .ask-card textarea:focus { outline:none; border-color:var(--ac); box-shadow:0 0 0 3px rgba(37,99,235,.12); }
   table { width:100%; border-collapse:collapse; font-size:14px; }
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--bd); }
   td.q { max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -134,21 +144,20 @@
 
   <!-- 首页：提问 + 我的运行 -->
   <section id="view-home" class="hide">
-    <div class="card">
+    <div class="card ask-card">
       <textarea id="query" placeholder="提出一个值得深挖的研究问题，例如：性善论和性恶论哪一个更正确？"></textarea>
-      <div class="row" style="margin-top:10px;justify-content:space-between">
-        <span id="quota-hint" class="muted"></span>
+      <div class="row" style="margin-top:12px;justify-content:space-between">
+        <span id="quota-hint" class="muted">Ctrl / ⌘ + Enter 快速开始</span>
         <button id="submit">开始研究</button>
       </div>
       <p id="home-error" class="err"></p>
     </div>
     <div class="card">
-      <b>我的研究</b>
-      <table id="runs-table">
-        <thead><tr><th>问题</th><th>状态</th><th>证据/来源</th><th>时间</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p id="runs-empty" class="muted">还没有研究记录。</p>
+      <div class="row" style="justify-content:space-between;align-items:baseline;margin-bottom:4px">
+        <b>我的研究</b><span id="runs-count" class="muted"></span>
+      </div>
+      <div id="runs-list"></div>
+      <p id="runs-empty" class="muted" style="padding:14px 0">还没有研究记录，从上面提出第一个问题开始。</p>
     </div>
   </section>
 
@@ -158,7 +167,7 @@
       <div class="row" style="justify-content:space-between">
         <b id="run-title">研究进行中</b>
         <span class="row">
-          <span id="run-status" class="badge queued">queued</span>
+          <span id="run-status" class="badge queued">排队中</span>
           <button id="run-cancel" class="secondary">取消</button>
           <button id="run-back" class="secondary">返回</button>
         </span>
@@ -275,28 +284,45 @@ $("submit").onclick = async () => {
   } catch (e) { $("home-error").textContent = e.message; }
   $("submit").disabled = false;
 };
+$("query").addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("submit").click();
+});
+
+function fmtAgo(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const s = (Date.now() - d.getTime()) / 1000;
+  if (s < 60) return "刚刚";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+  if (s < 86400 * 7) return Math.floor(s / 86400) + " 天前";
+  return (d.getMonth() + 1) + "月" + d.getDate() + "日";
+}
 
 async function refreshRuns() {
   let runs = [];
   try { runs = await api("/api/runs"); } catch (e) { return; }
-  const tbody = $("runs-table").querySelector("tbody");
-  tbody.innerHTML = "";
+  const list = $("runs-list");
+  list.innerHTML = "";
   $("runs-empty").classList.toggle("hide", runs.length > 0);
+  $("runs-count").textContent = runs.length ? "共 " + runs.length + " 条" : "";
   for (const run of runs) {
-    const tr = document.createElement("tr");
-    const time = run.created_at ? new Date(run.created_at).toLocaleString() : "";
+    const row = document.createElement("div");
+    row.className = "run-row";
     const badge = badgeFor(run.status, run);
-    tr.innerHTML =
-      '<td class="q"></td><td><span class="badge ' + badge.cls + '"></span></td>' +
-      "<td>" + run.evidence_count + " / " + run.source_count + "</td>" +
-      '<td class="muted">' + time + "</td>";
-    tr.querySelector(".q").textContent = run.query;
-    tr.querySelector(".badge").textContent = badge.text;
-    const open = document.createElement("button");
-    open.className = "secondary"; open.textContent = "查看";
-    open.onclick = () => { location.hash = "#/run/" + run.id; };
-    tr.appendChild(open);
-    tbody.appendChild(tr);
+    const b = document.createElement("span");
+    b.className = "badge " + badge.cls; b.textContent = badge.text;
+    const q = document.createElement("span");
+    q.className = "run-q"; q.textContent = run.query; q.title = run.query;
+    const meta = document.createElement("span");
+    meta.className = "run-meta";
+    const parts = [];
+    if (run.evidence_count || run.source_count) parts.push("证据 " + run.evidence_count + " · 来源 " + run.source_count);
+    parts.push(fmtAgo(run.created_at));
+    meta.textContent = parts.join("　·　");
+    row.append(b, q, meta);
+    row.onclick = () => { location.hash = "#/run/" + run.id; };
+    list.appendChild(row);
   }
 }
 setInterval(() => { if ($("view-home").classList.contains("hide") === false) refreshRuns(); }, 5000);
@@ -504,12 +530,16 @@ function resetProgressView() {
 
 /* completed 只代表"产出了终稿"；writer 耗尽/研究不完美的残局报告降级显示，
    不再用一个绿色 completed 掩盖"没成功"。数据源：answer_mode/terminal_reason。 */
+const STATUS_LABEL = {
+  running: "进行中", queued: "排队中", completed: "已完成",
+  failed: "失败", cancelled: "已取消",
+};
+
 function badgeFor(status, info) {
   const degraded = status === "completed" && info &&
     (info.answer_mode === "research_incomplete" || info.terminal_reason === "writer_exhausted");
-  return degraded
-    ? { cls: "degraded", text: "completed · 部分报告" }
-    : { cls: status, text: status };
+  if (degraded) return { cls: "degraded", text: "部分报告" };
+  return { cls: status, text: STATUS_LABEL[status] || status };
 }
 
 function setStatus(status, info) {
