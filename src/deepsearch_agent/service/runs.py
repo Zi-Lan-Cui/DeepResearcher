@@ -236,6 +236,11 @@ class RunManager:
             message, _metadata = chunk
         except (TypeError, ValueError):
             return
+        # messages 模式同样投递 ToolMessage（如 ReadWorkingSet 的 JSON 回执）：
+        # 工具结果是整块消息不是 token 流，混入预览会"啪"地弹出内部文本。
+        # 只放行语言模型的输出（AIMessage/AIMessageChunk 的 type == "ai"）。
+        if getattr(message, "type", None) != "ai":
+            return
         channel = self._preview_channel(namespace)
         if channel is None:
             return

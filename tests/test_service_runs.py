@@ -62,9 +62,18 @@ class FakeGraph:
         return await self._run(input)
 
     async def astream(self, input, **_kwargs):
-        """复刻官方形态：subgraphs=True 时 yield (namespace, mode, chunk)。"""
-        for namespace, text in self.stream_messages:
-            chunk = (SimpleNamespace(content_blocks=[{"type": "text", "text": text}]), {})
+        """复刻官方形态：subgraphs=True 时 yield (namespace, mode, chunk)。
+
+        stream_messages 条目 = (namespace, text) 或 (namespace, text, msg_type)，
+        msg_type 默认 "ai"；"tool" 模拟 messages 模式里混入的工具回执。
+        """
+        for entry in self.stream_messages:
+            namespace, text = entry[0], entry[1]
+            msg_type = entry[2] if len(entry) > 2 else "ai"
+            chunk = (
+                SimpleNamespace(type=msg_type, content_blocks=[{"type": "text", "text": text}]),
+                {},
+            )
             yield (namespace, "messages", chunk)
         yield ((), "values", await self._run(input))
 
@@ -291,6 +300,7 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
             (("supervisor:aaa", "tools:bbb"), "researcher串流"),  # ✗ 深度>1
             (("writer:ccc",), "writer字幕"),                # ✗ 非白名单
             (("supervisor:ddd",), ""),                      # ✗ 空文本
+            (("supervisor:eee",), "[系统工具执行结果] {\"active_evidence\": []}", "tool"),  # ✗ 工具回执
         ],
     )
     run_id = await manager.start(USER_ID, "q")
