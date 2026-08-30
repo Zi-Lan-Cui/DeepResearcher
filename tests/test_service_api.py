@@ -276,3 +276,16 @@ async def test_static_frontend_served(client):
     response = await client.get("/")
     assert response.status_code == 200
     assert "DeepSearch" in response.text
+
+
+async def test_concurrent_register_same_email_single_winner(client):
+    """快速路径查重可被并发穿透，UNIQUE 索引兜底且必须翻成 409 而非 500。"""
+    payload = {"email": "twin@test.dev", "password": PASSWORD}
+    first, second = await asyncio.gather(
+        client.post("/api/register", json=payload),
+        client.post("/api/register", json=payload),
+    )
+    codes = sorted([first.status_code, second.status_code])
+    assert codes == [201, 409], (first.status_code, second.status_code)
+    ok = await client.post("/api/login", json=payload)
+    assert ok.status_code == 200  # 恰有一个账号存在且可登录
