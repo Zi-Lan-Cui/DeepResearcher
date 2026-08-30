@@ -117,18 +117,27 @@ class RunManager:
 
     # ---- 启动/停机 ----
 
-    async def reconcile_startup(self) -> int:
-        """上个进程死掉时残留的 queued/running 一律收敛为 failed。
+    async def reconcile_startup(self) -> tuple[int, list[tuple[str, int, str]]]:
+        """崩溃恢复分诊（步骤②）：queued/running 残留行不再一律判死。
 
-        同时为每个孤儿 run 补一条持久化的 run_done 事件：它们的进程已蒸发，
-        事件表天然缺少收尾帧——不补，前端打开历史详情页的 SSE 回放永远等不到
-        done，会陷入无限重连。
+        - 有 checkpoint 的 → 可复活：原样留给 resume_runs（状态不改写，
+          SSE 以 resuming 播报）；
+        - 无 checkpoint 的 → 确认死亡：failed/server_restart + 补合成
+          run_done 收尾帧（无此帧，历史详情页的 SSE 回放永远等不到结束，
+          前端会无限重连）。
+        checkpointer=None（CLI/SQLite 测试）时全部走判死路径，行为与既往一致。
         """
+        resumable: list[tuple[str, int, str]] = []
+        killed = 0
         async with self._session_factory() as session:
             stale = (
                 await session.scalars(select(Run).where(Run.status.in_(("queued", "running"))))
             ).all()
             for run in stale:
+                if await self._has_checkpoint(run.id):
+                    resumable.append((run.id, run.user_id, run.query))
+                    continue
+                killed += 1
                 run.status = "failed"
                 run.terminal_reason = "server_restart"
                 run.error_message = "进程重启导致运行中断，请重新发起。"
@@ -155,7 +164,37 @@ class RunManager:
                     )
                 )
             await session.commit()
-            return len(stale)
+        return killed, resumable
+
+    async def _has_checkpoint(self, run_id: str) -> bool:
+        if self._checkpointer is None:
+            return False
+        tuple_ = await self._checkpointer.aget_tuple(
+            {"configurable": {"thread_id": run_id, "checkpoint_ns": ""}}
+        )
+        return tuple_ is not None
+
+    async def resume_runs(self, pending: list[tuple[str, int, str]]) -> int:
+        """复活有 checkpoint 的孤儿 run：astream(None) 从断点续跑。
+
+        关键不变量：fanout 的 seq 计数器先从 run_events 的 max 续号——
+        续跑事件的 seq 因此与上一世连续，主键不撞、前端去重不误杀。
+        """
+        for run_id, user_id, query in pending:
+            async with self._session_factory() as session:
+                max_seq = await session.scalar(
+                    select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id)
+                )
+            self._fanout.open(run_id)
+            self._fanout.seed_seq(run_id, int(max_seq or 0))
+            await self._publish_status(run_id, "resuming")
+            task = asyncio.create_task(
+                self._execute(run_id, user_id, query, resume=True),
+                name=f"research-resume-{run_id}",
+            )
+            self._tasks[run_id] = task
+            task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
+        return len(pending)
 
     async def shutdown(self) -> None:
         for task in list(self._tasks.values()):
@@ -164,7 +203,7 @@ class RunManager:
 
     # ---- 执行 ----
 
-    async def _execute(self, run_id: str, user_id: int, query: str) -> None:
+    async def _execute(self, run_id: str, user_id: int, query: str, *, resume: bool = False) -> None:
         sinks: list[Any] = [self._fanout]
         if self._config.jsonl_events:
             sinks.append(
@@ -180,10 +219,10 @@ class RunManager:
                 http_client=self._http_client,
                 checkpointer=self._checkpointer,
             )
-            # run_id 必须显式进入输入（见模块不变式 1）。
-            result = await self._run_graph(
-                run_id, graph, {"query": query, "run_id": run_id, "session_id": run_id}
-            )
+            # run_id 必须显式进入输入（见模块不变式 1）；resume 时输入 None，
+            # 由 checkpointer 依据 thread_id 从最后一个 superstep 续跑。
+            inputs = None if resume else {"query": query, "run_id": run_id, "session_id": run_id}
+            result = await self._run_graph(run_id, graph, inputs)
             await self._persist_terminal(run_id, result)
         except asyncio.CancelledError:
             # 引擎保证 CancelledError 干净重抛（执行边界不做业务失败化），
@@ -212,7 +251,7 @@ class RunManager:
 
     # ---- token 级预览：官方嵌套流式（subgraphs=True），引擎零修改 ----
 
-    async def _run_graph(self, run_id: str, graph: Any, inputs: dict) -> dict:
+    async def _run_graph(self, run_id: str, graph: Any, inputs: dict | None) -> dict:
         """astream(values+messages, subgraphs=True)：values 根命名空间 = ainvoke 返回值；
 
         messages 携带**嵌套 agent**（create_agent 子图，含 context 注入调用）的逐字
@@ -285,13 +324,18 @@ class RunManager:
     # ---- 持久化 ----
 
     async def _mark_running(self, run_id: str) -> None:
+        transitioned = False
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
             if run is not None and run.status == "queued":
                 run.status = "running"
                 run.started_at = _utcnow()
+                transitioned = True
                 await session.commit()
-        await self._publish_status(run_id, "running")
+        # 状态帧镜像真实转移：resume 的运行本来就是 running，不再谎报一次转移
+        # （曾多推一帧 run_status，把"恢复续跑中"徽章瞬间冲掉）。
+        if transitioned:
+            await self._publish_status(run_id, "running")
 
     async def _persist_terminal(self, run_id: str, result: dict) -> None:
         lifecycle = result.get("run") or {}

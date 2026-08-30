@@ -124,6 +124,16 @@ class FanoutSink:
             self._subs.get(run_id, {}).pop(key, None)
             self._dropped.pop((run_id, key), None)
 
+    def seed_seq(self, run_id: str, value: int) -> None:
+        """进程重启后为新 run 续号：seq 从库中 max(RunEvent.seq) 继续。
+
+        没有这一步，续跑（resume）产生的事件会拿着重叠的 seq 撞主键，
+        且前端回放去重会把它们当作旧事件全部丢弃。只允许向前拨表。
+        """
+        with self._lock:
+            if run_id in self._open and value > self._counters.get(run_id, 0):
+                self._counters[run_id] = value
+
     def publish_ephemeral(self, run_id: str, record: dict) -> None:
         """只投递、不记账的旁路通道（token 级预览帧专用）。
 

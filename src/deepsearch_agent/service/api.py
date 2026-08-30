@@ -123,9 +123,12 @@ def create_app(
             graph_factory=graph_factory,
             checkpointer=checkpointer,
         )
-        recovered = await manager.reconcile_startup()
-        if recovered:
-            app.state.service_logger.info("reconciled_stale_runs count=%d", recovered)
+        killed, resumable = await manager.reconcile_startup()
+        if killed:
+            app.state.service_logger.info("reconciled_stale_runs count=%d", killed)
+        if resumable:
+            resumed = await manager.resume_runs(resumable)
+            app.state.service_logger.info("resuming_orphan_runs count=%d", resumed)
 
         app.state.config = cfg
         app.state.settings = engine_settings
