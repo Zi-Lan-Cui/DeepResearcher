@@ -93,8 +93,13 @@
              border-bottom:1px solid #f0f1f3; border-radius:8px; cursor:pointer; }
   .run-row:last-child { border-bottom:0; }
   .run-row:hover { background:#f7f9fc; }
+  /* 三列定宽对齐：徽章等宽→问题起点齐；计数/时间右对齐定宽→不再参差 */
+  .run-row .badge { min-width:56px; text-align:center; }
   .run-q { flex:1; min-width:0; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .run-meta { color:var(--mut); font-size:12.5px; white-space:nowrap; }
+  .run-counts { flex:none; width:128px; text-align:right; font-size:12.5px; color:var(--mut);
+                font-variant-numeric:tabular-nums; }
+  .run-time { flex:none; width:68px; text-align:right; font-size:12.5px; color:var(--mut);
+              font-variant-numeric:tabular-nums; }
   .ask-card textarea:focus { outline:none; border-color:var(--ac); box-shadow:0 0 0 3px rgba(37,99,235,.12); }
   table { width:100%; border-collapse:collapse; font-size:14px; }
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--bd); }
@@ -314,13 +319,13 @@ async function refreshRuns() {
     b.className = "badge " + badge.cls; b.textContent = badge.text;
     const q = document.createElement("span");
     q.className = "run-q"; q.textContent = run.query; q.title = run.query;
-    const meta = document.createElement("span");
-    meta.className = "run-meta";
-    const parts = [];
-    if (run.evidence_count || run.source_count) parts.push("证据 " + run.evidence_count + " · 来源 " + run.source_count);
-    parts.push(fmtAgo(run.created_at));
-    meta.textContent = parts.join("　·　");
-    row.append(b, q, meta);
+    const counts = document.createElement("span");
+    counts.className = "run-counts";
+    counts.textContent = (run.evidence_count || run.source_count)
+      ? "证据 " + run.evidence_count + " · 来源 " + run.source_count : "";
+    const time = document.createElement("span");
+    time.className = "run-time"; time.textContent = fmtAgo(run.created_at);
+    row.append(b, q, counts, time);
     row.onclick = () => { location.hash = "#/run/" + run.id; };
     list.appendChild(row);
   }
