@@ -93,8 +93,9 @@
              border-bottom:1px solid #f0f1f3; border-radius:8px; cursor:pointer; }
   .run-row:last-child { border-bottom:0; }
   .run-row:hover { background:#f7f9fc; }
-  /* 三列定宽对齐：徽章等宽→问题起点齐；计数/时间右对齐定宽→不再参差 */
-  .run-row .badge { min-width:56px; text-align:center; }
+  /* 三列定宽对齐：徽章定宽（容四字的"部分报告"）→ 问题起点齐；
+     计数/时间右对齐定宽 → 不再参差。定宽而非改名，保住"完成≠完整"的语义。 */
+  .run-row .badge { width:74px; text-align:center; }
   .run-q { flex:1; min-width:0; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .run-counts { flex:none; width:128px; text-align:right; font-size:12.5px; color:var(--mut);
                 font-variant-numeric:tabular-nums; }
