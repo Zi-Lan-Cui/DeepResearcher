@@ -82,8 +82,15 @@ def build_graph(
     event_sink=None,
     trace_recorder: TraceRecorder | None = None,
     http_client: HttpClient | None = None,
+    checkpointer=None,
 ):
-    """装配完整研究应用；必需模型和联网工具缺失时立即失败。"""
+    """装配完整研究应用；必需模型和联网工具缺失时立即失败。
+
+    checkpointer 为 LangGraph BaseCheckpointSaver（如 AsyncPostgresSaver）：
+    每个 superstep 结束持久化 state 通道，调用方以
+    config={"configurable": {"thread_id": run_id}} 获得断点重放/续跑能力；
+    None（CLI/测试默认）行为与既往完全一致。
+    """
     settings = settings or get_settings()
     llm = llm or build_llm(settings)
 
@@ -239,4 +246,4 @@ def build_graph(
     )
     graph.add_edge(START, NodeName.ROUTER)
     graph.add_edge(NodeName.RENDER_FINAL_REPORT, END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
