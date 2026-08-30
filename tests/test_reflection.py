@@ -3,6 +3,7 @@ import asyncio
 from deepsearch_agent.orchestration.nodes import (
     reflection,
 )
+from deepsearch_agent.orchestration.nodes.reflection import reflection as reflection_core
 from deepsearch_agent.schemas import (
     ReflectionDecision,
     ReviewIssue,
@@ -97,3 +98,60 @@ def test_reflection_allows_warnings_without_rejecting_report(monkeypatch):
 
     assert result["review"].status == "approved"
     assert result["review"].issues[0].severity == "warning"
+
+
+def _decision():
+    return ReflectionDecision(feedback="通过", gaps=[], issues=[])
+
+
+def _review_state():
+    return {
+        "clarified_query": "q",
+        "report_brief": REPORT_BRIEF,
+        "review_attempts": 0,
+        "paragraph_bindings": [_binding("A 文学性高", ["e1"], kind="evidence")],
+        "citations": [_cite("e1", claim="A 有复杂叙事", quote="A 有复杂叙事。")],
+    }
+
+
+def test_reflection_retries_content_filter_then_succeeds(monkeypatch):
+    from openai import ContentFilterFinishReasonError
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    calls = {"n": 0}
+
+    async def flaky(llm, schema, messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ContentFilterFinishReasonError()
+        return _decision()
+
+    result = asyncio.run(reflection_core(_review_state(), object(), invoke_structured=flaky))
+    assert result["review"].status == "approved"
+    assert calls["n"] == 2   # 首次被内容审查拦截，重试一次成功
+
+
+def test_reflection_exhausts_retries_and_reraises(monkeypatch):
+    from openai import ContentFilterFinishReasonError
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    calls = {"n": 0}
+
+    async def always_filtered(llm, schema, messages):
+        calls["n"] += 1
+        raise ContentFilterFinishReasonError()
+
+    try:
+        asyncio.run(
+            reflection_core(_review_state(), object(), invoke_structured=always_filtered)
+        )
+        assert False, "应当抛出"
+    except ContentFilterFinishReasonError:
+        pass
+    # attempts=1 → 共 2 次尝试后放弃
+    from deepsearch_agent.config import get_settings
+    assert calls["n"] == get_settings().agent.reflection_retry_attempts + 1
+
+
+async def _no_sleep(_seconds):
+    return None
