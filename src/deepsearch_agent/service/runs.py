@@ -176,14 +176,10 @@ class RunManager:
                 settings=self._settings_for(user_id),
                 event_sink=sink,
                 http_client=self._http_client,
-                delta_sink=self._make_delta_relay(run_id),
             )
             # run_id 必须显式进入输入（见模块不变式 1）。
-            # token 预览不走这里的返回值路径：嵌套 agent 在引擎内部经
-            # delta_sink 接力（agents/streaming.py），外层 astream 的
-            # messages 模式对嵌套 Pregel 不可见（实测）。
-            result = await graph.ainvoke(
-                {"query": query, "run_id": run_id, "session_id": run_id}
+            result = await self._run_graph(
+                run_id, graph, {"query": query, "run_id": run_id, "session_id": run_id}
             )
             await self._persist_terminal(run_id, result)
         except asyncio.CancelledError:
@@ -211,19 +207,45 @@ class RunManager:
         """BYO-keys 预留缝：将来按用户返回 replace(...) 的 Settings，仅此一处。"""
         return self._settings
 
-    # ---- token 级预览（ephemeral 旁路；事实仍是落库的聚合帧） ----
+    # ---- token 级预览：官方嵌套流式（subgraphs=True），引擎零修改 ----
 
-    def _make_delta_relay(self, run_id: str):
-        """引擎 agent 调用点接力出的 (channel, text) → ephemeral SSE 帧。
+    async def _run_graph(self, run_id: str, graph: Any, inputs: dict) -> dict:
+        """astream(values+messages, subgraphs=True)：values 根命名空间 = ainvoke 返回值；
 
-        逐 chunk 直发不缓冲：实测网关 ~25ms/字、每块 1-5 字，帧率与 token
-        同步才有"打字"感。channel 白名单（只放行 supervisor/writer）在
-        projector 把关——relay 不重复造闸门。
+        messages 携带**嵌套 agent**（create_agent 子图，含 context 注入调用）的逐字
+        token——实测四种嵌套/组合形态，唯有 subgraphs=True 能同时给出
+        根最终状态与子图 token 流（见 docs/service-p0.md）。异常与取消在
+        async-for 处抛出，语义与原 ainvoke 一致，_execute 的 except 分支不动。
         """
+        final: dict = {}
+        async for namespace, mode, chunk in graph.astream(
+            inputs, stream_mode=["values", "messages"], subgraphs=True
+        ):
+            if mode == "values":
+                if namespace == () and isinstance(chunk, dict):
+                    final = chunk
+                continue
+            if mode == "messages":
+                # 同步直发：publish_ephemeral 内部只有锁+put_nowait，不阻塞；
+                # 绝不可放线程池——乱序完成的 to_thread 会打乱 token 帧序。
+                self._publish_message_preview(run_id, namespace, chunk)
+        return final
 
-        def relay(channel: str, text: str) -> None:
+    def _publish_message_preview(self, run_id: str, namespace: Any, chunk: Any) -> None:
+        try:
+            message, _metadata = chunk
+        except (TypeError, ValueError):
+            return
+        channel = self._preview_channel(namespace)
+        if channel is None:
+            return
+        for block in getattr(message, "content_blocks", None) or []:
+            # tool_call_chunk / 推理块 type 不是 text：报告 JSON 半成品永不进预览。
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = str(block.get("text") or "")
             if not text:
-                return
+                continue
             try:
                 self._fanout.publish_ephemeral(
                     run_id,
@@ -233,10 +255,21 @@ class RunManager:
                         "payload": {"channel": channel, "text": text[:200]},
                     },
                 )
-            except Exception:  # noqa: BLE001 - 预览通道永不反噬 agent 执行
-                logger.debug("delta_relay_publish_failed run_id=%s", run_id, exc_info=True)
+            except Exception:  # noqa: BLE001 - 预览通道不反噬运行
+                logger.debug("delta_publish_failed run_id=%s", run_id, exc_info=True)
 
-        return relay
+    @staticmethod
+    def _preview_channel(namespace: Any) -> str | None:
+        """ns 路径恰好落在 supervisor 宿主节点 → supervisor 思考通道。
+
+        深度大于 1 的路径（如 ('supervisor:…','tools:…')）是 researcher 在
+        工具内嵌套执行的 token，混入会串卡；writer/reflection 不在白名单——
+        用户只应看到它们的聚合结果。
+        """
+        if not isinstance(namespace, tuple) or len(namespace) != 1:
+            return None
+        head = str(namespace[0]).split(":", 1)[0]
+        return head if head == "supervisor" else None
 
     # ---- 持久化 ----
 

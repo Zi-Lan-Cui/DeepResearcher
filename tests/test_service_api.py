@@ -29,10 +29,9 @@ def _tick_events(frames):
 async def client(tmp_path):
     graphs: list[FakeGraph] = []
 
-    def graph_factory(*, settings, event_sink, http_client, delta_sink=None):
+    def graph_factory(*, settings, event_sink, http_client):
         graph = graphs.pop(0) if graphs else FakeGraph()
         graph._sink = event_sink
-        graph._delta_sink = delta_sink
         return graph
 
     app = create_app(

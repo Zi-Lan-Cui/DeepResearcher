@@ -151,10 +151,9 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             },
         )
     if event_type == "text_delta":
-        # 生产者是 RunManager 的 relay（引擎 agent 调用点接力）；此处仍是唯一出口。
-        # 只放行 supervisor：writer 正文走工具参数（tool_call_chunk 本就被丢），
-        # 其散文字幕对用户无叙事价值，review/reflection 是结构化调用不经流式——
-        # 两者都只应看到最终聚合结果。
+        # 生产者是 RunManager 对官方 astream(subgraphs=True) messages 的 ns 路由；
+        # 这里仍做第二道闸：只放行 supervisor。writer 正文走工具参数、
+        # reflection 是结构化调用——两者只应看到最终聚合结果。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)
         if channel != "supervisor" or not text:
