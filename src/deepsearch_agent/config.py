@@ -93,6 +93,9 @@ class AgentConfig:
     # 引用总条数不设上限——writer_max_selected_evidence 已移除：它制造过两次
     # 提交死循环，而聚焦度实际由"只能引用已读"+审阅把关，与条数无关。
     writer_read_batch_size: int = 30
+    # reflection 对内容审查抖动/坏 JSON 的额外重试次数（传输重试另有其层）。
+    reflection_retry_attempts: int = 1
+    reflection_retry_initial_seconds: float = 2.0
     max_subtasks_per_round: int = 12
     max_parallel_workers: int = 3
     supervisor_preview_chars: int = 300
@@ -235,6 +238,10 @@ def _agent_config() -> AgentConfig:
         ),
         partial_report_min_sources=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_SOURCES", 1)),
         writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
+        reflection_retry_attempts=max(0, _int_env("AGENT_REFLECTION_RETRY_ATTEMPTS", 1)),
+        reflection_retry_initial_seconds=max(
+            0.0, _float_env("AGENT_REFLECTION_RETRY_INITIAL_SECONDS", 2.0)
+        ),
         max_subtasks_per_round=max(1, _int_env("AGENT_MAX_SUBTASKS_PER_ROUND", 12)),
         max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),
         supervisor_preview_chars=max(100, _int_env("AGENT_SUPERVISOR_PREVIEW_CHARS", 300)),
