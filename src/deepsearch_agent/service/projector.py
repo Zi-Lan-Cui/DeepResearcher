@@ -91,8 +91,15 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return None
     if event_type == "node_failed":
         # 只说哪个阶段失败：内部异常文本永远不出网关（完整信息在 RunEvent/日志）。
-        label = _STAGE_TITLES.get(node, node) if isinstance(node, str) else "某阶段"
-        return _frame("error", seq, {"text": f"{label} 执行失败"})
+        # 已知节点必须用 failed 的 stage_done 关框——否则阶段框停在"运行中"
+        # 的绿点上永远呼吸（reflection 内容审查事故实锤），未知节点退回全局错误行。
+        if isinstance(node, str) and node in _STAGE_TITLES:
+            return _frame(
+                "stage_done",
+                seq,
+                {"stage": node, "status": "failed", "text": f"{_STAGE_TITLES[node]} 执行失败"},
+            )
+        return _frame("error", seq, {"text": f"{node if isinstance(node, str) else '某阶段'} 阶段执行失败"})
     if event_type == "node_cancelled":
         return _tick(seq, "该阶段已取消")
 

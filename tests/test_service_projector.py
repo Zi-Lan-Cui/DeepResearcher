@@ -68,10 +68,15 @@ def test_unmapped_model_turn_agent_returns_none():
 
 
 def test_node_failed_uses_safe_text_only():
-    frame = project(_record("node_failed", node="writer"))
-    assert frame.event == "error"
-    assert "Writer" in frame.data["text"] and "执行失败" in frame.data["text"]
+    frame = project(_record("node_failed", node="reflection"))
+    # 已知节点：失败也必须关框（红点收束），绝不停留在 running
+    assert (frame.event, frame.data["stage"], frame.data["status"]) == (
+        "stage_done", "reflection", "failed",
+    )
+    assert "Reviewer" in frame.data["text"] and "执行失败" in frame.data["text"]
     assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
+    # 未知节点退回全局错误行
+    assert project(_record("node_failed", node="mystery")).event == "error"
 
 
 def test_direction_search_becomes_task_update_without_direction_text():
