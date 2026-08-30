@@ -45,6 +45,7 @@ class FakeGraph:
         self.emit_events = emit_events
         self.stream_messages = list(stream_messages)  # [(namespace_tuple, text)]
         self.ainvoke_inputs: list[dict] = []
+        self.seen_configs: list[dict] = []
 
     async def _run(self, input):  # noqa: A002 - 与 LangGraph 契约同名
         self.ainvoke_inputs.append(dict(input))
@@ -61,12 +62,13 @@ class FakeGraph:
     async def ainvoke(self, input, **_kwargs):
         return await self._run(input)
 
-    async def astream(self, input, **_kwargs):
+    async def astream(self, input, **kwargs):
         """复刻官方形态：subgraphs=True 时 yield (namespace, mode, chunk)。
 
         stream_messages 条目 = (namespace, text) 或 (namespace, text, msg_type)，
         msg_type 默认 "ai"；"tool" 模拟 messages 模式里混入的工具回执。
         """
+        self.seen_configs.append(dict(kwargs))  # 记录 config（thread_id 注入断言用）
         for entry in self.stream_messages:
             namespace, text = entry[0], entry[1]
             msg_type = entry[2] if len(entry) > 2 else "ai"
@@ -114,8 +116,9 @@ async def manager(tmp_path):
     )
     holder: dict = {}
 
-    def graph_factory(*, settings, event_sink, http_client):
+    def graph_factory(*, settings, event_sink, http_client, checkpointer=None):
         holder["sink"] = event_sink
+        holder["checkpointer"] = checkpointer
         graph = holder.get("graph") or FakeGraph()
         graph._sink = event_sink
         return graph
@@ -288,6 +291,18 @@ async def test_reconcile_startup_converts_stale_rows(manager):
     assert len(orphans) == 2
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
+
+
+async def test_run_graph_passes_thread_id_config(manager):
+    """①恢复基建的接缝：graph 必须收到 thread_id=run_id 的 config，
+    否则 checkpointer 无处落、resume 无从谈起。"""
+    graph = FakeGraph(result=_completed_result())
+    manager.holder["graph"] = graph
+    run_id = await manager.start(USER_ID, "q")
+    await _settle(manager, run_id)
+    assert graph.seen_configs, "astream 未收到 kwargs"
+    configs = [c.get("config") for c in graph.seen_configs]
+    assert {"configurable": {"thread_id": run_id}} in configs
 
 
 async def test_streaming_preview_routing_and_ephemerality(manager):

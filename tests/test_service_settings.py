@@ -66,3 +66,15 @@ def test_env_overrides_are_clamped(_clean_env, monkeypatch):
 def test_explicit_config_usable_without_env(_clean_env):
     config = ServiceConfig(database_url="x", jwt_secret="y")
     assert config.token_ttl_hours == 12
+
+
+def test_checkpoint_dsn_derivation():
+    from deepsearch_agent.service.settings import checkpoint_dsn
+
+    assert (
+        checkpoint_dsn("postgresql+asyncpg://u:p@localhost:5432/db")
+        == "postgresql://u:p@localhost:5432/db"
+    )
+    assert checkpoint_dsn("postgresql://plain/url") == "postgresql://plain/url"
+    # 非 PG 部署（测试 SQLite）不假装支持恢复
+    assert checkpoint_dsn("sqlite+aiosqlite:///x.db") is None

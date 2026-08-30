@@ -53,7 +53,9 @@ class RunManager:
         fanout: FanoutSink,
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
+        checkpointer: Any = None,
     ):
+        self._checkpointer = checkpointer
         self._settings = settings
         self._session_factory = session_factory
         self._config = config
@@ -176,6 +178,7 @@ class RunManager:
                 settings=self._settings_for(user_id),
                 event_sink=sink,
                 http_client=self._http_client,
+                checkpointer=self._checkpointer,
             )
             # run_id 必须显式进入输入（见模块不变式 1）。
             result = await self._run_graph(
@@ -219,7 +222,10 @@ class RunManager:
         """
         final: dict = {}
         async for namespace, mode, chunk in graph.astream(
-            inputs, stream_mode=["values", "messages"], subgraphs=True
+            inputs,
+            config={"configurable": {"thread_id": run_id}},
+            stream_mode=["values", "messages"],
+            subgraphs=True,
         ):
             if mode == "values":
                 if namespace == () and isinstance(chunk, dict):

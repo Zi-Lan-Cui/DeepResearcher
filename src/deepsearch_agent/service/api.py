@@ -38,7 +38,11 @@ from deepsearch_agent.service.events import CLOSE_STREAM, FanoutSink
 from deepsearch_agent.service.models import Run, RunEvent, User
 from deepsearch_agent.service.projector import project
 from deepsearch_agent.service.runs import QuotaExceededError, RunManager
-from deepsearch_agent.service.settings import ServiceConfig, get_service_config
+from deepsearch_agent.service.settings import (
+    ServiceConfig,
+    checkpoint_dsn,
+    get_service_config,
+)
 from deepsearch_agent.tools.transport import HttpClient
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
@@ -95,6 +99,20 @@ def create_app(
         # HttpClient 进程级一个：跨 run 共享 provider 信号量与断路器（图不会关闭外来的它）。
         http_client = HttpClient(engine_settings.search)
         fanout = FanoutSink(asyncio.get_running_loop())
+
+        # checkpointer：仅 PostgreSQL 部署启用（AsyncPostgresSaver 走 psycopg，与
+        # 业务库同实例、独立连接）。SQLite 测试路径 checkpoint_dsn 返回 None，
+        # 恢复能力随部署形态自动降级——不假装有。
+        checkpoint_cm = None
+        checkpointer = None
+        dsn = checkpoint_dsn(cfg.database_url)
+        if dsn is not None:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            checkpoint_cm = AsyncPostgresSaver.from_conn_string(dsn)
+            checkpointer = await checkpoint_cm.__aenter__()
+            await checkpointer.setup()
+
         manager = RunManager(
             settings=engine_settings,
             session_factory=session_factory,
@@ -102,6 +120,7 @@ def create_app(
             fanout=fanout,
             http_client=http_client,
             graph_factory=graph_factory,
+            checkpointer=checkpointer,
         )
         recovered = await manager.reconcile_startup()
         if recovered:
@@ -113,6 +132,7 @@ def create_app(
         app.state.session_factory = session_factory
         app.state.fanout = fanout
         app.state.manager = manager
+        app.state.checkpointer = checkpointer
         app.state.codec = TokenCodec(cfg.jwt_secret, cfg.token_ttl_hours)
         app.state.auth_dependency = make_current_user(app.state.codec, session_factory)
         try:
@@ -120,6 +140,8 @@ def create_app(
         finally:
             await manager.shutdown()
             await http_client.aclose()
+            if checkpoint_cm is not None:
+                await checkpoint_cm.__aexit__(None, None, None)
             await engine.dispose()
 
     from deepsearch_agent.observability.logger import get_logger

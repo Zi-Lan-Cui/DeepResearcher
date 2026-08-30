@@ -98,3 +98,15 @@ def get_service_config() -> ServiceConfig:
 def clear_service_config_cache() -> None:
     """仅供测试或显式热加载配置使用。"""
     get_service_config.cache_clear()
+
+
+def checkpoint_dsn(database_url: str) -> str | None:
+    """由业务库 URL 派生 checkpointer 的 psycopg DSN。
+
+    langgraph 的 AsyncPostgresSaver 走 psycopg（不认 SQLAlchemy 的 +asyncpg 方言），
+    两者共享同一个 PG 实例但连接层独立；非 postgresql URL（测试用 SQLite）
+    返回 None，服务自动跳过 checkpointer——恢复能力随部署形态降级，不假装有。
+    """
+    if not database_url.startswith("postgresql"):
+        return None
+    return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
