@@ -21,7 +21,10 @@ _REFERENCE_HEADING = re.compile(
     r"|Sources?(?: and References?)?|References?|Bibliography)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
-_NEXT_HEADING = {2: re.compile(r"^#{1,2}[ \t]", re.MULTILINE), 3: re.compile(r"^#{1,3}[ \t]", re.MULTILINE)}
+_NEXT_HEADING = {
+    2: re.compile(r"^#{1,2}[ \t]", re.MULTILINE),
+    3: re.compile(r"^#{1,3}[ \t]", re.MULTILINE),
+}
 
 
 def _strip_reference_section(body: str) -> str:
@@ -158,30 +161,37 @@ def render_incomplete_report(state: ResearchState, reasons: list[str]) -> str:
                 if isinstance(task, ResearchDirectionResult)
                 else f"{task.get('execution_status', 'unknown')}/{task.get('coverage_status', 'unknown')}"
             )
-            direction = task.research_direction if isinstance(task, ResearchDirectionResult) else str(task.get("research_direction", "未命名方向"))
+            direction = (
+                task.research_direction
+                if isinstance(task, ResearchDirectionResult)
+                else str(task.get("research_direction", "未命名方向"))
+            )
             lines.append(f"- [{status}] {direction}")
         gaps: list[str] = []
         for task in task_results:
-            values = task.remaining_gaps if isinstance(task, ResearchDirectionResult) else task.get("remaining_gaps", [])
+            values = (
+                task.remaining_gaps
+                if isinstance(task, ResearchDirectionResult)
+                else task.get("remaining_gaps", [])
+            )
             gaps.extend(str(value) for value in values if str(value).strip())
         gaps.extend(str(value) for value in research.coverage_gaps if str(value).strip())
         if gaps:
             lines.append("未闭合缺口：")
             lines.extend(f"- {gap}" for gap in dict.fromkeys(gaps))
-    lines.extend([
-        "",
-        "## 已知阻塞",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 已知阻塞",
+        ]
+    )
     lines.extend(f"- {reason}" for reason in reasons)
     return "\n".join(lines)
 
 
 def render_error_report(state: ResearchState, error: RunError) -> str:
-    """统一渲染顶层节点异常，保留阶段、错误码和可读诊断。"""
-    detail = error.detail.strip()
-    reason = f"阶段 `{error.stage}` 失败（{error.code}）：{error.message}"
-    if detail:
-        reason += f"；{detail}"
+    """渲染面向用户的失败报告；异常原文只保留在日志和内部事件。"""
+    reason = f"阶段 `{error.stage}` 执行失败，请稍后重试或重新发起。"
     return render_incomplete_report(state, [reason]) + "\n\n[流程状态：失败]"
 
 

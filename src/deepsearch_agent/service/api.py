@@ -65,6 +65,10 @@ class CreateRunBody(BaseModel):
     query: str = Field(min_length=1, max_length=_MAX_QUERY_CHARS)
 
 
+class ResumeRunBody(BaseModel):
+    answer: str = Field(min_length=1, max_length=_MAX_QUERY_CHARS)
+
+
 def _run_summary(run: Run) -> dict[str, Any]:
     return {
         "id": run.id,
@@ -238,9 +242,7 @@ def create_app(
     async def _owned_run(request: Request, user: User, run_id: str) -> Run:
         state = _get_state(request)
         async with state.session_factory() as session:
-            run = await session.scalar(
-                select(Run).where(Run.id == run_id, Run.user_id == user.id)
-            )
+            run = await session.scalar(select(Run).where(Run.id == run_id, Run.user_id == user.id))
         if run is None:  # 越权与不存在同码：不暴露他人 run 的存在性
             raise HTTPException(status_code=404, detail="运行不存在。")
         return run
@@ -250,11 +252,37 @@ def create_app(
         run_id: str, request: Request, user: User = Depends(auth_dependency)
     ) -> dict[str, Any]:
         run = await _owned_run(request, user, run_id)
+        clarification = None
+        if run.status == "awaiting_input":
+            state = _get_state(request)
+            async with state.session_factory() as session:
+                row = await session.scalar(
+                    select(RunEvent)
+                    .where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "clarification_requested",
+                    )
+                    .order_by(RunEvent.seq.desc())
+                    .limit(1)
+                )
+            if row is not None:
+                payload = row.record.get("payload", {})
+                if isinstance(payload, dict):
+                    raw_options = payload.get("options")
+                    clarification = {
+                        "question": str(payload.get("question") or "")[:500],
+                        "options": (
+                            [str(item)[:120] for item in raw_options[:3]]
+                            if isinstance(raw_options, list)
+                            else []
+                        ),
+                    }
         return {
             **_run_summary(run),
             "report_markdown": run.report_markdown,
             "citations": run.citations_json or [],
             "error_message": run.error_message,
+            "clarification": clarification,
         }
 
     @app.post("/api/runs/{run_id}/cancel")
@@ -268,6 +296,30 @@ def create_app(
         except LookupError:
             raise HTTPException(status_code=404, detail="运行不存在。") from None
         return {"id": run.id, "status": run.status}
+
+    @app.post("/api/runs/{run_id}/resume")
+    async def resume_run(
+        run_id: str,
+        body: ResumeRunBody,
+        request: Request,
+        user: User = Depends(auth_dependency),
+    ) -> dict[str, str]:
+        state = _get_state(request)
+        await _owned_run(request, user, run_id)
+        try:
+            await state.manager.resume_with_input(user.id, run_id, body.answer)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="运行不存在。") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except RuntimeError as exc:
+            detail = (
+                "恢复断点不存在，请重新发起。"
+                if str(exc) == "checkpoint_missing"
+                else "该运行当前不在等待输入。"
+            )
+            raise HTTPException(status_code=409, detail=detail) from None
+        return {"id": run_id, "status": "running"}
 
     @app.get("/api/runs/{run_id}/events")
     async def run_events(
@@ -285,9 +337,7 @@ def create_app(
                 async with state.session_factory() as session:
                     rows = (
                         await session.scalars(
-                            select(RunEvent)
-                            .where(RunEvent.run_id == run_id)
-                            .order_by(RunEvent.seq)
+                            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
                         )
                     ).all()
                 for row in rows:

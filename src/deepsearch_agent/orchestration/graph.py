@@ -3,7 +3,8 @@
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from deepsearch_agent.agents import ReportWriter, ResearchAgent
+from deepsearch_agent.agents import Clarifier, ReportWriter, ResearchAgent
+from deepsearch_agent.agents.clarifier.graph import build_clarifier_graph
 from deepsearch_agent.agents.supervisor import ResearchSupervisor
 from deepsearch_agent.agents.writer.graph import build_writer_graph
 from deepsearch_agent.config import Settings, get_settings
@@ -98,7 +99,7 @@ def build_graph(
         raise ToolConfigurationError(
             "深度研究需要 BAIDU_API_KEY、TAVILY_API_KEY 或 SERPAPI_API_KEY。"
         )
-    
+
     shared_http = http_client or HttpClient(settings.search)
     owns_http_client = http_client is None
     search_tool = SearchTool(
@@ -121,6 +122,12 @@ def build_graph(
         parse_timeout=settings.agent.source_parse_timeout,
         evidence_extract_timeout=settings.agent.evidence_extract_timeout,
     )
+    clarifier = Clarifier(
+        llm,
+        settings.agent,
+        context_window_tokens=settings.llm.context_window_tokens,
+    )
+    clarifier_graph = build_clarifier_graph(clarifier.run)
     writer_agent = ReportWriter(
         llm,
         settings.agent,
@@ -169,13 +176,13 @@ def build_graph(
         NodeName.CLARIFY,
         _routed_node(
             NodeName.CLARIFY,
-            lambda state: nodes.clarify(state, llm),
+            clarifier_graph.ainvoke,
             route_after_clarify,
             event_sink=event_sink,
             trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
-        destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
+        destinations=(NodeName.SUPERVISOR,),
     )
     graph.add_node(
         NodeName.QUICK_ANSWER,

@@ -21,7 +21,7 @@ async def render_final_report_node(state: ResearchState):
         }
     if state.get("answer_mode") == "quick_answer":
         return {
-            "report": report + "\n\n[回答模式：即时回答；未进行引用校验]",
+            "report": report,
             "run": RunLifecycle(phase="completed", terminal_reason="quick_answer"),
         }
     if writer.status in {"failed", "exhausted"}:

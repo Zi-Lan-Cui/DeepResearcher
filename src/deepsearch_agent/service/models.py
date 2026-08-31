@@ -14,7 +14,15 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # 运行状态取值。P0 用普通 str 而非枚举/CHECK 约束，便于增删而不触发 ALTER；
 # 合法取值集合在 service/runs.py 里由 RunManager 单点维护。
-RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
+RUN_STATUSES = (
+    "queued",
+    "running",
+    "interrupted",
+    "awaiting_input",
+    "completed",
+    "failed",
+    "cancelled",
+)
 
 
 def _utcnow() -> datetime:
@@ -71,9 +79,7 @@ class RunEvent(Base):
 
     __tablename__ = "run_events"
 
-    run_id: Mapped[str] = mapped_column(
-        ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True
-    )
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
     event_type: Mapped[str] = mapped_column(String(64))
     record: Mapped[dict] = mapped_column(JSON)

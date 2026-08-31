@@ -2,7 +2,10 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from langgraph.errors import GraphInterrupt
+from langgraph.graph import END, START, StateGraph
 
+from deepsearch_agent.agents.clarifier.state import ClarifierAgentState
 from deepsearch_agent.agents.writer import ReportWriter
 from deepsearch_agent.config import (
     AgentConfig,
@@ -72,6 +75,48 @@ async def _clarify_success(state, _llm):
     return {"clarified_query": query, "research_brief": "测试研究方向"}
 
 
+class _FakeClarifier:
+    async def run(self, state):
+        return await self.graph.ainvoke(state)
+
+
+class _CompleteClarifier(_FakeClarifier):
+    def __init__(self, *_args, **_kwargs):
+        self.graph = _fake_clarifier_graph(_clarify_success)
+
+
+class _FailingClarifier(_FakeClarifier):
+    def __init__(self, *_args, **_kwargs):
+        async def fail(_state, _llm):
+            raise RuntimeError("clarify boom")
+
+        self.graph = _fake_clarifier_graph(fail)
+
+
+class _CancellingClarifier(_FakeClarifier):
+    def __init__(self, *_args, **_kwargs):
+        async def cancel(_state, _llm):
+            raise asyncio.CancelledError()
+
+        self.graph = _fake_clarifier_graph(cancel)
+
+
+def _fake_clarifier_graph(node):
+    builder = StateGraph(ClarifierAgentState)
+
+    async def invoke(state):
+        result = await node(state, None)
+        return {
+            "intent_summary": result.get("research_brief", "测试研究方向"),
+            "clarification_completed": True,
+        }
+
+    builder.add_node("clarify", invoke)
+    builder.add_edge(START, "clarify")
+    builder.add_edge("clarify", END)
+    return builder.compile()
+
+
 class _FailingSupervisor:
     def __init__(self, *_args, **_kwargs):
         pass
@@ -87,7 +132,9 @@ class _CompleteSupervisor:
     async def run(self, _state):
         return {
             "run": RunLifecycle(phase="writing"),
-            "research": ResearchProgress(status="completed", current_round=1, is_sufficient=True, generation_mode="full"),
+            "research": ResearchProgress(
+                status="completed", current_round=1, is_sufficient=True, generation_mode="full"
+            ),
             "supervisor_next": "writer",
             "evidences": [],
         }
@@ -142,7 +189,8 @@ def test_quick_answer_route_produces_uncited_answer():
     )
     result = asyncio.run(writer.run(state))
     assert result["answer_mode"] == "quick_answer"
-    assert "未进行联网检索或来源核验" in result["report"]
+    assert result["report"] == "这是显式注入的即时回答。"
+    assert "什么是向量数据库" not in result["report"]
 
 
 def test_router_delegates_research_classification_to_llm():
@@ -174,9 +222,18 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert result["run"].phase == "failed"
     assert result["run"].terminal_reason == "node_failed"
     assert result["run"].error.stage == "broken"
-    assert "boom" in result["report"]
+    assert "执行失败，请稍后重试" in result["report"]
+    assert "boom" not in result["report"]
     # 边界的失败产物自身必须通过与节点产物相同的不变量校验（回归锁）。
     validate_state_invariants({}, result)
+
+
+def test_execution_boundary_never_converts_graph_interrupt_to_failure():
+    async def paused(_state):
+        raise GraphInterrupt()
+
+    with pytest.raises(GraphInterrupt):
+        asyncio.run(execute_node({"query": "测试"}, stage="clarify", node=paused))
 
 
 def test_state_invariant_violation_becomes_run_error():
@@ -240,7 +297,10 @@ def test_execution_boundary_restores_checkpoint_models_before_node():
     result = asyncio.run(
         execute_node(
             {
-                "run": {"phase": "failed", "error": {"stage": "writer", "code": "node_failed", "message": "失败"}},
+                "run": {
+                    "phase": "failed",
+                    "error": {"stage": "writer", "code": "node_failed", "message": "失败"},
+                },
                 "review": {"issues": [{"severity": "warning", "reason": "可改进"}]},
                 "citations": [{"id": "e1"}],
                 "node_events": [
@@ -273,10 +333,7 @@ def test_compiled_graph_clarify_failure_renders_failure_report(tmp_path, monkeyp
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
 
-    async def fail_clarify(_state, _llm):
-        raise RuntimeError("clarify boom")
-
-    monkeypatch.setattr(graph.nodes, "clarify", fail_clarify)
+    monkeypatch.setattr(graph, "Clarifier", _FailingClarifier)
 
     result = asyncio.run(
         build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
@@ -284,7 +341,8 @@ def test_compiled_graph_clarify_failure_renders_failure_report(tmp_path, monkeyp
 
     assert result["run"].phase == "failed"
     assert result["run"].error.stage == "clarify"
-    assert "clarify boom" in result["report"]
+    assert "执行失败，请稍后重试" in result["report"]
+    assert "clarify boom" not in result["report"]
 
 
 def test_compiled_graph_router_failure_fails_closed_to_deep_research(tmp_path, monkeypatch):
@@ -292,7 +350,7 @@ def test_compiled_graph_router_failure_fails_closed_to_deep_research(tmp_path, m
         raise TimeoutError("router offline")
 
     monkeypatch.setattr(graph.nodes, "ainvoke_structured", fail_structured)
-    monkeypatch.setattr(graph.nodes, "clarify", _clarify_success)
+    monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
     monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
 
     result = asyncio.run(
@@ -305,7 +363,7 @@ def test_compiled_graph_router_failure_fails_closed_to_deep_research(tmp_path, m
 
 def test_compiled_graph_supervisor_failure_skips_writer(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
-    monkeypatch.setattr(graph.nodes, "clarify", _clarify_success)
+    monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
     monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
 
     result = asyncio.run(
@@ -314,12 +372,13 @@ def test_compiled_graph_supervisor_failure_skips_writer(tmp_path, monkeypatch):
 
     assert result["run"].error.stage == "supervisor"
     assert result.get("writer") is None
-    assert "supervisor boom" in result["report"]
+    assert "执行失败，请稍后重试" in result["report"]
+    assert "supervisor boom" not in result["report"]
 
 
 def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
-    monkeypatch.setattr(graph.nodes, "clarify", _clarify_success)
+    monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
     monkeypatch.setattr(graph, "ResearchSupervisor", _CompleteSupervisor)
     monkeypatch.setattr(graph, "ReportWriter", _FailingWriter)
 
@@ -328,12 +387,13 @@ def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypa
     )
 
     assert result["run"].error.stage == "writer"
-    assert "writer boom" in result["report"]
+    assert "执行失败，请稍后重试" in result["report"]
+    assert "writer boom" not in result["report"]
 
 
 def test_compiled_graph_reflection_failure_renders_failure_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
-    monkeypatch.setattr(graph.nodes, "clarify", _clarify_success)
+    monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
     monkeypatch.setattr(graph, "ResearchSupervisor", _CompleteSupervisor)
     monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
 
@@ -347,12 +407,13 @@ def test_compiled_graph_reflection_failure_renders_failure_report(tmp_path, monk
     )
 
     assert result["run"].error.stage == "reflection"
-    assert "reflection boom" in result["report"]
+    assert "执行失败，请稍后重试" in result["report"]
+    assert "reflection boom" not in result["report"]
 
 
 def test_compiled_graph_research_exhaustion_renders_incomplete_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
-    monkeypatch.setattr(graph.nodes, "clarify", _clarify_success)
+    monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
     monkeypatch.setattr(graph, "ResearchSupervisor", _ExhaustedSupervisor)
 
     result = asyncio.run(
@@ -368,20 +429,21 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
 
-    async def cancel_clarify(_state, _llm):
-        raise asyncio.CancelledError()
-
-    monkeypatch.setattr(graph.nodes, "clarify", cancel_clarify)
+    monkeypatch.setattr(graph, "Clarifier", _CancellingClarifier)
 
     # LangGraph 会把节点主动抛出的 CancelledError 包装成自己的取消异常；
     # 关键契约是它不会被执行边界转换成 RunError 并渲染成失败报告。
     with pytest.raises(BaseException) as caught:
-        asyncio.run(build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"}))
+        asyncio.run(
+            build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        )
     assert type(caught.value).__name__ != "RunError"
 
 
 def test_approved_reflection_bypasses_supervisor_and_renders_final_report():
-    assert route_after_reflection({"review": {"status": "approved"}}) == NodeName.RENDER_FINAL_REPORT
+    assert (
+        route_after_reflection({"review": {"status": "approved"}}) == NodeName.RENDER_FINAL_REPORT
+    )
     assert route_after_reflection({"review": {"status": "rejected"}}) == NodeName.SUPERVISOR
 
 
@@ -392,18 +454,20 @@ def test_terminal_phase_trunk_overrides_every_business_handoff():
         "writer": {"status": "exhausted"},
     }
     assert route_after_writer(exhausted_writer) == NodeName.RENDER_FINAL_REPORT
-    assert route_after_writer({"run": {"phase": "reviewing"}, "writer": {"status": "completed"}}) == (
-        NodeName.REFLECTION
-    )
+    assert route_after_writer(
+        {"run": {"phase": "reviewing"}, "writer": {"status": "completed"}}
+    ) == (NodeName.REFLECTION)
     # 审阅还在等回流，但 Supervisor 宣告终止 → 仍然去渲染
-    assert route_after_reflection(
-        {"run": {"phase": "rendering"}, "review": {"status": "rejected"}}
-    ) == NodeName.RENDER_FINAL_REPORT
+    assert (
+        route_after_reflection({"run": {"phase": "rendering"}, "review": {"status": "rejected"}})
+        == NodeName.RENDER_FINAL_REPORT
+    )
     # supervisor_next 的业务交接在正常态生效
     assert route_after_supervisor({"supervisor_next": NodeName.WRITER}) == NodeName.WRITER
-    assert route_after_supervisor(
-        {"run": {"phase": "failed"}, "supervisor_next": NodeName.WRITER}
-    ) == NodeName.RENDER_FINAL_REPORT
+    assert (
+        route_after_supervisor({"run": {"phase": "failed"}, "supervisor_next": NodeName.WRITER})
+        == NodeName.RENDER_FINAL_REPORT
+    )
 
 
 def test_clarify_preserves_open_question_and_only_adds_research_brief(monkeypatch):
@@ -436,21 +500,3 @@ def test_clarify_stops_only_for_material_user_choice(monkeypatch):
 
     assert result["answer_mode"] == "clarification_needed"
     assert "具体作品" in result["report"]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

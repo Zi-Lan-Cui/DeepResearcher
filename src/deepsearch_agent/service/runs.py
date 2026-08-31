@@ -19,6 +19,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from langgraph.types import Command
 from sqlalchemy import func, select
 
 from deepsearch_agent.config import Settings
@@ -66,6 +67,9 @@ class RunManager:
         self._quota_lock = asyncio.Lock()
         self._persisted: set[str] = set()
         self._done_published: set[str] = set()
+        # 进程停机只借 asyncio cancellation 收束协程，不代表用户取消。
+        # 此集合同时阻止 _execute.finally 写出会截断后续恢复流的 run_done。
+        self._shutdown_interrupts: set[str] = set()
 
     # ---- 受理 ----
 
@@ -76,22 +80,21 @@ class RunManager:
                 active = await session.scalar(
                     select(func.count())
                     .select_from(Run)
-                    .where(Run.user_id == user_id, Run.status.in_(("queued", "running")))
+                    .where(
+                        Run.user_id == user_id,
+                        Run.status.in_(("queued", "running", "interrupted")),
+                    )
                 )
                 if (active or 0) >= self._config.max_concurrent_runs_per_user:
                     raise QuotaExceededError(
                         f"同时进行的运行已达上限（{self._config.max_concurrent_runs_per_user}）。"
                     )
                 run_id = new_id("run")
-                session.add(
-                    Run(id=run_id, user_id=user_id, query=query, status="queued")
-                )
+                session.add(Run(id=run_id, user_id=user_id, query=query, status="queued"))
                 await session.commit()
         self._fanout.open(run_id)
         await self._publish_status(run_id, "queued")
-        task = asyncio.create_task(
-            self._execute(run_id, user_id, query), name=f"research-{run_id}"
-        )
+        task = asyncio.create_task(self._execute(run_id, user_id, query), name=f"research-{run_id}")
         self._tasks[run_id] = task
         task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
         return run_id
@@ -108,9 +111,7 @@ class RunManager:
             task.cancel()  # 终态写入发生在 _execute 的 cancelled 分支
         else:
             # 本进程没有活任务（如 reconcile 前残留）：直接落终态。
-            await self._persist_status(
-                run_id, status="cancelled", terminal_reason="user_cancelled"
-            )
+            await self._persist_status(run_id, status="cancelled", terminal_reason="user_cancelled")
             await self._publish_done(run_id)
         async with self._session_factory() as session:
             return await session.get(Run, run_id)
@@ -118,7 +119,7 @@ class RunManager:
     # ---- 启动/停机 ----
 
     async def reconcile_startup(self) -> tuple[int, list[tuple[str, int, str]]]:
-        """崩溃恢复分诊（步骤②）：queued/running 残留行不再一律判死。
+        """崩溃恢复分诊（步骤②）：活跃/中断残留行不再一律判死。
 
         - 有 checkpoint 的 → 可复活：原样留给 resume_runs（状态不改写，
           SSE 以 resuming 播报）；
@@ -131,7 +132,9 @@ class RunManager:
         killed = 0
         async with self._session_factory() as session:
             stale = (
-                await session.scalars(select(Run).where(Run.status.in_(("queued", "running"))))
+                await session.scalars(
+                    select(Run).where(Run.status.in_(("queued", "running", "interrupted")))
+                )
             ).all()
             for run in stale:
                 if await self._has_checkpoint(run.id):
@@ -196,23 +199,78 @@ class RunManager:
             task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
         return len(pending)
 
+    async def resume_with_input(self, user_id: int, run_id: str, answer: str) -> None:
+        """向原 checkpoint 提交人类回答；同一暂停点只接受第一份。"""
+        answer = answer.strip()
+        if not answer:
+            raise ValueError("澄清回答不能为空。")
+        async with self._quota_lock:
+            async with self._session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is None or run.user_id != user_id:
+                    raise LookupError(run_id)
+                if run.status != "awaiting_input":
+                    raise RuntimeError(run.status)
+                max_seq = await session.scalar(
+                    select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id)
+                )
+                query = run.query
+            if not await self._has_checkpoint(run_id):
+                raise RuntimeError("checkpoint_missing")
+            async with self._session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is None or run.status != "awaiting_input":
+                    raise RuntimeError(run.status if run is not None else "missing")
+                run.status = "running"
+                await session.commit()
+            self._fanout.open(run_id)
+            self._fanout.seed_seq(run_id, int(max_seq or 0))
+            # 人工回答不是进程故障恢复：checkpoint 已经接上且数据库也已转为
+            # running，后续 Supervisor/Writer 应显示正常运行状态。
+            await self._publish_status(run_id, "running")
+            task = asyncio.create_task(
+                self._execute(
+                    run_id,
+                    user_id,
+                    query,
+                    resume=True,
+                    resume_input=Command(resume={"answer": answer}),
+                ),
+                name=f"research-input-resume-{run_id}",
+            )
+            self._tasks[run_id] = task
+            task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
+
     async def shutdown(self) -> None:
-        for task in list(self._tasks.values()):
+        live = [(run_id, task) for run_id, task in self._tasks.items() if not task.done()]
+        interrupted: list[asyncio.Task] = []
+        for run_id, task in live:
+            # 先同步预占状态写入权，再 await；停机与自然完成竞速时不振荡。
+            if await self._persist_interrupted(run_id):
+                interrupted.append(task)
+        for task in interrupted:
             task.cancel()
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        await asyncio.gather(*(task for _run_id, task in live), return_exceptions=True)
 
     # ---- 执行 ----
 
-    async def _execute(self, run_id: str, user_id: int, query: str, *, resume: bool = False) -> None:
+    async def _execute(
+        self,
+        run_id: str,
+        user_id: int,
+        query: str,
+        *,
+        resume: bool = False,
+        resume_input: Any = None,
+    ) -> None:
         sinks: list[Any] = [self._fanout]
         if self._config.jsonl_events:
-            sinks.append(
-                JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl")
-            )
+            sinks.append(JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl"))
         sink = CompositeSink(*sinks)
         flusher = asyncio.create_task(self._periodic_flush(run_id))
+        suspended = False
         try:
-            await self._mark_running(run_id)
+            await self._mark_running(run_id, resume=resume)
             graph = self._graph_factory(
                 settings=self._settings_for(user_id),
                 event_sink=sink,
@@ -221,27 +279,43 @@ class RunManager:
             )
             # run_id 必须显式进入输入（见模块不变式 1）；resume 时输入 None，
             # 由 checkpointer 依据 thread_id 从最后一个 superstep 续跑。
-            inputs = None if resume else {"query": query, "run_id": run_id, "session_id": run_id}
-            result = await self._run_graph(run_id, graph, inputs)
-            await self._persist_terminal(run_id, result)
+            inputs = (
+                resume_input if resume else {"query": query, "run_id": run_id, "session_id": run_id}
+            )
+            result, interruption = await self._run_graph(run_id, graph, inputs)
+            if interruption is not None:
+                suspended = True
+                await self._persist_awaiting_input(run_id)
+                self._fanout.write(
+                    {
+                        "run_id": run_id,
+                        "event_type": "clarification_requested",
+                        "payload": interruption,
+                    }
+                )
+                await self._publish_status(run_id, "awaiting_input")
+            else:
+                await self._persist_terminal(run_id, result)
         except asyncio.CancelledError:
             # 引擎保证 CancelledError 干净重抛（执行边界不做业务失败化），
-            # 这里持久化后吞掉：任务已把该做的事做完。
-            await self._persist_status(
-                run_id, status="cancelled", terminal_reason="user_cancelled"
-            )
-        except Exception as exc:  # noqa: BLE001 - 后台任务必须自收口
+            # 用户取消才是 cancelled；shutdown 的状态已预先落为 interrupted。
+            if run_id not in self._shutdown_interrupts:
+                await self._persist_status(
+                    run_id, status="cancelled", terminal_reason="user_cancelled"
+                )
+        except Exception:  # noqa: BLE001 - 后台任务必须自收口
             logger.exception("research_run_failed run_id=%s", run_id)
             await self._persist_status(
                 run_id,
                 status="failed",
                 terminal_reason="run_exception",
-                error_message=str(exc)[:500],
+                error_message="运行执行失败，请稍后重试或重新发起。",
             )
         finally:
             flusher.cancel()
             await asyncio.gather(flusher, return_exceptions=True)
-            await self._publish_done(run_id)  # 先发布 done …
+            if run_id not in self._shutdown_interrupts and not suspended:
+                await self._publish_done(run_id)  # 先发布 done …
             await self._flush_events(run_id)  # … 再最终排水，done 因此也进 RunEvent
             self._fanout.close(run_id)
 
@@ -251,7 +325,7 @@ class RunManager:
 
     # ---- token 级预览：官方嵌套流式（subgraphs=True），引擎零修改 ----
 
-    async def _run_graph(self, run_id: str, graph: Any, inputs: dict | None) -> dict:
+    async def _run_graph(self, run_id: str, graph: Any, inputs: Any) -> tuple[dict, dict | None]:
         """astream(values+messages, subgraphs=True)：values 根命名空间 = ainvoke 返回值；
 
         messages 携带**嵌套 agent**（create_agent 子图，含 context 注入调用）的逐字
@@ -260,21 +334,29 @@ class RunManager:
         async-for 处抛出，语义与原 ainvoke 一致，_execute 的 except 分支不动。
         """
         final: dict = {}
+        interruption: dict | None = None
         async for namespace, mode, chunk in graph.astream(
             inputs,
             config={"configurable": {"thread_id": run_id}},
-            stream_mode=["values", "messages"],
+            stream_mode=["values", "messages", "updates"],
             subgraphs=True,
         ):
             if mode == "values":
                 if namespace == () and isinstance(chunk, dict):
                     final = chunk
                 continue
+            if mode == "updates" and isinstance(chunk, dict):
+                interrupts = chunk.get("__interrupt__") or ()
+                if interrupts:
+                    value = getattr(interrupts[0], "value", None)
+                    if isinstance(value, dict):
+                        interruption = value
+                continue
             if mode == "messages":
                 # 同步直发：publish_ephemeral 内部只有锁+put_nowait，不阻塞；
                 # 绝不可放线程池——乱序完成的 to_thread 会打乱 token 帧序。
                 self._publish_message_preview(run_id, namespace, chunk)
-        return final
+        return final, interruption
 
     def _publish_message_preview(self, run_id: str, namespace: Any, chunk: Any) -> None:
         try:
@@ -323,19 +405,50 @@ class RunManager:
 
     # ---- 持久化 ----
 
-    async def _mark_running(self, run_id: str) -> None:
+    async def _mark_running(self, run_id: str, *, resume: bool = False) -> None:
         transitioned = False
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
-            if run is not None and run.status == "queued":
+            if run is not None and run.status in ("queued", "interrupted", "awaiting_input"):
                 run.status = "running"
-                run.started_at = _utcnow()
+                if run.started_at is None:
+                    run.started_at = _utcnow()
                 transitioned = True
                 await session.commit()
         # 状态帧镜像真实转移：resume 的运行本来就是 running，不再谎报一次转移
         # （曾多推一帧 run_status，把"恢复续跑中"徽章瞬间冲掉）。
-        if transitioned:
+        if transitioned and not resume:
             await self._publish_status(run_id, "running")
+
+    async def _persist_interrupted(self, run_id: str) -> bool:
+        """停机中断是可恢复态：不设 finished_at，不写 run_done。"""
+        if run_id in self._persisted:
+            return False
+        self._persisted.add(run_id)
+        self._shutdown_interrupts.add(run_id)
+        async with self._session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None or run.status in TERMINAL_STATUSES:
+                self._shutdown_interrupts.discard(run_id)
+                return False
+            run.status = "interrupted"
+            run.terminal_reason = "server_shutdown"
+            run.error_message = None
+            run.finished_at = None
+            await session.commit()
+        return True
+
+    async def _persist_awaiting_input(self, run_id: str) -> None:
+        """等待输入是非终态，不占用终态写一次的预占位。"""
+        async with self._session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None or run.status in TERMINAL_STATUSES:
+                return
+            run.status = "awaiting_input"
+            run.terminal_reason = None
+            run.error_message = None
+            run.finished_at = None
+            await session.commit()
 
     async def _persist_terminal(self, run_id: str, result: dict) -> None:
         lifecycle = result.get("run") or {}
@@ -355,7 +468,11 @@ class RunManager:
             citations_json=citations,
             evidence_count=int(result.get("evidence_count") or len(result.get("evidences") or [])),
             source_count=int(result.get("source_count") or len(result.get("source_refs") or [])),
-            error_message=(_field(error, "message", "") or None) if error else None,
+            error_message=(
+                f"阶段 {_field(error, 'stage', 'unknown')} 执行失败，请稍后重试或重新发起。"
+                if error
+                else None
+            ),
         )
 
     async def _persist_status(self, run_id: str, *, status: str, **extra: Any) -> None:

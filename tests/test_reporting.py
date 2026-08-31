@@ -191,6 +191,20 @@ def test_render_final_report_node_routes_failure_paths():
     assert "「原文。」" in result["report"]
 
 
+def test_quick_answer_finalizer_does_not_append_redundant_mode_text():
+    result = asyncio.run(
+        render_final_report_node(
+            {
+                "answer_mode": "quick_answer",
+                "report": "向量数据库用于存储和检索向量。",
+            }
+        )
+    )
+
+    assert result["report"] == "向量数据库用于存储和检索向量。"
+    assert result["run"].terminal_reason == "quick_answer"
+
+
 def test_validate_and_bind_rejects_unknown_evidence_and_too_many_sources():
     with pytest.raises(DraftProtocolError, match="不存在的 Evidence"):
         validate_and_bind("事实。[[cite:unknown]]", {"e1": _ev("e1", "事实")})

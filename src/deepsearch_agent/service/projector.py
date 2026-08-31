@@ -99,13 +99,17 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
                 seq,
                 {"stage": node, "status": "failed", "text": f"{_STAGE_TITLES[node]} 执行失败"},
             )
-        return _frame("error", seq, {"text": f"{node if isinstance(node, str) else '某阶段'} 阶段执行失败"})
+        return _frame(
+            "error", seq, {"text": f"{node if isinstance(node, str) else '某阶段'} 阶段执行失败"}
+        )
     if event_type == "node_cancelled":
         return _tick(seq, "该阶段已取消")
 
     # ---- Supervisor 决策旁白（plan 帧都带 stage 归属）----
     if event_type == "research_stopped":
-        return _plan(seq, NodeName.SUPERVISOR, f"研究提前结束：{_stop_reason_text(payload.get('reason'))}")
+        return _plan(
+            seq, NodeName.SUPERVISOR, f"研究提前结束：{_stop_reason_text(payload.get('reason'))}"
+        )
     if event_type == "delegate_completed":
         status = str(payload.get("status", ""))
         if status == "skipped":
@@ -116,9 +120,6 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == "supervisor_model_turn":
         thought = _text(payload.get("content_preview"), 800)  # 与 _PREVIEW_CHARS 对齐
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
-    if event_type == "writer_draft_ready":
-        return _plan(seq, NodeName.WRITER, "草稿完成，进入审阅")
-
     # ---- 方向卡（Supervisor 块内子项）----
     if event_type == "research_task_started":
         title = _text(payload.get("question") or payload.get("research_direction"), 140)
@@ -167,12 +168,27 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             return None
         return SseFrame(event="text_delta", data={"channel": channel, "text": text})
     if event_type == TRUNCATED_EVENT:
-        return _frame("error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"})
+        return _frame(
+            "error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"}
+        )
 
     # ---- RunManager 合成事件 ----
     if event_type == "run_status":
         status = _text(payload.get("status"), 32)
         return _frame("status", seq, {"status": status}) if status else None
+    if event_type == "clarification_requested":
+        question = _text(payload.get("question"), 500)
+        raw_options = payload.get("options")
+        options = (
+            [_text(item, 120) for item in raw_options[:3] if _text(item, 120)]
+            if isinstance(raw_options, list)
+            else []
+        )
+        return (
+            _frame("clarification", seq, {"question": question, "options": options})
+            if question
+            else None
+        )
     if event_type == "run_done":
         return _frame(
             "done",
@@ -190,9 +206,17 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
     """阶段完成时的人话结论——只读取白名单键（各键均为有界标量）。"""
     if node == NodeName.ROUTER:
         route = str(payload.get("route", ""))
-        label = {"deep_research": "进入深度研究", "quick_answer": "按即时回答处理"}.get(route, route)
+        label = {"deep_research": "进入深度研究", "quick_answer": "按即时回答处理"}.get(
+            route, route
+        )
         reason = _text(payload.get("route_reason"), 120)
         return "；".join(part for part in (label, reason) if part)
+    if node == NodeName.CLARIFY:
+        # Clarifier 的完成结论来自子图 finalize；没有触发 interrupt 时也应让
+        # 用户看到 Agent 确认后的研究范围，而不是留下一个空阶段卡片。
+        return _text(payload.get("research_brief"), 800) or _text(
+            payload.get("clarified_query"), 300
+        )
     if node == NodeName.SUPERVISOR:
         # 注意键名：节点产出的 evidences 列表增量在 summary 里是 evidences_count；
         # evidence_count 是 writer 才写的累计字段，supervisor 节点里恒为 0（曾致误报）。

@@ -43,6 +43,25 @@ def test_node_completed_closes_stage_with_conclusion():
     )
     assert (done.event, done.data["status"]) == ("stage_done", "done")
     assert done.data["text"].startswith("进入深度研究")
+    clarified = project(
+        _record(
+            "node_completed",
+            {
+                "research_brief": "重点比较 Redis 在传统后端与 Agent 中的用途",
+                "clarified_query": "Redis 有什么作用？",
+            },
+            node="clarify",
+        )
+    )
+    assert clarified.data["text"] == "重点比较 Redis 在传统后端与 Agent 中的用途"
+    clarify_fallback = project(
+        _record(
+            "node_completed",
+            {"clarified_query": "Redis 有什么作用？"},
+            node="clarify",
+        )
+    )
+    assert clarify_fallback.data["text"] == "Redis 有什么作用？"
     writer = project(_record("node_completed", {"writer_status": "completed"}, node="writer"))
     assert writer.data["text"] == "草稿通过校验"
     # supervisor 读的是列表增量键 evidences_count（曾误读 evidence_count 恒为 0）
@@ -50,9 +69,7 @@ def test_node_completed_closes_stage_with_conclusion():
         _record("node_completed", {"current_round": 2, "evidences_count": 49}, node="supervisor")
     )
     assert sup.data["text"] == "规划完成 · 第 2 轮 · 本次新增证据 49"
-    reviewer = project(
-        _record("node_completed", {"review_status": "approved"}, node="reflection")
-    )
+    reviewer = project(_record("node_completed", {"review_status": "approved"}, node="reflection"))
     assert reviewer.data["text"] == "审阅通过"
     # 未注册的收尾事件保持安静；SECRET 类字段无一透入
     assert project(_record("node_completed", node="unknown_node")) is None
@@ -71,7 +88,9 @@ def test_node_failed_uses_safe_text_only():
     frame = project(_record("node_failed", node="reflection"))
     # 已知节点：失败也必须关框（红点收束），绝不停留在 running
     assert (frame.event, frame.data["stage"], frame.data["status"]) == (
-        "stage_done", "reflection", "failed",
+        "stage_done",
+        "reflection",
+        "failed",
     )
     assert "Reviewer" in frame.data["text"] and "执行失败" in frame.data["text"]
     assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
@@ -118,9 +137,7 @@ def test_research_round_completed_maps_to_stats_frame():
 
 
 def test_research_stopped_maps_stop_reason_description():
-    frame = project(
-        _record("research_stopped", {"reason": str(StopReason.ROUND_BUDGET_EXHAUSTED)})
-    )
+    frame = project(_record("research_stopped", {"reason": str(StopReason.ROUND_BUDGET_EXHAUSTED)}))
     assert frame.event == "plan" and frame.data["stage"] == "supervisor"
     assert StopReason.ROUND_BUDGET_EXHAUSTED.description in frame.data["text"]
 
@@ -170,7 +187,10 @@ def test_node_started_supervisor_opens_stage():
 
 def test_research_task_card_lifecycle():
     opened = project(
-        _record("research_task_started", {"task_id": "task-0001", "question": "性善论的论证结构" + "。" * 200})
+        _record(
+            "research_task_started",
+            {"task_id": "task-0001", "question": "性善论的论证结构" + "。" * 200},
+        )
     )
     assert opened.event == "task_open"
     assert opened.data["task"] == "task-0001"
@@ -202,12 +222,8 @@ def test_research_task_card_lifecycle():
 def test_writer_stage_lifecycle():
     opened = project(_record("node_started", node="writer"))
     assert (opened.event, opened.data["stage"]) == ("stage_open", "writer")
-    ready = project(_record("writer_draft_ready", {}))
-    assert (ready.event, ready.data["stage"], ready.data["text"]) == (
-        "plan",
-        "writer",
-        "草稿完成，进入审阅",
-    )
+    # 草稿 ready 是 Writer 内部事件；审阅阶段会自行开框，不在 Writer 中抢跑播报。
+    assert project(_record("writer_draft_ready", {})) is None
     # writer 的内部 turn/finished 帧不再出口（收束交给 node_completed 的结论）
     assert project(_record("writer_agent_finished", {"stop_reason": "final_response"})) is None
     assert project(_record("writer_model_turn", {"turn": 2})) is None
@@ -218,16 +234,25 @@ def test_writer_stage_lifecycle():
 def test_agent_finished_events_are_silent():
     """agent 内部收尾帧不进用户视图（阶段收束统一走 stage_done）。"""
     assert project(_record("supervisor_agent_finished", {"stop_reason": "final_response"})) is None
-    assert project(_record("researcher_agent_finished", {"stop_reason": "model_call_limit_exceeded"})) is None
+    assert (
+        project(_record("researcher_agent_finished", {"stop_reason": "model_call_limit_exceeded"}))
+        is None
+    )
 
 
 def test_delegate_completed_maps_silent_planner_outcomes():
-    skipped = project(_record("delegate_completed", {"status": "skipped", "reason": "duplicate_or_budget"}))
+    skipped = project(
+        _record("delegate_completed", {"status": "skipped", "reason": "duplicate_or_budget"})
+    )
     assert skipped.data["text"] == "发现重复研究方向，已跳过并调整计划"
-    blocked = project(_record("delegate_completed", {"status": "blocked", "reason": "round_budget_exhausted"}))
+    blocked = project(
+        _record("delegate_completed", {"status": "blocked", "reason": "round_budget_exhausted"})
+    )
     assert "预算耗尽" in blocked.data["text"]
     # 正常完成的研究委托由研究员自己的事件播报，delegate 帧保持安静
-    assert project(_record("delegate_completed", {"status": "completed", "evidence_count": 5})) is None
+    assert (
+        project(_record("delegate_completed", {"status": "completed", "evidence_count": 5})) is None
+    )
 
 
 def test_run_status_and_run_done_shape():
@@ -241,6 +266,23 @@ def test_run_status_and_run_done_shape():
     )
     assert done.event == "done"
     assert set(done.data) == {"status", "answer_mode", "report_available", "seq"}
+
+
+def test_clarification_projection_only_exposes_prompt_and_three_options():
+    frame = project(
+        _record(
+            "clarification_requested",
+            {
+                "question": "你更关心什么？",
+                "options": ["成本", "效果", "风险", "不应外泄"],
+                "internal_reason": "secret",
+            },
+        )
+    )
+    assert frame.event == "clarification"
+    assert frame.data["question"] == "你更关心什么？"
+    assert frame.data["options"] == ["成本", "效果", "风险"]
+    assert "internal_reason" not in frame.data
 
 
 def test_text_delta_whitelist_and_no_seq():
