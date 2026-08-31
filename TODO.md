@@ -35,7 +35,7 @@
 
 ### 当前版本封板
 
-- [~] 本轮回归：Clarifier、主图、观测、报告和 projector 相关目标集 77 条已通过；`test_service_runs.py` 在本机受 ROS pytest 自动插件污染且隔离运行后仍有挂起，需定位并完成全量 pytest。
+- [~] 本轮回归：Clarifier、主图、观测、报告和 projector 相关目标集 77 条已通过；`test_service_runs.py` 的“挂起”已定位为受限沙箱阻断 aiosqlite 工作线程回调，非业务死锁，改在非沙箱环境运行后 13 条全绿。剩余：完成全量 pytest。
 - [ ] 浏览器冒烟：验证 10/15/20 条自适应分页、窄屏布局、Clarifier 提问→回答→继续、服务重启自动恢复四条路径。
 
 ### G2：searcher 零良率空转熔断
