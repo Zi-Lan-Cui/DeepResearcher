@@ -101,16 +101,9 @@ class ResearchAgent:
     ) -> ResearchAgentResult:
         """运行方向级 Agent loop，返回方向级研究结论与轨迹。"""
         run_state = DirectionRunState()
-        execution = ToolExecutionContext.from_task(task)
-        event_context = {
-            **execution.event_fields(),
-            "worker_id": task.get("worker_id", task["id"]),
-            "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
-        }
         runtime = self._runtime_context(
             task,
             run_state,
-            event_context,
             claim_url=claim_url,
             on_url_already_attempted=on_url_already_attempted,
         )
@@ -145,11 +138,17 @@ class ResearchAgent:
         self,
         task: SubTask,
         run_state: DirectionRunState,
-        event_context: dict[str, object],
         *,
         claim_url: Callable[[str], Awaitable[bool]],
         on_url_already_attempted: Callable[[str], None] | None,
     ) -> ResearchRuntimeContext:
+        execution = ToolExecutionContext.from_task(task)
+        event_context = {
+            **execution.event_fields(),
+            "worker_id": task.get("worker_id", task["id"]),
+            "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
+        }
+
         async def search_sources(queries: list[str], reason: str) -> dict[str, object]:
             return await self._search_sources(
                 task, queries, reason, run_state=run_state, event_context=event_context
@@ -168,7 +167,7 @@ class ResearchAgent:
 
         return ResearchRuntimeContext(
             task=task,
-            execution=ToolExecutionContext.from_task(task),
+            execution=execution,
             run_state=run_state,
             search_sources=search_sources,
             read_sources=read_sources,
