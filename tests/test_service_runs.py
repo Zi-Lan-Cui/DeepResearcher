@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -165,7 +166,13 @@ async def manager(tmp_path):
 async def _settle(manager, run_id):
     task = manager._tasks.get(run_id)  # noqa: SLF001 - 测试观察内部收尾
     if task is not None:
-        await task
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        except TimeoutError:
+            stacks = "".join(
+                traceback.format_list(traceback.extract_stack(frame)) for frame in task.get_stack()
+            )
+            pytest.fail(f"run task did not settle:\n{stacks}")
 
 
 async def _row(manager, run_id):
