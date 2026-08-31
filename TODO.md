@@ -74,6 +74,7 @@
 
 ### 引擎一致性
 
+- [ ] LangGraph checkpoint serde 显式允许项目模型（至少 `RunLifecycle`、`NodeEvent`），并用 strict msgpack 回归旧断点恢复，避免未来版本默认阻断未注册类型。
 - [ ] supervisor/researcher 提示词按 writer 同标准分层：工具机制下沉 description、系统提示词留角色/边界/输出标准。
 - [ ] 并行派发观察：若模型持续每轮单派，评估程序层攒批并行（同 AIMessage 多 tool_calls 的能力已具备）。
 - [ ] JSONL 事件轮转与大小上限；token/延迟计量入事件。
