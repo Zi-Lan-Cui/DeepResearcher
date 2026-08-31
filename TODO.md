@@ -4,6 +4,16 @@
 >
 > 状态：`[x]` 已完成、`[~]` 部分完成、`[ ]` 待办。优先级：P0 必须先完成，P1 在主链稳定后完成，P2/P3 不阻塞交付。
 
+## 当前判断
+
+用户可见的产品闭环已经完成：提交研究、路由与澄清、等待用户回答、恢复执行、研究进度、报告交付、取消/重启恢复、历史列表与自适应分页均可用。当前不再有必须补齐的页面或主流程节点。
+
+下一阶段只保留三个真正影响交付质量的方向：
+
+1. **先收运行成本与空转**：searcher 零良率熔断、搜索/抓取副作用幂等缓存。
+2. **再做公网安全**：SSRF、接口限流、token 吊销和部署边界。
+3. **最后做体验增强**：解释流、工具活动呈现、历史筛选等均为非阻塞优化。
+
 ## 当前基线（已完成）
 
 - [x] 主流程：Router → Clarify → Supervisor → ResearchAgent → Writer（引用完整性校验）→ Reflection → Render。
@@ -14,14 +24,19 @@
 - [x] 服务化 P0：FastAPI + PostgreSQL（users/runs/run_events，SQLAlchemy async，NullPool/pragma 适配）+ 手写 SSE + 单文件前端；注册/登录（argon2 + HS256 JWT 12h）、每用户并发配额（429）、越权统一 404。
 - [x] 事件链路：FanoutSink（seq 单点分配、pending backlog 补订阅、溢出丢旧+截断标记、ephemeral 旁路）+ CompositeSink + projector 默认拒绝白名单；断线/刷新从 RunEvent 回放，`run_done` 恒为收尾（孤儿 run 启动时补合成 done）。
 - [x] 流式预览：官方 `astream(stream_mode=["values","messages"], subgraphs=True)` 在 RunManager 消费（嵌套 Pregel 的 token 经 ns 深度 1 归 supervisor 思考通道；ToolMessage 回执、tool_call 参数、非白名单通道全部隔离）；前端斜体预览 + 聚合帧"更长者胜"替换，永不出现打字完截短。
-- [x] UI：阶段块（Router/Clarify/Supervisor/Writer/Reviewer/Render 事件驱动出现，绿呼吸点→灰/红收束）+ 方向卡（编号、滚动动作行、▸ 展开明细、状态配色）+ 全局时间线 + stats 指标条 + 论文式上标角标与来源面板互跳 + 历史列表定宽对齐中文状态。
+- [x] UI：阶段块（Router/Clarify/Supervisor/Writer/Reviewer/Render 事件驱动出现，绿呼吸点→灰/红收束）+ 方向卡（编号、滚动动作行、▸ 展开明细、状态配色）+ 全局时间线 + stats 指标条 + 论文式上标角标与来源面板互跳 + Clarifier 三选项/Other + 历史列表响应式宽度与 10/15/20 条自适应分页。
 - [x] 语义修正：`completed ≠ 成功`（部分报告琥珀徽章）；reflection 对内容审查/坏 JSON 定向重试（`AGENT_REFLECTION_RETRY_ATTEMPTS`）；引用条数硬上限移除（曾制造两起 writer 死循环，聚焦交由提示词+审阅把关）。
 - [x] writer 工具契约单一数字（读窗口 50 / 每轮交付 30 / 无引用上限），机制描述归工具、角色边界归系统提示词。
 - [x] 输出语言运行时配置（`AGENT_OUTPUT_LANGUAGE`）注入全部六处生成用户可见文字的提示词；quote 保持原文例外。
-- [x] 测试 203 条分主题组织（引擎/服务/前端契约），ruff + pyright + pytest 全绿；服务层测试跑文件 SQLite 还原 asyncpg 并发语义。
+- [x] 测试按引擎/服务/前端契约分主题组织；服务层测试跑文件 SQLite 还原 asyncpg 并发语义。
 - [x] 真机端到端已验证：注册→提交→逐字流→报告→取消→kill -9 收敛→回放闭环→内容审查事故复盘。
 
 ## P0：当前必须收敛
+
+### 当前版本封板
+
+- [~] 本轮回归：Clarifier、主图、观测、报告和 projector 相关目标集 77 条已通过；`test_service_runs.py` 在本机受 ROS pytest 自动插件污染且隔离运行后仍有挂起，需定位并完成全量 pytest。
+- [ ] 浏览器冒烟：验证 10/15/20 条自适应分页、窄屏布局、Clarifier 提问→回答→继续、服务重启自动恢复四条路径。
 
 ### G2：searcher 零良率空转熔断
 
@@ -31,12 +46,12 @@
 
 验收：历史列表中 failed 且 0 证据的 run 显著减少；searcher 不再烧满 10 轮颗粒无收。
 
-### 降级与恢复（四步走，进度 1/4）
+### 降级与恢复（四步走，进度 3/4）
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
 - [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
 - [ ] ③ 副作用幂等：搜索/抓取结果缓存（content hash、query 去重——即 P1-A 旧账），否则每次恢复重付断点节点的钱。
-- [ ] ④ clarify `interrupt()` + resume API（`awaiting_input` 状态、配额不占、前端输入框）——与②共用全部基建。
+- [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
 - [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
 
 ## P1：服务深化
@@ -44,7 +59,7 @@
 ### 接口与数据
 
 - [ ] detail API 返回渲染期有序引用（`ordered_citations` 含 `[来源N]` label），前端弃 markdown 反解析；报告头元信息（轮次/来源/Evidence）以字段下发。
-- [ ] History 页恢复 stats 指标条（现仅详情页）；列表状态过滤（进行中/已完成/部分报告）。
+- [ ] History 页补 stats 指标条（现仅详情页）与状态过滤（进行中/已完成/部分报告）；当前响应式列表和分页已完成。
 - [ ] RunEvent 表保留/清理策略（随配额一起定 TTL）。
 - [ ] writer 正文"打字"预览需改提交协议（正文走 content、cite 后校验）——评估收益后决定。
 
@@ -65,6 +80,11 @@
 
 ## P2：不阻塞交付
 
+- [ ] **Router/Clarifier 解释流优化**：接入 `get_stream_writer()` + `stream_mode="custom"`；Router 在结构化校验完成后发送安全化 `reason`，Clarifier 开放正常文字预览，并在工具调用前解释判断依据。后端发送完整可信文本，逐字动画由前端完成，不用 `sleep()` 制造分片。
+- [ ] **Clarifier 工具呈现优化**：`AskClarification` 的问题与三个选项保持原子渲染；`ClarificationComplete` 只提交最终结构化判断；增加“工具调用前说明理由”的守卫与空解释降级文案。
+- [ ] **Supervisor 工具可视化**：为 `ResearchComplete`、`ResearchReady`、`ReadWorkingSet`、`ForgetEvidence` 补安全领域事件；区分永久阶段结论与低权重临时动作，不向前端暴露 Evidence ID、原始参数或异常详情。
+- [ ] **排除方向智能渲染**：`delegate_completed(status=skipped|blocked)` 携带安全化方向摘要和标准原因（duplicate / budget / out_of_scope / covered），前端以灰色可折叠方向卡展示，不再统一压成“已跳过”。
+- [ ] **统一工具活动协议**：评估 `tool_activity {stage, tool, phase, presentation}` 投影层，形成“模型解释 → 工具动作 → 权威阶段结论”的一致交互；custom 流只负责观感，持久化聚合事件负责回放与纠正。
 - [ ] 跨 Run 语义检索与研究档案复用（先等短期上下文/checkpointer 落地）。
 - [ ] 人工修订 Evidence/报告 + 版本审计；多项目/团队共享与权限隔离。
 - [ ] eval/dataset.json 执行器与真实 LLM smoke 集；badcase 回归基线。
