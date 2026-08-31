@@ -229,6 +229,7 @@ class ResearchSupervisor:
                 task_index = working.allocate_task_index()
                 task: SubTask = {
                     "id": f"task-{task_index:04d}",
+                    "run_id": str(state.get("run_id") or ""),
                     "question": topic,
                     "round": round_no,
                     "sequence": task_index,
