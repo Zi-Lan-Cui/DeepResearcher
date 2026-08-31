@@ -9,7 +9,9 @@ from deepsearch_agent.observability.events import (
     make_audit_event,
     make_node_event,
 )
+from deepsearch_agent.observability.instrumentation import _node_result_summary
 from deepsearch_agent.observability.tracing import TraceRecorder
+from deepsearch_agent.service.projector import project
 
 
 def test_trace_records_nested_spans(tmp_path):
@@ -62,6 +64,27 @@ def test_node_event_accepts_summary_payload():
 
     assert event.node == "render_final_report"
     assert event.payload == {"citation_count": 3}
+
+
+def test_clarifier_summary_survives_instrumentation_and_projection():
+    payload = _node_result_summary(
+        {
+            "clarified_query": "Redis 有什么作用？",
+            "research_brief": "比较 Redis 在后端与 Agent 系统中的职责和知识要求",
+        }
+    )
+    frame = project(
+        {
+            "event_type": "node_completed",
+            "node": "clarify",
+            "seq": 1,
+            "payload": payload,
+        }
+    )
+
+    assert payload["research_brief"] == "比较 Redis 在后端与 Agent 系统中的职责和知识要求"
+    assert frame is not None
+    assert frame.data["text"] == payload["research_brief"]
 
 
 def test_events_and_artifacts_have_separate_records_and_correlation():

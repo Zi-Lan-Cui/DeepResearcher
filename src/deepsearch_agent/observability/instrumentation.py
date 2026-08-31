@@ -4,6 +4,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from langgraph.errors import GraphBubbleUp
+
 from deepsearch_agent.observability.events.models import make_node_event
 from deepsearch_agent.observability.events.sink import JsonlSink
 from deepsearch_agent.observability.logger import get_logger
@@ -47,11 +49,7 @@ def instrument_node(
                 )
             try:
                 span_link: SpanContext | None = None
-                with (
-                    trace_recorder.span(name)
-                    if trace_recorder is not None
-                    else _null_context()
-                ):
+                with trace_recorder.span(name) if trace_recorder is not None else _null_context():
                     # 节点生命周期事件统一归属节点 span;span 进入即冻结身份。
                     span_link = current_span_context()
                     value = node(state)
@@ -79,6 +77,9 @@ def instrument_node(
                     event_sink.write(event)
                 result["node_events"] = [*result.get("node_events", []), event]
                 return result
+            except GraphBubbleUp:
+                # interrupt() 是子图控制流，由根图持久化，不是节点失败。
+                raise
             except (asyncio.CancelledError, KeyboardInterrupt) as exc:
                 duration_ms = (time.perf_counter() - started) * 1000
                 log.info("node_cancelled duration_ms=%.2f", duration_ms, extra={"node": name})
@@ -132,6 +133,8 @@ def _node_result_summary(result: dict[str, Any], *, max_text_chars: int = 1_000)
         summary["route_reason"] = str(result["route_reason"])[:240]
     if "clarified_query" in result:
         summary["clarified_query"] = str(result["clarified_query"])[:300]
+    if "research_brief" in result:
+        summary["research_brief"] = str(result["research_brief"])[:max_text_chars]
     run = result.get("run")
     if run is not None:
         summary["phase"] = getattr(run, "phase", None)

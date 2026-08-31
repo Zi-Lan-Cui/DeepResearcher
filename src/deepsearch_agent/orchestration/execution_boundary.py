@@ -10,6 +10,8 @@ import inspect
 from collections.abc import Callable
 from typing import Any, cast
 
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
+
 from deepsearch_agent.observability.events.models import make_node_event
 from deepsearch_agent.reporting import render_error_report
 from deepsearch_agent.routing import NodeName
@@ -37,7 +39,7 @@ async def execute_node(
         result = dict(value)
         validate_state_invariants(state, result)
         return result
-    except (asyncio.CancelledError, KeyboardInterrupt):
+    except (GraphBubbleUp, asyncio.CancelledError, KeyboardInterrupt, NodeCancelledError):
         raise
     except Exception as exc:
         error = RunError.from_exception(stage, exc)

@@ -38,8 +38,17 @@ def _settings(tmp_path) -> Settings:
 class FakeGraph:
     """记录 ainvoke 输入；可选先发一条引擎事件、等待门控、返回结果或抛错。"""
 
-    def __init__(self, *, result=None, error=None, gate=None, emit_events=1, stream_messages=(),
-                 resume_run_id="run-resume"):
+    def __init__(
+        self,
+        *,
+        result=None,
+        error=None,
+        gate=None,
+        emit_events=1,
+        stream_messages=(),
+        resume_run_id="run-resume",
+        interrupt_payload=None,
+    ):
         self.result = result or {}
         self.error = error
         self.gate = gate
@@ -49,17 +58,16 @@ class FakeGraph:
         self.ainvoke_inputs: list[dict] = []
         self.seen_configs: list[dict] = []
         self.none_inputs = 0
+        self.interrupt_payload = interrupt_payload
 
     async def _run(self, input):  # noqa: A002 - 与 LangGraph 契约同名
         run_id = input["run_id"] if input is not None else self.resume_run_id
-        if input is None:          # resume 形态：astream(None)，thread_id 定位断点
+        if input is None:  # resume 形态：astream(None)，thread_id 定位断点
             self.none_inputs += 1
         else:
             self.ainvoke_inputs.append(dict(input))
         for i in range(self.emit_events):
-            self._sink.write(
-                {"run_id": run_id, "event_type": f"engine_{i}", "payload": {}}
-            )
+            self._sink.write({"run_id": run_id, "event_type": f"engine_{i}", "payload": {}})
         if self.gate is not None:
             await self.gate.wait()
         if self.error is not None:
@@ -84,14 +92,19 @@ class FakeGraph:
                 {},
             )
             yield (namespace, "messages", chunk)
+        if self.interrupt_payload is not None:
+            yield (
+                (),
+                "updates",
+                {"__interrupt__": (SimpleNamespace(value=self.interrupt_payload),)},
+            )
+            return
         yield ((), "values", await self._run(input))
 
 
 def _completed_result():
     return {
-        "run": SimpleNamespace(
-            phase="completed", terminal_reason="report_rendered", error=None
-        ),
+        "run": SimpleNamespace(phase="completed", terminal_reason="report_rendered", error=None),
         "answer_mode": "deep_research",
         "report": "# 研究报告\n完成。",
         "citations": [{"id": "e1", "url": "https://a", "title": "A", "quote": "q", "claim": "c"}],
@@ -191,7 +204,7 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
     gate = asyncio.Event()
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     run_id = await manager.start(USER_ID, "q")
-    while run_id not in manager._tasks or manager._tasks[run_id].done():  # noqa: SLF001
+    while (await _row(manager, run_id)).status != "running":
         await asyncio.sleep(0.01)
     await manager.cancel(USER_ID, run_id)
     gate.set()
@@ -205,9 +218,7 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
     async with manager.session_factory() as session:
         dones = (
             await session.scalars(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id, RunEvent.event_type == "run_done"
-                )
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
             )
         ).all()
     assert len(dones) == 1  # 不变式 2/3：done 恰一次且在 DB（可回放）
@@ -219,6 +230,52 @@ async def test_cancel_after_completion_is_idempotent(manager):
     await _settle(manager, run_id)
     again = await manager.cancel(USER_ID, run_id)
     assert again.status == "completed"
+
+
+async def test_shutdown_marks_interrupted_without_terminal_done(manager):
+    gate = asyncio.Event()
+    manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
+    run_id = await manager.start(USER_ID, "q")
+    while run_id not in manager._tasks or manager._tasks[run_id].done():  # noqa: SLF001
+        await asyncio.sleep(0.01)
+
+    await manager.shutdown()
+
+    run = await _row(manager, run_id)
+    assert run.status == "interrupted"
+    assert run.terminal_reason == "server_shutdown"
+    assert run.finished_at is None
+    async with manager.session_factory() as session:
+        dones = (
+            await session.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
+            )
+        ).all()
+    assert dones == []
+
+
+async def test_graph_interrupt_persists_awaiting_input_without_done(manager):
+    manager.holder["graph"] = FakeGraph(
+        interrupt_payload={
+            "kind": "clarification",
+            "question": "你更关心哪一方面？",
+            "options": ["成本", "效果", "风险"],
+        }
+    )
+    run_id = await manager.start(USER_ID, "q")
+    await _settle(manager, run_id)
+
+    run = await _row(manager, run_id)
+    assert run.status == "awaiting_input"
+    assert run.finished_at is None
+    async with manager.session_factory() as session:
+        events = (
+            await session.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+            )
+        ).all()
+    assert "clarification_requested" in [event.event_type for event in events]
+    assert "run_done" not in [event.event_type for event in events]
 
 
 async def test_cancel_other_users_run_raises_lookup(manager):
@@ -256,8 +313,8 @@ async def test_events_are_persisted_in_seq_order_with_done_last(manager):
     types = [event.event_type for event in events]
     seqs = [event.seq for event in events]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)  # 无洞、无重复
-    assert types[0] == "run_status"      # queued 最早
-    assert types[-1] == "run_done"       # done 严格最后（重连回放以此收尾）
+    assert types[0] == "run_status"  # queued 最早
+    assert types[-1] == "run_done"  # done 严格最后（重连回放以此收尾）
     assert "engine_0" in types and "engine_2" in types
     assert types.count("run_done") == 1
 
@@ -268,13 +325,19 @@ async def test_reconcile_startup_converts_stale_rows(manager):
             [
                 Run(id="run-stale-a", user_id=USER_ID, query="q", status="running"),
                 Run(id="run-stale-b", user_id=USER_ID, query="q", status="queued"),
+                Run(id="run-stale-c", user_id=USER_ID, query="q", status="interrupted"),
                 Run(id="run-done", user_id=USER_ID, query="q", status="completed"),
             ]
         )
         await session.commit()
     killed, resumable = await manager.reconcile_startup()
-    assert (killed, resumable) == (2, [])  # 无 checkpointer → 全部判死（既往行为）
-    for run_id, expected in (("run-stale-a", "failed"), ("run-stale-b", "failed"), ("run-done", "completed")):
+    assert (killed, resumable) == (3, [])  # 无 checkpointer → 全部判死（既往行为）
+    for run_id, expected in (
+        ("run-stale-a", "failed"),
+        ("run-stale-b", "failed"),
+        ("run-stale-c", "failed"),
+        ("run-done", "completed"),
+    ):
         run = await _row(manager, run_id)
         assert run.status == expected
     assert (await _row(manager, "run-stale-a")).terminal_reason == "server_restart"
@@ -283,7 +346,7 @@ async def test_reconcile_startup_converts_stale_rows(manager):
         orphans = (
             await session.scalars(
                 select(RunEvent).where(
-                    RunEvent.run_id.in_(("run-stale-a", "run-stale-b")),
+                    RunEvent.run_id.in_(("run-stale-a", "run-stale-b", "run-stale-c")),
                     RunEvent.event_type == "run_done",
                 )
             )
@@ -295,7 +358,7 @@ async def test_reconcile_startup_converts_stale_rows(manager):
                 )
             )
         ).all()
-    assert len(orphans) == 2
+    assert len(orphans) == 3
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
 
@@ -318,11 +381,15 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
         stream_messages=[
-            (("supervisor:aaa",), "先梳理缺口，"),          # ✓ 唯一放行
+            (("supervisor:aaa",), "先梳理缺口，"),  # ✓ 唯一放行
             (("supervisor:aaa", "tools:bbb"), "researcher串流"),  # ✗ 深度>1
-            (("writer:ccc",), "writer字幕"),                # ✗ 非白名单
-            (("supervisor:ddd",), ""),                      # ✗ 空文本
-            (("supervisor:eee",), "[系统工具执行结果] {\"active_evidence\": []}", "tool"),  # ✗ 工具回执
+            (("writer:ccc",), "writer字幕"),  # ✗ 非白名单
+            (("supervisor:ddd",), ""),  # ✗ 空文本
+            (
+                ("supervisor:eee",),
+                '[系统工具执行结果] {"active_evidence": []}',
+                "tool",
+            ),  # ✗ 工具回执
         ],
     )
     run_id = await manager.start(USER_ID, "q")
@@ -369,10 +436,20 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     factory = make_session_factory(engine)
     async with factory() as session:
         session.add(User(id=USER_ID, email="r@test", password_hash="h"))
-        session.add(Run(id="run-orphan", user_id=USER_ID, query="孤而可活", status="running"))
+        session.add(
+            Run(
+                id="run-orphan",
+                user_id=USER_ID,
+                query="孤而可活",
+                status="interrupted",
+                terminal_reason="server_shutdown",
+            )
+        )
         session.add(Run(id="run-dead", user_id=USER_ID, query="无据可活", status="queued"))
         for i in range(1, 6):  # 上一世留下的 seq 1..5
-            session.add(RunEvent(run_id="run-orphan", seq=i, event_type=f"engine_{i}", record={"seq": i}))
+            session.add(
+                RunEvent(run_id="run-orphan", seq=i, event_type=f"engine_{i}", record={"seq": i})
+            )
         await session.commit()
 
     holder: dict = {}
@@ -387,8 +464,10 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         settings=_settings(tmp_path),
         session_factory=factory,
         config=ServiceConfig(
-            database_url="unused", jwt_secret="s" * 40,
-            service_log_dir=tmp_path, jsonl_events=False,
+            database_url="unused",
+            jwt_secret="s" * 40,
+            service_log_dir=tmp_path,
+            jsonl_events=False,
         ),
         fanout=FanoutSink(asyncio.get_running_loop()),
         http_client=SimpleNamespace(),
@@ -400,7 +479,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     assert resumable == [("run-orphan", USER_ID, "孤而可活")]
     async with factory() as session:
         assert (await session.get(Run, "run-dead")).status == "failed"
-        assert (await session.get(Run, "run-orphan")).status == "running"  # 未判死
+        assert (await session.get(Run, "run-orphan")).status == "interrupted"  # 未判死
 
     assert await manager.resume_runs(resumable) == 1
     task = manager._tasks.get("run-orphan")  # noqa: SLF001
@@ -410,9 +489,13 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     assert holder["graph"].none_inputs == 1  # 续跑用 astream(None)
     async with factory() as session:
         seqs = list(
-            (await session.scalars(
-                select(RunEvent.seq).where(RunEvent.run_id == "run-orphan").order_by(RunEvent.seq)
-            )).all()
+            (
+                await session.scalars(
+                    select(RunEvent.seq)
+                    .where(RunEvent.run_id == "run-orphan")
+                    .order_by(RunEvent.seq)
+                )
+            ).all()
         )
         # 旧 1..5 → resuming=6 → engine×3=7..9 → run_done=10：跨世连续、无主键冲突
         assert seqs == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]

@@ -278,22 +278,10 @@ class ReportWriter:
             return
 
     def _render_quick_answer(self, state: ResearchState) -> dict[str, object]:
-        lines = [
-            "# 即时回答",
-            "",
-            "## 问题",
-            state.get("clarified_query", state.get("query", "")),
-            "",
-            "> 以下内容基于模型已有知识生成，未进行联网检索或来源核验。",
-            "> 它可能不完整或过时，不应作为可引用的研究结论。",
-            "",
-            "## 回答",
-            state.get("draft_answer", "当前无法生成即时回答。"),
-            "",
-            "如需可验证来源、比较分析或完整清单，请进行深度研究。",
-        ]
         return WriterResult(
-            report="\n".join(lines),
+            # 页面徽标已经表达“即时回答 / 未联网检索”；正文只保留答案，
+            # 不重复问题、模式说明或行动号召。
+            report=str(state.get("draft_answer") or "当前无法生成即时回答。"),
             citations=[],
             answer_mode="quick_answer",
             current_round=0,
