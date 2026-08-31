@@ -11,6 +11,7 @@ from deepsearch_agent.observability.tracing.context import SpanContext, current_
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.parsers.models import ParsedDocument
 from deepsearch_agent.state import SubTask
+from deepsearch_agent.tools.context import ToolExecutionContext
 from deepsearch_agent.tools.errors import (
     SourceUnavailableError,
     ToolConfigurationError,
@@ -65,12 +66,11 @@ class SourceReaderTool:
 
     async def arun(self, task: SubTask, result: SearchResult) -> SourceReaderToolResult:
         started = time.perf_counter()
+        execution = ToolExecutionContext.from_task(task)
         task_context = {
-            "task_id": task["id"],
+            **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),
             "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
-            "parent_task_id": task.get("parent_task_id", ""),
-            "operation_id": task.get("operation_id", task["id"]),
         }
         if self.event_sink is not None:
             self.event_sink.write(

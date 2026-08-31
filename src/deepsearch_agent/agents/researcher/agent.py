@@ -30,7 +30,7 @@ from deepsearch_agent.schemas import (
     ResearchDirectionResult,
 )
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools import SearchTool, SourceReaderTool
+from deepsearch_agent.tools import SearchTool, SourceReaderTool, ToolExecutionContext
 from deepsearch_agent.tools.search.models import SearchCandidate, SearchResult, SearchToolResult
 from deepsearch_agent.tools.sources.models import SourceReaderToolResult
 
@@ -101,12 +101,11 @@ class ResearchAgent:
     ) -> ResearchAgentResult:
         """运行方向级 Agent loop，返回方向级研究结论与轨迹。"""
         run_state = DirectionRunState()
+        execution = ToolExecutionContext.from_task(task)
         event_context = {
-            "task_id": task["id"],
+            **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),
             "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
-            "parent_task_id": task.get("parent_task_id", ""),
-            "operation_id": task.get("operation_id", task["id"]),
         }
         runtime = self._runtime_context(
             task,
@@ -169,6 +168,7 @@ class ResearchAgent:
 
         return ResearchRuntimeContext(
             task=task,
+            execution=ToolExecutionContext.from_task(task),
             run_state=run_state,
             search_sources=search_sources,
             read_sources=read_sources,

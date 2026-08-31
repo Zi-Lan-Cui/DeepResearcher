@@ -50,7 +50,7 @@
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
 - [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
-- [ ] ③ 副作用幂等：搜索/抓取结果缓存（content hash、query 去重——即 P1-A 旧账），否则每次恢复重付断点节点的钱。
+- [~] ③ 恢复期重复调用治理：已预留统一 `ToolExecutionContext(run_id, task_id, operation_id, parent_task_id)` 并贯通 Supervisor → Researcher → Search/Reader；待实现规范化 query 的 TTL 缓存、URL 抓取缓存与 content hash/Evidence 提取复用。方向级 `operation_id` 目前仅作接口，不冒充工具调用级幂等键。
 - [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
 - [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
 

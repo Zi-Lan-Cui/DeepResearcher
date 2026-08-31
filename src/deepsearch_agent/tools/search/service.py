@@ -9,6 +9,7 @@ from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.state import SubTask
+from deepsearch_agent.tools.context import ToolExecutionContext
 from deepsearch_agent.tools.errors import ToolConfigurationError
 from deepsearch_agent.tools.search.client import SearchClient
 from deepsearch_agent.tools.search.models import (
@@ -47,12 +48,11 @@ class SearchTool:
         search_queries = list(
             dict.fromkeys(query.strip() for query in queries if query.strip())
         ) or [task["question"]]
+        execution = ToolExecutionContext.from_task(task)
         task_context = {
-            "task_id": task["id"],
+            **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),
             "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
-            "parent_task_id": task.get("parent_task_id", ""),
-            "operation_id": task.get("operation_id", task["id"]),
             "provider": getattr(self.client, "provider_name", "unknown"),
             "effective_limit": getattr(self.client, "effective_limit", None),
         }

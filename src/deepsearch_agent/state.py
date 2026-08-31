@@ -38,6 +38,7 @@ class StateInvariantError(AgentError):
 
 class SubTask(TypedDict):
     id: str
+    run_id: NotRequired[str]
     question: str
     round: NotRequired[int]
     sequence: NotRequired[int]
