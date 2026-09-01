@@ -19,7 +19,8 @@
 - [x] 主流程：Router → Clarify → Supervisor → ResearchAgent → Writer（引用完整性校验）→ Reflection → Render。
 - [x] Evidence 契约：claim/quote/来源/定位/确定性 quote 校验；`search_summary` 回退通道有 `support_ceiling=partial` 上限（摘要不升级为 direct）。
 - [x] 领域模型与 State reducer、路由契约（NodeName/routing.py）、StopReason 唯一词汇、schemas 分域包化。
-- [x] Agent 运行时中间件栈（profile/factory）：turn 日志、提交守卫、模型/工具重试、ToolCallLimit、串行工具；writer 内联草稿救回。
+- [x] Agent 运行时中间件栈（profile/factory）：模型回合 + 工具 started/completed/failed + Agent 终止观测、提交守卫、模型/工具重试、ToolCallLimit、串行工具；writer 内联草稿救回。
+- [x] Agent 运行身份与异步契约：四类 RuntimeContext 统一注入 `AgentExecutionScope`（run/agent/task/operation 归属）；所有 Agent `@tool` 统一使用原生 `async def`。
 - [x] HTTP 韧性：`Retry-After` 感知退避 + 全抖动、provider 断路器、每供应商并发闸（`SEARCH_MAX_CONCURRENT_REQUESTS`）。
 - [x] 服务化 P0：FastAPI + PostgreSQL（users/runs/run_events，SQLAlchemy async，NullPool/pragma 适配）+ 手写 SSE + 单文件前端；注册/登录（argon2 + HS256 JWT 12h）、每用户并发配额（429）、越权统一 404。
 - [x] 事件链路：FanoutSink（seq 单点分配、pending backlog 补订阅、溢出丢旧+截断标记、ephemeral 旁路）+ CompositeSink + projector 默认拒绝白名单；断线/刷新从 RunEvent 回放，`run_done` 恒为收尾（孤儿 run 启动时补合成 done）。
@@ -28,14 +29,14 @@
 - [x] 语义修正：`completed ≠ 成功`（部分报告琥珀徽章）；reflection 对内容审查/坏 JSON 定向重试（`AGENT_REFLECTION_RETRY_ATTEMPTS`）；引用条数硬上限移除（曾制造两起 writer 死循环，聚焦交由提示词+审阅把关）。
 - [x] writer 工具契约单一数字（读窗口 50 / 每轮交付 30 / 无引用上限），机制描述归工具、角色边界归系统提示词。
 - [x] 输出语言运行时配置（`AGENT_OUTPUT_LANGUAGE`）注入全部六处生成用户可见文字的提示词；quote 保持原文例外。
-- [x] 测试按引擎/服务/前端契约分主题组织；服务层测试跑文件 SQLite 还原 asyncpg 并发语义。
+- [x] 测试按引擎/服务/前端契约分主题组织；服务层测试跑文件 SQLite 还原 asyncpg 并发语义；测试进程显式使用与 Uvicorn 生产运行时一致的 uvloop，并有 LangChain model/tool wrapper 超时冒烟回归。
 - [x] 真机端到端已验证：注册→提交→逐字流→报告→取消→kill -9 收敛→回放闭环→内容审查事故复盘。
 
 ## P0：当前必须收敛
 
 ### 当前版本封板
 
-- [x] 本轮回归：`test_service_runs.py` 的“挂起”已定位为受限沙箱阻断 aiosqlite 工作线程回调，非业务死锁；改在非沙箱环境并禁用外部 pytest 插件自动加载后，全量测试 219 条通过。
+- [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时后，model/tool wrapper、Writer 完整链路及全量 **226 条**测试通过。
 - [x] 浏览器冒烟：10/15/20 条自适应分页、箭头/圆点换页、390px 窄屏无横向溢出、Clarifier 三选项 `等待回答 → 进行中`、服务重启后 `恢复续跑中` + 阶段回放 + `resuming` 事件，四条路径均已真机验证。
 
 ### G2：searcher 零良率空转熔断
@@ -50,7 +51,7 @@
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
 - [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
-- [~] ③ 恢复期重复调用治理：已预留统一 `ToolExecutionContext(run_id, task_id, operation_id, parent_task_id)` 并贯通 Supervisor → Researcher → Search/Reader；待实现规范化 query 的 TTL 缓存、URL 抓取缓存与 content hash/Evidence 提取复用。方向级 `operation_id` 目前仅作接口，不冒充工具调用级幂等键。
+- [~] ③ 恢复期重复调用治理：已用通用 `AgentExecutionScope(run_id, agent_name, task_id, operation_id, parent_task_id)` 替代 Researcher 专属 `ToolExecutionContext`，贯通四类 RuntimeContext 与统一工具生命周期事件；待实现规范化 query 的 TTL 缓存、URL 抓取缓存与 content hash/Evidence 提取复用。方向级 `operation_id` 目前仅作接口，不冒充工具调用级幂等键。
 - [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
 - [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
 
