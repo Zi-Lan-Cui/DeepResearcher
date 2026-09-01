@@ -243,14 +243,15 @@ class RunManager:
 
     async def shutdown(self) -> None:
         live = [(run_id, task) for run_id, task in self._tasks.items() if not task.done()]
-        interrupted: list[asyncio.Task] = []
-        for run_id, task in live:
-            # 先同步预占状态写入权，再 await；停机与自然完成竞速时不振荡。
-            if await self._persist_interrupted(run_id):
-                interrupted.append(task)
-        for task in interrupted:
+        # 先标记停机语义再取消，防止 _execute 把 CancelledError 记成用户取消。
+        # 必须等执行协程完全收束后再落 interrupted：否则启动初期一个
+        # 迟到的 _mark_running 事务可能把 interrupted 覆盖回 running。
+        self._shutdown_interrupts.update(run_id for run_id, _task in live)
+        for _run_id, task in live:
             task.cancel()
         await asyncio.gather(*(task for _run_id, task in live), return_exceptions=True)
+        for run_id, _task in live:
+            await self._persist_interrupted(run_id)
 
     # ---- 执行 ----
 
