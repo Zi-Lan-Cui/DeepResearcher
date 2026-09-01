@@ -8,6 +8,7 @@ from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.schemas import RunLifecycle
 
 
@@ -15,6 +16,7 @@ from deepsearch_agent.schemas import RunLifecycle
 class ClarifierRuntimeContext:
     """不进入 checkpoint 的 Clarifier 工具执行上下文。"""
 
+    scope: AgentExecutionScope
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -30,6 +32,7 @@ class ClarifierAgentState(AgentState, total=False):
 
 
 class ClarifierGraphState(TypedDict, total=False):
+    run_id: str
     messages: Annotated[list[AnyMessage], add_messages]
     query: str
     intent_summary: str

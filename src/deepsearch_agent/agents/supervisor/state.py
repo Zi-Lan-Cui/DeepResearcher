@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from langchain_core.messages import ToolMessage
 
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import (
     ReportBrief,
@@ -22,6 +23,7 @@ from deepsearch_agent.state import ResearchState, SubTask, section
 class SupervisorRuntimeContext:
     """本次 Supervisor Agent 运行的依赖和可变工作状态。"""
 
+    scope: AgentExecutionScope
     working: "WorkingState"
     url_reservations: "RunUrlReservations"
     delegate_research: Callable[[str], Awaitable[dict[str, object]]]

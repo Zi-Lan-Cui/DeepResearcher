@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import Citation, ParagraphBinding
 
@@ -11,6 +12,7 @@ from deepsearch_agent.schemas import Citation, ParagraphBinding
 class WriterRuntimeContext:
     """不进入 State 的 Writer 运行时依赖。"""
 
+    scope: AgentExecutionScope
     evidence_by_id: dict[str, Evidence]
     read_evidence_ids: set[str]
     read_batch_size: int

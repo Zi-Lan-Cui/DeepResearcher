@@ -6,9 +6,9 @@ from typing import TypedDict
 
 from langchain_core.messages import BaseMessage
 
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools.context import ToolExecutionContext
 from deepsearch_agent.tools.search.models import SearchCandidate
 
 
@@ -36,7 +36,7 @@ class ResearchRuntimeContext:
     """不进入 State 的 ResearchAgent 运行时依赖。"""
 
     task: SubTask
-    execution: ToolExecutionContext
+    scope: AgentExecutionScope
     run_state: "DirectionRunState"
     search_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
     read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]

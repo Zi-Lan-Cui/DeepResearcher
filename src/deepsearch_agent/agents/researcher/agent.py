@@ -20,6 +20,7 @@ from deepsearch_agent.agents.researcher.state import (
     ResearchRuntimeContext,
 )
 from deepsearch_agent.agents.researcher.tools import build_researcher_tools
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
@@ -30,7 +31,7 @@ from deepsearch_agent.schemas import (
     ResearchDirectionResult,
 )
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools import SearchTool, SourceReaderTool, ToolExecutionContext
+from deepsearch_agent.tools import SearchTool, SourceReaderTool
 from deepsearch_agent.tools.search.models import SearchCandidate, SearchResult, SearchToolResult
 from deepsearch_agent.tools.sources.models import SourceReaderToolResult
 
@@ -142,9 +143,9 @@ class ResearchAgent:
         claim_url: Callable[[str], Awaitable[bool]],
         on_url_already_attempted: Callable[[str], None] | None,
     ) -> ResearchRuntimeContext:
-        execution = ToolExecutionContext.from_task(task)
+        scope = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
         event_context = {
-            **execution.event_fields(),
+            **scope.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),
             "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
         }
@@ -167,7 +168,7 @@ class ResearchAgent:
 
         return ResearchRuntimeContext(
             task=task,
-            execution=execution,
+            scope=scope,
             run_state=run_state,
             search_sources=search_sources,
             read_sources=read_sources,

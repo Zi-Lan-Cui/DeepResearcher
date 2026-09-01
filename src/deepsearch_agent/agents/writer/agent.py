@@ -17,6 +17,7 @@ from deepsearch_agent.agents.middleware import (
     SubmissionGuard,
     build_agent_middleware,
 )
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.agents.writer.state import (
     PreparedEvidence,
     ValidatedDraft,
@@ -166,7 +167,10 @@ class ReportWriter:
         if not prepared.by_id:
             return self._render_insufficient_evidence(state, evidences)
 
-        runtime = self._writer_runtime_context(prepared.by_id)
+        runtime = self._writer_runtime_context(
+            prepared.by_id,
+            run_id=str(state.get("run_id") or ""),
+        )
         messages = self._build_generation_messages(
             state=state,
             directive=directive,
@@ -204,8 +208,14 @@ class ReportWriter:
             evidence_count=len(prepared.by_id),
         )
 
-    def _writer_runtime_context(self, evidence_by_id: dict[str, Evidence]) -> WriterRuntimeContext:
+    def _writer_runtime_context(
+        self,
+        evidence_by_id: dict[str, Evidence],
+        *,
+        run_id: str,
+    ) -> WriterRuntimeContext:
         return WriterRuntimeContext(
+            scope=AgentExecutionScope(run_id=run_id, agent_name="Writer"),
             evidence_by_id=evidence_by_id,
             emit=self._emit,
             read_evidence_ids=set(),

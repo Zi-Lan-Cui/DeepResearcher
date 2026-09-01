@@ -20,6 +20,7 @@ from deepsearch_agent.agents.middleware import (
     build_agent_middleware,
 )
 from deepsearch_agent.agents.researcher import ResearchAgent
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.agents.supervisor.state import (
     RunUrlReservations,
     SupervisorRuntimeContext,
@@ -270,6 +271,10 @@ class ResearchSupervisor:
             )
 
         runtime = SupervisorRuntimeContext(
+            scope=AgentExecutionScope(
+                run_id=str(state.get("run_id") or ""),
+                agent_name="Supervisor",
+            ),
             working=working,
             url_reservations=url_reservations,
             delegate_research=delegate,

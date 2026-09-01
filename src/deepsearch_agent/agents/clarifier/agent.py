@@ -18,6 +18,7 @@ from deepsearch_agent.agents.middleware.factory import (
     build_agent_middleware,
 )
 from deepsearch_agent.agents.middleware.profile import MiddlewareProfile
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 
@@ -76,6 +77,11 @@ class Clarifier:
         """为每次 Agent 决策注入独立工具锁；上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
-            context=ClarifierRuntimeContext(),
+            context=ClarifierRuntimeContext(
+                scope=AgentExecutionScope(
+                    run_id=str(state.get("run_id") or ""),
+                    agent_name="Clarifier",
+                )
+            ),
             config={"recursion_limit": AGENT_RECURSION_LIMIT},
         )
