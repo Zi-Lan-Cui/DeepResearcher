@@ -11,9 +11,9 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 
+from deepsearch_agent.agents.middleware.observability import AgentObservabilityMiddleware
 from deepsearch_agent.agents.middleware.profile import MiddlewareProfile
 from deepsearch_agent.agents.middleware.retry import model_retry, tool_retry
-from deepsearch_agent.agents.middleware.turn_logging import TurnLoggingMiddleware
 from deepsearch_agent.context.budget import MessageBudget, message_text
 
 _MESSAGE_BUDGET = MessageBudget()
@@ -29,7 +29,7 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     """按 Profile 组装所有 Agent 共用的模型、工具、上下文和轮次中间件。
 
     Profile 语义约定见 :mod:`.profile`；注册顺序即行为契约：提交守卫
-    先于 TurnLogging 注册（after-hook 逆序执行），保证回合日志完整记录
+    先于 AgentObservability 注册（after-hook 逆序执行），保证回合日志完整记录
     被拦截的文本输出；ModelCallLimit 最后注册，其计数先于日志中间件递增。
     """
     from deepsearch_agent.agents.middleware.serial_tools import SerialToolMiddleware
@@ -71,7 +71,7 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
             )
         )
     middleware.append(
-        TurnLoggingMiddleware(
+        AgentObservabilityMiddleware(
             agent_name=profile.agent_name, run_limit=profile.max_turns, emit=profile.emit
         )
     )
