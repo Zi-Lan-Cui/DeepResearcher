@@ -62,7 +62,7 @@ def build_researcher_tools() -> list[BaseTool]:
         return _tool_result(result)
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
-    def read_working_set(
+    async def read_working_set(
         reason: str,
         runtime: ToolRuntime[ResearchRuntimeContext],
     ) -> str:
@@ -71,7 +71,7 @@ def build_researcher_tools() -> list[BaseTool]:
         return _tool_result(_working_set_snapshot(runtime.context.run_state))
 
     @tool("ForgetEvidence", args_schema=ForgetEvidence)
-    def forget_evidence(
+    async def forget_evidence(
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[ResearchRuntimeContext],
@@ -94,7 +94,7 @@ def build_researcher_tools() -> list[BaseTool]:
         )
 
     @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
-    def complete_direction(
+    async def complete_direction(
         reason: str,
         answered_points: list[str],
         conclusion: str,
