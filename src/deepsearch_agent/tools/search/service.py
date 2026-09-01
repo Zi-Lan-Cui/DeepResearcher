@@ -4,12 +4,12 @@ import asyncio
 import time
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.observability.events import JsonlSink, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools.context import ToolExecutionContext
 from deepsearch_agent.tools.errors import ToolConfigurationError
 from deepsearch_agent.tools.search.client import SearchClient
 from deepsearch_agent.tools.search.models import (
@@ -48,7 +48,7 @@ class SearchTool:
         search_queries = list(
             dict.fromkeys(query.strip() for query in queries if query.strip())
         ) or [task["question"]]
-        execution = ToolExecutionContext.from_task(task)
+        execution = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
         task_context = {
             **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),

@@ -3,6 +3,7 @@
 import asyncio
 import time
 
+from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.evidence import EvidenceExtractor
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, make_tool_event
@@ -11,7 +12,6 @@ from deepsearch_agent.observability.tracing.context import SpanContext, current_
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.parsers.models import ParsedDocument
 from deepsearch_agent.state import SubTask
-from deepsearch_agent.tools.context import ToolExecutionContext
 from deepsearch_agent.tools.errors import (
     SourceUnavailableError,
     ToolConfigurationError,
@@ -66,7 +66,7 @@ class SourceReaderTool:
 
     async def arun(self, task: SubTask, result: SearchResult) -> SourceReaderToolResult:
         started = time.perf_counter()
-        execution = ToolExecutionContext.from_task(task)
+        execution = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
         task_context = {
             **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),

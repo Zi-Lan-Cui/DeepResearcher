@@ -1,7 +1,6 @@
 """外部工具客户端。"""
 
 from deepsearch_agent.parsers import ParsedDocument
-from deepsearch_agent.tools.context import ToolExecutionContext
 from deepsearch_agent.tools.errors import (
     SourceUnavailableError,
     ToolConfigurationError,
@@ -20,7 +19,6 @@ __all__ = [
     "SearchResult",
     "SearchTool",
     "SourceReaderTool",
-    "ToolExecutionContext",
     "SourceUnavailableError",
     "ToolConfigurationError",
     "ToolError",
