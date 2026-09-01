@@ -52,7 +52,7 @@ class ClarificationCompleteArgs(BaseModel):
 
 def build_clarifier_tools():
     @tool("AskClarification", args_schema=AskClarificationArgs, return_direct=True)
-    def ask_clarification(
+    async def ask_clarification(
         question: str,
         options: list[str],
         runtime: ToolRuntime[None, ClarifierAgentState],
@@ -98,7 +98,7 @@ def build_clarifier_tools():
         )
 
     @tool("ClarificationComplete", args_schema=ClarificationCompleteArgs, return_direct=True)
-    def clarification_complete(
+    async def clarification_complete(
         intent_summary: str,
         research_focus: list[str],
         assumptions: list[str],

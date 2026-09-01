@@ -56,7 +56,7 @@ def build_supervisor_tools() -> list[BaseTool]:
     # return_direct 才会让 Command(goto=END) 真正终止 Agent 循环；
     # 缺省时 langchain 仍会把消息送回模型，决策调用白白空转一整圈。
     @tool("ResearchComplete", args_schema=ResearchComplete, return_direct=True)
-    def research_complete(
+    async def research_complete(
         report_brief: object,
         reason: str,
         runtime: ToolRuntime[SupervisorRuntimeContext],
@@ -86,7 +86,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         )
 
     @tool("ResearchReady", args_schema=ResearchReady)
-    def research_ready(
+    async def research_ready(
         report_brief: object,
         reason: str,
         runtime: ToolRuntime[SupervisorRuntimeContext],
@@ -102,7 +102,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         return _result({"status": "recorded", "reason": reason})
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
-    def read_working_set(
+    async def read_working_set(
         reason: str,
         runtime: ToolRuntime[SupervisorRuntimeContext],
     ) -> str:
@@ -111,7 +111,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         return _result(_working_set_snapshot(runtime.context.working))
 
     @tool("ForgetEvidence", args_schema=ForgetEvidence)
-    def forget_evidence(
+    async def forget_evidence(
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[SupervisorRuntimeContext],

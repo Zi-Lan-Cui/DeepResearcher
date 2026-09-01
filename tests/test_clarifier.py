@@ -25,10 +25,12 @@ def test_ask_only_stages_question_without_interrupt_or_external_effect():
         (),
         {"tool_call_id": "ask-1", "state": {"query": "原问题"}},
     )()
-    command = _tool("AskClarification").func(
-        question="你更关心什么？",
-        options=["成本", "效果", "风险"],
-        runtime=runtime,
+    command = asyncio.run(
+        _tool("AskClarification").coroutine(
+            question="你更关心什么？",
+            options=["成本", "效果", "风险"],
+            runtime=runtime,
+        )
     )
 
     assert command.update["pending_question"] == "你更关心什么？"
@@ -54,11 +56,13 @@ def test_clarifier_tools_explain_boundary_and_pause_contract():
 def test_complete_is_the_only_submission_signal():
     runtime = type("Runtime", (), {"tool_call_id": "call-2"})()
 
-    command = _tool("ClarificationComplete").func(
-        intent_summary="比较两种方案",
-        research_focus=["成本", "效果"],
-        assumptions=["按公开资料评估"],
-        runtime=runtime,
+    command = asyncio.run(
+        _tool("ClarificationComplete").coroutine(
+            intent_summary="比较两种方案",
+            research_focus=["成本", "效果"],
+            assumptions=["按公开资料评估"],
+            runtime=runtime,
+        )
     )
 
     assert command.update["clarification_completed"] is True
@@ -76,10 +80,11 @@ def test_clarifier_run_injects_serial_tool_context():
 
     clarifier = Clarifier.__new__(Clarifier)
     clarifier.graph = AgentGraph()
-    result = asyncio.run(clarifier.run({"query": "测试"}))
+    result = asyncio.run(clarifier.run({"run_id": "run-clarify", "query": "测试"}))
 
     assert result["clarification_completed"] is True
     assert isinstance(captured["context"], ClarifierRuntimeContext)
+    assert captured["context"].scope.run_id == "run-clarify"
     assert captured["context"].tool_lock is not None
     assert captured["config"]["recursion_limit"] > 0
 
@@ -97,10 +102,13 @@ def test_clarifier_graph_preserves_parent_state_contract():
     agent.add_edge(START, "complete")
     agent.add_edge("complete", END)
     result = asyncio.run(
-        build_clarifier_graph(agent.compile().ainvoke).ainvoke({"query": "原问题"})
+        build_clarifier_graph(agent.compile().ainvoke).ainvoke(
+            {"run_id": "run-parent", "query": "原问题"}
+        )
     )
 
     assert result["query"] == "原问题"
+    assert result["run_id"] == "run-parent"
     assert result["clarified_query"] == "原问题"
     assert result["research_brief"] == "已确认的研究范围"
 

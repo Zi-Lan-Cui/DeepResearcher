@@ -55,7 +55,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
             "若返回含 not_read_ids/unknown_ids/hint，必须先按提示处理。"
         ),
     )
-    def read_evidence(
+    async def read_evidence(
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[WriterRuntimeContext],
@@ -122,7 +122,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
             "——修正通常无需读取新证据，不要重复调用 ReadEvidence。"
         ),
     )
-    def complete_report(
+    async def complete_report(
         selected_evidence_ids: list[str],
         markdown: str,
         runtime: ToolRuntime[WriterRuntimeContext],
