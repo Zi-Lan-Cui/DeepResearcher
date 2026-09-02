@@ -37,6 +37,7 @@ from deepsearch_agent.schemas import (
     RunLifecycle,
     WriterProgress,
 )
+from deepsearch_agent.service.usage import UsageBudgetExceeded
 from deepsearch_agent.state import validate_state_invariants
 from deepsearch_agent.tools.errors import ToolRequestError
 
@@ -226,6 +227,19 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert "boom" not in result["report"]
     # 边界的失败产物自身必须通过与节点产物相同的不变量校验（回归锁）。
     validate_state_invariants({}, result)
+
+
+def test_usage_budget_exhaustion_degrades_to_incomplete_report():
+    async def over_budget(_state):
+        raise UsageBudgetExceeded("run_token_budget_exhausted")
+
+    result = asyncio.run(execute_node({"query": "测试"}, stage="writer", node=over_budget))
+
+    assert result["run"].phase == "failed"
+    assert result["run"].terminal_reason == "budget_exhausted"
+    assert result["run"].error.code == "budget_exhausted"
+    assert "已达用量上限" in result["report"]
+    assert "run_token_budget_exhausted" not in result["report"]
 
 
 def test_execution_boundary_never_converts_graph_interrupt_to_failure():

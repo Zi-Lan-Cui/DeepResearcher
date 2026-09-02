@@ -576,7 +576,8 @@ async def test_run_graph_passes_thread_id_config(manager):
     await _settle(manager, run_id)
     assert graph.seen_configs, "astream 未收到 kwargs"
     configs = [c.get("config") for c in graph.seen_configs]
-    assert {"configurable": {"thread_id": run_id}} in configs
+    assert any(config["configurable"] == {"thread_id": run_id} for config in configs)
+    assert all(config["callbacks"] for config in configs)
 
 
 async def test_streaming_preview_routing_and_ephemerality(manager):
