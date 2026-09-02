@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.observability.logger import get_logger
+from deepsearch_agent.service.usage import enforce_usage_budget
 
 _LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 LIMIT_MESSAGE_MARKER = _LIMIT_MESSAGE_MARKER
@@ -46,6 +47,11 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         fields = scope.event_fields() if isinstance(scope, AgentExecutionScope) else {}
         fields["agent"] = self.agent_name
         return fields
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        """在每个 Agent 模型回合前检查 run/user/platform 预算。"""
+        await enforce_usage_budget()
+        return await handler(request)
 
     async def aafter_model(self, state: Any, runtime: Any) -> None:
         messages = state.get("messages", []) if isinstance(state, dict) else []

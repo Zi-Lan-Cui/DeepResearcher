@@ -13,6 +13,7 @@ from curl_cffi.requests.exceptions import RequestException, Timeout
 from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI
 
 from deepsearch_agent.config import SearchConfig
+from deepsearch_agent.service.usage import record_external_request
 from deepsearch_agent.tools.errors import ToolRequestError
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -50,6 +51,10 @@ class HttpClient:
         self.config = config
         self.client = client or AsyncSession(timeout=config.timeout)
         self._owns_client = client is None
+        self._capacity = {
+            "search": asyncio.Semaphore(config.max_concurrent_requests),
+            "fetch": asyncio.Semaphore(config.max_concurrent_fetches),
+        }
 
     async def arequest(
         self,
@@ -60,6 +65,7 @@ class HttpClient:
         json: Mapping | None = None,
         headers: Mapping | None = None,
         timeout: float | None = None,
+        request_kind: str = "fetch",
     ) -> Response:
         last_error: Exception | None = None
         rate_limit_reset_ts: float | None = None
@@ -69,14 +75,32 @@ class HttpClient:
                 # curl_cffi 的类型存根只接受受限的字面量集合；项目边界允许
                 # 调用方继续使用通用的 HTTP 方法和 Mapping 类型。
                 request = cast(Any, self.client.request)
-                response = await request(
-                    method,
-                    url,
-                    params=params,
-                    json=json,
-                    headers=headers,
-                    timeout=timeout,
-                    impersonate=random.choice(_IMPERSONATE_TARGETS),
+                started = time.monotonic()
+                semaphore = self._capacity.get(request_kind, self._capacity["fetch"])
+                async with semaphore:
+                    try:
+                        response = await request(
+                            method,
+                            url,
+                            params=params,
+                            json=json,
+                            headers=headers,
+                            timeout=timeout,
+                            impersonate=random.choice(_IMPERSONATE_TARGETS),
+                        )
+                    except Exception:
+                        await record_external_request(
+                            category=request_kind,
+                            status="failed",
+                            duration_ms=round((time.monotonic() - started) * 1000),
+                            detail={"attempt": attempt + 1},
+                        )
+                        raise
+                await record_external_request(
+                    category=request_kind,
+                    status="completed" if response.status_code < 400 else "failed",
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    detail={"attempt": attempt + 1, "status_code": response.status_code},
                 )
                 if response.status_code in _RETRYABLE_STATUS:
                     # 服务端在 429/503 里的等待指示优先于本地指数曲线，

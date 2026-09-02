@@ -13,9 +13,10 @@ from typing import Any, cast
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
 from deepsearch_agent.observability.events.models import make_node_event
-from deepsearch_agent.reporting import render_error_report
+from deepsearch_agent.reporting import render_error_report, render_incomplete_report
 from deepsearch_agent.routing import NodeName
 from deepsearch_agent.schemas import RunError, RunLifecycle
+from deepsearch_agent.service.usage import UsageBudgetExceeded
 from deepsearch_agent.state import ResearchState, restore_state_models, validate_state_invariants
 
 
@@ -51,11 +52,31 @@ async def execute_node(
             error=error.message,
             payload={"code": error.code, "retryable": error.retryable},
         )
+        budget_exhausted = isinstance(exc, UsageBudgetExceeded)
+        if budget_exhausted:
+            error = RunError(
+                stage=stage,
+                code="budget_exhausted",
+                message="本次研究已达配置的模型用量上限。",
+                retryable=False,
+                detail=str(exc),
+            )
         failure: dict[str, Any] = {
-            "run": RunLifecycle(phase="failed", terminal_reason="node_failed", error=error),
+            "run": RunLifecycle(
+                phase="failed",
+                terminal_reason="budget_exhausted" if budget_exhausted else "node_failed",
+                error=error,
+            ),
             "answer_mode": "research_incomplete",
             "supervisor_next": NodeName.RENDER_FINAL_REPORT,
-            "report": render_error_report(cast(ResearchState, state), error),
+            "report": (
+                render_incomplete_report(
+                    cast(ResearchState, state),
+                    ["本次研究已达用量上限，已保留当前获取的研究进度。"],
+                )
+                if budget_exhausted
+                else render_error_report(cast(ResearchState, state), error)
+            ),
             "node_events": [event],
         }
         # 边界的产物与节点产物过同一条不变量校验。此处校验不通过说明

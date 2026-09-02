@@ -23,6 +23,16 @@ from deepsearch_agent.service.events import CompositeSink, FanoutSink
 from deepsearch_agent.service.models import Run
 from deepsearch_agent.service.queue import RunWork
 from deepsearch_agent.service.settings import ServiceConfig
+from deepsearch_agent.service.usage import (
+    CapacityGate,
+    ProviderRateLimiter,
+    RunUsageCallback,
+    UsageBudgetExceeded,
+    UsageRuntime,
+    UsageStore,
+    bind_usage_runtime,
+    reset_usage_runtime,
+)
 
 logger = logging.getLogger("deepsearch_agent.service.executor")
 
@@ -45,6 +55,9 @@ class RunExecutor:
         config: ServiceConfig,
         fanout: FanoutSink,
         event_store: RunEventStore,
+        usage_store: UsageStore,
+        llm_gate: CapacityGate,
+        llm_rate_limiter: ProviderRateLimiter,
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
@@ -54,6 +67,9 @@ class RunExecutor:
         self._config = config
         self._fanout = fanout
         self._event_store = event_store
+        self._usage_store = usage_store
+        self._llm_gate = llm_gate
+        self._llm_rate_limiter = llm_rate_limiter
         self._http_client = http_client
         self._graph_factory = graph_factory
         self._checkpointer = checkpointer
@@ -89,6 +105,9 @@ class RunExecutor:
             sinks.append(JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl"))
         sink = CompositeSink(*sinks)
         flusher = asyncio.create_task(self._periodic_flush(run_id))
+        usage_token = bind_usage_runtime(
+            UsageRuntime(run_id=run_id, store=self._usage_store, config=self._settings.llm)
+        )
         suspended = False
         try:
             if not await self._mark_running(run_id, resume=resume, claim=claim):
@@ -105,7 +124,16 @@ class RunExecutor:
             inputs = (
                 resume_input if resume else {"query": query, "run_id": run_id, "session_id": run_id}
             )
-            result, interruption = await self._run_graph(run_id, graph, inputs)
+            callback = RunUsageCallback(
+                run_id=run_id,
+                store=self._usage_store,
+                gate=self._llm_gate,
+                rate_limiter=self._llm_rate_limiter,
+                config=self._settings.llm,
+            )
+            result, interruption = await self._run_graph(
+                run_id, graph, inputs, callbacks=[callback]
+            )
             if interruption is not None:
                 if not await self._persist_awaiting_input(run_id, claim=claim):
                     self.mark_lease_lost(run_id)
@@ -132,6 +160,17 @@ class RunExecutor:
                 )
                 if claim is not None and not persisted:
                     self.mark_lease_lost(run_id)
+        except UsageBudgetExceeded as exc:
+            logger.info("research_budget_exhausted run_id=%s reason=%s", run_id, exc)
+            persisted = await self.persist_status(
+                run_id,
+                status="failed",
+                terminal_reason="budget_exhausted",
+                error_message="本次研究已达用量上限，请调整配额后重试。",
+                claim=claim,
+            )
+            if claim is not None and not persisted:
+                self.mark_lease_lost(run_id)
         except Exception:  # noqa: BLE001 - 后台执行必须自收口
             logger.exception("research_run_failed run_id=%s", run_id)
             persisted = await self.persist_status(
@@ -157,18 +196,21 @@ class RunExecutor:
                 self._fanout.close(run_id)
             self._lost_leases.discard(run_id)
             self._cancellation_requests.discard(run_id)
+            reset_usage_runtime(usage_token)
 
     def _settings_for(self, user_id: int) -> Settings:
         """BYO-keys 预留缝：未来可按用户返回 replace(...) 的 Settings。"""
         return self._settings
 
-    async def _run_graph(self, run_id: str, graph: Any, inputs: Any) -> tuple[dict, dict | None]:
+    async def _run_graph(
+        self, run_id: str, graph: Any, inputs: Any, *, callbacks: list[Any] | None = None
+    ) -> tuple[dict, dict | None]:
         """Stream root state, interrupts and safe token previews from the graph."""
         final: dict = {}
         interruption: dict | None = None
         async for namespace, mode, chunk in graph.astream(
             inputs,
-            config={"configurable": {"thread_id": run_id}},
+            config={"configurable": {"thread_id": run_id}, "callbacks": callbacks or []},
             stream_mode=["values", "messages", "updates"],
             subgraphs=True,
         ):

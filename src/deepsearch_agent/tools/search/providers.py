@@ -24,6 +24,7 @@ class TavilySearchProvider:
                   "search_depth": "advanced", "max_results": limit,
                   "include_answer": False,
                   "include_raw_content": self.config.tavily_include_raw_content},
+            request_kind="search",
         )
         try:
             return [{"title": item.get("title", ""), "url": item["url"],
@@ -45,6 +46,7 @@ class SerpApiSearchProvider:
             "GET", "https://serpapi.com/search.json",
             params={"engine": "google", "q": query,
                     "api_key": self.config.serpapi_api_key, "num": limit},
+            request_kind="search",
         )
         try:
             data = response.json()
@@ -75,6 +77,7 @@ class BaiduSearchProvider:
             json={"messages": [{"content": query, "role": "user"}],
                   "search_source": "baidu_search_v2",
                   "resource_type_filter": [{"type": "web", "top_k": min(limit, 50)}]},
+            request_kind="search",
         )
         try:
             data = response.json()

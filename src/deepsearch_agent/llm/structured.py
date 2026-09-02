@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 from deepsearch_agent.config import LLMRetryConfig
 from deepsearch_agent.llm.errors import LLMConfigurationError
 from deepsearch_agent.llm.retry import with_transport_retry
+from deepsearch_agent.service.usage import enforce_usage_budget
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 STRUCTURED_ERRORS = (OutputParserException, ValidationError, ValueError)
@@ -46,6 +47,7 @@ class LLMInvoker:
         *,
         request_kwargs: dict[str, Any] | None = None,
     ) -> Any:
+        await enforce_usage_budget()
         runnable = self._model.bind(**request_kwargs) if request_kwargs else self._model
         return await with_transport_retry(runnable, self._retry).ainvoke(list(messages))
 
@@ -73,6 +75,7 @@ class LLMInvoker:
         current_messages = list(structured_messages)
         for attempt in range(self._retry.structured_repair_attempts + 1):
             try:
+                await enforce_usage_budget()
                 return await runnable.ainvoke(current_messages)
             except STRUCTURED_ERRORS as exc:
                 if attempt >= self._retry.structured_repair_attempts:
