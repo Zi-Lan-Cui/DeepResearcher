@@ -4,14 +4,18 @@
 （测试/无 Docker 过渡）。``:memory:`` 的 SQLite 每个连接是独立库，必须
 StaticPool 复用同一连接；外键（CASCADE）在 SQLite 里默认关闭，需逐连接开 pragma。
 
-迁移策略：P0 用 ``init_db``（create_all）——仅当 schema 保持 append-only 且部署
-只有我们一个时成立。**引入 Alembic 的触发条件是第一次 ALTER/列变更，不是第一次
-上线**；到那步之前禁止手改 models 里已有列的语义。
+应用启动使用 Alembic 升级 schema；``init_db`` 只供隔离测试快速创建当前完整模型。
+首个迁移前已经存在的数据库会被采纳到 ``0001_initial``，再执行 lease 字段迁移。
 """
 
 from __future__ import annotations
 
-from sqlalchemy import event
+import asyncio
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -68,5 +72,33 @@ def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
 
 
 async def init_db(engine: AsyncEngine) -> None:
+    """Create the complete schema for isolated SQLite tests."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def migrate_database(database_url: str) -> None:
+    """Upgrade an application database with Alembic.
+
+    Databases created before Alembic are adopted at the immutable initial-schema
+    revision and then upgraded. This is safe only because ``0001_initial`` exactly
+    describes the schema that preceded the first ALTER migration.
+    """
+    engine = make_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            tables = await connection.run_sync(lambda sync: set(inspect(sync).get_table_names()))
+    finally:
+        await engine.dispose()
+
+    root = Path(__file__).resolve().parents[3]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+
+    def upgrade() -> None:
+        if "runs" in tables and "alembic_version" not in tables:
+            command.stamp(config, "0001_initial")
+        command.upgrade(config, "head")
+
+    await asyncio.to_thread(upgrade)

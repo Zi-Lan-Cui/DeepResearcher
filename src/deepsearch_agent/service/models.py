@@ -62,6 +62,12 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(96), index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resume_payload: Mapped[dict | None] = mapped_column(JSON)
+    event_seq: Mapped[int] = mapped_column(Integer, default=0)
 
     user: Mapped["User"] = relationship(back_populates="runs")
     events: Mapped[list["RunEvent"]] = relationship(

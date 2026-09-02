@@ -53,6 +53,10 @@ class ServiceConfig:
     jwt_secret: str
     token_ttl_hours: int = 12
     max_concurrent_runs_per_user: int = 2
+    max_global_running_runs: int = 3
+    max_global_queued_runs: int = 100
+    worker_lease_seconds: int = 60
+    worker_heartbeat_seconds: int = 20
     host: str = "127.0.0.1"
     port: int = 8080
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
@@ -74,9 +78,7 @@ def get_service_config() -> ServiceConfig:
     jwt_secret = _env("SERVICE_JWT_SECRET")
     if len(jwt_secret) < _MIN_SECRET_CHARS:
         if environment == "production":
-            raise ValueError(
-                f"生产环境必须提供长度 ≥{_MIN_SECRET_CHARS} 的 SERVICE_JWT_SECRET。"
-            )
+            raise ValueError(f"生产环境必须提供长度 ≥{_MIN_SECRET_CHARS} 的 SERVICE_JWT_SECRET。")
         # 开发期缺省 → 每次进程随机一份：能用，但重启即令全部旧 token 失效。
         jwt_secret = secrets.token_urlsafe(_MIN_SECRET_CHARS)
         logger.warning(
@@ -88,6 +90,10 @@ def get_service_config() -> ServiceConfig:
         jwt_secret=jwt_secret,
         token_ttl_hours=max(1, _int_env("SERVICE_TOKEN_TTL_HOURS", 12)),
         max_concurrent_runs_per_user=max(1, _int_env("SERVICE_MAX_CONCURRENT_RUNS_PER_USER", 2)),
+        max_global_running_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_RUNNING_RUNS", 3)),
+        max_global_queued_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_QUEUED_RUNS", 100)),
+        worker_lease_seconds=max(10, _int_env("SERVICE_WORKER_LEASE_SECONDS", 60)),
+        worker_heartbeat_seconds=max(1, _int_env("SERVICE_WORKER_HEARTBEAT_SECONDS", 20)),
         host=_env("SERVICE_HOST", "127.0.0.1"),
         port=_int_env("SERVICE_PORT", 8080),
         service_log_dir=Path(_env("SERVICE_LOG_DIR", str(_PROJECT_ROOT / "var" / "service"))),
