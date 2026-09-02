@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 
 from deepsearch_agent.service.models import Run
 
@@ -41,8 +41,13 @@ class PostgresRunQueue:
     the test/embedded compatibility path deterministic.
     """
 
-    def __init__(self, session_factory: Callable[[], Any]) -> None:
+    def __init__(
+        self, session_factory: Callable[[], Any], *, max_global_running: int | None = None
+    ) -> None:
         self._session_factory = session_factory
+        self._max_global_running = (
+            max(1, max_global_running) if max_global_running is not None else None
+        )
         self._claim_lock = asyncio.Lock()
 
     async def claim(
@@ -55,6 +60,18 @@ class PostgresRunQueue:
         async with self._claim_lock:
             async with self._session_factory() as session:
                 now = _utcnow()
+                if self._max_global_running is not None:
+                    # PostgreSQL 上用事务 advisory lock 串行化“计数+领取”；
+                    # SQLite 测试/单进程兼容路径由 _claim_lock 保护。
+                    bind = session.get_bind()
+                    if bind.dialect.name == "postgresql":
+                        await session.execute(text("SELECT pg_advisory_xact_lock(731904621)"))
+                    running = await session.scalar(
+                        select(func.count()).select_from(Run).where(Run.status == "running")
+                    )
+                    if int(running or 0) >= self._max_global_running:
+                        await session.rollback()
+                        return None
                 allowed = ("queued",)
                 if preferred is None:
                     candidate = (
