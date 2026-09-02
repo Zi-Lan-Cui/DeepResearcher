@@ -50,7 +50,7 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 ## 语义速查
 
 - 状态机：`queued → running → completed|failed|cancelled`；服务正常停机将活跃 run 记为非终态 `interrupted`（不写 `run_done`）。重启时**分诊** `queued|running|interrupted`：有 checkpoint 的孤儿 run 复活续跑（SSE 播 `resuming`，seq 从库中 max 续号，真机 kill -9 验收通过），无 checkpoint 的才判 `server_restart` 并补写终帧。
-- **进程边界**：Run claim、取消意图、resume payload、事件 seq 与 SSE DB tail 已持久化；聚合事件可跨 API/Worker 进程。token 级预览仍是进程内可丢失旁路，集群总容量/费用限制及独立 Worker 启动入口尚未完成，因此正式水平扩容仍按迁移计划的 M6–M8 推进。
+- **进程边界**：Run claim、取消意图、resume payload、事件 seq、SSE DB tail、usage/预算和全局 Run 槽已持久化或由 PostgreSQL 协调。token 级预览仍是进程内可丢失旁路，LLM RPM/TPM 与 search/fetch 容量是每 Worker 限制；正式水平扩容还需 M7 工具缓存和 M8 独立 Worker 入口。
 - 越权与不存在同为 404；登录两错同为 401 文案。
 - 事件流：`done` 帧恒最后且已落库（RunEvent），断线/刷新自动回放续接，seq 客户端去重。
 - 配额：`SERVICE_MAX_CONCURRENT_RUNS_PER_USER`（活跃 queued+running 数，超限 429）。
@@ -63,7 +63,7 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 | 服务端 token 吊销 / sessions 表 | 有真实安全需求或加"退出所有设备"时 |
 | ~~checkpointer~~ **已接入（1/4 步）** | 状态快照已在 PG `checkpoints*` 表（thread_id=run_id，SQLite 部署自动跳过）；resume 驱动（reconcile 续跑+seq 续号）在 TODO P0②，做完才真正"杀而不死" |
 | Redis（跨进程事件/配额）与任务队列 | web 与 worker 拆开或多机部署那天 |
-| 登录限流、成本计量、Alembic、HTTPS/反代 | 对外部署前逐项补 |
+| 登录限流、HTTPS/反代 | 对外部署前补；成本计量和 Alembic 已完成 |
 | SSRF 守卫（fetcher 拦私网/元数据地址） | **任何公网托管前的一票否决项** |
 
 ## 开发门检
