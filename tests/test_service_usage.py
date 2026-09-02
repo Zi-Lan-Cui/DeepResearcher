@@ -137,6 +137,26 @@ async def test_daily_user_cost_budget_uses_usage_details(usage_db):
         await store.enforce_budget("run-usage", LLMConfig(max_cost_usd_per_user_daily=0.2))
 
 
+async def test_callback_checks_budget_for_every_provider_attempt(usage_db):
+    store = UsageStore(usage_db)
+    await store.record(
+        run_id="run-usage",
+        category="llm",
+        component="router",
+        status="completed",
+        input_tokens=10,
+    )
+    callback = RunUsageCallback(
+        run_id="run-usage",
+        store=store,
+        gate=CapacityGate(1),
+        rate_limiter=ProviderRateLimiter(requests_per_minute=0, tokens_per_minute=0),
+        config=LLMConfig(max_tokens_per_run=10),
+    )
+    with pytest.raises(UsageBudgetExceeded, match="run_token_budget_exhausted"):
+        await callback.on_chat_model_start({}, [[HumanMessage(content="next")]], run_id=uuid4())
+
+
 async def test_capacity_and_rate_limiters_bound_requests():
     gate = CapacityGate(1)
     await gate.acquire()
