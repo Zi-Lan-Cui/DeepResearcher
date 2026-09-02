@@ -128,13 +128,13 @@ API 原子写 `cancellation_requested_at`；queued/awaiting_input 可直接转 c
 
 ### LLM 容量与速率
 
-`LLMCapacityLimiter` 覆盖 Agent 模型、Router/Reflection 和 EvidenceExtractor 的全部调用。本地实现用进程级 Semaphore，独立 Worker 初期通过“Worker 数 × 每 Worker 槽位”保守配置，之后再引入 Redis token bucket 控制集群 RPM/TPM。Semaphore 只管在飞数，不替代速率与费用预算。
+`CapacityGate + ProviderRateLimiter` 覆盖 Agent 模型、Router/Reflection 和 EvidenceExtractor 的全部调用。本地实现使用每 Worker Semaphore 和滑动窗口 RPM/TPM，独立 Worker 初期通过“Worker 数 × 每 Worker 槽位”保守配置。Semaphore 只管在飞数，RPM/TPM 只管请求速率，两者都不替代费用预算。
 
 ### Usage 与费用
 
-在 RunExecutor 最外层安装 LangChain `UsageMetadataCallbackHandler`，收集全图实际 token；Agent middleware 记录 turn 粒度 usage；非 Agent 调用通过 tracing context 标记 node/operation。自定义 OpenAI-compatible provider 若不返回流式 usage，则使用 tokenizer 估算并显式标记 `estimated`，缺失不能当作 0。
+在 RunExecutor 最外层安装 `RunUsageCallback`，收集全图 token；LangGraph callback metadata 标记 node/provider/model。OpenAI-compatible provider 若不返回 usage，则按请求/响应字符数估算并显式标记 `estimated`，缺失不当作 0。
 
-持久化分为 `llm_usage_events` 调用明细和 Run 聚合。价格表按 provider/model/effective_at 版本化，保存计算时的 price version。预算包括单 Run model calls/input/output/cost/wall time，以及用户日/月与平台小时/日总额；达限时优先用已有 Evidence 降级交付，而不是简单报系统错误。
+持久化分为 `run_usage` 调用明细和 Run 聚合。当前价格由部署配置提供，每条明细保存 `price_version`；后续如需多模型动态计价，再将价格解析抽成可版本化仓库。预算已包括单 Run token/cost、用户当日与平台滚动小时/当日总额；达限时优先用已有 Evidence 降级交付。
 
 ## 9. 工具缓存与可重放边界
 
@@ -254,13 +254,24 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 
 **边界**：到此事件回放与持久实时流已支持跨进程；token 级预览仍只在 Worker 与连接位于同一进程时可见。若独立 Worker 也需要逐 token 预览，应使用单独的可丢失通道，不把 token 写入 RunEvent 表。
 
-### M6：Usage、成本和分层容量闸
+### M6：Usage、成本和分层容量闸（已完成）
 
 **原因**：在没有实际 usage 时无法证明缓存收益，也无法安全扩大 Worker 数。
 
 **工作**：接 LangChain usage callback；存明细/聚合/价格版本；实现 Run 槽、每 Worker LLM/fetch 槽、provider RPM/TPM 和 Run/user/platform 预算。
 
 **验收**：所有模型调用都是 actual 或 estimated，不存在静默 0；预算耗尽能降级交付；并发不超配置。
+
+**实施结果**：
+
+- Alembic `0004_run_usage` 新增 `run_usage` 调用明细及 Run 级 LLM 次数、input/output/cache token、外部请求数、峰值并发和估算费用聚合。详情 API 直接下发聚合与耗时。
+- `RunExecutor` 在整张 Graph 外层安装 LangChain callback，Agent 回合、Router/Reflection 结构化调用和 Evidence 抽取共用一条计量路径。Provider 有 usage 时记 actual，缺失或全 0 时按字符估算并标记 estimated。
+- `HttpClient` 分别使用共享 search/fetch Semaphore，每次真实网络 attempt 都写入成功/失败明细；LLM 使用每 Worker 共享并发闸与 60 秒滑动窗口 RPM/TPM。
+- `SERVICE_MAX_GLOBAL_RUNNING_RUNS` 在 PostgreSQL claim 中通过事务 advisory lock 串行化“计数+领取”，不再随 Worker 数量倍增。
+- 请求前检查单 Run token/费用、用户当日费用、平台滚动小时/当日费用；达限后使用已有 Evidence 渲染不完整报告，不把内部预算原因暴露到前端。
+- 全量 `242 passed, 1 skipped`；真实 PostgreSQL 测试额外 `1 passed`，包含 `0004` 迁移、双 claim、全局 Run 槽、并发 seq 和跨连接通知。
+
+**边界**：LLM RPM/TPM 与 search/fetch 并发是每 Worker 容量，部署时需按 `Worker 数 × 单 Worker 配额` 保守配置；预算是请求前软闸，真实 token 只能在返回后入账，因此最多可超出已在途请求。需要集群级精硬 RPM/TPM/预算预留时，再把现有限制器协议换成 Redis token bucket/配额服务。
 
 ### M7：恢复期工具缓存
 
