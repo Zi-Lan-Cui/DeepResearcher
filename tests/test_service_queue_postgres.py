@@ -73,6 +73,35 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
             receiver.unsubscribe(run_id, notify_key)
             await sender.close()
             await receiver.close()
+
+        assert await PostgresRunQueue(factory).release(
+            winners[0], status="interrupted", terminal_reason="integration_test"
+        )
+        second_run_id = new_id("run-pg-slot-a")
+        third_run_id = new_id("run-pg-slot-b")
+        async with factory() as session:
+            session.add_all(
+                [
+                    Run(id=second_run_id, user_id=user_id, query="slot a", status="queued"),
+                    Run(id=third_run_id, user_id=user_id, query="slot b", status="queued"),
+                ]
+            )
+            await session.commit()
+        limited_a = PostgresRunQueue(factory, max_global_running=1)
+        limited_b = PostgresRunQueue(factory, max_global_running=1)
+        slot_claims = await asyncio.gather(
+            limited_a.claim(
+                worker_id="pg-worker-a",
+                lease_seconds=60,
+                preferred=RunWork(second_run_id, user_id, "slot a"),
+            ),
+            limited_b.claim(
+                worker_id="pg-worker-b",
+                lease_seconds=60,
+                preferred=RunWork(third_run_id, user_id, "slot b"),
+            ),
+        )
+        assert sum(claim is not None for claim in slot_claims) == 1
     finally:
         async with factory() as session:
             await session.execute(delete(User).where(User.email == email))

@@ -73,7 +73,9 @@ class RunManager:
             tokens_per_minute=settings.llm.provider_tokens_per_minute,
         )
         self._run_service = RunService(session_factory=session_factory, config=config)
-        self._queue = PostgresRunQueue(session_factory)
+        self._queue = PostgresRunQueue(
+            session_factory, max_global_running=config.max_global_running_runs
+        )
         self._executor = RunExecutor(
             settings=settings,
             session_factory=session_factory,
