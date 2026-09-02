@@ -17,17 +17,23 @@ async def _get_message(queue, timeout=1.0):
     return await asyncio.wait_for(queue.get(), timeout)
 
 
-async def test_write_assigns_seq_and_delivers_to_subscribers(sink):
+async def test_only_persisted_records_are_delivered_to_subscribers(sink):
     sink.open("run-1")
     key_a, queue_a = sink.subscribe("run-1")
     _, queue_b = sink.subscribe("run-1")
     sink.write({"run_id": "run-1", "event_type": "node_started", "payload": {}})
-
+    assert queue_a.empty()
+    first_batch = sink.take_pending("run-1")
+    first_batch[0]["seq"] = 1
+    sink.publish_persisted("run-1", first_batch)
     first = await _get_message(queue_a)
     assert first["seq"] == 1
     assert await _get_message(queue_b) is first  # 同一记录对象，同一 seq
     sink.unsubscribe("run-1", key_a)
     sink.write({"run_id": "run-1", "event_type": "node_completed", "payload": {}})
+    second_batch = sink.take_pending("run-1")
+    second_batch[0]["seq"] = 2
+    sink.publish_persisted("run-1", second_batch)
     assert queue_a.empty()  # 退订后不再投递
     assert queue_b.qsize() == 1
     assert (await _get_message(queue_b))["seq"] == 2
@@ -44,23 +50,26 @@ async def test_take_pending_returns_all_in_order_and_drains(sink):
     for i in range(3):
         sink.write({"run_id": "run-2", "event_type": f"e{i}", "payload": {}})
     pending = sink.take_pending("run-2")
-    assert [item["seq"] for item in pending] == [1, 2, 3]
+    assert all("seq" not in item for item in pending)
     assert [item["event_type"] for item in pending] == ["e0", "e1", "e2"]
     assert sink.take_pending("run-2") == []
     sink.write({"run_id": "run-2", "event_type": "e3", "payload": {}})
-    assert [item["seq"] for item in sink.take_pending("run-2")] == [4]  # 排水后 seq 不回绕
+    assert "seq" not in sink.take_pending("run-2")[0]
 
 
-async def test_late_subscriber_receives_unflushed_backlog_then_live(sink):
-    """已写入未 flush 的事件对新订阅者不再是黑洞：backlog → 实时无缝拼接。"""
+async def test_late_subscriber_is_woken_after_pending_batch_commits(sink):
     sink.open("run-7")
     sink.write({"run_id": "run-7", "event_type": "before", "payload": {}})  # 无订阅者时写入
     _, queue = sink.subscribe("run-7")
     sink.write({"run_id": "run-7", "event_type": "after", "payload": {}})
+    pending = sink.take_pending("run-7")
+    for seq, item in enumerate(pending, 1):
+        item["seq"] = seq
+    sink.publish_persisted("run-7", pending)
     received = [await _get_message(queue), await _get_message(queue)]
     assert [item["event_type"] for item in received] == ["before", "after"]
     assert [item["seq"] for item in received] == [1, 2]
-    assert [item["seq"] for item in sink.take_pending("run-7")] == [1, 2]  # backlog 不动 pending
+    assert sink.take_pending("run-7") == []
 
 
 async def test_overflow_drops_oldest_and_injects_truncation_marker():
@@ -69,6 +78,10 @@ async def test_overflow_drops_oldest_and_injects_truncation_marker():
     _, queue = sink.subscribe("run-3")
     for i in range(4):
         sink.write({"run_id": "run-3", "event_type": f"e{i}", "payload": {}})
+    persisted = sink.take_pending("run-3")
+    for seq, item in enumerate(persisted, 1):
+        item["seq"] = seq
+    sink.publish_persisted("run-3", persisted)
 
     delivered = [await _get_message(queue), await _get_message(queue)]
     assert [item["event_type"] for item in delivered] == [
@@ -77,7 +90,7 @@ async def test_overflow_drops_oldest_and_injects_truncation_marker():
     ]
     assert [item["seq"] for item in delivered] == [1, 2]  # 标记沿用被丢者的 seq
     # 持久化侧不受溢出影响：4 条都在
-    assert [item["seq"] for item in sink.take_pending("run-3")] == [1, 2, 3, 4]
+    assert [item["seq"] for item in persisted] == [1, 2, 3, 4]
 
 
 async def test_close_sentinels_subscribers_and_late_writes_drop(sink):
@@ -96,6 +109,9 @@ async def test_write_from_worker_thread_reaches_queue(sink):
     sink.open("run-5")
     _, queue = sink.subscribe("run-5")
     await asyncio.to_thread(sink.write, {"run_id": "run-5", "event_type": "x", "payload": {}})
+    pending = sink.take_pending("run-5")
+    pending[0]["seq"] = 1
+    sink.publish_persisted("run-5", pending)
     assert (await _get_message(queue))["seq"] == 1
 
 
@@ -110,8 +126,7 @@ async def test_pydantic_model_records_are_dumped(sink):
     sink.open("run-6")
     sink.write(Rec(run_id="run-6", event_type="node_started"))
     pending = sink.take_pending("run-6")
-    assert pending[0]["seq"] == 1
-    assert "seq" in pending[0]
+    assert "seq" not in pending[0]
 
 
 async def test_composite_sink_isolates_member_failures():

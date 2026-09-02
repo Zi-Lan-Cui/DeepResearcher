@@ -34,9 +34,10 @@ from deepsearch_agent.service.auth import (
     password_policy_ok,
     verify_password,
 )
-from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
+from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
 from deepsearch_agent.service.events import CLOSE_STREAM, FanoutSink
 from deepsearch_agent.service.models import Run, RunEvent, User
+from deepsearch_agent.service.notifier import EventNotifier
 from deepsearch_agent.service.projector import project
 from deepsearch_agent.service.runs import QuotaExceededError, RunManager
 from deepsearch_agent.service.settings import (
@@ -48,6 +49,7 @@ from deepsearch_agent.tools.transport import HttpClient
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 _SSE_HEARTBEAT_SECONDS = 15.0
+_SSE_DB_POLL_SECONDS = 1.0
 _MAX_QUERY_CHARS = 2000
 
 
@@ -98,12 +100,14 @@ def create_app(
     async def lifespan(app: FastAPI):
         cfg = config or get_service_config()
         engine_settings = settings or get_settings()
+        await migrate_database(cfg.database_url)
         engine = make_engine(cfg.database_url)
-        await init_db(engine)
         session_factory = make_session_factory(engine)
         # HttpClient 进程级一个：跨 run 共享 provider 信号量与断路器（图不会关闭外来的它）。
         http_client = HttpClient(engine_settings.search)
         fanout = FanoutSink(asyncio.get_running_loop())
+        event_notifier = EventNotifier()
+        await event_notifier.start(cfg.database_url)
 
         # checkpointer：仅 PostgreSQL 部署启用（AsyncPostgresSaver 走 psycopg，与
         # 业务库同实例、独立连接）。SQLite 测试路径 checkpoint_dsn 返回 None，
@@ -126,12 +130,13 @@ def create_app(
             http_client=http_client,
             graph_factory=graph_factory,
             checkpointer=checkpointer,
+            event_notifier=event_notifier,
         )
         killed, resumable = await manager.reconcile_startup()
         if killed:
             app.state.service_logger.info("reconciled_stale_runs count=%d", killed)
-        if resumable:
-            resumed = await manager.resume_runs(resumable)
+        resumed = await manager.resume_runs(resumable)
+        if resumed:
             app.state.service_logger.info("resuming_orphan_runs count=%d", resumed)
 
         app.state.config = cfg
@@ -147,6 +152,7 @@ def create_app(
             yield
         finally:
             await manager.shutdown()
+            await event_notifier.close()
             await http_client.aclose()
             if checkpoint_cm is not None:
                 await checkpoint_cm.__aexit__(None, None, None)
@@ -307,7 +313,7 @@ def create_app(
         state = _get_state(request)
         await _owned_run(request, user, run_id)
         try:
-            await state.manager.resume_with_input(user.id, run_id, body.answer)
+            status = await state.manager.resume_with_input(user.id, run_id, body.answer)
         except LookupError:
             raise HTTPException(status_code=404, detail="运行不存在。") from None
         except ValueError as exc:
@@ -319,7 +325,7 @@ def create_app(
                 else "该运行当前不在等待输入。"
             )
             raise HTTPException(status_code=409, detail=detail) from None
-        return {"id": run_id, "status": "running"}
+        return {"id": run_id, "status": status}
 
     @app.get("/api/runs/{run_id}/events")
     async def run_events(
@@ -329,51 +335,60 @@ def create_app(
         state = _get_state(request)
 
         async def stream() -> AsyncIterator[str]:
-            # ① subscribe 先行（含 backlog），② DB 回放旧段，③ 队列续活段——
-            # 三段统一按 seq 去重，任何时刻接入都不重不漏。
+            # 数据库是完整事实；本地 fanout 只负责 token 预览与低延迟唤醒。
+            # Worker 位于另一进程或通知丢失时，周期 DB tail 仍能补齐。
             key, queue = state.fanout.subscribe(run_id)
+            notify_key, notify_queue = state.manager.event_notifier.subscribe(run_id)
             last_seq = 0
+            last_ping = asyncio.get_running_loop().time()
             try:
-                async with state.session_factory() as session:
-                    rows = (
-                        await session.scalars(
-                            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
-                        )
-                    ).all()
-                for row in rows:
-                    if row.seq <= last_seq:
-                        continue
-                    last_seq = row.seq
-                    frame = project(row.record)
-                    if frame is not None:
-                        yield _sse(frame)
-                        if frame.event == "done":
-                            return
                 while True:
+                    rows = await state.manager.event_store.after(run_id, last_seq)
+                    for row in rows:
+                        last_seq = row.seq
+                        frame = project(row.record)
+                        if frame is not None:
+                            yield _sse(frame)
+                            if frame.event == "done":
+                                return
                     try:
-                        item = await asyncio.wait_for(queue.get(), _SSE_HEARTBEAT_SECONDS)
+                        local_wait = asyncio.create_task(queue.get())
+                        notify_wait = asyncio.create_task(notify_queue.get())
+                        done, pending = await asyncio.wait(
+                            (local_wait, notify_wait),
+                            timeout=_SSE_DB_POLL_SECONDS,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for waiter in pending:
+                            waiter.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        if not done:
+                            raise TimeoutError
+                        item = local_wait.result() if local_wait in done else None
+                        for completed in done:
+                            if completed is not local_wait:
+                                completed.result()
                     except TimeoutError:
-                        yield ": ping\n\n"  # SSE 注释帧：保活，客户端自动忽略
+                        now = asyncio.get_running_loop().time()
+                        if now - last_ping >= _SSE_HEARTBEAT_SECONDS:
+                            last_ping = now
+                            yield ": ping\n\n"
                         continue
                     if item is CLOSE_STREAM:
-                        return
+                        continue
+                    if item is None:
+                        continue
                     # ephemeral 预览帧无 seq：只走直播通道，不参与回放/去重。
                     if item.get("event_type") == "text_delta":
                         frame = project(item)
                         if frame is not None:
                             yield _sse(frame)
                         continue
-                    seq = item.get("seq")
-                    if not isinstance(seq, int) or seq <= last_seq:
-                        continue
-                    last_seq = seq
-                    frame = project(item)
-                    if frame is not None:
-                        yield _sse(frame)
-                        if frame.event == "done":
-                            return
+                    # 持久帧只作为唤醒信号；下一轮从 DB 读取，避免本地直播
+                    # 与跨进程回放形成两份事实。
             finally:
                 state.fanout.unsubscribe(run_id, key)
+                state.manager.event_notifier.unsubscribe(run_id, notify_key)
 
         return StreamingResponse(
             stream(),

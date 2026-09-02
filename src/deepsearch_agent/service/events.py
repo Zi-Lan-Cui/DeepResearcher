@@ -1,13 +1,12 @@
-"""进程内事件分发：FanoutSink 与 CompositeSink。
+"""进程内低延迟事件分发：FanoutSink 与 CompositeSink。
 
 引擎的 sink 契约只有一个同步方法 ``write(record)``（JsonlSink 同款 duck-typing）。
 FanoutSink 在此基础上承担三件事：
 
-1. **seq 单点分配**：write() 内加锁自增并注入记录副本，活队列与待持久化
-   pending 列表携带同一个 seq —— SSE 回放/实时去重退化为整数比较。
-2. **溢出策略分离**：活订阅者队列有界，满则丢最旧、原位替换成
-   ``stream_truncated`` 标记帧（刷新走 DB 回放可补齐）；持久化 pending
-   列表不丢（回放正确性 > 内存上界，单 run 事件量有界）。
+1. **同步收集**：write() 只将无 seq 记录放入 pending；RunEventStore 在数据库
+   事务中分配 seq 并提交后，才由 publish_persisted() 唤醒本地订阅者。
+2. **溢出策略分离**：活订阅队列有界，满则丢最旧并提示截断；持久化
+   pending 不丢，SSE 始终能从数据库 tail 补齐。
 3. **线程安全**：在事件循环线程直接入队，否则经 call_soon_threadsafe
    回环投递（asyncio.Queue 非线程安全）。
 """
@@ -15,9 +14,8 @@ FanoutSink 在此基础上承担三件事：
 from __future__ import annotations
 
 import asyncio
-import itertools
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel
@@ -38,9 +36,8 @@ class FanoutSink:
         self._loop_thread = threading.get_ident()  # 构造必须发生在事件循环线程
         self._queue_maxsize = queue_maxsize
         self._lock = threading.Lock()
-        self._keys = itertools.count(1)
+        self._next_key = 1
         self._open: set[str] = set()
-        self._counters: dict[str, int] = {}
         self._pending: dict[str, list[dict]] = {}
         self._subs: dict[str, dict[int, asyncio.Queue]] = {}
         self._dropped: dict[tuple[str, int], int] = {}
@@ -51,7 +48,6 @@ class FanoutSink:
     def open(self, run_id: str) -> None:
         with self._lock:
             self._open.add(run_id)
-            self._counters.setdefault(run_id, 0)
             self._pending.setdefault(run_id, [])
             self._subs.setdefault(run_id, {})
 
@@ -63,7 +59,6 @@ class FanoutSink:
         """
         with self._lock:
             self._open.discard(run_id)
-            self._counters.pop(run_id, None)
             self._pending.pop(run_id, None)
             subscribers = list(self._subs.pop(run_id, {}).values())
         for queue in subscribers:
@@ -87,36 +82,20 @@ class FanoutSink:
             if not isinstance(run_id, str) or run_id not in self._open:
                 self._drop_unrouted(run_id)
                 return
-            seq = self._counters[run_id] + 1
-            self._counters[run_id] = seq
-            data["seq"] = seq
             self._pending.setdefault(run_id, []).append(data)
-            if threading.get_ident() == self._loop_thread:
-                self._deliver_locked(run_id, data)
-            else:
-                self._loop.call_soon_threadsafe(self._deliver_threadsafe, run_id, data)
 
     # ---- 订阅 ----
 
     def subscribe(self, run_id: str) -> tuple[int, asyncio.Queue]:
-        """先 subscribe 再回放 DB：封死 POST→GET 之间的丢事件竞态。
-
-        新订阅者先收到 pending 积压（已写入但尚未 flush 到 DB 的事件）——否则
-        这半截区间（DB 回放够不到、队列又错过投递）对迟到者是黑洞。三段拼接：
-        DB 回放（旧）→ backlog（积压）→ 实时（新），统一按 seq 去重。
-        """
+        """Subscribe to committed local records and ephemeral token previews."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize)
         with self._lock:
             if run_id not in self._open:
                 queue.put_nowait(CLOSE_STREAM)
                 return -1, queue
-            key = next(self._keys)
+            key = self._next_key
+            self._next_key += 1
             self._subs[run_id][key] = queue
-            for record in self._pending.get(run_id, []):
-                try:
-                    queue.put_nowait(record)
-                except asyncio.QueueFull:  # 积压都塞不下说明客户端已死，交给溢出/回放兜底
-                    break
         return key, queue
 
     def unsubscribe(self, run_id: str, key: int) -> None:
@@ -125,14 +104,18 @@ class FanoutSink:
             self._dropped.pop((run_id, key), None)
 
     def seed_seq(self, run_id: str, value: int) -> None:
-        """进程重启后为新 run 续号：seq 从库中 max(RunEvent.seq) 继续。
+        """Compatibility no-op: M5 moved sequence ownership to RunEventStore."""
 
-        没有这一步，续跑（resume）产生的事件会拿着重叠的 seq 撞主键，
-        且前端回放去重会把它们当作旧事件全部丢弃。只允许向前拨表。
-        """
+    def publish_persisted(self, run_id: str, records: Sequence[dict]) -> None:
+        """Deliver records only after their database transaction committed."""
         with self._lock:
-            if run_id in self._open and value > self._counters.get(run_id, 0):
-                self._counters[run_id] = value
+            if run_id not in self._open:
+                return
+            for record in records:
+                if threading.get_ident() == self._loop_thread:
+                    self._deliver_locked(run_id, record)
+                else:
+                    self._loop.call_soon_threadsafe(self._deliver_threadsafe, run_id, record)
 
     def publish_ephemeral(self, run_id: str, record: dict) -> None:
         """只投递、不记账的旁路通道（token 级预览帧专用）。
@@ -150,7 +133,7 @@ class FanoutSink:
     # ---- 持久化排水 ----
 
     def take_pending(self, run_id: str) -> list[dict]:
-        """取走并清空当前已积累的事件（供 RunManager 批量 INSERT RunEvent）。"""
+        """取走无 seq 事件，交给 RunEventStore 原子编号并持久化。"""
         with self._lock:
             return self._pending.pop(run_id, [])
 
@@ -225,5 +208,6 @@ class CompositeSink:
             try:
                 sink.write(record)
             except Exception:  # noqa: BLE001 - sink 之间必须互相隔离
-                logger.warning("composite_sink_member_failed sink=%s", type(sink).__name__,
-                               exc_info=True)
+                logger.warning(
+                    "composite_sink_member_failed sink=%s", type(sink).__name__, exc_info=True
+                )

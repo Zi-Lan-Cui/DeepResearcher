@@ -1,5 +1,7 @@
 import asyncio
 import traceback
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -15,9 +17,12 @@ from deepsearch_agent.config import (
     Settings,
 )
 from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
+from deepsearch_agent.service.event_store import RunEventStore
 from deepsearch_agent.service.events import CLOSE_STREAM as CLOSE_STREAM_FLAG
 from deepsearch_agent.service.events import FanoutSink
 from deepsearch_agent.service.models import Run, RunEvent, User
+from deepsearch_agent.service.queue import PostgresRunQueue
+from deepsearch_agent.service.run_service import RunService
 from deepsearch_agent.service.runs import QuotaExceededError, RunManager
 from deepsearch_agent.service.settings import ServiceConfig
 
@@ -168,6 +173,8 @@ async def _settle(manager, run_id):
     if task is not None:
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        except asyncio.CancelledError:
+            return
         except TimeoutError:
             stacks = "".join(
                 traceback.format_list(traceback.extract_stack(frame)) for frame in task.get_stack()
@@ -178,6 +185,32 @@ async def _settle(manager, run_id):
 async def _row(manager, run_id):
     async with manager.session_factory() as session:
         return await session.get(Run, run_id)
+
+
+async def test_manager_delegates_execution_without_building_graph_itself(manager):
+    captured = {}
+    original_execute = manager._executor.execute  # noqa: SLF001
+
+    async def execute(run_id, user_id, query, **kwargs):
+        captured.update(
+            run_id=run_id,
+            user_id=user_id,
+            query=query,
+            kwargs=kwargs,
+        )
+        await original_execute(run_id, user_id, query, **kwargs)
+
+    manager._executor.execute = execute  # noqa: SLF001 - 验证 M1 职责接缝
+    run_id = await manager.start(USER_ID, "  委托执行  ")
+    await _settle(manager, run_id)
+
+    assert captured["run_id"] == run_id
+    assert captured["user_id"] == USER_ID
+    assert captured["query"] == "委托执行"
+    assert captured["kwargs"]["resume"] is False
+    assert captured["kwargs"]["resume_input"] is None
+    assert captured["kwargs"]["claim"].run_id == run_id
+    assert captured["kwargs"]["claim"].claimed is True
 
 
 async def test_success_persists_terminal_and_injects_run_id(manager):
@@ -229,6 +262,30 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
             )
         ).all()
     assert len(dones) == 1  # 不变式 2/3：done 恰一次且在 DB（可回放）
+
+
+async def test_remote_manager_cancel_is_observed_through_durable_intent(manager, tmp_path):
+    gate = asyncio.Event()
+    manager._worker._heartbeat_seconds = 0.01  # noqa: SLF001 - cancellation probe seam
+    manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
+    run_id = await manager.start(USER_ID, "remote cancel")
+    while (await _row(manager, run_id)).status != "running":
+        await asyncio.sleep(0.01)
+
+    controller = RunManager(
+        settings=_settings(tmp_path),
+        session_factory=manager.session_factory,
+        config=manager._config,
+        fanout=FanoutSink(asyncio.get_running_loop()),
+        http_client=SimpleNamespace(),
+        graph_factory=lambda **_kwargs: FakeGraph(),
+    )
+    requested = await controller.cancel(USER_ID, run_id)
+    assert requested.status == "running"
+    assert requested.cancellation_requested_at is not None
+    await _settle(manager, run_id)
+    assert (await _row(manager, run_id)).status == "cancelled"
+    await controller.shutdown()
 
 
 async def test_cancel_after_completion_is_idempotent(manager):
@@ -305,6 +362,146 @@ async def test_quota_blocks_third_concurrent_run(manager):
         await _settle(manager, run_id)
 
 
+async def test_global_queue_quota_rejects_new_admission(manager):
+    service = RunService(
+        session_factory=manager.session_factory,
+        config=ServiceConfig(
+            database_url="unused",
+            jwt_secret="s" * 40,
+            max_concurrent_runs_per_user=10,
+            max_global_queued_runs=1,
+        ),
+    )
+    await service.create(USER_ID, "q1")
+    with pytest.raises(QuotaExceededError, match="等待队列已满"):
+        await service.create(USER_ID, "q2")
+
+
+async def test_two_queue_instances_claim_a_run_only_once(manager):
+    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    run_id = await service.create(USER_ID, "atomic claim")
+    first_queue = PostgresRunQueue(manager.session_factory)
+    second_queue = PostgresRunQueue(manager.session_factory)
+
+    claims = await asyncio.gather(
+        first_queue.claim(worker_id="worker-a", lease_seconds=60),
+        second_queue.claim(worker_id="worker-b", lease_seconds=60),
+    )
+
+    winners = [claim for claim in claims if claim is not None]
+    assert len(winners) == 1
+    assert winners[0].run_id == run_id
+    assert winners[0].attempt == 1
+
+
+async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
+    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    run_id = await service.create(USER_ID, "owner CAS")
+    queue = PostgresRunQueue(manager.session_factory)
+    claim = await queue.claim(worker_id="worker-a", lease_seconds=60)
+    assert claim is not None
+    stale = replace(claim, lease_owner="worker-stale")
+
+    assert await queue.renew(stale, lease_seconds=60) is False
+    assert (
+        await manager._executor.persist_status(  # noqa: SLF001 - owner CAS contract
+            run_id, status="completed", claim=stale
+        )
+        is False
+    )
+    assert (await _row(manager, run_id)).status == "running"
+    assert (
+        await manager._executor.persist_status(  # noqa: SLF001 - owner CAS contract
+            run_id, status="completed", claim=claim
+        )
+        is True
+    )
+
+
+async def test_expired_lease_is_reaped_for_resume(manager):
+    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    run_id = await service.create(USER_ID, "expired")
+    queue = PostgresRunQueue(manager.session_factory)
+    claim = await queue.claim(worker_id="worker-a", lease_seconds=60)
+    assert claim is not None
+    async with manager.session_factory() as session:
+        run = await session.get(Run, run_id)
+        run.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+
+    reaped = await queue.reap_expired()
+    assert [work.run_id for work in reaped] == [run_id]
+    run = await _row(manager, run_id)
+    assert run.status == "interrupted"
+    assert run.terminal_reason == "lease_expired"
+    assert run.lease_owner is None
+
+
+async def test_two_event_stores_allocate_non_overlapping_sequences(manager):
+    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    run_id = await service.create(USER_ID, "event sequence")
+    first_store = RunEventStore(manager.session_factory)
+    second_store = RunEventStore(manager.session_factory)
+
+    batches = await asyncio.gather(
+        first_store.append(run_id, [{"event_type": "from-a", "payload": {}}]),
+        second_store.append(run_id, [{"event_type": "from-b", "payload": {}}]),
+    )
+
+    assert sorted(batch[0]["seq"] for batch in batches) == [1, 2]
+    async with manager.session_factory() as session:
+        seqs = list(
+            (
+                await session.scalars(
+                    select(RunEvent.seq).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+                )
+            ).all()
+        )
+    assert seqs == [1, 2]
+
+
+async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
+    gate = asyncio.Event()
+    manager._worker._max_running = 1  # noqa: SLF001 - M2 容量接缝
+    manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
+
+    first = await manager.start(USER_ID, "q1")
+    second = await manager.start(USER_ID, "q2")
+
+    while (await _row(manager, first)).status != "running":
+        await asyncio.sleep(0.01)
+    assert (await _row(manager, second)).status == "queued"
+    assert second not in manager._tasks  # noqa: SLF001
+
+    gate.set()
+    await _settle(manager, first)
+    for _ in range(100):
+        if (await _row(manager, second)).status != "queued":
+            break
+        await asyncio.sleep(0.01)
+    await _settle(manager, second)
+    assert (await _row(manager, second)).status == "completed"
+
+
+async def test_cancel_queued_run_never_executes_graph(manager):
+    gate = asyncio.Event()
+    manager._worker._max_running = 1  # noqa: SLF001 - M2 容量接缝
+    graph = FakeGraph(gate=gate, result=_completed_result())
+    manager.holder["graph"] = graph
+
+    first = await manager.start(USER_ID, "q1")
+    queued = await manager.start(USER_ID, "q2")
+    assert (await _row(manager, queued)).status == "queued"
+
+    cancelled = await manager.cancel(USER_ID, queued)
+    assert cancelled.status == "cancelled"
+    assert queued not in manager._tasks  # noqa: SLF001
+
+    gate.set()
+    await _settle(manager, first)
+    assert (await _row(manager, queued)).status == "cancelled"
+
+
 async def test_events_are_persisted_in_seq_order_with_done_last(manager):
     graph = FakeGraph(result=_completed_result(), emit_events=3)
     manager.holder["graph"] = graph
@@ -338,10 +535,10 @@ async def test_reconcile_startup_converts_stale_rows(manager):
         )
         await session.commit()
     killed, resumable = await manager.reconcile_startup()
-    assert (killed, resumable) == (3, [])  # 无 checkpointer → 全部判死（既往行为）
+    assert (killed, resumable) == (2, [])
     for run_id, expected in (
         ("run-stale-a", "failed"),
-        ("run-stale-b", "failed"),
+        ("run-stale-b", "queued"),  # 未领取任务在重启后仍可从头执行
         ("run-stale-c", "failed"),
         ("run-done", "completed"),
     ):
@@ -365,7 +562,7 @@ async def test_reconcile_startup_converts_stale_rows(manager):
                 )
             )
         ).all()
-    assert len(orphans) == 3
+    assert len(orphans) == 2
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
 
@@ -385,8 +582,11 @@ async def test_run_graph_passes_thread_id_config(manager):
 async def test_streaming_preview_routing_and_ephemerality(manager):
     """官方 flag 形态：只有 supervisor 直下（ns 深度1）的 text 进预览；
     深层嵌套（tools 路径）、writer、空文本一律静默；帧无 seq、不落库。"""
+    gate = asyncio.Event()
+    manager._worker._max_running = 1  # noqa: SLF001 - 订阅必须先于纯临时帧
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
+        gate=gate,
         stream_messages=[
             (("supervisor:aaa",), "先梳理缺口，"),  # ✓ 唯一放行
             (("supervisor:aaa", "tools:bbb"), "researcher串流"),  # ✗ 深度>1
@@ -401,6 +601,7 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
     )
     run_id = await manager.start(USER_ID, "q")
     _, queue = manager.fanout.subscribe(run_id)  # start 已登记任务但未开跑：必然先于 delta
+    gate.set()
     await _settle(manager, run_id)
 
     frames = []
@@ -436,6 +637,31 @@ class FakeSaver:
         return object() if thread_id in self.alive else None
 
 
+async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(manager):
+    gate = asyncio.Event()
+    manager._worker._max_running = 1  # noqa: SLF001 - keep resumed work queued
+    manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
+    active = await manager.start(USER_ID, "occupy slot")
+    while (await _row(manager, active)).status != "running":
+        await asyncio.sleep(0.01)
+
+    run_id = "run-awaiting-durable"
+    async with manager.session_factory() as session:
+        session.add(Run(id=run_id, user_id=USER_ID, query="clarify", status="awaiting_input"))
+        await session.commit()
+    manager._checkpointer = FakeSaver({run_id})  # noqa: SLF001
+
+    assert await manager.resume_with_input(USER_ID, run_id, "选择第二项") == "queued"
+    queued = await _row(manager, run_id)
+    assert queued.resume_payload == {"answer": "选择第二项"}
+    with pytest.raises(RuntimeError):
+        await manager.resume_with_input(USER_ID, run_id, "重复回答")
+
+    await manager.cancel(USER_ID, run_id)
+    gate.set()
+    await _settle(manager, active)
+
+
 async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     """②全链路：分诊(判死/复活) → seq 续号 → astream(None) 续跑 → 新事件落库。"""
     engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'resume.db'}")
@@ -450,9 +676,10 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
                 query="孤而可活",
                 status="interrupted",
                 terminal_reason="server_shutdown",
+                event_seq=5,
             )
         )
-        session.add(Run(id="run-dead", user_id=USER_ID, query="无据可活", status="queued"))
+        session.add(Run(id="run-dead", user_id=USER_ID, query="无据可活", status="running"))
         for i in range(1, 6):  # 上一世留下的 seq 1..5
             session.add(
                 RunEvent(run_id="run-orphan", seq=i, event_type=f"engine_{i}", record={"seq": i})
@@ -460,9 +687,15 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         await session.commit()
 
     holder: dict = {}
+    gate = asyncio.Event()
 
     def graph_factory(*, settings, event_sink, http_client, checkpointer=None):
-        graph = FakeGraph(result=_completed_result(), emit_events=3, resume_run_id="run-orphan")
+        graph = FakeGraph(
+            result=_completed_result(),
+            emit_events=3,
+            resume_run_id="run-orphan",
+            gate=gate,
+        )
         graph._sink = event_sink
         holder["graph"] = graph
         return graph
@@ -491,6 +724,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     assert await manager.resume_runs(resumable) == 1
     task = manager._tasks.get("run-orphan")  # noqa: SLF001
     assert task is not None
+    gate.set()
     await task
 
     assert holder["graph"].none_inputs == 1  # 续跑用 astream(None)
