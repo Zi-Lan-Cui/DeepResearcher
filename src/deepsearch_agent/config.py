@@ -68,6 +68,15 @@ class LLMConfig:
     temperature: float = 0.0
     timeout: float = 60.0
     context_window_tokens: int = 32_768
+    max_concurrent_requests: int = 6
+    max_tokens_per_run: int = 0
+    max_cost_usd_per_run: float = 0.0
+    max_cost_usd_per_user: float = 0.0
+    max_cost_usd_platform: float = 0.0
+    input_usd_per_million: float = 0.0
+    output_usd_per_million: float = 0.0
+    cached_input_usd_per_million: float = 0.0
+    price_version: str = "unpriced"
     retry: LLMRetryConfig = LLMRetryConfig()
 
     @property
@@ -150,6 +159,7 @@ class SearchConfig:
     retry_after_max_seconds: float = 60.0
     # 同一供应商同时允许的搜索请求数（跨 worker 全局）；限流窗口下降低并发比快速重试更有效。
     max_concurrent_requests: int = 2
+    max_concurrent_fetches: int = 6
     tavily_include_raw_content: bool = True
 
     @property
@@ -203,6 +213,15 @@ def _llm_config() -> LLMConfig:
         temperature=_float_env("LLM_TEMPERATURE", 0.0),
         timeout=_float_env("LLM_TIMEOUT", 60.0),
         context_window_tokens=max(4_096, _int_env("LLM_CONTEXT_WINDOW_TOKENS", 32_768)),
+        max_concurrent_requests=max(1, _int_env("LLM_MAX_CONCURRENT_REQUESTS", 6)),
+        max_tokens_per_run=max(0, _int_env("LLM_MAX_TOKENS_PER_RUN", 0)),
+        max_cost_usd_per_run=max(0.0, _float_env("LLM_MAX_COST_USD_PER_RUN", 0.0)),
+        max_cost_usd_per_user=max(0.0, _float_env("LLM_MAX_COST_USD_PER_USER", 0.0)),
+        max_cost_usd_platform=max(0.0, _float_env("LLM_MAX_COST_USD_PLATFORM", 0.0)),
+        input_usd_per_million=max(0.0, _float_env("LLM_INPUT_USD_PER_MILLION", 0.0)),
+        output_usd_per_million=max(0.0, _float_env("LLM_OUTPUT_USD_PER_MILLION", 0.0)),
+        cached_input_usd_per_million=max(0.0, _float_env("LLM_CACHED_INPUT_USD_PER_MILLION", 0.0)),
+        price_version=_env("LLM_PRICE_VERSION", "unpriced") or "unpriced",
         retry=LLMRetryConfig(
             transport_attempts=max(1, _int_env("LLM_RETRY_ATTEMPTS", 3)),
             initial_seconds=max(0.0, _float_env("LLM_RETRY_INITIAL_SECONDS", 1.0)),
@@ -230,12 +249,8 @@ def _agent_config() -> AgentConfig:
                 {"insufficient", "partial", "direct"},
             ),
         ),
-        writer_max_markdown_chars=max(
-            1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)
-        ),
-        partial_report_min_evidences=max(
-            1, _int_env("AGENT_PARTIAL_REPORT_MIN_EVIDENCES", 1)
-        ),
+        writer_max_markdown_chars=max(1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)),
+        partial_report_min_evidences=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_EVIDENCES", 1)),
         partial_report_min_sources=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_SOURCES", 1)),
         writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
         reflection_retry_attempts=max(0, _int_env("AGENT_REFLECTION_RETRY_ATTEMPTS", 1)),
@@ -293,6 +308,7 @@ def _search_config() -> SearchConfig:
         retry_max_seconds=max(0.0, _float_env("SEARCH_RETRY_MAX_SECONDS", 10.0)),
         retry_after_max_seconds=max(0.0, _float_env("SEARCH_RETRY_AFTER_MAX_SECONDS", 60.0)),
         max_concurrent_requests=max(1, _int_env("SEARCH_MAX_CONCURRENT_REQUESTS", 2)),
+        max_concurrent_fetches=max(1, _int_env("FETCH_MAX_CONCURRENT_REQUESTS", 6)),
         tavily_include_raw_content=_bool_env("TAVILY_INCLUDE_RAW_CONTENT", True),
     )
 

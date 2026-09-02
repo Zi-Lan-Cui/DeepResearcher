@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # 运行状态取值。P0 用普通 str 而非枚举/CHECK 约束，便于增删而不触发 ALTER；
@@ -68,9 +68,19 @@ class Run(Base):
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resume_payload: Mapped[dict | None] = mapped_column(JSON)
     event_seq: Mapped[int] = mapped_column(Integer, default=0)
+    llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    external_request_count: Mapped[int] = mapped_column(Integer, default=0)
+    peak_llm_concurrency: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
 
     user: Mapped["User"] = relationship(back_populates="runs")
     events: Mapped[list["RunEvent"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    usage_records: Mapped[list["RunUsage"]] = relationship(
         back_populates="run", cascade="all, delete-orphan", passive_deletes=True
     )
 
@@ -92,3 +102,27 @@ class RunEvent(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     run: Mapped["Run"] = relationship(back_populates="events")
+
+
+class RunUsage(Base):
+    """One billable or externally capacity-consuming operation."""
+
+    __tablename__ = "run_usage"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    component: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str | None] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16))
+    usage_estimated: Mapped[bool] = mapped_column(Boolean, default=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    detail_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    run: Mapped["Run"] = relationship(back_populates="usage_records")
