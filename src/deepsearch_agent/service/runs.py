@@ -33,6 +33,7 @@ from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
 from deepsearch_agent.service.run_service import QuotaExceededError as QuotaExceededError
 from deepsearch_agent.service.run_service import RunService
 from deepsearch_agent.service.settings import ServiceConfig
+from deepsearch_agent.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepsearch_agent.service.worker import EmbeddedWorker
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -65,6 +66,12 @@ class RunManager:
             publish_persisted=fanout.publish_persisted,
             notifier=self.event_notifier,
         )
+        self.usage_store = UsageStore(session_factory)
+        self.llm_gate = CapacityGate(settings.llm.max_concurrent_requests)
+        self.llm_rate_limiter = ProviderRateLimiter(
+            requests_per_minute=settings.llm.provider_requests_per_minute,
+            tokens_per_minute=settings.llm.provider_tokens_per_minute,
+        )
         self._run_service = RunService(session_factory=session_factory, config=config)
         self._queue = PostgresRunQueue(session_factory)
         self._executor = RunExecutor(
@@ -73,6 +80,9 @@ class RunManager:
             config=config,
             fanout=fanout,
             event_store=self.event_store,
+            usage_store=self.usage_store,
+            llm_gate=self.llm_gate,
+            llm_rate_limiter=self.llm_rate_limiter,
             http_client=http_client,
             graph_factory=graph_factory,
             checkpointer=checkpointer,
