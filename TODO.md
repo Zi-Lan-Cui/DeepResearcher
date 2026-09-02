@@ -8,6 +8,8 @@
 
 用户可见的产品闭环已经完成：提交研究、路由与澄清、等待用户回答、恢复执行、研究进度、报告交付、取消/重启恢复、历史列表与自适应分页均可用。当前不再有必须补齐的页面或主流程节点。
 
+工程主线已转为 [水平扩展 Worker 架构与迁移计划](docs/水平扩展Worker架构与迁移计划.md)：先以 EmbeddedWorker 形态拆分控制面/执行面，再逐步外移队列、lease、事件 seq、取消、usage 和缓存，不重写 LangGraph/Agent 核心逻辑。
+
 下一阶段只保留三个真正影响交付质量的方向：
 
 1. **先收运行成本与空转**：searcher 零良率熔断、搜索/抓取副作用幂等缓存。
@@ -38,6 +40,7 @@
 
 - [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时后，model/tool wrapper、Writer 完整链路及全量 **226 条**测试通过。
 - [x] 浏览器冒烟：10/15/20 条自适应分页、箭头/圆点换页、390px 窄屏无横向溢出、Clarifier 三选项 `等待回答 → 进行中`、服务重启后 `恢复续跑中` + 阶段回放 + `resuming` 事件，四条路径均已真机验证。
+- [x] Worker 迁移 M1–M5：控制面/执行面、持久 queued、lease claim/续租/回收、取消意图、单次 resume payload、数据库原子事件 seq、DB tail SSE 与 PostgreSQL LISTEN/NOTIFY 均已落地。全量 **236 条通过、1 条 PG 集成默认跳过**；显式真实 PG 测试另有 1 passed（双 claim、并发 seq、跨连接通知）。下一步 M6 是 usage/费用和集群容量限制；独立 Worker 入口留到 M8。
 
 ### G2：searcher 零良率空转熔断
 
@@ -51,7 +54,7 @@
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
 - [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
-- [~] ③ 恢复期重复调用治理：已用通用 `AgentExecutionScope(run_id, agent_name, task_id, operation_id, parent_task_id)` 替代 Researcher 专属 `ToolExecutionContext`，贯通四类 RuntimeContext 与统一工具生命周期事件；待实现规范化 query 的 TTL 缓存、URL 抓取缓存与 content hash/Evidence 提取复用。方向级 `operation_id` 目前仅作接口，不冒充工具调用级幂等键。
+- [~] ③ 恢复期重复调用治理：图 checkpoint 是 at-least-once 恢复语义，外部工具可在“已成功、未提交下一断点”窗口被重放，因此会重付搜索、HTTP 抓取和 LLM 抽取费用。已完成 `AgentExecutionScope` 与统一工具生命周期事件；下一步按 [恢复期工具缓存方案](docs/恢复期工具缓存方案.md) 实现 PostgreSQL `ToolCache` 及 L1 规范化 query TTL 缓存、L2 URL 抓取/解析缓存、L3 `content_hash + research_direction + extractor/model/schema version` Evidence 抽取复用。`run_id/task_id/tool_call_id/operation_id` 只用于观测，不冒充语义幂等键。
 - [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
 - [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
 
@@ -69,7 +72,7 @@
 - [ ] **SSRF 守卫**：fetcher 拦截私网/回环/云元数据地址 + DNS 重绑定防护——一票否决项。
 - [ ] 请求限流（登录/注册/创建 run）；token 吊销（sessions 表或黑名单）。
 - [ ] LLM/搜索调用的 token 用量与成本归集（事件已有阶段，缺 usage 字段）。
-- [ ] Alembic（触发条件=第一次 schema ALTER，当前 create_all+追加列纪律）。
+- [x] Alembic：`0001_initial` 基线 + `0002_run_leases`，应用启动自动 upgrade；旧库采纳与真实 PostgreSQL 迁移已验证。
 - [ ] HTTPS/反代（Caddy 或 Nginx）与真实部署形态决策（BYO key 与否）。
 - [ ] 单进程纪律的机制化（当前仅文档约定：同库禁双 server，fanout/seq 为进程内存）。
 
