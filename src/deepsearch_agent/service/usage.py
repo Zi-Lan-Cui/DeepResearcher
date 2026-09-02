@@ -253,6 +253,7 @@ class RunUsageCallback(AsyncCallbackHandler):
         rate_limiter: ProviderRateLimiter,
         config: LLMConfig,
     ) -> None:
+        self.raise_error = True
         self._run_id = run_id
         self._store = store
         self._gate = gate
@@ -271,6 +272,12 @@ class RunUsageCallback(AsyncCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **_kwargs: Any,
     ) -> None:
+        try:
+            await self._store.enforce_budget(self._run_id, self._config)
+        except UsageBudgetExceeded:
+            raise
+        except Exception:  # noqa: BLE001 - 计量存储短暂故障不阻断 provider
+            logger.warning("usage_budget_check_failed run_id=%s", self._run_id, exc_info=True)
         prompt_chars = sum(len(str(message.content)) for batch in messages for message in batch)
         estimated_tokens = max(1, prompt_chars // 4) + self._config.provider_output_token_reserve
         await self._rate_limiter.acquire(estimated_tokens)
