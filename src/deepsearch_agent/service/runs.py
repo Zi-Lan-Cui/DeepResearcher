@@ -35,6 +35,7 @@ from deepsearch_agent.service.run_service import RunService
 from deepsearch_agent.service.settings import ServiceConfig
 from deepsearch_agent.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepsearch_agent.service.worker import EmbeddedWorker
+from deepsearch_agent.tools.cache import ToolCache
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
@@ -55,6 +56,7 @@ class RunManager:
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
         event_notifier: EventNotifier | None = None,
+        tool_cache: ToolCache | None = None,
     ):
         self._checkpointer = checkpointer
         self._session_factory = session_factory
@@ -88,6 +90,7 @@ class RunManager:
             http_client=http_client,
             graph_factory=graph_factory,
             checkpointer=checkpointer,
+            tool_cache=tool_cache,
         )
         self._worker = EmbeddedWorker(
             queue=self._queue,

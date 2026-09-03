@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -16,6 +17,8 @@ from deepsearch_agent.observability.events import JsonlSink, make_audit_event, m
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.parsers.models import DocumentBlock, ParsedDocument
 from deepsearch_agent.state import SubTask
+from deepsearch_agent.tools.cache import CacheResult, CacheValue, NoOpToolCache, ToolCache
+from deepsearch_agent.tools.cache_keys import normalize_text, semantic_cache_key
 from deepsearch_agent.tools.search.models import SearchResult
 
 _EXTRACTION_SYSTEM_PROMPT = (
@@ -62,6 +65,14 @@ class EvidenceExtractor:
         max_evidences: int | None = None,
         estimator: TokenEstimator | None = None,
         event_sink: JsonlSink | None = None,
+        tool_cache: ToolCache | None = None,
+        cache_ttl_seconds: int = 0,
+        extractor_prompt_version: str = "evidence-prompt-v1",
+        evidence_schema_version: str = "evidence-schema-v1",
+        chunking_version: str = "chunks-v1",
+        model_id: str = "",
+        input_usd_per_million: float = 0.0,
+        output_usd_per_million: float = 0.0,
     ):
         if llm is None:
             raise LLMConfigurationError("EvidenceExtractor 需要已装配的 LLMInvoker。")
@@ -76,6 +87,14 @@ class EvidenceExtractor:
         self.chunk_concurrency = chunk_concurrency
         self.max_evidences = max_evidences
         self.event_sink = event_sink
+        self.tool_cache = tool_cache or NoOpToolCache()
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self.extractor_prompt_version = extractor_prompt_version
+        self.evidence_schema_version = evidence_schema_version
+        self.chunking_version = chunking_version
+        self.model_id = model_id
+        self.input_usd_per_million = input_usd_per_million
+        self.output_usd_per_million = output_usd_per_million
         self.logger = get_logger("deepsearch_agent.evidence.extractor")
 
     async def aextract(
@@ -105,9 +124,14 @@ class EvidenceExtractor:
         chunks, strategy = self._build_chunks(blocks)
         if not chunks:
             return ExtractionResult([], strategy, 0, 0)
-        extracted_by_chunk, failed_chunk_count = await self._extract_chunks(
-            task, document, result, chunks
-        )
+        cached = await self._extract_chunks_cached(task, document, result, chunks)
+        extracted_by_chunk = [
+            EvidenceExtraction.model_validate(item)
+            for item in cast(dict, cached.value).get("chunks", [])
+        ]
+        failed_chunk_count = int(cast(dict, cached.value).get("failed_chunk_count", 0))
+        if len(extracted_by_chunk) != len(chunks):
+            raise ValueError("evidence_cache_chunk_mismatch")
         evidences: list[Evidence] = []
         seen_quotes: set[str] = set()
         validation_rejected_count = 0
@@ -168,6 +192,63 @@ class EvidenceExtractor:
             candidate_chars=sum(len(block.get("text", "")) for chunk in chunks for block in chunk),
             failed_chunk_count=failed_chunk_count,
             validation_rejected_count=validation_rejected_count,
+            cache_hit=cached.hit,
+        )
+
+    async def _extract_chunks_cached(
+        self,
+        task: SubTask,
+        document: ParsedDocument,
+        result: SearchResult,
+        chunks: list[list[DocumentBlock]],
+    ) -> CacheResult:
+        content_hash = (
+            document.get("content_hash")
+            or hashlib.sha256(document.get("text", "").encode("utf-8")).hexdigest()
+        )
+        cache_key = semantic_cache_key(
+            content_hash,
+            normalize_text(task["question"]),
+            self.extractor_prompt_version,
+            self.evidence_schema_version,
+            self.model_id,
+            self.chunking_version,
+            self.input_budget_tokens,
+            self.max_evidences,
+            document.get("retrieval_method", "origin_fetch"),
+            document.get("support_ceiling", "direct"),
+            normalize_text(document.get("title", result.get("title", ""))),
+        )
+
+        async def compute() -> CacheValue:
+            extracted, failed_count = await self._extract_chunks(task, document, result, chunks)
+            input_tokens = sum(self._blocks_tokens(chunk) for chunk in chunks)
+            output_tokens = sum(self.estimator.count(item.model_dump_json()) for item in extracted)
+            cost = (
+                Decimal(input_tokens) * Decimal(str(self.input_usd_per_million))
+                + Decimal(output_tokens) * Decimal(str(self.output_usd_per_million))
+            ) / Decimal(1_000_000)
+            return CacheValue(
+                value={
+                    "chunks": [item.model_dump(mode="json") for item in extracted],
+                    "failed_chunk_count": failed_count,
+                },
+                content_hash=content_hash,
+                metrics={
+                    "saved_llm_calls": len(chunks),
+                    "saved_tokens": input_tokens + output_tokens,
+                    "saved_cost_usd": str(cost.quantize(Decimal("0.00000001"))),
+                    "estimated": True,
+                },
+                cacheable=failed_count == 0,
+            )
+
+        return await self.tool_cache.get_or_compute(
+            "evidence",
+            cache_key,
+            ttl_seconds=self.cache_ttl_seconds,
+            schema_version=self.evidence_schema_version,
+            compute=compute,
         )
 
     @staticmethod
@@ -206,7 +287,12 @@ class EvidenceExtractor:
                             "evidence_extract",
                             "started",
                             event_name="evidence_chunk_started",
-                            payload={"task_id": task["id"], "chunk_index": index, "chunk_count": len(chunks), "block_ids": chunk_ids},
+                            payload={
+                                "task_id": task["id"],
+                                "chunk_index": index,
+                                "chunk_count": len(chunks),
+                                "block_ids": chunk_ids,
+                            },
                         )
                     )
                 try:
@@ -215,28 +301,44 @@ class EvidenceExtractor:
                         task, document, result, chunk, max_evidences=per_chunk_limit
                     )
                 except asyncio.CancelledError:
-                    self.logger.warning("evidence_chunk_cancelled task=%s chunk=%d/%d", task["id"], index, len(chunks))
+                    self.logger.warning(
+                        "evidence_chunk_cancelled task=%s chunk=%d/%d",
+                        task["id"],
+                        index,
+                        len(chunks),
+                    )
                     raise
                 except Exception as exc:
                     elapsed = asyncio.get_running_loop().time() - started
                     self.logger.warning(
                         "evidence_chunk_failed task=%s chunk=%d/%d duration_ms=%.2f error_type=%s error=%s",
-                        task["id"], index, len(chunks), elapsed * 1000, type(exc).__name__, exc,
+                        task["id"],
+                        index,
+                        len(chunks),
+                        elapsed * 1000,
+                        type(exc).__name__,
+                        exc,
                     )
                     if self.event_sink is not None:
                         self.event_sink.write(
                             make_tool_event(
-                                "evidence_extract", "failed",
+                                "evidence_extract",
+                                "failed",
                                 event_name="evidence_chunk_failed",
-                                duration_ms=elapsed * 1000, error=str(exc),
-                                payload={"task_id": task["id"], "chunk_index": index, "chunk_count": len(chunks), "block_ids": chunk_ids, "error_type": type(exc).__name__},
+                                duration_ms=elapsed * 1000,
+                                error=str(exc),
+                                payload={
+                                    "task_id": task["id"],
+                                    "chunk_index": index,
+                                    "chunk_count": len(chunks),
+                                    "block_ids": chunk_ids,
+                                    "error_type": type(exc).__name__,
+                                },
                             )
                         )
                     return EvidenceExtraction(), True
                 response_json = extracted.model_dump_json(ensure_ascii=False)
-                llm_duration_ms = (
-                    asyncio.get_running_loop().time() - llm_started
-                ) * 1000
+                llm_duration_ms = (asyncio.get_running_loop().time() - llm_started) * 1000
                 self.logger.info(
                     "evidence_llm_completed task=%s source_url=%s chunk=%d/%d "
                     "llm_duration_ms=%.2f response_type=%s response_chars=%d candidate_count=%d",
@@ -272,10 +374,17 @@ class EvidenceExtractor:
                 if self.event_sink is not None:
                     self.event_sink.write(
                         make_tool_event(
-                            "evidence_extract", "completed",
+                            "evidence_extract",
+                            "completed",
                             event_name="evidence_chunk_completed",
                             duration_ms=elapsed * 1000,
-                            payload={"task_id": task["id"], "chunk_index": index, "chunk_count": len(chunks), "block_ids": chunk_ids, "candidate_count": len(extracted.evidences)},
+                            payload={
+                                "task_id": task["id"],
+                                "chunk_index": index,
+                                "chunk_count": len(chunks),
+                                "block_ids": chunk_ids,
+                                "candidate_count": len(extracted.evidences),
+                            },
                         )
                     )
                 return extracted, False
@@ -300,7 +409,9 @@ class EvidenceExtractor:
             failed_count += int(failed)
         self.logger.info(
             "evidence_chunks_completed task=%s chunks=%d failed_chunks=%d candidate_count=%d",
-            task["id"], len(chunks), failed_count,
+            task["id"],
+            len(chunks),
+            failed_count,
             sum(len(item.evidences) for item in extracted),
         )
         return extracted, failed_count
@@ -404,3 +515,4 @@ class ExtractionResult:
     candidate_chars: int
     failed_chunk_count: int = 0
     validation_rejected_count: int = 0
+    cache_hit: bool = False

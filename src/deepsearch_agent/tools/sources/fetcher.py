@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 from pathlib import PurePosixPath
+from typing import cast
 
 from bs4 import BeautifulSoup
 
@@ -16,6 +17,8 @@ from deepsearch_agent.parsers import (
     parse_pdf,
     parse_text,
 )
+from deepsearch_agent.tools.cache import CacheValue, NoOpToolCache, ToolCache
+from deepsearch_agent.tools.cache_keys import canonical_url, semantic_cache_key
 from deepsearch_agent.tools.errors import SourceUnavailableError
 from deepsearch_agent.tools.transport.http_client import HttpClient
 
@@ -32,11 +35,63 @@ _CHALLENGE_BODY_MARKERS = (
 
 
 class WebFetcher:
-    def __init__(self, config: SearchConfig, http_client: HttpClient | None = None):
+    def __init__(
+        self,
+        config: SearchConfig,
+        http_client: HttpClient | None = None,
+        *,
+        tool_cache: ToolCache | None = None,
+        cache_ttl_seconds: int = 0,
+        fetch_policy_version: str = "public-fetch-v1",
+        parser_version: str = "parser-v1",
+    ):
         self.timeout = config.timeout
         self.http = http_client or HttpClient(config)
+        self.tool_cache = tool_cache or NoOpToolCache()
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self.fetch_policy_version = fetch_policy_version
+        self.parser_version = parser_version
 
     async def afetch(
+        self,
+        url: str,
+        *,
+        fetch_timeout: float | None = None,
+        parse_timeout: float | None = None,
+    ) -> ParsedDocument:
+        normalized_url = canonical_url(url)
+        if not normalized_url or not normalized_url.startswith(("http://", "https://")):
+            return await self._afetch_uncached(
+                url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
+            )
+
+        async def compute() -> CacheValue:
+            document = await self._afetch_uncached(
+                url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
+            )
+            return CacheValue(
+                value=dict(document),
+                content_hash=document.get("content_hash"),
+                metrics={"saved_external_requests": 1},
+                cacheable=document.get("status") == "completed" and not document.get("error"),
+            )
+
+        cached = await self.tool_cache.get_or_compute(
+            "fetch",
+            semantic_cache_key(normalized_url, self.fetch_policy_version, self.parser_version),
+            ttl_seconds=self.cache_ttl_seconds,
+            schema_version=self.parser_version,
+            compute=compute,
+        )
+        document = cast(ParsedDocument, dict(cached.value))
+        document["source_url"] = url
+        document["cache_hit"] = cached.hit
+        if cached.hit:
+            document["fetch_duration_ms"] = 0
+            document["parse_duration_ms"] = 0
+        return document
+
+    async def _afetch_uncached(
         self,
         url: str,
         *,
