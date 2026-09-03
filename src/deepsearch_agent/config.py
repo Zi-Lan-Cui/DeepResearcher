@@ -187,12 +187,27 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
+class ToolCacheConfig:
+    enabled: bool = True
+    search_ttl_seconds: int = 6 * 60 * 60
+    fetch_ttl_seconds: int = 24 * 60 * 60
+    evidence_ttl_seconds: int = 7 * 24 * 60 * 60
+    search_version: str = "search-v1"
+    fetch_policy_version: str = "public-fetch-v1"
+    parser_version: str = "parser-v1"
+    extractor_prompt_version: str = "evidence-prompt-v1"
+    evidence_schema_version: str = "evidence-schema-v1"
+    chunking_version: str = "chunks-v1"
+
+
+@dataclass(frozen=True)
 class Settings:
     llm: LLMConfig
     agent: AgentConfig
     search: SearchConfig
     app: AppConfig
     observability: ObservabilityConfig
+    tool_cache: ToolCacheConfig = ToolCacheConfig()
 
 
 @lru_cache(maxsize=1)
@@ -206,6 +221,7 @@ def get_settings() -> Settings:
         search=_search_config(),
         app=_app_config(),
         observability=_observability_config(),
+        tool_cache=_tool_cache_config(),
     )
 
 
@@ -335,6 +351,28 @@ def _observability_config() -> ObservabilityConfig:
         event_file=_env("OBSERVABILITY_EVENT_FILE", "events.jsonl"),
         trace_file=_env("OBSERVABILITY_TRACE_FILE", "traces.jsonl"),
         max_text_chars=max(100, _int_env("OBSERVABILITY_MAX_TEXT_CHARS", 1_000)),
+    )
+
+
+def _tool_cache_config() -> ToolCacheConfig:
+    return ToolCacheConfig(
+        enabled=_bool_env("TOOL_CACHE_ENABLED", True),
+        search_ttl_seconds=max(0, _int_env("TOOL_CACHE_SEARCH_TTL_SECONDS", 21_600)),
+        fetch_ttl_seconds=max(0, _int_env("TOOL_CACHE_FETCH_TTL_SECONDS", 86_400)),
+        evidence_ttl_seconds=max(0, _int_env("TOOL_CACHE_EVIDENCE_TTL_SECONDS", 604_800)),
+        search_version=_env("TOOL_CACHE_SEARCH_VERSION", "search-v1") or "search-v1",
+        fetch_policy_version=(
+            _env("TOOL_CACHE_FETCH_POLICY_VERSION", "public-fetch-v1") or "public-fetch-v1"
+        ),
+        parser_version=_env("TOOL_CACHE_PARSER_VERSION", "parser-v1") or "parser-v1",
+        extractor_prompt_version=(
+            _env("TOOL_CACHE_EXTRACTOR_PROMPT_VERSION", "evidence-prompt-v1")
+            or "evidence-prompt-v1"
+        ),
+        evidence_schema_version=(
+            _env("TOOL_CACHE_EVIDENCE_SCHEMA_VERSION", "evidence-schema-v1") or "evidence-schema-v1"
+        ),
+        chunking_version=(_env("TOOL_CACHE_CHUNKING_VERSION", "chunks-v1") or "chunks-v1"),
     )
 
 
