@@ -138,7 +138,7 @@ API 原子写 `cancellation_requested_at`；queued/awaiting_input 可直接转 c
 
 ## 9. 工具缓存与可重放边界
 
-工具缓存按 [恢复期工具缓存方案](恢复期工具缓存方案.md) 实施，通过 `ToolCache` 协议隔离存储。第一版使用 PostgreSQL，后续可换 Redis。`run_id/task_id/tool_call_id/operation_id` 只是观测关联，缓存键必须是规范化 query、URL/parser 版本或 `content_hash + research_direction + extractor/model/schema version`。
+工具缓存已按 [恢复期工具缓存方案](恢复期工具缓存方案.md) 实施，通过 `ToolCache` 协议隔离存储，当前后端为 PostgreSQL。`run_id/task_id/tool_call_id/operation_id` 只是观测关联，不参与语义键。
 
 缓存解决 Worker 在 checkpoint 边界上重放已成功外部读的成本；它不替代 Run lease 和终态 CAS。取消、超时、未完整抽取或 5xx 不写正向缓存。
 
@@ -147,14 +147,20 @@ API 原子写 `cancellation_requested_at`；queued/awaiting_input 可直接转 c
 新配置按职责分组：
 
 ```text
-SERVICE_EMBEDDED_WORKER=true
-RUN_MAX_GLOBAL_RUNNING=3
-RUN_MAX_QUEUED_PER_USER=5
-RUN_MAX_GLOBAL_QUEUED=100
-RUN_LEASE_SECONDS=60
-RUN_HEARTBEAT_SECONDS=20
-LLM_MAX_IN_FLIGHT_PER_WORKER=4
-FETCH_MAX_IN_FLIGHT_PER_WORKER=8
+SERVICE_MAX_GLOBAL_RUNNING_RUNS=3
+SERVICE_MAX_GLOBAL_QUEUED_RUNS=100
+SERVICE_MAX_CONCURRENT_RUNS_PER_USER=2
+SERVICE_WORKER_LEASE_SECONDS=60
+SERVICE_WORKER_HEARTBEAT_SECONDS=20
+LLM_MAX_CONCURRENT_REQUESTS=6
+LLM_PROVIDER_RPM=0
+LLM_PROVIDER_TPM=0
+SEARCH_MAX_CONCURRENT_REQUESTS=2
+FETCH_MAX_CONCURRENT_REQUESTS=6
+TOOL_CACHE_ENABLED=true
+TOOL_CACHE_SEARCH_TTL_SECONDS=21600
+TOOL_CACHE_FETCH_TTL_SECONDS=86400
+TOOL_CACHE_EVIDENCE_TTL_SECONDS=604800
 ```
 
 单进程模式由 API lifespan 创建 RunService 与 EmbeddedWorker。独立模式提供两个入口：
@@ -273,13 +279,26 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 
 **边界**：LLM RPM/TPM 与 search/fetch 并发是每 Worker 容量，部署时需按 `Worker 数 × 单 Worker 配额` 保守配置；预算是请求前软闸，真实 token 只能在返回后入账，因此最多可超出已在途请求。需要集群级精硬 RPM/TPM/预算预留时，再把现有限制器协议换成 Redis token bucket/配额服务。
 
-### M7：恢复期工具缓存
+### M7：恢复期工具缓存（已完成）
 
 **原因**：at-least-once 的节点恢复会重放 checkpoint 前已成功的外部读。
 
 **工作**：按 L1 Search、L2 Fetch/Parse、L3 Evidence extraction 顺序接入 `ToolCache`；记录命中和节省 token/费用。
 
 **验收**：在三类工具成功后、下一 checkpoint 前杀进程，恢复后外部调用计数不增加。
+
+**实施结果**：
+
+- Alembic `0005_tool_cache` 新增 `tool_cache_entries`，以 `namespace + cache_key` 为联合主键，持久 JSON 结果、content hash、schema version、TTL、最后访问时间和命中数。
+- `ToolCache` 是工具层仅依赖的窄协议；服务使用 `PostgresToolCache`，CLI/测试可使用 `NoOpToolCache`。数据库读写失败时 fail-open 直连，不改变研究正确性。
+- L1 使用 NFKC/空白/casefold 规范化查询，键包含 provider、effective limit 和 search version；保留进程内 L0 热缓存。
+- L2 使用去 fragment、host 小写的 canonical URL，键包含 fetch policy/parser version；只缓存公开、完整成功的抓取+解析结果，带 URL 凭证的请求直接 bypass。
+- L3 缓存与 run/task 无关的 chunk 抽取候选；键包含 content hash、研究方向、prompt/schema/model/chunking 版本、输入配额和来源类型。命中后仍执行 quote 确定性校验，并按当前 task 重新生成 Evidence ID。
+- 取消、异常、抓取/解析失败、存在失败 chunk 的抽取都不写正向缓存；所有 chunk 成功且确认为空的结果可缓存。
+- 命中/miss/write/bypass 写入 `run_usage`；Run 聚合命中数、节省的外部请求/LLM 调用/token/估算费用，详情 API 直接下发。
+- 新建工具/缓存实例的恢复测试确认 L1/L2/L3 均不重复调用外部供应商，并覆盖 single-flight、TTL、版本 miss、失败/取消不污染和 L3 身份重绑定。全量 `251 passed, 1 skipped`，真实 PostgreSQL 额外 `1 passed`。
+
+**边界**：当前 single-flight 是每进程的；多 Worker 同时遇到一个全新键时，可能各执行一次外部调用，但最终 upsert 为同一成功值。这不影响恢复后的持久命中；若实测证明冷键惊群成本显著，再增加 PostgreSQL advisory lock 或 Redis 分布式 single-flight。
 
 ### M8：独立 Worker 与 Redis 可选升级
 

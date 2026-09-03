@@ -50,7 +50,7 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 ## 语义速查
 
 - 状态机：`queued → running → completed|failed|cancelled`；服务正常停机将活跃 run 记为非终态 `interrupted`（不写 `run_done`）。重启时**分诊** `queued|running|interrupted`：有 checkpoint 的孤儿 run 复活续跑（SSE 播 `resuming`，seq 从库中 max 续号，真机 kill -9 验收通过），无 checkpoint 的才判 `server_restart` 并补写终帧。
-- **进程边界**：Run claim、取消意图、resume payload、事件 seq、SSE DB tail、usage/预算和全局 Run 槽已持久化或由 PostgreSQL 协调。token 级预览仍是进程内可丢失旁路，LLM RPM/TPM 与 search/fetch 容量是每 Worker 限制；正式水平扩容还需 M7 工具缓存和 M8 独立 Worker 入口。
+- **进程边界**：Run claim、取消意图、resume payload、事件 seq、SSE DB tail、usage/预算、全局 Run 槽和三层工具缓存已持久化或由 PostgreSQL 协调。token 级预览仍是进程内可丢失旁路，LLM RPM/TPM、search/fetch 容量和同键 single-flight 是每 Worker 限制；正式水平扩容仅剩 M8 独立 Worker 入口与多 Worker 验收。
 - 越权与不存在同为 404；登录两错同为 401 文案。
 - 事件流：`done` 帧恒最后且已落库（RunEvent），断线/刷新自动回放续接，seq 客户端去重。
 - 配额：`SERVICE_MAX_CONCURRENT_RUNS_PER_USER`（活跃 queued+running 数，超限 429）。
