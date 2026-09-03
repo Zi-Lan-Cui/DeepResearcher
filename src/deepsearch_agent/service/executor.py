@@ -33,6 +33,7 @@ from deepsearch_agent.service.usage import (
     bind_usage_runtime,
     reset_usage_runtime,
 )
+from deepsearch_agent.tools.cache import ToolCache
 
 logger = logging.getLogger("deepsearch_agent.service.executor")
 
@@ -61,6 +62,7 @@ class RunExecutor:
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
+        tool_cache: ToolCache | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
@@ -73,6 +75,7 @@ class RunExecutor:
         self._http_client = http_client
         self._graph_factory = graph_factory
         self._checkpointer = checkpointer
+        self._tool_cache = tool_cache
         self._done_published: set[str] = set()
         self._shutdown_interrupts: set[str] = set()
         self._lost_leases: set[str] = set()
@@ -119,6 +122,7 @@ class RunExecutor:
                 event_sink=sink,
                 http_client=self._http_client,
                 checkpointer=self._checkpointer,
+                tool_cache=self._tool_cache,
             )
             # resume 时传 None 或 Command，由 checkpointer + thread_id 从断点继续。
             inputs = (

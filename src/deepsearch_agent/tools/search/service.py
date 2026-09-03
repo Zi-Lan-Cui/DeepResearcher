@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from typing import cast
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 from deepsearch_agent.agents.runtime import AgentExecutionScope
@@ -10,6 +11,8 @@ from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.state import SubTask
+from deepsearch_agent.tools.cache import CacheValue, NoOpToolCache, ToolCache
+from deepsearch_agent.tools.cache_keys import normalize_text, semantic_cache_key
 from deepsearch_agent.tools.errors import ToolConfigurationError
 from deepsearch_agent.tools.search.client import SearchClient
 from deepsearch_agent.tools.search.models import (
@@ -29,6 +32,9 @@ class SearchTool:
         *,
         trace_recorder: TraceRecorder | None = None,
         event_sink: JsonlSink | None = None,
+        tool_cache: ToolCache | None = None,
+        cache_ttl_seconds: int = 0,
+        cache_version: str = "search-v1",
     ):
         if client is None:
             raise ToolConfigurationError("SearchTool 需要已配置的 SearchClient。")
@@ -36,6 +42,9 @@ class SearchTool:
         self.trace_recorder = trace_recorder
         self.event_sink = event_sink
         self.logger = get_logger("deepsearch_agent.tools.web_search")
+        self.tool_cache = tool_cache or NoOpToolCache()
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self.cache_version = cache_version
         self._query_cache: dict[str, list[SearchResult]] = {}
         self._query_cache_lock = asyncio.Lock()
 
@@ -69,20 +78,38 @@ class SearchTool:
             missing_queries: list[str] = []
             async with self._query_cache_lock:
                 for query in search_queries:
-                    if query in self._query_cache:
-                        cached_queries[query] = self._query_cache[query]
+                    local_key = self._cache_key(query)
+                    if local_key in self._query_cache:
+                        cached_queries[query] = self._query_cache[local_key]
                     else:
                         missing_queries.append(query)
+
+            async def search_one(query: str) -> tuple[list[SearchResult], bool]:
+                async def compute() -> CacheValue:
+                    results = await self.client.asearch(query)
+                    return CacheValue(value=list(results), metrics={"saved_external_requests": 1})
+
+                cached = await self.tool_cache.get_or_compute(
+                    "search",
+                    self._cache_key(query),
+                    ttl_seconds=self.cache_ttl_seconds,
+                    schema_version=self.cache_version,
+                    compute=compute,
+                )
+                return cast(list[SearchResult], cached.value), cached.hit
+
             if self.trace_recorder is not None:
                 with self.trace_recorder.span("search", kind="tool"):
-                    link = current_span_context()  # search 事件归属 tool span,即使写出点在 with 之外
+                    link = (
+                        current_span_context()
+                    )  # search 事件归属 tool span,即使写出点在 with 之外
                     batches = await asyncio.gather(
-                        *(self.client.asearch(query) for query in missing_queries),
+                        *(search_one(query) for query in missing_queries),
                         return_exceptions=True,
                     )
             else:
                 batches = await asyncio.gather(
-                    *(self.client.asearch(query) for query in missing_queries),
+                    *(search_one(query) for query in missing_queries),
                     return_exceptions=True,
                 )
             if any(isinstance(item, asyncio.CancelledError) for item in batches):
@@ -92,11 +119,14 @@ class SearchTool:
                 for query, batch in zip(missing_queries, batches, strict=True)
                 if isinstance(batch, BaseException)
             ]
-            fetched_batches = [batch for batch in batches if isinstance(batch, list)]
+            fetched_batches = [batch[0] for batch in batches if isinstance(batch, tuple)]
+            persistent_hit_count = sum(
+                int(batch[1]) for batch in batches if isinstance(batch, tuple)
+            )
             async with self._query_cache_lock:
                 for query, batch in zip(missing_queries, batches, strict=True):
-                    if isinstance(batch, list):
-                        self._query_cache[query] = list(batch)
+                    if isinstance(batch, tuple):
+                        self._query_cache[self._cache_key(query)] = list(batch[0])
             results = [
                 result
                 for result_set in [*cached_queries.values(), *fetched_batches]
@@ -127,7 +157,7 @@ class SearchTool:
                             "candidate_count": len(ranked),
                             "failed_query_count": len(failures),
                             "failed_queries": [item.model_dump() for item in failures],
-                            "cache_hit_count": len(cached_queries),
+                            "cache_hit_count": len(cached_queries) + persistent_hit_count,
                             "candidates": [
                                 {
                                     "title": item.get("title", "")[:160],
@@ -165,6 +195,14 @@ class SearchTool:
                 queries=search_queries,
                 failures=failures if "failures" in locals() else None,
             )
+
+    def _cache_key(self, query: str) -> str:
+        return semantic_cache_key(
+            normalize_text(query),
+            getattr(self.client, "provider_name", "unknown"),
+            getattr(self.client, "effective_limit", None),
+            self.cache_version,
+        )
 
     @staticmethod
     def _canonical_url(url: str) -> str:

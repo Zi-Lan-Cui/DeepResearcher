@@ -29,7 +29,8 @@ def _tick_events(frames):
 async def client(tmp_path):
     graphs: list[FakeGraph] = []
 
-    def graph_factory(*, settings, event_sink, http_client, checkpointer=None):
+    def graph_factory(*, settings, event_sink, http_client, checkpointer=None, tool_cache=None):
+        del tool_cache
         graph = graphs.pop(0) if graphs else FakeGraph()
         graph._sink = event_sink
         return graph
@@ -48,9 +49,7 @@ async def client(tmp_path):
 
 
 async def register(client, email="a@test.dev") -> str:
-    response = await client.post(
-        "/api/register", json={"email": email, "password": PASSWORD}
-    )
+    response = await client.post("/api/register", json={"email": email, "password": PASSWORD})
     assert response.status_code == 201
     return response.json()["token"]
 
@@ -92,7 +91,9 @@ async def test_register_login_and_me_roundtrip(client):
     assert ok.status_code == 200
     assert ok.json()["token"]
 
-    wrong = await client.post("/api/login", json={"email": "a@test.dev", "password": "bad-password"})
+    wrong = await client.post(
+        "/api/login", json={"email": "a@test.dev", "password": "bad-password"}
+    )
     assert wrong.status_code == 401
     ghost = await client.post("/api/login", json={"email": "no@test.dev", "password": "whatever1"})
     assert ghost.json()["detail"] == wrong.json()["detail"]  # 不区分“无此人/密码错”
@@ -123,24 +124,24 @@ async def test_run_lifecycle_detail_and_list(client):
     listing = await client.get("/api/runs", headers=_auth(token))
     assert [item["id"] for item in listing.json()] == [run_id]
     assert "report_markdown" not in listing.json()[0]  # 列表不带正文
-    assert (await client.post("/api/runs", json={"query": "   "}, headers=_auth(token))).status_code == 422
-    assert (await client.post("/api/runs", json={"query": "x" * 2001}, headers=_auth(token))).status_code == 422
+    assert (
+        await client.post("/api/runs", json={"query": "   "}, headers=_auth(token))
+    ).status_code == 422
+    assert (
+        await client.post("/api/runs", json={"query": "x" * 2001}, headers=_auth(token))
+    ).status_code == 422
 
 
 async def test_cross_user_access_always_404(client):
     alice = await register(client, "alice@test.dev")
     bob = await register(client, "bob@test.dev")
-    run_id = (
-        await client.post("/api/runs", json={"query": "q"}, headers=_auth(alice))
-    ).json()["run_id"]
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(alice))).json()[
+        "run_id"
+    ]
 
     assert (await client.get(f"/api/runs/{run_id}", headers=_auth(bob))).status_code == 404
-    assert (
-        await client.post(f"/api/runs/{run_id}/cancel", headers=_auth(bob))
-    ).status_code == 404
-    async with client.stream(
-        "GET", f"/api/runs/{run_id}/events", headers=_auth(bob)
-    ) as response:
+    assert (await client.post(f"/api/runs/{run_id}/cancel", headers=_auth(bob))).status_code == 404
+    async with client.stream("GET", f"/api/runs/{run_id}/events", headers=_auth(bob)) as response:
         assert response.status_code == 404
     assert (await client.get("/api/runs/nope", headers=_auth(alice))).status_code == 404
 
@@ -148,15 +149,13 @@ async def test_cross_user_access_always_404(client):
 async def test_quota_blocks_third_concurrent_run(client):
     token = await register(client)
     first_gate, second_gate = asyncio.Event(), asyncio.Event()
-    client.graphs.extend(
-        [FakeGraph(gate=first_gate), FakeGraph(gate=second_gate)]
-    )
-    first = (
-        await client.post("/api/runs", json={"query": "q1"}, headers=_auth(token))
-    ).json()["run_id"]
-    second = (
-        await client.post("/api/runs", json={"query": "q2"}, headers=_auth(token))
-    ).json()["run_id"]
+    client.graphs.extend([FakeGraph(gate=first_gate), FakeGraph(gate=second_gate)])
+    first = (await client.post("/api/runs", json={"query": "q1"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
+    second = (await client.post("/api/runs", json={"query": "q2"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
     third = await client.post("/api/runs", json={"query": "q3"}, headers=_auth(token))
     assert third.status_code == 429
     first_gate.set()
@@ -169,9 +168,9 @@ async def test_cancel_endpoint_converges_to_cancelled(client):
     token = await register(client)
     gate = asyncio.Event()
     client.graphs.append(FakeGraph(gate=gate))
-    run_id = (
-        await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))
-    ).json()["run_id"]
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
     await wait_status(client, token, run_id, {"running"})
     response = await client.post(f"/api/runs/{run_id}/cancel", headers=_auth(token))
     assert response.status_code == 200
@@ -202,7 +201,11 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
                 },
                 {
                     "event_type": "direction_search_completed",
-                    "payload": {"task_id": "task-0001", "research_direction": "方向甲", "candidate_count": 5},
+                    "payload": {
+                        "task_id": "task-0001",
+                        "research_direction": "方向甲",
+                        "candidate_count": 5,
+                    },
                 },
                 {
                     "event_type": "research_task_completed",
@@ -216,9 +219,9 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
             ]
         )
     )
-    run_id = (
-        await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))
-    ).json()["run_id"]
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
     await wait_status(client, token, run_id, {"completed"})
 
     frames = await read_sse(client, token, run_id)
@@ -258,9 +261,9 @@ async def test_sse_live_backlog_and_gate_release(client):
             ],
         )
     )
-    run_id = (
-        await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))
-    ).json()["run_id"]
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
     reader = asyncio.create_task(read_sse(client, token, run_id))
     await asyncio.sleep(0.05)
     gate.set()

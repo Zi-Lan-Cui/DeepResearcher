@@ -12,6 +12,7 @@ from deepsearch_agent.observability.tracing.context import SpanContext, current_
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
 from deepsearch_agent.parsers.models import ParsedDocument
 from deepsearch_agent.state import SubTask
+from deepsearch_agent.tools.cache import ToolCache
 from deepsearch_agent.tools.errors import (
     SourceUnavailableError,
     ToolConfigurationError,
@@ -36,11 +37,19 @@ class SourceReaderTool:
         evidence_input_budget_tokens: int = 24_000,
         evidence_output_budget_tokens: int = 4_000,
         evidence_safety_margin_tokens: int = 2_000,
-            evidence_chunk_concurrency: int = 2,
+        evidence_chunk_concurrency: int = 2,
         evidence_max_per_source: int = 2,
         fetch_timeout: float = 30.0,
         parse_timeout: float = 20.0,
         evidence_extract_timeout: float = 120.0,
+        tool_cache: ToolCache | None = None,
+        evidence_cache_ttl_seconds: int = 0,
+        extractor_prompt_version: str = "evidence-prompt-v1",
+        evidence_schema_version: str = "evidence-schema-v1",
+        chunking_version: str = "chunks-v1",
+        model_id: str = "",
+        input_usd_per_million: float = 0.0,
+        output_usd_per_million: float = 0.0,
     ):
         if fetcher is None:
             raise ToolConfigurationError("SourceReaderTool 需要已配置的 WebFetcher。")
@@ -61,6 +70,14 @@ class SourceReaderTool:
             chunk_concurrency=evidence_chunk_concurrency,
             max_evidences=evidence_max_per_source,
             event_sink=event_sink,
+            tool_cache=tool_cache,
+            cache_ttl_seconds=evidence_cache_ttl_seconds,
+            extractor_prompt_version=extractor_prompt_version,
+            evidence_schema_version=evidence_schema_version,
+            chunking_version=chunking_version,
+            model_id=model_id,
+            input_usd_per_million=input_usd_per_million,
+            output_usd_per_million=output_usd_per_million,
         )
         self.logger = get_logger("deepsearch_agent.tools.source_reader")
 
@@ -131,6 +148,7 @@ class SourceReaderTool:
                             "raw_bytes": document.get("raw_bytes", 0),
                             "fetch_duration_ms": document.get("fetch_duration_ms", 0),
                             "parse_duration_ms": document.get("parse_duration_ms", 0),
+                            "cache_hit": bool(document.get("cache_hit", False)),
                         },
                     )
                 )
@@ -178,12 +196,13 @@ class SourceReaderTool:
                     )
                 return failed_read(task, exc)
             if extraction.failed_chunk_count == extraction.chunk_count and extraction.chunk_count:
-                reason = (
-                    f"Evidence 抽取失败：{extraction.failed_chunk_count} 个 chunk 全部失败。"
-                )
+                reason = f"Evidence 抽取失败：{extraction.failed_chunk_count} 个 chunk 全部失败。"
                 self.logger.warning(
                     "evidence_extraction_failed task=%s url=%s chunks=%d failed_chunks=%d",
-                    task["id"], source_url, extraction.chunk_count, extraction.failed_chunk_count,
+                    task["id"],
+                    source_url,
+                    extraction.chunk_count,
+                    extraction.failed_chunk_count,
                 )
                 return failed_read(task, RuntimeError(reason))
             evidences = extraction.evidences
@@ -214,6 +233,7 @@ class SourceReaderTool:
                                 "candidate_chars": extraction.candidate_chars,
                                 "failed_chunk_count": extraction.failed_chunk_count,
                                 "validation_rejected_count": extraction.validation_rejected_count,
+                                "cache_hit": extraction.cache_hit,
                                 "reason_code": "evidence_empty",
                             },
                         )
@@ -254,6 +274,7 @@ class SourceReaderTool:
                             "evidence_count": len(evidences),
                             "failed_chunk_count": extraction.failed_chunk_count,
                             "validation_rejected_count": extraction.validation_rejected_count,
+                            "cache_hit": extraction.cache_hit,
                             "evidences": [item.model_dump() for item in evidences],
                         },
                     )
@@ -269,12 +290,16 @@ class SourceReaderTool:
             stage = str(exc) or "source_timeout"
             self.logger.warning(
                 "source_stage_timeout task=%s url=%s stage=%s",
-                task["id"], result.get("url", ""), stage,
+                task["id"],
+                result.get("url", ""),
+                stage,
             )
             if self.event_sink is not None:
                 self.event_sink.write(
                     make_tool_event(
-                        "source_reader", "failed", event_name="source_timeout",
+                        "source_reader",
+                        "failed",
+                        event_name="source_timeout",
                         link=link,
                         error=stage,
                         duration_ms=(time.perf_counter() - started) * 1000,
@@ -457,7 +482,10 @@ class SourceReaderTool:
             reason = f"Evidence 抽取失败：{extraction.failed_chunk_count} 个 chunk 全部失败。"
             self.logger.warning(
                 "fallback_evidence_extraction_failed task=%s url=%s chunks=%d failed_chunks=%d",
-                task["id"], source_url, extraction.chunk_count, extraction.failed_chunk_count,
+                task["id"],
+                source_url,
+                extraction.chunk_count,
+                extraction.failed_chunk_count,
             )
             return failed_read(task, RuntimeError(reason))
 
@@ -499,6 +527,7 @@ class SourceReaderTool:
                         "retrieval_method": retrieval_method,
                         "support_ceiling": support_ceiling,
                         "evidence_count": len(evidences),
+                        "cache_hit": extraction.cache_hit,
                     },
                 )
             )

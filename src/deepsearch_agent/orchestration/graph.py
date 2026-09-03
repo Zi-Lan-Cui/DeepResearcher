@@ -26,6 +26,7 @@ from deepsearch_agent.routing import (
 from deepsearch_agent.state import ResearchState
 from deepsearch_agent.tools import (
     HttpClient,
+    NoOpToolCache,
     SearchClient,
     SearchTool,
     SourceReaderTool,
@@ -84,6 +85,7 @@ def build_graph(
     trace_recorder: TraceRecorder | None = None,
     http_client: HttpClient | None = None,
     checkpointer=None,
+    tool_cache=None,
 ):
     """装配完整研究应用；必需模型和联网工具缺失时立即失败。
 
@@ -101,14 +103,25 @@ def build_graph(
         )
 
     shared_http = http_client or HttpClient(settings.search)
+    shared_cache = tool_cache or NoOpToolCache()
     owns_http_client = http_client is None
     search_tool = SearchTool(
         SearchClient(settings.search, shared_http),
         trace_recorder=trace_recorder,
         event_sink=event_sink,
+        tool_cache=shared_cache,
+        cache_ttl_seconds=settings.tool_cache.search_ttl_seconds,
+        cache_version=settings.tool_cache.search_version,
     )
     reader_tool = SourceReaderTool(
-        WebFetcher(settings.search, shared_http),
+        WebFetcher(
+            settings.search,
+            shared_http,
+            tool_cache=shared_cache,
+            cache_ttl_seconds=settings.tool_cache.fetch_ttl_seconds,
+            fetch_policy_version=settings.tool_cache.fetch_policy_version,
+            parser_version=settings.tool_cache.parser_version,
+        ),
         llm=llm,
         trace_recorder=trace_recorder,
         event_sink=event_sink,
@@ -121,6 +134,14 @@ def build_graph(
         fetch_timeout=settings.agent.source_fetch_timeout,
         parse_timeout=settings.agent.source_parse_timeout,
         evidence_extract_timeout=settings.agent.evidence_extract_timeout,
+        tool_cache=shared_cache,
+        evidence_cache_ttl_seconds=settings.tool_cache.evidence_ttl_seconds,
+        extractor_prompt_version=settings.tool_cache.extractor_prompt_version,
+        evidence_schema_version=settings.tool_cache.evidence_schema_version,
+        chunking_version=settings.tool_cache.chunking_version,
+        model_id=settings.llm.model,
+        input_usd_per_million=settings.llm.input_usd_per_million,
+        output_usd_per_million=settings.llm.output_usd_per_million,
     )
     clarifier = Clarifier(
         llm,

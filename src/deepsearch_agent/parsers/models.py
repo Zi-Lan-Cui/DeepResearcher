@@ -38,3 +38,4 @@ class ParsedDocument(TypedDict):
     support_ceiling: NotRequired[str]
     fetch_duration_ms: NotRequired[float]
     parse_duration_ms: NotRequired[float]
+    cache_hit: NotRequired[bool]
