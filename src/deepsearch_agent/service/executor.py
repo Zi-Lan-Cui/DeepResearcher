@@ -103,6 +103,9 @@ class RunExecutor:
         resume_input: Any = None,
         claim: RunWork | None = None,
     ) -> None:
+        # Worker 可能与受理该 Run 的 API 不在同一进程；执行面必须
+        # 自行打开本地 sink，不能依赖 API 进程中的 fanout.open().
+        self._fanout.open(run_id)
         sinks: list[Any] = [self._fanout]
         if self._config.jsonl_events:
             sinks.append(JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl"))

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -84,21 +84,32 @@ async def migrate_database(database_url: str) -> None:
     revision and then upgraded. This is safe only because ``0001_initial`` exactly
     describes the schema that preceded the first ALTER migration.
     """
-    engine = make_engine(database_url)
-    try:
-        async with engine.connect() as connection:
-            tables = await connection.run_sync(lambda sync: set(inspect(sync).get_table_names()))
-    finally:
-        await engine.dispose()
-
     root = Path(__file__).resolve().parents[3]
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "migrations"))
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
-    def upgrade() -> None:
+    def upgrade(tables: set[str]) -> None:
         if "runs" in tables and "alembic_version" not in tables:
             command.stamp(config, "0001_initial")
         command.upgrade(config, "head")
 
-    await asyncio.to_thread(upgrade)
+    # API 与多个 Worker 可能同时启动。Alembic 自身不会为多进程
+    # upgrade 排队，因此在 PostgreSQL 上用 session advisory lock 包住整段
+    # inspect + upgrade；SQLite 只是单进程测试路径。
+    engine = make_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            is_postgres = connection.dialect.name == "postgresql"
+            if is_postgres:
+                await connection.execute(text("SELECT pg_advisory_lock(731904620)"))
+            try:
+                tables = await connection.run_sync(
+                    lambda sync: set(inspect(sync).get_table_names())
+                )
+                await asyncio.to_thread(upgrade, tables)
+            finally:
+                if is_postgres:
+                    await connection.execute(text("SELECT pg_advisory_unlock(731904620)"))
+    finally:
+        await engine.dispose()

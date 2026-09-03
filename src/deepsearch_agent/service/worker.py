@@ -1,4 +1,4 @@
-"""Single-process embedded worker with a real global run capacity limit."""
+"""Lease-based run worker shared by embedded and independent process modes."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from deepsearch_agent.service.executor import RunExecutor
 from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
 
 
-class EmbeddedWorker:
-    """Fill process-wide execution slots from explicit resumes and durable queue rows."""
+class RunWorker:
+    """Poll and fill process-local slots from the durable run queue."""
 
     def __init__(
         self,
@@ -24,6 +24,7 @@ class EmbeddedWorker:
         max_running: int,
         lease_seconds: int,
         heartbeat_seconds: int,
+        poll_seconds: float = 1.0,
         worker_id: str | None = None,
         recover_expired: Callable[[RunWork], Awaitable[RunWork | None]] | None = None,
     ) -> None:
@@ -32,6 +33,7 @@ class EmbeddedWorker:
         self._max_running = max(1, max_running)
         self._lease_seconds = max(10, lease_seconds)
         self._heartbeat_seconds = min(max(1, heartbeat_seconds), self._lease_seconds // 2)
+        self._poll_seconds = max(0.05, poll_seconds)
         self._worker_id = worker_id or new_id("worker")
         self._recover_expired = recover_expired
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -41,11 +43,23 @@ class EmbeddedWorker:
         self._dispatch_lock = asyncio.Lock()
         self._closed = False
         self._reaper_task: asyncio.Task[None] | None = None
+        self._poll_task: asyncio.Task[None] | None = None
 
     @property
     def tasks(self) -> dict[str, asyncio.Task[None]]:
         """Compatibility view for cancellation and M1-era tests."""
         return self._tasks
+
+    @property
+    def worker_id(self) -> str:
+        return self._worker_id
+
+    async def start(self) -> None:
+        """Start autonomous polling; safe to call more than once."""
+        if self._closed:
+            return
+        self._ensure_background_tasks()
+        await self.wake()
 
     async def submit(self, work: RunWork) -> None:
         """Prioritize an already durable resume/recovery work item."""
@@ -65,10 +79,7 @@ class EmbeddedWorker:
         """Fill all currently free slots; safe to call after every state transition."""
         if self._closed:
             return
-        if self._reaper_task is None:
-            self._reaper_task = asyncio.create_task(
-                self._reap_loop(), name=f"lease-reaper-{self._worker_id}"
-            )
+        self._ensure_background_tasks()
         async with self._dispatch_lock:
             while not self._closed and len(self._tasks) < self._max_running:
                 preferred = self._take_explicit()
@@ -89,6 +100,24 @@ class EmbeddedWorker:
                 self._tasks[work.run_id] = task
                 self._claims[work.run_id] = work
                 task.add_done_callback(lambda _task, run_id=work.run_id: self._on_task_done(run_id))
+
+    def _ensure_background_tasks(self) -> None:
+        if self._reaper_task is None:
+            self._reaper_task = asyncio.create_task(
+                self._reap_loop(), name=f"lease-reaper-{self._worker_id}"
+            )
+        if self._poll_task is None:
+            self._poll_task = asyncio.create_task(
+                self._poll_loop(), name=f"queue-poller-{self._worker_id}"
+            )
+
+    async def _poll_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._poll_seconds)
+                await self.wake()
+        except asyncio.CancelledError:
+            return
 
     async def _execute_claimed(self, work: RunWork) -> None:
         owner_task = asyncio.current_task()
@@ -161,9 +190,12 @@ class EmbeddedWorker:
 
     async def shutdown(self) -> None:
         self._closed = True
-        if self._reaper_task is not None:
-            self._reaper_task.cancel()
-            await asyncio.gather(self._reaper_task, return_exceptions=True)
+        background = [
+            task for task in (self._poll_task, self._reaper_task) if task is not None
+        ]
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         live = [
             (run_id, task, self._claims.get(run_id))
             for run_id, task in self._tasks.items()
@@ -178,3 +210,7 @@ class EmbeddedWorker:
                 await self._queue.release(
                     work, status="interrupted", terminal_reason="server_shutdown"
                 )
+
+
+# Compatibility import for callers/tests from the single-process migration stages.
+EmbeddedWorker = RunWorker

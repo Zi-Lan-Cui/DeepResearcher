@@ -34,7 +34,7 @@ from deepsearch_agent.service.run_service import QuotaExceededError as QuotaExce
 from deepsearch_agent.service.run_service import RunService
 from deepsearch_agent.service.settings import ServiceConfig
 from deepsearch_agent.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
-from deepsearch_agent.service.worker import EmbeddedWorker
+from deepsearch_agent.service.worker import RunWorker
 from deepsearch_agent.tools.cache import ToolCache
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -57,6 +57,7 @@ class RunManager:
         checkpointer: Any = None,
         event_notifier: EventNotifier | None = None,
         tool_cache: ToolCache | None = None,
+        enable_worker: bool = True,
     ):
         self._checkpointer = checkpointer
         self._session_factory = session_factory
@@ -92,17 +93,30 @@ class RunManager:
             checkpointer=checkpointer,
             tool_cache=tool_cache,
         )
-        self._worker = EmbeddedWorker(
-            queue=self._queue,
-            executor=self._executor,
-            max_running=config.max_global_running_runs,
-            lease_seconds=config.worker_lease_seconds,
-            heartbeat_seconds=config.worker_heartbeat_seconds,
-            recover_expired=self._recover_expired,
+        self._worker = (
+            RunWorker(
+                queue=self._queue,
+                executor=self._executor,
+                max_running=config.max_global_running_runs,
+                lease_seconds=config.worker_lease_seconds,
+                heartbeat_seconds=config.worker_heartbeat_seconds,
+                poll_seconds=config.worker_poll_seconds,
+                recover_expired=self._recover_expired,
+            )
+            if enable_worker
+            else None
         )
         # M2 兼容视图：权威运行事实已是 DB queued/running，测试与本地取消
         # 仍需观察当前 EmbeddedWorker 所持有的 asyncio.Task。
-        self._tasks = self._worker.tasks
+        self._tasks = self._worker.tasks if self._worker is not None else {}
+
+    @property
+    def worker_id(self) -> str | None:
+        return self._worker.worker_id if self._worker is not None else None
+
+    async def start_worker(self) -> None:
+        if self._worker is not None:
+            await self._worker.start()
 
     # ---- 受理 ----
 
@@ -113,7 +127,8 @@ class RunManager:
         await self._executor.publish_status(run_id, "queued")
         # queued 可能长时间等待，受理帧不能依赖 Executor 启动后的周期排水。
         await self._executor.flush_events(run_id)
-        await self._worker.wake()
+        if self._worker is not None:
+            await self._worker.wake()
         return run_id
 
     async def cancel(self, user_id: int, run_id: str) -> Run:
@@ -137,11 +152,15 @@ class RunManager:
                 run.lease_expires_at = None
             await session.commit()
         if immediate:
+            # 取消请求可能落到任意 API 副本，不能假设本进程
+            # 曾受理该 Run。先打开本地 sink，再持久唯一收尾帧。
+            self._fanout.open(run_id)
             await self._executor.publish_done(run_id)
             await self._executor.flush_events(run_id)
             self._fanout.close(run_id)
         else:
-            self._worker.request_cancel(run_id)
+            if self._worker is not None:
+                self._worker.request_cancel(run_id)
         async with self._session_factory() as session:
             return await session.get(Run, run_id)
 
@@ -262,11 +281,13 @@ class RunManager:
             self._fanout.seed_seq(run_id, int(max_seq or 0))
             await self._executor.publish_status(run_id, "resuming")
             await self._executor.flush_events(run_id)
-            await self._worker.submit(
-                RunWork(run_id=run_id, user_id=user_id, query=query, resume=True)
-            )
+            if self._worker is not None:
+                await self._worker.submit(
+                    RunWork(run_id=run_id, user_id=user_id, query=query, resume=True)
+                )
         # 即使没有 checkpoint 恢复项，也要启动重启前已受理的 queued Run。
-        await self._worker.wake()
+        if self._worker is not None:
+            await self._worker.wake()
         return len(pending)
 
     async def resume_with_input(self, user_id: int, run_id: str, answer: str) -> str:
@@ -299,10 +320,12 @@ class RunManager:
         self._fanout.open(run_id)
         await self._executor.publish_status(run_id, "queued")
         await self._executor.flush_events(run_id)
-        await self._worker.wake()
+        if self._worker is not None:
+            await self._worker.wake()
         async with self._session_factory() as session:
             current = await session.get(Run, run_id)
         return current.status if current is not None else "queued"
 
     async def shutdown(self) -> None:
-        await self._worker.shutdown()
+        if self._worker is not None:
+            await self._worker.shutdown()
