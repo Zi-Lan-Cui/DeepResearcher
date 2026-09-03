@@ -46,6 +46,8 @@ from deepsearch_agent.service.settings import (
     checkpoint_dsn,
     get_service_config,
 )
+from deepsearch_agent.service.tool_cache import PostgresToolCache
+from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
@@ -97,6 +99,11 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "external_request_count": run.external_request_count,
         "peak_llm_concurrency": run.peak_llm_concurrency,
         "estimated_cost_usd": float(run.estimated_cost_usd or 0),
+        "cache_hit_count": run.cache_hit_count,
+        "saved_external_request_count": run.saved_external_request_count,
+        "saved_llm_call_count": run.saved_llm_call_count,
+        "saved_tokens": run.saved_tokens,
+        "saved_cost_usd": float(run.saved_cost_usd or 0),
         "elapsed_ms": elapsed_ms,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -121,6 +128,12 @@ def create_app(
         await migrate_database(cfg.database_url)
         engine = make_engine(cfg.database_url)
         session_factory = make_session_factory(engine)
+        tool_cache = (
+            PostgresToolCache(session_factory)
+            if engine_settings.tool_cache.enabled
+            else NoOpToolCache()
+        )
+        await tool_cache.delete_expired()
         # HttpClient 进程级一个：跨 run 共享 provider 信号量与断路器（图不会关闭外来的它）。
         http_client = HttpClient(engine_settings.search)
         fanout = FanoutSink(asyncio.get_running_loop())
@@ -149,6 +162,7 @@ def create_app(
             graph_factory=graph_factory,
             checkpointer=checkpointer,
             event_notifier=event_notifier,
+            tool_cache=tool_cache,
         )
         killed, resumable = await manager.reconcile_startup()
         if killed:
@@ -164,6 +178,7 @@ def create_app(
         app.state.fanout = fanout
         app.state.manager = manager
         app.state.checkpointer = checkpointer
+        app.state.tool_cache = tool_cache
         app.state.codec = TokenCodec(cfg.jwt_secret, cfg.token_ttl_hours)
         app.state.auth_dependency = make_current_user(app.state.codec, session_factory)
         try:

@@ -176,9 +176,26 @@ class UsageStore:
                     ),
                     "estimated_cost_usd": Run.estimated_cost_usd + cost_usd,
                 }
-            else:
+            elif category in {"search", "fetch"}:
                 values = {"external_request_count": Run.external_request_count + 1}
-            await session.execute(update(Run).where(Run.id == run_id).values(**values))
+            elif category == "cache" and status == "hit":
+                metrics = detail or {}
+                values = {
+                    "cache_hit_count": Run.cache_hit_count + 1,
+                    "saved_external_request_count": (
+                        Run.saved_external_request_count
+                        + int(metrics.get("saved_external_requests", 0) or 0)
+                    ),
+                    "saved_llm_call_count": (
+                        Run.saved_llm_call_count + int(metrics.get("saved_llm_calls", 0) or 0)
+                    ),
+                    "saved_tokens": (Run.saved_tokens + int(metrics.get("saved_tokens", 0) or 0)),
+                    "saved_cost_usd": (
+                        Run.saved_cost_usd + Decimal(str(metrics.get("saved_cost_usd", 0) or 0))
+                    ),
+                }
+            if values:
+                await session.execute(update(Run).where(Run.id == run_id).values(**values))
             await session.commit()
 
     async def enforce_budget(self, run_id: str, config: LLMConfig) -> None:
@@ -380,6 +397,24 @@ async def record_external_request(
         )
     except Exception:  # noqa: BLE001
         logger.warning("external_usage_record_failed run_id=%s", runtime.run_id, exc_info=True)
+
+
+async def record_cache_event(
+    *, namespace: str, status: str, detail: dict[str, Any] | None = None
+) -> None:
+    runtime = current_usage_runtime()
+    if runtime is None:
+        return
+    try:
+        await runtime.store.record(
+            run_id=runtime.run_id,
+            category="cache",
+            component=namespace,
+            status=status,
+            detail=detail,
+        )
+    except Exception:  # noqa: BLE001 - 缓存计量不改变工具语义
+        logger.warning("cache_usage_record_failed run_id=%s", runtime.run_id, exc_info=True)
 
 
 def _response_usage(response: Any) -> tuple[int, int, int, bool]:
