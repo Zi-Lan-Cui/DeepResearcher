@@ -40,7 +40,7 @@
 
 - [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时后，model/tool wrapper、Writer 完整链路及全量 **226 条**测试通过。
 - [x] 浏览器冒烟：10/15/20 条自适应分页、箭头/圆点换页、390px 窄屏无横向溢出、Clarifier 三选项 `等待回答 → 进行中`、服务重启后 `恢复续跑中` + 阶段回放 + `resuming` 事件，四条路径均已真机验证。
-- [x] Worker 迁移 M1–M6：控制面/执行面、持久 queued、lease claim/续租/回收、取消/resume、持久事件与 SSE，以及 usage 明细/Run 聚合、费用预算、全局 Run 槽、每 Worker LLM RPM/TPM 与 search/fetch 并发闸均已落地。全量 **242 passed、1 条 PG 集成默认跳过**；显式真实 PG 测试另有 1 passed。下一步 M7 是恢复期工具缓存；独立 Worker 入口留到 M8。
+- [x] Worker 迁移 M1–M7：控制面/执行面、持久队列/租约/事件/恢复、usage/预算/分层容量，以及 L1 Search、L2 Fetch/Parse、L3 Evidence 持久语义缓存均已落地。全量 **251 passed、1 条 PG 集成默认跳过**；显式真实 PG 测试另有 1 passed。下一步 M8 是独立 Worker 入口与 2+ Worker 杀进程接管验收。
 
 ### G2：searcher 零良率空转熔断
 
@@ -54,7 +54,7 @@
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
 - [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
-- [~] ③ 恢复期重复调用治理：图 checkpoint 是 at-least-once 恢复语义，外部工具可在“已成功、未提交下一断点”窗口被重放，因此会重付搜索、HTTP 抓取和 LLM 抽取费用。已完成 `AgentExecutionScope` 与统一工具生命周期事件；下一步按 [恢复期工具缓存方案](docs/恢复期工具缓存方案.md) 实现 PostgreSQL `ToolCache` 及 L1 规范化 query TTL 缓存、L2 URL 抓取/解析缓存、L3 `content_hash + research_direction + extractor/model/schema version` Evidence 抽取复用。`run_id/task_id/tool_call_id/operation_id` 只用于观测，不冒充语义幂等键。
+- [x] ③ 恢复期重复调用治理：PostgreSQL `ToolCache` 已覆盖 L1 规范化 query TTL、L2 canonical URL + parser/fetch version、L3 `content_hash + research_direction + extractor/model/schema/chunking version`。命中后仍产生当前 run/task 事件与 Evidence ID；失败、取消和部分 chunk 失败不写正向缓存。详见 [恢复期工具缓存方案](docs/恢复期工具缓存方案.md)。
 - [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
 - [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
 
