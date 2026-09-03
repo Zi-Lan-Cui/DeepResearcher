@@ -20,6 +20,8 @@ def _clean_env(monkeypatch, tmp_path):
         "SERVICE_MAX_GLOBAL_QUEUED_RUNS",
         "SERVICE_WORKER_LEASE_SECONDS",
         "SERVICE_WORKER_HEARTBEAT_SECONDS",
+        "SERVICE_WORKER_POLL_SECONDS",
+        "SERVICE_API_EMBEDDED_WORKER",
         "SERVICE_PORT",
         "APP_ENV",
     ):
@@ -49,6 +51,8 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert config.max_global_queued_runs == 100
     assert config.worker_lease_seconds == 60
     assert config.worker_heartbeat_seconds == 20
+    assert config.worker_poll_seconds == 1.0
+    assert config.api_embedded_worker is False
     assert config.port == 8080
     assert config.jsonl_events is True
 
@@ -66,9 +70,13 @@ def test_env_overrides_are_clamped(_clean_env, monkeypatch):
     monkeypatch.setenv("SERVICE_JWT_SECRET", _long_secret())
     monkeypatch.setenv("SERVICE_TOKEN_TTL_HOURS", "0")  # 非法 → 夹到最小 1
     monkeypatch.setenv("SERVICE_MAX_CONCURRENT_RUNS_PER_USER", "not-a-number")  # 回落默认
+    monkeypatch.setenv("SERVICE_WORKER_POLL_SECONDS", "0")
+    monkeypatch.setenv("SERVICE_API_EMBEDDED_WORKER", "true")
     config = get_service_config()
     assert config.token_ttl_hours == 1
     assert config.max_concurrent_runs_per_user == 2
+    assert config.worker_poll_seconds == 0.05
+    assert config.api_embedded_worker is True
 
 
 def test_explicit_config_usable_without_env(_clean_env):

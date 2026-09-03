@@ -395,6 +395,34 @@ async def test_two_queue_instances_claim_a_run_only_once(manager):
     assert winners[0].attempt == 1
 
 
+async def test_worker_polling_claims_run_created_by_another_process(manager):
+    """Independent Worker does not rely on the API process calling wake()."""
+    manager._worker._poll_seconds = 0.01  # noqa: SLF001 - polling seam
+    graph = FakeGraph(result=_completed_result(), emit_events=1)
+    manager.holder["graph"] = graph
+    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    run_id = await service.create(USER_ID, "external admission")
+
+    await manager.start_worker()
+    async with asyncio.timeout(2):
+        while (await _row(manager, run_id)).status != "completed":
+            await asyncio.sleep(0.01)
+    await _settle(manager, run_id)
+
+    assert len(graph.ainvoke_inputs) == 1
+    async with manager.session_factory() as session:
+        event_types = list(
+            (
+                await session.scalars(
+                    select(RunEvent.event_type)
+                    .where(RunEvent.run_id == run_id)
+                    .order_by(RunEvent.seq)
+                )
+            ).all()
+        )
+    assert "engine_0" in event_types
+
+
 async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
     service = RunService(session_factory=manager.session_factory, config=manager._config)
     run_id = await service.create(USER_ID, "owner CAS")

@@ -2,9 +2,10 @@
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from deepsearch_agent.observability.tracing.context import new_id
 from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
@@ -28,7 +29,8 @@ pytestmark = [
 async def test_two_postgres_claimers_cannot_own_the_same_run():
     database_url = get_service_config().database_url
     assert database_url.startswith("postgresql")
-    await migrate_database(database_url)
+    # API 与多 Worker 可同时起进程；迁移必须跨进程排队。
+    await asyncio.gather(migrate_database(database_url), migrate_database(database_url))
     engine = make_engine(database_url)
     factory = make_session_factory(engine)
     run_id = new_id("run-pg-test")
@@ -80,6 +82,46 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
         assert await PostgresRunQueue(factory).release(
             winners[0], status="interrupted", terminal_reason="integration_test"
         )
+        takeover_run_id = new_id("run-pg-takeover")
+        async with factory() as session:
+            session.add(
+                Run(
+                    id=takeover_run_id,
+                    user_id=user_id,
+                    query="worker crash takeover",
+                    status="queued",
+                )
+            )
+            await session.commit()
+        takeover_queue = PostgresRunQueue(factory)
+        abandoned = await takeover_queue.claim(worker_id="dead-worker", lease_seconds=60)
+        assert abandoned is not None
+        async with factory() as session:
+            await session.execute(
+                update(Run)
+                .where(Run.id == takeover_run_id)
+                .values(lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+            )
+            await session.commit()
+        expired = await takeover_queue.reap_expired()
+        assert [work.run_id for work in expired] == [takeover_run_id]
+        takeover = await PostgresRunQueue(factory).claim(
+            worker_id="replacement-worker",
+            lease_seconds=60,
+            preferred=RunWork(
+                run_id=takeover_run_id,
+                user_id=user_id,
+                query="worker crash takeover",
+                resume=True,
+            ),
+        )
+        assert takeover is not None
+        assert takeover.lease_owner == "replacement-worker"
+        assert takeover.attempt == 2
+        assert await takeover_queue.release(
+            takeover, status="interrupted", terminal_reason="integration_test"
+        )
+
         second_run_id = new_id("run-pg-slot-a")
         third_run_id = new_id("run-pg-slot-b")
         async with factory() as session:

@@ -132,6 +132,37 @@ async def test_run_lifecycle_detail_and_list(client):
     ).status_code == 422
 
 
+async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
+    def forbidden_graph_factory(**_kwargs):
+        raise AssertionError("control-plane API must not build or execute a graph")
+
+    app = create_app(
+        service_settings(tmp_path),
+        service_config(tmp_path, api_embedded_worker=False),
+        graph_factory=forbidden_graph_factory,
+    )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://svc") as isolated:
+            token = await register(isolated, "control@test.dev")
+            created = await isolated.post(
+                "/api/runs", json={"query": "queued for worker"}, headers=_auth(token)
+            )
+            assert created.status_code == 202
+            await asyncio.sleep(0.1)
+            detail = await isolated.get(
+                f"/api/runs/{created.json()['run_id']}", headers=_auth(token)
+            )
+            assert detail.json()["status"] == "queued"
+            assert app.state.manager.worker_id is None
+            cancelled = await isolated.post(
+                f"/api/runs/{created.json()['run_id']}/cancel", headers=_auth(token)
+            )
+            assert cancelled.json()["status"] == "cancelled"
+            frames = await read_sse(isolated, token, created.json()["run_id"])
+            assert [event for event, _data in frames][-1] == "done"
+
+
 async def test_cross_user_access_always_404(client):
     alice = await register(client, "alice@test.dev")
     bob = await register(client, "bob@test.dev")

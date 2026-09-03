@@ -33,6 +33,7 @@ def service_config(tmp_path, **overrides) -> ServiceConfig:
         service_log_dir=tmp_path,
         jsonl_events=False,
         max_concurrent_runs_per_user=2,
+        api_embedded_worker=True,
     )
     base.update(overrides)
     return ServiceConfig(**base)
