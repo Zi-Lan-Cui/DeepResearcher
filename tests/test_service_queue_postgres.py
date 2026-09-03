@@ -9,10 +9,12 @@ from sqlalchemy import delete
 from deepsearch_agent.observability.tracing.context import new_id
 from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
 from deepsearch_agent.service.event_store import RunEventStore
-from deepsearch_agent.service.models import Run, User
+from deepsearch_agent.service.models import Run, ToolCacheEntry, User
 from deepsearch_agent.service.notifier import EventNotifier
 from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
 from deepsearch_agent.service.settings import get_service_config
+from deepsearch_agent.service.tool_cache import PostgresToolCache
+from deepsearch_agent.tools.cache import CacheValue
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -30,6 +32,7 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
     engine = make_engine(database_url)
     factory = make_session_factory(engine)
     run_id = new_id("run-pg-test")
+    cache_key = new_id("cache-pg-test")
     email = f"{run_id}@test.invalid"
     try:
         async with factory() as session:
@@ -102,8 +105,39 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
             ),
         )
         assert sum(claim is not None for claim in slot_claims) == 1
+
+        cache_calls = 0
+
+        async def compute_cache_value():
+            nonlocal cache_calls
+            cache_calls += 1
+            return CacheValue(value={"source": "postgres"})
+
+        first_cache = await PostgresToolCache(factory).get_or_compute(
+            "test",
+            cache_key,
+            ttl_seconds=60,
+            schema_version="v1",
+            compute=compute_cache_value,
+        )
+        second_cache = await PostgresToolCache(factory).get_or_compute(
+            "test",
+            cache_key,
+            ttl_seconds=60,
+            schema_version="v1",
+            compute=compute_cache_value,
+        )
+        assert first_cache.hit is False and second_cache.hit is True
+        assert second_cache.value == {"source": "postgres"}
+        assert cache_calls == 1
     finally:
         async with factory() as session:
+            await session.execute(
+                delete(ToolCacheEntry).where(
+                    ToolCacheEntry.namespace == "test",
+                    ToolCacheEntry.cache_key == cache_key,
+                )
+            )
             await session.execute(delete(User).where(User.email == email))
             await session.commit()
         await engine.dispose()
