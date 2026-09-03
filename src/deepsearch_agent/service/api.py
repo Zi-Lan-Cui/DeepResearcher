@@ -163,13 +163,15 @@ def create_app(
             checkpointer=checkpointer,
             event_notifier=event_notifier,
             tool_cache=tool_cache,
+            enable_worker=cfg.api_embedded_worker,
         )
-        killed, resumable = await manager.reconcile_startup()
-        if killed:
-            app.state.service_logger.info("reconciled_stale_runs count=%d", killed)
-        resumed = await manager.resume_runs(resumable)
-        if resumed:
-            app.state.service_logger.info("resuming_orphan_runs count=%d", resumed)
+        if cfg.api_embedded_worker:
+            killed, resumable = await manager.reconcile_startup()
+            if killed:
+                app.state.service_logger.info("reconciled_stale_runs count=%d", killed)
+            resumed = await manager.resume_runs(resumable)
+            if resumed:
+                app.state.service_logger.info("resuming_orphan_runs count=%d", resumed)
 
         app.state.config = cfg
         app.state.settings = engine_settings

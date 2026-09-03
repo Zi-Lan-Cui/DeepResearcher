@@ -38,6 +38,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(_env(name, str(default)))
+    except ValueError:
+        return default
+
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = _env(name, "true" if default else "false").lower()
     if raw in {"1", "true", "yes"}:
@@ -57,6 +64,8 @@ class ServiceConfig:
     max_global_queued_runs: int = 100
     worker_lease_seconds: int = 60
     worker_heartbeat_seconds: int = 20
+    worker_poll_seconds: float = 1.0
+    api_embedded_worker: bool = False
     host: str = "127.0.0.1"
     port: int = 8080
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
@@ -94,6 +103,8 @@ def get_service_config() -> ServiceConfig:
         max_global_queued_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_QUEUED_RUNS", 100)),
         worker_lease_seconds=max(10, _int_env("SERVICE_WORKER_LEASE_SECONDS", 60)),
         worker_heartbeat_seconds=max(1, _int_env("SERVICE_WORKER_HEARTBEAT_SECONDS", 20)),
+        worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 1.0)),
+        api_embedded_worker=_bool_env("SERVICE_API_EMBEDDED_WORKER", False),
         host=_env("SERVICE_HOST", "127.0.0.1"),
         port=_int_env("SERVICE_PORT", 8080),
         service_log_dir=Path(_env("SERVICE_LOG_DIR", str(_PROJECT_ROOT / "var" / "service"))),
