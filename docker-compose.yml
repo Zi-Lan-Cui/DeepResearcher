@@ -1,5 +1,5 @@
-# P0 服务只依赖 Postgres；应用本体用 uv run python server.py 直接起。
-# 将来拆 worker / 多副本时，这个文件是编排的生长点。
+# API 与独立 Worker 共享 Postgres；本文件暂只编排基础设施。
+# 本机分别运行 server.py 和 python -m deepsearch_agent.worker。
 services:
   postgres:
     image: postgres:16

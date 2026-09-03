@@ -300,13 +300,36 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 
 **边界**：当前 single-flight 是每进程的；多 Worker 同时遇到一个全新键时，可能各执行一次外部调用，但最终 upsert 为同一成功值。这不影响恢复后的持久命中；若实测证明冷键惊群成本显著，再增加 PostgreSQL advisory lock 或 Redis 分布式 single-flight。
 
-### M8：独立 Worker 与 Redis 可选升级
+### M8：独立 Worker 与 Redis 可选升级（已完成）
 
 **原因**：在共享事实完成外移后，进程拆分才是启动方式变化，而不是业务重写。
 
 **工作**：增加 Worker CLI、关闭 API embedded worker、运行 2+ Worker。只在 PG 轮询/通知、热缓存或集群限流成为实测瓶颈时，将对应协议后端替换为 Redis。
 
 **验收**：多 Worker 无重复执行；任意 Worker 被 kill 后 Run 可接管；API 滚动发布不中断长任务。
+
+**实施结果**：
+
+- `python -m deepsearch_agent.worker` 是独立执行面入口；Worker 自己持有 Graph、checkpointer、HTTP client、tool cache、event notifier 和 DB 连接，并在退出时统一收敛。
+- API 默认 `SERVICE_API_EMBEDDED_WORKER=false`，只负责受理、取消意图、澄清恢复、查询与 SSE；本地单进程兼容可显式改为 `true`。
+- Worker 增加独立队列 poll loop（`SERVICE_WORKER_POLL_SECONDS`），新 Run 不再依赖受理它的 API 进程调用 `wake()`。PostgreSQL `FOR UPDATE SKIP LOCKED` + owner/attempt CAS 保证同一 Run 只有一个有效执行者。
+- 执行面在 claim 后自行打开本地 `FanoutSink`；事件先持久化，再用 PostgreSQL NOTIFY 唤醒任意 API 的 DB tail，不共享进程内队列。
+- 多 Worker 启动时以 PostgreSQL advisory lock 串行化一次性恢复分诊；API/Worker 并发启动时的 Alembic upgrade 也有独立 advisory lock，避免重复 DDL。
+- SIGTERM/SIGINT 是优雅停机：当前 claim 立即释放为 `interrupted`。强制 kill 则由 lease 过期后接管；有 checkpoint 时续跑，无 checkpoint 时明确失败，不从头重做副作用。
+- 回归测试用两个独立 Worker runtime 证明一个 Run 只构建/执行一次 Graph，并在任务运行中销毁、重建 API 后仍正常交付。
+
+**运行方式**：
+
+```bash
+# 控制面
+SERVICE_API_EMBEDDED_WORKER=false uv run python server.py
+
+# 执行面（可在不同进程/容器/主机重复启动）
+uv run python -m deepsearch_agent.worker
+uv run python -m deepsearch_agent.worker
+```
+
+Redis 未引入：当前 PostgreSQL 已承担权威队列、lease、事件通知和语义缓存。只有当压测证明 DB polling、冷键惊群或跨 Worker 供应商限流成为瓶颈时，才按现有窄协议逐项替换，不把 Redis 变成第二个事实源。
 
 ## 12. 测试与发布策略
 

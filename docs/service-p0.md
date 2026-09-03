@@ -32,7 +32,14 @@ docker compose up -d postgres
 uv run python server.py        # 默认 http://127.0.0.1:8080
 ```
 
-浏览器打开 `http://127.0.0.1:8080/` 注册即用；CLI `main.py` 不受影响。
+默认分进程启动（共用同一 PostgreSQL）：
+
+```bash
+SERVICE_API_EMBEDDED_WORKER=false uv run python server.py
+uv run python -m deepsearch_agent.worker   # 可启动多份
+```
+
+浏览器打开 `http://127.0.0.1:8080/` 注册即用。本地临时单进程模式可设 `SERVICE_API_EMBEDDED_WORKER=true`；CLI `main.py` 不受影响。
 
 ## curl 冒烟
 
@@ -50,7 +57,7 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 ## 语义速查
 
 - 状态机：`queued → running → completed|failed|cancelled`；服务正常停机将活跃 run 记为非终态 `interrupted`（不写 `run_done`）。重启时**分诊** `queued|running|interrupted`：有 checkpoint 的孤儿 run 复活续跑（SSE 播 `resuming`，seq 从库中 max 续号，真机 kill -9 验收通过），无 checkpoint 的才判 `server_restart` 并补写终帧。
-- **进程边界**：Run claim、取消意图、resume payload、事件 seq、SSE DB tail、usage/预算、全局 Run 槽和三层工具缓存已持久化或由 PostgreSQL 协调。token 级预览仍是进程内可丢失旁路，LLM RPM/TPM、search/fetch 容量和同键 single-flight 是每 Worker 限制；正式水平扩容仅剩 M8 独立 Worker 入口与多 Worker 验收。
+- **进程边界**：API 默认不执行 Graph，独立 Worker 自主轮询持久队列。Run claim、取消意图、resume payload、事件 seq、SSE DB tail、usage/预算、全局 Run 槽和三层工具缓存由 PostgreSQL 协调。token 级预览仍是 Worker 本地可丢失旁路，LLM RPM/TPM、search/fetch 容量和同键 single-flight 是每 Worker 限制。
 - 越权与不存在同为 404；登录两错同为 401 文案。
 - 事件流：`done` 帧恒最后且已落库（RunEvent），断线/刷新自动回放续接，seq 客户端去重。
 - 配额：`SERVICE_MAX_CONCURRENT_RUNS_PER_USER`（活跃 queued+running 数，超限 429）。
@@ -62,7 +69,7 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 |---|---|
 | 服务端 token 吊销 / sessions 表 | 有真实安全需求或加"退出所有设备"时 |
 | ~~checkpointer~~ **已接入（1/4 步）** | 状态快照已在 PG `checkpoints*` 表（thread_id=run_id，SQLite 部署自动跳过）；resume 驱动（reconcile 续跑+seq 续号）在 TODO P0②，做完才真正"杀而不死" |
-| Redis（跨进程事件/配额）与任务队列 | web 与 worker 拆开或多机部署那天 |
+| Redis（跨进程热缓存/限流） | PG 轮询、冷键惊群或跨 Worker 限流成为实测瓶颈时 |
 | 登录限流、HTTPS/反代 | 对外部署前补；成本计量和 Alembic 已完成 |
 | SSRF 守卫（fetcher 拦私网/元数据地址） | **任何公网托管前的一票否决项** |
 
@@ -70,5 +77,5 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 
 ```bash
 make check   # ruff + ruff format --check + pyright + pytest + coverage(≥70%)
-# 无 Docker 过渡（非推荐形态）：SERVICE_DATABASE_URL=sqlite+aiosqlite:///var/service/dev.db
+# 无 Docker 过渡（仅支持单进程）：SERVICE_DATABASE_URL=sqlite+aiosqlite:///var/service/dev.db
 ```

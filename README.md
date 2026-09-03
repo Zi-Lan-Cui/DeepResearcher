@@ -53,6 +53,16 @@ UV_CACHE_DIR=/tmp/deepsearch-agent-uv-cache uv sync
 
 Python 版本由 `.python-version` 固定为 3.13；`pyproject.toml` 声明兼容 Python 3.12 及以上。
 
+多用户服务默认将 API 与执行面分开：
+
+```bash
+docker compose up -d postgres
+SERVICE_API_EMBEDDED_WORKER=false uv run python server.py
+uv run python -m deepsearch_agent.worker
+```
+
+可启动多个 Worker，它们通过 PostgreSQL claim/lease 共享队列且不重复执行。本地单进程调试可设 `SERVICE_API_EMBEDDED_WORKER=true`。
+
 运行回归测试和静态检查：
 
 ```bash
