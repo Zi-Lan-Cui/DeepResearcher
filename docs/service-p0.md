@@ -77,5 +77,16 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 
 ```bash
 make check   # ruff + ruff format --check + pyright + pytest + coverage(≥70%)
+make verify-m8  # 真实多进程 + PostgreSQL，但不调用 LLM/搜索/抓取
 # 无 Docker 过渡（仅支持单进程）：SERVICE_DATABASE_URL=sqlite+aiosqlite:///var/service/dev.db
 ```
+
+`verify-m8` 会在随机本地端口启动真实 Uvicorn API 和两个 Worker 子进程，但 Worker 使用测试专用的 checkpointed Graph。默认验证：
+
+- 100 个同时 SSE 连接和 100 个列表/详情请求；
+- 1、2、4、8 并发 Run 都只进入一个 Worker；
+- 运行中销毁并重建 API，Run 仍由 Worker 继续持有；
+- 对 lease owner 发 `SIGKILL`，第二个 Worker 在 lease 过期后以 `attempt=2` 从 checkpoint 接管；
+- Run 最终 completed，event seq 无洞，`run_done` 恰好一次。
+
+失败时脚本保留 `/tmp/deepsearch-m8-*` 中的子进程日志；成功时自动清理。这只验证服务调度容量，不代表真实 LLM/provider 吞吐；付费链路压测仍需显式单独运行。

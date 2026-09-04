@@ -317,6 +317,7 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 - 多 Worker 启动时以 PostgreSQL advisory lock 串行化一次性恢复分诊；API/Worker 并发启动时的 Alembic upgrade 也有独立 advisory lock，避免重复 DDL。
 - SIGTERM/SIGINT 是优雅停机：当前 claim 立即释放为 `interrupted`。强制 kill 则由 lease 过期后接管；有 checkpoint 时续跑，无 checkpoint 时明确失败，不从头重做副作用。
 - 回归测试用两个独立 Worker runtime 证明一个 Run 只构建/执行一次 Graph，并在任务运行中销毁、重建 API 后仍正常交付。
+- `scripts/verify_m8_processes.py` 进一步使用真实 OS 子进程和 PostgreSQL 自动完成 `SIGKILL` 故障注入、checkpoint 接管、API 滚动重启、100 SSE、100 HTTP 与 1/2/4/8 并发波次。默认可控 Graph 不调用任何付费 provider。
 
 **运行方式**：
 

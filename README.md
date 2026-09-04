@@ -63,6 +63,14 @@ uv run python -m deepsearch_agent.worker
 
 可启动多个 Worker，它们通过 PostgreSQL claim/lease 共享队列且不重复执行。本地单进程调试可设 `SERVICE_API_EMBEDDED_WORKER=true`。
 
+无 LLM 费用的多进程故障/容量回归（需本机 PostgreSQL）：
+
+```bash
+make verify-m8
+```
+
+该脚本自动启动 API 和两个 Worker，验证 100 SSE、100 HTTP 请求、1/2/4/8 并发 Run、API 滚动重启与 Worker `SIGKILL` 接管，并只清理本次生成的测试用户、Run 和 checkpoint。
+
 运行回归测试和静态检查：
 
 ```bash

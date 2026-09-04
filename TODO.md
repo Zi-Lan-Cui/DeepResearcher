@@ -41,6 +41,7 @@
 - [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时后，model/tool wrapper、Writer 完整链路及全量 **226 条**测试通过。
 - [x] 浏览器冒烟：10/15/20 条自适应分页、箭头/圆点换页、390px 窄屏无横向溢出、Clarifier 三选项 `等待回答 → 进行中`、服务重启后 `恢复续跑中` + 阶段回放 + `resuming` 事件，四条路径均已真机验证。
 - [x] Worker 迁移 M1–M8：API 默认为纯控制面，`python -m deepsearch_agent.worker` 独立消费持久队列；多 Worker 原子 claim、lease 接管、恢复分诊选主、API 滚动重启回归均已落地。
+- [x] M8 多进程故障/容量验收脚本：真实 Uvicorn + 2 Worker + PostgreSQL，自动覆盖 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换、owner `SIGKILL` 后 `attempt=2` 接管与 `run_done` 唯一性；可控 Graph 零 LLM/provider 费用。
 
 ### G2：searcher 零良率空转熔断
 
