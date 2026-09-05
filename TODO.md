@@ -12,9 +12,9 @@
 
 下一阶段只保留三个真正影响交付质量的方向：
 
-1. **先收运行成本与空转**：searcher 零良率熔断、搜索/抓取副作用幂等缓存。
+1. **先收空转**：searcher 零良率熔断与候选池压力反馈；恢复期搜索/抓取/Evidence 缓存已完成。
 2. **再做公网安全**：SSRF、接口限流、token 吊销和部署边界。
-3. **最后做体验增强**：解释流、工具活动呈现、历史筛选等均为非阻塞优化。
+3. **最后做运维与体验增强**：集成 CI、数据保留、解释流、工具活动呈现和历史筛选。
 
 ## 当前基线（已完成）
 
@@ -26,7 +26,7 @@
 - [x] HTTP 韧性：`Retry-After` 感知退避 + 全抖动、provider 断路器、每供应商并发闸（`SEARCH_MAX_CONCURRENT_REQUESTS`）。
 - [x] 服务化 P0：FastAPI + PostgreSQL（users/runs/run_events，SQLAlchemy async，NullPool/pragma 适配）+ 手写 SSE + 单文件前端；注册/登录（argon2 + HS256 JWT 12h）、每用户并发配额（429）、越权统一 404。
 - [x] 事件链路：FanoutSink（seq 单点分配、pending backlog 补订阅、溢出丢旧+截断标记、ephemeral 旁路）+ CompositeSink + projector 默认拒绝白名单；断线/刷新从 RunEvent 回放，`run_done` 恒为收尾（孤儿 run 启动时补合成 done）。
-- [x] 流式预览：官方 `astream(stream_mode=["values","messages"], subgraphs=True)` 在 RunManager 消费（嵌套 Pregel 的 token 经 ns 深度 1 归 supervisor 思考通道；ToolMessage 回执、tool_call 参数、非白名单通道全部隔离）；前端斜体预览 + 聚合帧"更长者胜"替换，永不出现打字完截短。
+- [x] 流式预览：官方 `astream(stream_mode=["values","messages"], subgraphs=True)` 由 `RunExecutor` 消费（嵌套 Pregel 的 token 经 ns 深度 1 归 supervisor 思考通道；ToolMessage 回执、tool_call 参数、非白名单通道全部隔离）；前端斜体预览 + 聚合帧"更长者胜"替换，永不出现打字完截短。
 - [x] UI：阶段块（Router/Clarify/Supervisor/Writer/Reviewer/Render 事件驱动出现，绿呼吸点→灰/红收束）+ 方向卡（编号、滚动动作行、▸ 展开明细、状态配色）+ 全局时间线 + stats 指标条 + 论文式上标角标与来源面板互跳 + Clarifier 三选项/Other + 历史列表响应式宽度与 10/15/20 条自适应分页。
 - [x] 语义修正：`completed ≠ 成功`（部分报告琥珀徽章）；reflection 对内容审查/坏 JSON 定向重试（`AGENT_REFLECTION_RETRY_ATTEMPTS`）；引用条数硬上限移除（曾制造两起 writer 死循环，聚焦交由提示词+审阅把关）。
 - [x] writer 工具契约单一数字（读窗口 50 / 每轮交付 30 / 无引用上限），机制描述归工具、角色边界归系统提示词。
@@ -38,7 +38,7 @@
 
 ### 当前版本封板
 
-- [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时后，model/tool wrapper、Writer 完整链路及全量 **226 条**测试通过。
+- [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时，当前全量基线为 **264 passed / 3 infrastructure-gated skipped**。
 - [x] 浏览器冒烟：10/15/20 条自适应分页、箭头/圆点换页、390px 窄屏无横向溢出、Clarifier 三选项 `等待回答 → 进行中`、服务重启后 `恢复续跑中` + 阶段回放 + `resuming` 事件，四条路径均已真机验证。
 - [x] Worker 迁移 M1–M8：API 默认为纯控制面，`python -m deepsearch_agent.worker` 独立消费持久队列；多 Worker 原子 claim、lease 接管、恢复分诊选主、API 滚动重启回归均已落地。
 - [x] M8 多进程故障/容量验收脚本：真实 Uvicorn + 2 Worker + PostgreSQL，自动覆盖 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换、owner `SIGKILL` 后 `attempt=2` 接管与 `run_done` 唯一性；可控 Graph 零 LLM/provider 费用。
@@ -54,7 +54,7 @@
 ### 降级与恢复（四步走，进度 3/4）
 
 - [x] ① checkpointer 基建（`e83dc4c`）：`build_graph(checkpointer=…)` + `thread_id=run_id`；服务 lifespan 挂 AsyncPostgresSaver（DSN 由业务 URL 派生，SQLite 自动跳过）；真机验证 quick run 落 9 行 checkpoint。
-- [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
+- [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + PostgreSQL `Run.event_seq` 原子续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
 - [x] ③ 恢复期重复调用治理：PostgreSQL `ToolCache` 已覆盖 L1 规范化 query TTL、L2 canonical URL + parser/fetch version、L3 `content_hash + research_direction + extractor/model/schema/chunking version`。命中后仍产生当前 run/task 事件与 Evidence ID；失败、取消和部分 chunk 失败不写正向缓存。详见 [恢复期工具缓存方案](docs/恢复期工具缓存方案.md)。
 - [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
 - [x] 产品入口收口为 Web：删除绕过持久 Run、用量、恢复和安全边界的 `main.py` CLI；人工 eval 与未来评测器统一通过 HTTP API 执行。
@@ -71,7 +71,11 @@
 - [x] 按稳定职责将平铺的 `service/` 收纳为 `web/`、`runs/`、`execution/`、`events/`、`persistence/`；项目内导入已全部迁往唯一新路径，旧的纯 re-export 文件已删除。
 - [x] 消除 PostgreSQL advisory lock 魔法数字：迁移、claim 容量、Worker 恢复和 API 准入 key 统一由 `service/coordination.py` 导出，并有稳定性回归。
 - [x] 保持依赖方向 `web/control plane -> execution engine -> agents/tools`；纯 Usage ContextVar/预算异常已从 SQLAlchemy 服务存储中拆出，AST 架构测试阻止 Agent/LLM/Graph/Tool 反向导入 service。
-- [x] 结构迁移批次均运行针对性回归，收尾全量 257 passed / 2 PostgreSQL-only skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。
+- [x] 删除迁移期执行面代理：`RunManager` 不再持有 WorkerCoordinator、RunExecutor、RunWorker 或 tasks，embedded 模式由 lifespan 显式组装两个平面，仅注入 wake/cancel 窄回调。
+- [x] 结构迁移批次均运行针对性回归，当前全量 264 passed / 3 infrastructure-gated skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。
+- [ ] 定义有类型的 `ApiRuntime`，将分散的 `app.state.*` 收口为单一 lifespan 资源对象，减少 Web 层 `Any` 传播。
+- [ ] 按责任拆分 `service/usage.py`：capacity/rate limiter 归 execution，UsageStore 归 persistence，LangChain callback 归 observability/integration。
+- [ ] 将单文件 `frontend/index.html` 拆为 HTML + CSS + 原生 JS modules（api/state/sse/history/report），不在此批次顺带引入前端框架。
 
 ### 接口与数据
 
@@ -87,6 +91,9 @@
 - [x] LLM/搜索/抓取用量与成本归集：`run_usage` 明细 + Run 聚合，actual/estimated 显式区分，详情 API 下发 token/费用/耗时/并发数据。
 - [x] Alembic：`0001_initial`–`0004_run_usage`，应用启动自动 upgrade；旧库采纳与真实 PostgreSQL 迁移已验证。
 - [ ] HTTPS/反代（Caddy 或 Nginx）与真实部署形态决策（BYO key 与否）。
+- [ ] 健康检查：分离 `/health/live` 与 `/health/ready`；PostgreSQL/迁移影响 readiness，可丢失的 Redis 预览不作为业务就绪的硬条件。
+- [ ] 制定 `run_events` / `run_usage` / tool cache / checkpoints / JSONL 的 TTL、分批清理、索引维护、备份与恢复演练策略。
+- [ ] 生产密钥与连接边界：JWT secret 托管、PostgreSQL/Redis 私网或 TLS、按 API/Worker 总实例数核算连接池。
 - [x] 进程边界机制化：同库可运行多 API/多 Worker，DB 分配 event seq，PostgreSQL NOTIFY 只做唤醒而非事实源。
 
 ### 引擎一致性
@@ -109,7 +116,8 @@
 - [ ] 跨 Run 语义检索与研究档案复用（先等短期上下文/checkpointer 落地）。
 - [ ] 人工修订 Evidence/报告 + 版本审计；多项目/团队共享与权限隔离。
 - [ ] eval/dataset.json 执行器与真实 LLM smoke 集；badcase 回归基线。
-- [ ] CI（lint→typecheck→unit→integration）；HTML/PDF/DOCX 解析 fixture 扩充。
+- [x] 基础 CI：GitHub Actions 已执行 locked sync、Ruff lint/format、Pyright、pytest 和 coverage。
+- [ ] 集成 CI：增加真实 PostgreSQL/Redis service job 与 M8 多进程回归；HTML/PDF/DOCX 解析 fixture 继续扩充。
 - [ ] 对象存储（PDF 导出、快照）与备份/隐私策略。
 
 ## 已知决策记录（避免反复）

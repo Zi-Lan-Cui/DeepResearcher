@@ -14,6 +14,7 @@ ENGINE_ROOTS = (
     Path("src/deepsearch_agent/tools"),
 )
 SERVICE_PREFIX = "deepsearch_agent.service"
+EXECUTION_PREFIX = "deepsearch_agent.service.execution"
 
 
 def test_agent_engine_does_not_import_service_delivery_layer():
@@ -34,6 +35,27 @@ def test_agent_engine_does_not_import_service_delivery_layer():
                             violations.append(f"{path}:{node.lineno} imports {alias.name}")
 
     assert violations == [], "engine must not depend on service delivery modules:\n" + "\n".join(
+        violations
+    )
+
+
+def test_run_control_plane_does_not_import_execution_plane():
+    violations: list[str] = []
+    for path in Path("src/deepsearch_agent/service/runs").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module == EXECUTION_PREFIX or module.startswith(f"{EXECUTION_PREFIX}."):
+                    violations.append(f"{path}:{node.lineno} imports {module}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == EXECUTION_PREFIX or alias.name.startswith(
+                        f"{EXECUTION_PREFIX}."
+                    ):
+                        violations.append(f"{path}:{node.lineno} imports {alias.name}")
+
+    assert violations == [], "run control plane must not import execution modules:\n" + "\n".join(
         violations
     )
 
