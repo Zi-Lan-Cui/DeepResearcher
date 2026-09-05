@@ -13,7 +13,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, St
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # 运行状态取值。P0 用普通 str 而非枚举/CHECK 约束，便于增删而不触发 ALTER；
-# 合法取值集合在 service/runs.py 里由 RunManager 单点维护。
+# 该常量是 ORM 层的单一合法集合，控制面与执行面共用同一词汇。
 RUN_STATUSES = (
     "queued",
     "running",

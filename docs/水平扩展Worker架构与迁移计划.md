@@ -1,19 +1,21 @@
 # DeepSearch 水平扩展 Worker 架构与迁移计划
 
+> 状态：M1–M8 已完成。当前默认是 API 与 Worker 分进程，Web/API 是唯一产品入口；文中“迁移前/迁移初期”保留为决策历史。
+
 ## 1. 目标与非目标
 
-目标是将当前“FastAPI 进程受理 Run，同一进程内 `asyncio.create_task()` 执行 LangGraph”的形态，逐步演进为 API 与多个 Worker 可独立伸缩的形态。迁移期间必须保持：
+本计划记录如何将“FastAPI 进程受理 Run，同一进程内 `asyncio.create_task()` 执行 LangGraph”的早期形态，演进为 API 与多个 Worker 可独立伸缩的形态。迁移期间必须保持：
 
 - Router → Clarifier → Supervisor/Researcher → Writer/Reflection 的图逻辑不改。
 - `thread_id=run_id` 与 PostgreSQL Checkpointer 的恢复语义不改。
 - API、SSE、取消、澄清恢复和历史报告在每个迁移步骤都可用。
-- 单进程部署始终是可用的默认形态，不为尚未需要的分布式运维付出成本。
+- 迁移期保留单进程 embedded 回退开关；完成后默认使用 API/Worker 分进程形态。
 
 非目标：本迁移不重写 Agent，不将 LangGraph State 放入 Redis，不立即引入 Celery/Kubernetes，不追求 exactly-once。底层队列和 checkpoint 均采用 at-least-once，通过租约、状态 CAS 和工具语义缓存实现可安全重放。
 
-## 2. 为什么现状无法直接增加 Worker
+## 2. 为什么迁移前无法直接增加 Worker
 
-当前 `RunManager` 同时是受理服务、调度器、执行器、事件排水器和停机管理器。其中以下数据只存在当前 Python 进程：
+迁移前 `RunManager` 同时是受理服务、调度器、执行器、事件排水器和停机管理器。其中以下数据只存在当前 Python 进程：
 
 - `_tasks`：Run 到 `asyncio.Task` 的映射。
 - `_persisted/_done_published/_shutdown_interrupts`：终态、done 和停机竞态防护。
@@ -41,7 +43,8 @@ API instances
              │    ├─ run_events + usage
              │    └─ LangGraph checkpoints
              │
-             └─ EventNotifier (local → PG NOTIFY/Redis)
+             ├─ EventNotifier (local → PG NOTIFY)
+             └─ Redis Pub/Sub (ephemeral text_delta only)
                          │
 Worker instances          │
    ├─ RunScheduler/RunQueue.claim()
@@ -62,9 +65,9 @@ Worker instances          │
 
 只执行一个已领取 Run：装配 Graph、调用 `astream`、发布预览、处理 interrupt、保存终态/部分报告、排水事件。它不检查用户队列配额，不决定下一个 Run。
 
-### EmbeddedWorker 与独立 Worker
+### Embedded 模式与独立 Worker
 
-迁移初期在 API lifespan 内启动 EmbeddedWorker，对外仍是单进程。当所有共享状态完成外移后，只新增 Worker 启动入口并关闭 API 内的 embedded 模式，Graph 代码不改。
+迁移初期在 API lifespan 内启动 `RunWorker`，对外仍是单进程。当所有共享状态完成外移后，新增 Worker 进程入口并将 API embedded 模式改为显式回退开关，Graph 代码不改。
 
 ## 4. Run 状态机与队列语义
 
@@ -163,10 +166,10 @@ TOOL_CACHE_FETCH_TTL_SECONDS=86400
 TOOL_CACHE_EVIDENCE_TTL_SECONDS=604800
 ```
 
-单进程模式由 API lifespan 创建 RunService 与 EmbeddedWorker。独立模式提供两个入口：
+单进程模式由 API lifespan 创建 RunManager 与 WorkerCoordinator。默认独立模式提供两个进程入口：
 
 ```text
-python -m deepsearch_agent.service.api_server
+python server.py
 python -m deepsearch_agent.worker
 ```
 
@@ -203,7 +206,7 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 **实施结果**：
 
 - `RunService` 只负责配额判断并持久化 queued Run，不接触 Graph 或 `asyncio.Task`。
-- `PostgresRunQueue` 以数据库中的 queued 行作为待办事实；`EmbeddedWorker` 按 `SERVICE_MAX_GLOBAL_RUNNING_RUNS` 填充执行槽。
+- `PostgresRunQueue` 以数据库中的 queued 行作为待办事实；embedded `RunWorker` 按 `SERVICE_MAX_GLOBAL_RUNNING_RUNS` 填充执行槽。
 - `SERVICE_MAX_GLOBAL_QUEUED_RUNS` 限制全局积压，`SERVICE_MAX_CONCURRENT_RUNS_PER_USER` 限制单用户未完成 Run；运行槽已满本身不再返回 429。
 - queued Run 的取消先持久化用户意图，再处理可能已创建但尚未启动的协程，避免取消竞态遗留活跃状态。
 - 启动恢复保留 queued 行并重新派发；服务停机仍将实际占槽任务登记为 interrupted。
@@ -290,7 +293,7 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 **实施结果**：
 
 - Alembic `0005_tool_cache` 新增 `tool_cache_entries`，以 `namespace + cache_key` 为联合主键，持久 JSON 结果、content hash、schema version、TTL、最后访问时间和命中数。
-- `ToolCache` 是工具层仅依赖的窄协议；服务使用 `PostgresToolCache`，CLI/测试可使用 `NoOpToolCache`。数据库读写失败时 fail-open 直连，不改变研究正确性。
+- `ToolCache` 是工具层仅依赖的窄协议；服务使用 `PostgresToolCache`，测试/直接库调用可使用 `NoOpToolCache`。数据库读写失败时 fail-open 直连，不改变研究正确性。
 - L1 使用 NFKC/空白/casefold 规范化查询，键包含 provider、effective limit 和 search version；保留进程内 L0 热缓存。
 - L2 使用去 fragment、host 小写的 canonical URL，键包含 fetch policy/parser version；只缓存公开、完整成功的抓取+解析结果，带 URL 凭证的请求直接 bypass。
 - L3 缓存与 run/task 无关的 chunk 抽取候选；键包含 content hash、研究方向、prompt/schema/model/chunking 版本、输入配额和来源类型。命中后仍执行 quote 确定性校验，并按当前 task 重新生成 Evidence ID。
@@ -304,7 +307,7 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 
 **原因**：在共享事实完成外移后，进程拆分才是启动方式变化，而不是业务重写。
 
-**工作**：增加 Worker CLI、关闭 API embedded worker、运行 2+ Worker。只在 PG 轮询/通知、热缓存或集群限流成为实测瓶颈时，将对应协议后端替换为 Redis。
+**工作**：增加 Worker 进程入口、默认关闭 API embedded worker、运行 2+ Worker。只在 PG 轮询/通知、热缓存或集群限流成为实测瓶颈时，将对应协议后端替换为 Redis。
 
 **验收**：多 Worker 无重复执行；任意 Worker 被 kill 后 Run 可接管；API 滚动发布不中断长任务。
 

@@ -5,7 +5,7 @@
 绝不整包转发 payload；``error``/``*_preview``/``prompt`` 等敏感键在代码层面
 就没有进入路径。
 
-SSE 帧词汇表（与前端、RunManager 合成事件共用）。呈现原则：管线每个阶段是
+SSE 帧词汇表（与前端、服务层合成事件共用）。呈现原则：管线每个阶段是
 一个阶段块（出现即开始、完成即灰化），阶段自己的判断文本进该块；方向卡是
 Supervisor 块的子项。
 
@@ -17,7 +17,7 @@ Supervisor 块的子项。
 - ``task_open``   开一张方向卡 {task, title}
 - ``task_update`` 方向卡滚动一条动作 {task, text}
 - ``task_done``   方向卡收束 {task, status, summary}
-- ``status``      运行状态变化（RunManager 合成）
+- ``status``      运行状态变化（服务层合成）
 - ``error``       需要用户知道的异常提示（仅安全文案）
 - ``done``        终态 {status, answer_mode, report_available}
 
@@ -159,7 +159,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             },
         )
     if event_type == "text_delta":
-        # 生产者是 RunManager 对官方 astream(subgraphs=True) messages 的 ns 路由；
+        # 生产者是 RunExecutor 对官方 astream(subgraphs=True) messages 的 ns 路由；
         # 这里仍做第二道闸：只放行 supervisor。writer 正文走工具参数、
         # reflection 是结构化调用——两者只应看到最终聚合结果。
         channel = _text(payload.get("channel"), 24)
@@ -172,7 +172,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             "error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"}
         )
 
-    # ---- RunManager 合成事件 ----
+    # ---- 服务层合成事件 ----
     if event_type == "run_status":
         status = _text(payload.get("status"), 32)
         return _frame("status", seq, {"status": status}) if status else None

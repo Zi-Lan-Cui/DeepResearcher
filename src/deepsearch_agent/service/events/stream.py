@@ -54,7 +54,7 @@ class FanoutSink:
     def close(self, run_id: str) -> None:
         """终止该 run 的分发：迟到事件丢弃，订阅者收到 CLOSE_STREAM 哨兵。
 
-        未取走的 pending 一并丢弃——RunManager 的收尾顺序是 take_pending
+        未取走的 pending 一并丢弃——RunExecutor 的收尾顺序是 take_pending
         （最后一次 flush）→ close，正常路径不会走到丢数据。
         """
         with self._lock:

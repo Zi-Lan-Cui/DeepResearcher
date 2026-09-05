@@ -51,7 +51,7 @@ def _configure_sqlite(engine: AsyncEngine) -> None:
     """逐连接会话层前置条件，让测试库具备生产 asyncpg 的并发语义：
 
     - foreign_keys：SQLite 默认关闭，不开则 ON DELETE CASCADE 静默失效；
-    - busy_timeout：读一写一并发时（RunManager 后台 flush vs 请求事务）默认
+    - busy_timeout：读一写一并发时（RunExecutor 后台 flush vs 请求事务）默认
       立刻抛 database is locked，5s 等待等价于 PG 的行锁排队；
     - journal_mode=WAL：读写不互斥（仅文件库有效，:memory: 无副作用）。
     """
