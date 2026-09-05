@@ -61,6 +61,18 @@
 
 ## P1：服务深化
 
+### Service 职责与包结构收敛
+
+> 先以当前调用链为基线补齐职责边界，再移动文件；不为了“看起来分层”而只做路径重命名。
+
+- [ ] 拆分 `RunManager` 的控制面与执行面职责：API 进程只保留 Run 创建/取消/恢复命令、持久事件发布和 checkpoint 可恢复性查询；Worker 进程持有 `RunExecutor`、LLM gates、HTTP client 与 Graph 组装。
+- [ ] 收口多 API 实例的准入竞态：将 `RunService.create()` 当前的进程内 `_admission_lock` + count/insert 改为 PostgreSQL 事务级互斥/原子准入，使用户并发配额和全局队列上限在 API 水平扩展后仍然准确。
+- [ ] 将 `api.py` 拆为组装根、请求/响应 schema、鉴权依赖和按领域划分的 routes；`create_app()` 只负责 lifespan 与路由注册。
+- [ ] 按稳定职责将平铺的 `service/` 逐步收纳为 `web/`、`runs/`、`execution/`、`events/`、`persistence/`；先增加兼容导入并分批迁移，最后删除旧路径。
+- [ ] 消除 PostgreSQL advisory lock 魔法数字：将 `731904620/621/622` 集中定义为带用途的常量（数据库迁移、Run claim 容量、Worker 启动恢复），由统一协调模块导出，并为 key 稳定性加回归测试。
+- [ ] 保持依赖方向 `web/control plane -> execution engine -> agents/tools`；Agent/Graph 不得反向导入 FastAPI、SQLAlchemy 或 SSE 投影层。
+- [ ] 每一批结构迁移后运行全量回归与 M8 真实多进程验收，重点保护 DB claim/lease CAS、SSE 断线回放、Clarifier resume、API 滚动替换和 Worker 接管语义。
+
 ### 接口与数据
 
 - [ ] detail API 返回渲染期有序引用（`ordered_citations` 含 `[来源N]` label），前端弃 markdown 反解析；报告头元信息（轮次/来源/Evidence）以字段下发。
@@ -86,6 +98,7 @@
 
 ## P2：不阻塞交付
 
+- [ ] **Clarifier 恢复状态对齐**：用户提交回答后按 resume API 返回的真实 `queued` 显示“排队中/等待恢复”，仅在 Worker claim 后收到 `running` 状态事件时切换为“进行中”，取消前端当前的乐观 `setStatus("running")`。
 - [ ] **Router/Clarifier 解释流优化**：接入 `get_stream_writer()` + `stream_mode="custom"`；Router 在结构化校验完成后发送安全化 `reason`，Clarifier 开放正常文字预览，并在工具调用前解释判断依据。后端发送完整可信文本，逐字动画由前端完成，不用 `sleep()` 制造分片。
 - [ ] **Clarifier 工具呈现优化**：`AskClarification` 的问题与三个选项保持原子渲染；`ClarificationComplete` 只提交最终结构化判断；增加“工具调用前说明理由”的守卫与空解释降级文案。
 - [ ] **Supervisor 工具可视化**：为 `ResearchComplete`、`ResearchReady`、`ReadWorkingSet`、`ForgetEvidence` 补安全领域事件；区分永久阶段结论与低权重临时动作，不向前端暴露 Evidence ID、原始参数或异常详情。
