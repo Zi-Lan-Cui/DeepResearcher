@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from deepsearch_agent.service.models import Run
+from deepsearch_agent.service.persistence.models import Run
 
 
 def run_summary(run: Run) -> dict[str, Any]:

@@ -14,7 +14,7 @@ from sqlalchemy import func, select, text
 
 from deepsearch_agent.observability.tracing.context import new_id
 from deepsearch_agent.service.coordination import RUN_ADMISSION_LOCK_ID
-from deepsearch_agent.service.models import Run
+from deepsearch_agent.service.persistence.models import Run
 from deepsearch_agent.service.settings import ServiceConfig
 
 

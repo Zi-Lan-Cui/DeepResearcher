@@ -13,7 +13,7 @@ from deepsearch_agent.service.auth import (
     password_policy_ok,
     verify_password,
 )
-from deepsearch_agent.service.models import User
+from deepsearch_agent.service.persistence.models import User
 from deepsearch_agent.service.web.dependencies import app_state, current_user
 from deepsearch_agent.service.web.schemas import LoginBody, RegisterBody
 

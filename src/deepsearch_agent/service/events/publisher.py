@@ -8,7 +8,7 @@ from typing import Any
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
-from deepsearch_agent.service.models import Run
+from deepsearch_agent.service.persistence.models import Run
 
 logger = get_logger("deepsearch_agent.service.event_publisher")
 
