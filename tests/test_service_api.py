@@ -310,6 +310,11 @@ async def test_static_frontend_served(client):
     response = await client.get("/")
     assert response.status_code == 200
     assert "DeepSearch" in response.text
+    assert 'id="report-copy"' in response.text
+    assert 'id="report-download"' in response.text
+    assert "html2pdf.bundle.min.js" in response.text
+    assert "reportExportText()" in response.text
+    assert '.from($("report-card"))' in response.text
 
 
 async def test_concurrent_register_same_email_single_winner(client):

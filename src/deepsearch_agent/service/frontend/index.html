@@ -6,6 +6,8 @@
 <title>DeepSearch · 深度研究</title>
 <!-- marked 仅用于报告渲染；CDN 不可达时回退 <pre> 原文显示，功能不中断。 -->
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js" onerror="window.__marked_failed=1"></script>
+<!-- PDF 在浏览器端生成：不将报告正文和参考来源再发给第三方服务。 -->
+<script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js" onerror="window.__html2pdf_failed=1"></script>
 <style>
   :root { --fg:#1c1e21; --mut:#68707a; --bd:#e3e6ea; --ac:#2563eb; --bg:#f7f8fa; }
   * { box-sizing: border-box; }
@@ -122,6 +124,9 @@
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--bd); }
   td.q { max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .report { background:#fff; }
+  .report-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .report-actions { display:flex; align-items:center; gap:8px; }
+  .report-actions button { padding:6px 12px; font-size:13px; }
   .report .md { line-height:1.8; }
   .report-meta { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 4px; }
   .report-meta span { font-size:12.5px; padding:3px 10px; border-radius:99px;
@@ -146,6 +151,9 @@
     .run-counts { display:none; }
     .run-time { width:58px; }
     .runs-pager { gap:8px; }
+    .report-head { align-items:flex-start; }
+    .report-actions { gap:6px; }
+    .report-actions button { padding:5px 9px; }
   }
   .hide { display:none !important; }
 </style>
@@ -227,7 +235,13 @@
       </div>
     </div>
     <div class="card report hide" id="report-card">
-      <b>研究报告</b>
+      <div class="report-head">
+        <b>研究报告</b>
+        <span id="report-actions" class="report-actions hide" data-html2canvas-ignore="true">
+          <button id="report-copy" class="secondary" type="button">复制</button>
+          <button id="report-download" class="secondary" type="button">下载 PDF</button>
+        </span>
+      </div>
       <div id="report-meta" class="report-meta hide"></div>
       <div id="report" class="md"></div>
       <hr />
@@ -761,6 +775,7 @@ function renderReport(md, fallbackCitations, detail) {
   const stripped = stripReportHead(md);
   const [bodyMd, refMd] = splitReport(stripped);
   renderReportMeta(detail);
+  $("report-actions").classList.toggle("hide", !(detail && detail.report_markdown));
   const reportEl = $("report");
   if (window.marked && !window.__marked_failed) {
     // 论文式角标：[来源N] → <sup>[N]</sup> 可点击上标（marked 透传内联 HTML；
@@ -779,6 +794,7 @@ function renderReport(md, fallbackCitations, detail) {
   sourcesEl.innerHTML = "";
   const items = refMd ? parseReferences(refMd) : [];
   if (!items.length) {
+    $("sources-title").classList.toggle("hide", !fallbackCitations.length);
     for (const c of fallbackCitations) {          // 兜底：老数据无表格式时列原始引用
       const p = document.createElement("p");
       p.textContent = c.title + " — ";
@@ -788,7 +804,6 @@ function renderReport(md, fallbackCitations, detail) {
       if (c.quote) { const q = document.createElement("i"); q.textContent = "「" + c.quote + "」"; p.appendChild(document.createElement("br")); p.appendChild(q); }
       sourcesEl.appendChild(p);
     }
-    if (!fallbackCitations.length) $("sources-title").classList.add("hide");
     return;
   }
   $("sources-title").classList.remove("hide");
@@ -812,6 +827,90 @@ function renderReport(md, fallbackCitations, detail) {
     sourcesEl.appendChild(div);
   }
 }
+
+function reportExportText() {
+  const parts = ["研究报告"];
+  const body = $("report").innerText.trim();
+  const sources = $("sources").innerText.trim();
+  if (body) parts.push(body);
+  if (sources && !$("sources-title").classList.contains("hide")) {
+    parts.push("参考来源\n\n" + sources);
+  }
+  return parts.join("\n\n");
+}
+
+async function writeClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand("copy");
+  area.remove();
+  if (!copied) throw new Error("浏览器拒绝了剪贴板访问。");
+}
+
+function reportPdfFilename() {
+  const query = ($("run-query").textContent || "研究报告")
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .slice(0, 48);
+  return (query || "研究报告") + ".pdf";
+}
+
+async function showActionResult(button, pendingText, successText, action) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = pendingText;
+  try {
+    await action();
+    button.textContent = successText;
+  } catch (error) {
+    progressLine(error && error.message ? error.message : "操作失败，请稍后重试。", true);
+    button.textContent = "重试";
+  } finally {
+    window.setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1500);
+  }
+}
+
+$("report-copy").onclick = () => showActionResult(
+  $("report-copy"),
+  "复制中…",
+  "已复制",
+  () => writeClipboard(reportExportText()),
+);
+
+$("report-download").onclick = () => showActionResult(
+  $("report-download"),
+  "生成中…",
+  "已下载",
+  async () => {
+    if (!window.html2pdf || window.__html2pdf_failed) {
+      throw new Error("PDF 组件加载失败，请检查网络后刷新页面。");
+    }
+    await window.html2pdf()
+      .set({
+        margin: [12, 12, 14, 12],
+        filename: reportPdfFilename(),
+        image: { type: "jpeg", quality: 0.96 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        pagebreak: { mode: ["css", "legacy"], avoid: [".src-item", "blockquote", "pre"] },
+      })
+      .from($("report-card"))
+      .save();
+  },
+);
 
 async function consumeStream(runId) {
   // EventSource 无法携带 Authorization 头 → 用 fetch 流式解析 SSE（~20 行）。
