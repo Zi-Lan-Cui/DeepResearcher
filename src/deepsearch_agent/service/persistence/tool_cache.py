@@ -17,7 +17,7 @@ from deepsearch_agent.observability.usage_runtime import record_cache_event
 from deepsearch_agent.service.persistence.models import ToolCacheEntry
 from deepsearch_agent.tools.cache import CacheResult, CacheValue
 
-logger = logging.getLogger("deepsearch_agent.service.tool_cache")
+logger = logging.getLogger("deepsearch_agent.service.persistence.tool_cache")
 
 
 def _utcnow() -> datetime:

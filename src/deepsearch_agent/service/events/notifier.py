@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 _CHANNEL = "deepsearch_run_events"
-logger = logging.getLogger("deepsearch_agent.service.notifier")
+logger = logging.getLogger("deepsearch_agent.service.events.notifier")
 
 
 class EventNotifier:

@@ -39,11 +39,11 @@ def test_agent_engine_does_not_import_service_delivery_layer():
 
 
 def test_execution_runtime_can_be_imported_before_run_manager():
-    """Package compatibility exports must not create an import-order cycle."""
+    """Canonical package modules must remain safe in either import order."""
 
     code = (
         "from deepsearch_agent.service.execution.runtime import worker_lifespan; "
-        "from deepsearch_agent.service.runs import RunManager; "
+        "from deepsearch_agent.service.runs.manager import RunManager; "
         "assert worker_lifespan and RunManager"
     )
     subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603

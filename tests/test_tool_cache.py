@@ -9,9 +9,9 @@ from sqlalchemy import func, select, update
 from deepsearch_agent.config import LLMConfig, SearchConfig
 from deepsearch_agent.evidence.extractor import EvidenceExtractor
 from deepsearch_agent.evidence.models import EvidenceExtraction, ExtractedEvidence
-from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.models import Run, RunUsage, ToolCacheEntry, User
-from deepsearch_agent.service.tool_cache import PostgresToolCache
+from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
+from deepsearch_agent.service.persistence.models import Run, RunUsage, ToolCacheEntry, User
+from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
 from deepsearch_agent.service.usage import (
     UsageRuntime,
     UsageStore,

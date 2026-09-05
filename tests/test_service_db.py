@@ -5,8 +5,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.models import Run, RunEvent, User
+from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
+from deepsearch_agent.service.persistence.models import Run, RunEvent, User
 
 pytestmark = pytest.mark.asyncio
 

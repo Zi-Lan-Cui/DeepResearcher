@@ -17,7 +17,7 @@ from sqlalchemy import update
 from deepsearch_agent.config import Settings
 from deepsearch_agent.observability import JsonlSink
 from deepsearch_agent.orchestration.graph import build_graph
-from deepsearch_agent.service.event_publisher import RunEventPublisher
+from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import CompositeSink, FanoutSink
 from deepsearch_agent.service.persistence.models import Run
@@ -35,7 +35,7 @@ from deepsearch_agent.service.usage import (
 )
 from deepsearch_agent.tools.cache import ToolCache
 
-logger = logging.getLogger("deepsearch_agent.service.executor")
+logger = logging.getLogger("deepsearch_agent.service.execution.executor")
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 _FLUSH_INTERVAL_SECONDS = 2.0
