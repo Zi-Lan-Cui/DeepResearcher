@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 ENGINE_ROOTS = (
@@ -34,3 +36,14 @@ def test_agent_engine_does_not_import_service_delivery_layer():
     assert violations == [], "engine must not depend on service delivery modules:\n" + "\n".join(
         violations
     )
+
+
+def test_execution_runtime_can_be_imported_before_run_manager():
+    """Package compatibility exports must not create an import-order cycle."""
+
+    code = (
+        "from deepsearch_agent.service.execution.runtime import worker_lifespan; "
+        "from deepsearch_agent.service.runs import RunManager; "
+        "assert worker_lifespan and RunManager"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603

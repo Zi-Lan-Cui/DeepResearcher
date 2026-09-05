@@ -21,6 +21,14 @@ async def _wait_status(client, token, run_id, expected):
             await asyncio.sleep(0.01)
 
 
+async def _wait_graph_count(graphs, expected):
+    # Claim commits ``running`` immediately before graph construction; observe
+    # the second condition rather than assuming both actions are atomic.
+    async with asyncio.timeout(3):
+        while len(graphs) != expected:
+            await asyncio.sleep(0.01)
+
+
 async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path):
     """Exercise the M8 process boundaries against one shared durable database."""
     settings = service_settings(tmp_path)
@@ -61,6 +69,7 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
                     )
                     run_id = created.json()["run_id"]
                     await _wait_status(first_client, token, run_id, {"running"})
+                    await _wait_graph_count(built_graphs, 1)
                     assert len(built_graphs) == 1
 
             # First API is now gone while the independently owned graph remains live.
