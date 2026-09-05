@@ -13,8 +13,8 @@ from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from deepsearch_agent.observability.usage_runtime import record_cache_event
 from deepsearch_agent.service.persistence.models import ToolCacheEntry
-from deepsearch_agent.service.usage import record_cache_event
 from deepsearch_agent.tools.cache import CacheResult, CacheValue
 
 logger = logging.getLogger("deepsearch_agent.service.tool_cache")

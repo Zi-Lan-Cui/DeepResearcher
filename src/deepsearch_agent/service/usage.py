@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from contextvars import ContextVar, Token
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from time import monotonic
@@ -18,9 +16,34 @@ from sqlalchemy import case, func, select, update
 
 from deepsearch_agent.config import LLMConfig
 from deepsearch_agent.observability.tracing.context import new_id
+from deepsearch_agent.observability.usage_runtime import (
+    UsageBudgetExceeded,
+    UsageRuntime,
+    bind_usage_runtime,
+    current_usage_runtime,
+    enforce_usage_budget,
+    record_cache_event,
+    record_external_request,
+    reset_usage_runtime,
+)
 from deepsearch_agent.service.persistence.models import Run, RunUsage
 
 logger = logging.getLogger("deepsearch_agent.service.usage")
+
+__all__ = [
+    "CapacityGate",
+    "ProviderRateLimiter",
+    "RunUsageCallback",
+    "UsageBudgetExceeded",
+    "UsageRuntime",
+    "UsageStore",
+    "bind_usage_runtime",
+    "current_usage_runtime",
+    "enforce_usage_budget",
+    "record_cache_event",
+    "record_external_request",
+    "reset_usage_runtime",
+]
 
 
 class CapacityGate:
@@ -87,39 +110,6 @@ class ProviderRateLimiter:
                     deadlines.append(self._tokens[0][0] + self._window_seconds)
                 delay = max(0.01, min(deadlines) - now) if deadlines else 0.01
             await asyncio.sleep(delay)
-
-
-@dataclass(frozen=True)
-class UsageRuntime:
-    run_id: str
-    store: "UsageStore"
-    config: LLMConfig
-
-
-class UsageBudgetExceeded(RuntimeError):
-    """本次运行已达配置的 LLM 用量上限。"""
-
-
-_runtime: ContextVar[UsageRuntime | None] = ContextVar("deepsearch_usage_runtime", default=None)
-
-
-def bind_usage_runtime(runtime: UsageRuntime) -> Token:
-    return _runtime.set(runtime)
-
-
-def reset_usage_runtime(token: Token) -> None:
-    _runtime.reset(token)
-
-
-def current_usage_runtime() -> UsageRuntime | None:
-    return _runtime.get()
-
-
-async def enforce_usage_budget() -> None:
-    """检查当前 run 的用量预算；非服务执行上下文中自动跳过。"""
-    runtime = current_usage_runtime()
-    if runtime is not None:
-        await runtime.store.enforce_budget(runtime.run_id, runtime.config)
 
 
 class UsageStore:
@@ -378,43 +368,6 @@ class RunUsageCallback(AsyncCallbackHandler):
             )
         except Exception:  # noqa: BLE001 - 计量故障不能破坏研究交付
             logger.warning("usage_record_failed run_id=%s", self._run_id, exc_info=True)
-
-
-async def record_external_request(
-    *, category: str, status: str, duration_ms: int, detail: dict[str, Any] | None = None
-) -> None:
-    runtime = current_usage_runtime()
-    if runtime is None:
-        return
-    try:
-        await runtime.store.record(
-            run_id=runtime.run_id,
-            category=category,
-            component=category,
-            status=status,
-            duration_ms=duration_ms,
-            detail=detail,
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("external_usage_record_failed run_id=%s", runtime.run_id, exc_info=True)
-
-
-async def record_cache_event(
-    *, namespace: str, status: str, detail: dict[str, Any] | None = None
-) -> None:
-    runtime = current_usage_runtime()
-    if runtime is None:
-        return
-    try:
-        await runtime.store.record(
-            run_id=runtime.run_id,
-            category="cache",
-            component=namespace,
-            status=status,
-            detail=detail,
-        )
-    except Exception:  # noqa: BLE001 - 缓存计量不改变工具语义
-        logger.warning("cache_usage_record_failed run_id=%s", runtime.run_id, exc_info=True)
 
 
 def _response_usage(response: Any) -> tuple[int, int, int, bool]:

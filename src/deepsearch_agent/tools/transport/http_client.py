@@ -13,7 +13,7 @@ from curl_cffi.requests.exceptions import RequestException, Timeout
 from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI
 
 from deepsearch_agent.config import SearchConfig
-from deepsearch_agent.service.usage import record_external_request
+from deepsearch_agent.observability.usage_runtime import record_external_request
 from deepsearch_agent.tools.errors import ToolRequestError
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
