@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.service.usage import enforce_usage_budget
+from deepsearch_agent.observability.usage_runtime import enforce_usage_budget
 
 _LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 LIMIT_MESSAGE_MARKER = _LIMIT_MESSAGE_MARKER

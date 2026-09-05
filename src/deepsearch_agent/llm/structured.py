@@ -12,7 +12,7 @@ from pydantic import BaseModel, ValidationError
 from deepsearch_agent.config import LLMRetryConfig
 from deepsearch_agent.llm.errors import LLMConfigurationError
 from deepsearch_agent.llm.retry import with_transport_retry
-from deepsearch_agent.service.usage import enforce_usage_budget
+from deepsearch_agent.observability.usage_runtime import enforce_usage_budget
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 STRUCTURED_ERRORS = (OutputParserException, ValidationError, ValueError)

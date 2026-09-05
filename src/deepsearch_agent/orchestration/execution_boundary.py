@@ -13,10 +13,10 @@ from typing import Any, cast
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
 from deepsearch_agent.observability.events.models import make_node_event
+from deepsearch_agent.observability.usage_runtime import UsageBudgetExceeded
 from deepsearch_agent.reporting import render_error_report, render_incomplete_report
 from deepsearch_agent.routing import NodeName
 from deepsearch_agent.schemas import RunError, RunLifecycle
-from deepsearch_agent.service.usage import UsageBudgetExceeded
 from deepsearch_agent.state import ResearchState, restore_state_models, validate_state_invariants
 
 
