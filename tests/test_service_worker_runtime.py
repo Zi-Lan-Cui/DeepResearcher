@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from deepsearch_agent.service.api import create_app
-from deepsearch_agent.service.worker_runtime import worker_lifespan
+from deepsearch_agent.service.execution.runtime import worker_lifespan
 from fakes_service import FakeGraph, service_config, service_settings
 
 pytestmark = pytest.mark.asyncio

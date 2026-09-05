@@ -14,8 +14,8 @@ from sqlalchemy import select, update
 
 from deepsearch_agent.config import Settings
 from deepsearch_agent.orchestration.graph import build_graph
-from deepsearch_agent.service.event_publisher import RunEventPublisher
 from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.execution.coordinator import WorkerCoordinator

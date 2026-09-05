@@ -16,14 +16,14 @@ from deepsearch_agent.config import (
     SearchConfig,
     Settings,
 )
-from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.event_store import RunEventStore
-from deepsearch_agent.service.events import CLOSE_STREAM as CLOSE_STREAM_FLAG
-from deepsearch_agent.service.events import FanoutSink
-from deepsearch_agent.service.models import Run, RunEvent, User
-from deepsearch_agent.service.queue import PostgresRunQueue
-from deepsearch_agent.service.run_service import RunService
-from deepsearch_agent.service.runs import QuotaExceededError, RunManager
+from deepsearch_agent.service.events.store import RunEventStore
+from deepsearch_agent.service.events.stream import CLOSE_STREAM as CLOSE_STREAM_FLAG
+from deepsearch_agent.service.events.stream import FanoutSink
+from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
+from deepsearch_agent.service.persistence.models import Run, RunEvent, User
+from deepsearch_agent.service.runs.manager import RunManager
+from deepsearch_agent.service.runs.queue import PostgresRunQueue
+from deepsearch_agent.service.runs.service import QuotaExceededError, RunService
 from deepsearch_agent.service.settings import ServiceConfig
 
 pytestmark = pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def manager(tmp_path):
     await init_db(engine)
     session_factory = make_session_factory(engine)
     async with session_factory() as session:
-        from deepsearch_agent.service.models import User
+        from deepsearch_agent.service.persistence.models import User
 
         session.add(User(id=USER_ID, email="u@test", password_hash="h"))
         await session.commit()

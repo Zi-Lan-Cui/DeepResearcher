@@ -68,7 +68,7 @@
 - [x] 拆分 `RunManager` 的控制面与执行面职责：API 进程只保留 Run 创建/取消/恢复命令、持久事件发布和 checkpoint 可恢复性查询；Worker 进程持有 `RunExecutor`、LLM gates、HTTP client 与 Graph 组装。
 - [x] 收口多 API 实例的准入竞态：`RunService.create()` 在 PostgreSQL 上用事务 advisory lock 串行化 count/insert，用户配额和全局 queued 上限对多 API 实例仍是原子的。
 - [x] 将 `api.py` 拆为组装根、请求/响应 schema、鉴权依赖和按领域划分的 routes；`create_app()` 只负责 lifespan 与路由注册。
-- [~] 按稳定职责将平铺的 `service/` 收纳为 `web/`、`runs/`、`execution/`、`events/`、`persistence/`；实现已迁入，旧路径仅留兼容导入，待下一个破坏性版本删除。
+- [x] 按稳定职责将平铺的 `service/` 收纳为 `web/`、`runs/`、`execution/`、`events/`、`persistence/`；项目内导入已全部迁往唯一新路径，旧的纯 re-export 文件已删除。
 - [x] 消除 PostgreSQL advisory lock 魔法数字：迁移、claim 容量、Worker 恢复和 API 准入 key 统一由 `service/coordination.py` 导出，并有稳定性回归。
 - [x] 保持依赖方向 `web/control plane -> execution engine -> agents/tools`；纯 Usage ContextVar/预算异常已从 SQLAlchemy 服务存储中拆出，AST 架构测试阻止 Agent/LLM/Graph/Tool 反向导入 service。
 - [x] 结构迁移批次均运行针对性回归，收尾全量 257 passed / 2 PostgreSQL-only skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。

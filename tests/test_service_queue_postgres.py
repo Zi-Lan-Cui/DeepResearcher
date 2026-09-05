@@ -9,14 +9,18 @@ import pytest
 from sqlalchemy import delete, update
 
 from deepsearch_agent.observability.tracing.context import new_id
-from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
-from deepsearch_agent.service.event_store import RunEventStore
-from deepsearch_agent.service.models import Run, ToolCacheEntry, User
-from deepsearch_agent.service.notifier import EventNotifier
-from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
-from deepsearch_agent.service.run_service import QuotaExceededError, RunService
+from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.store import RunEventStore
+from deepsearch_agent.service.persistence.database import (
+    make_engine,
+    make_session_factory,
+    migrate_database,
+)
+from deepsearch_agent.service.persistence.models import Run, ToolCacheEntry, User
+from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
+from deepsearch_agent.service.runs.queue import PostgresRunQueue, RunWork
+from deepsearch_agent.service.runs.service import QuotaExceededError, RunService
 from deepsearch_agent.service.settings import get_service_config
-from deepsearch_agent.service.tool_cache import PostgresToolCache
 from deepsearch_agent.tools.cache import CacheValue
 
 pytestmark = [

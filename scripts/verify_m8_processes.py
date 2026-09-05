@@ -26,8 +26,8 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import delete, func, select, text
 
-from deepsearch_agent.service.db import make_engine, make_session_factory
-from deepsearch_agent.service.models import Run, RunEvent, User
+from deepsearch_agent.service.persistence.database import make_engine, make_session_factory
+from deepsearch_agent.service.persistence.models import Run, RunEvent, User
 from deepsearch_agent.service.settings import get_service_config
 
 ROOT = Path(__file__).resolve().parents[1]

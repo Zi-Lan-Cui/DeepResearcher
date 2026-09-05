@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import select
 
 from deepsearch_agent.config import LLMConfig
-from deepsearch_agent.service.db import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.models import Run, RunUsage, User
+from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
+from deepsearch_agent.service.persistence.models import Run, RunUsage, User
 from deepsearch_agent.service.usage import (
     CapacityGate,
     ProviderRateLimiter,

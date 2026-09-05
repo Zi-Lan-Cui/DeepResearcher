@@ -11,7 +11,7 @@ from deepsearch_agent.observability.events import (
 )
 from deepsearch_agent.observability.instrumentation import _node_result_summary
 from deepsearch_agent.observability.tracing import TraceRecorder
-from deepsearch_agent.service.projector import project
+from deepsearch_agent.service.events.projector import project
 
 
 def test_trace_records_nested_spans(tmp_path):

@@ -19,7 +19,7 @@ from deepsearch_agent.service.persistence.database import (
     migrate_database,
 )
 from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
-from deepsearch_agent.service.runs import RunManager
+from deepsearch_agent.service.runs.manager import RunManager
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
 from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient

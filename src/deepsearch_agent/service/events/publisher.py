@@ -10,7 +10,7 @@ from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.persistence.models import Run
 
-logger = get_logger("deepsearch_agent.service.event_publisher")
+logger = get_logger("deepsearch_agent.service.events.publisher")
 
 
 class RunEventPublisher:
