@@ -10,9 +10,10 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from deepsearch_agent.observability.tracing.context import new_id
+from deepsearch_agent.service.coordination import RUN_ADMISSION_LOCK_ID
 from deepsearch_agent.service.models import Run
 from deepsearch_agent.service.settings import ServiceConfig
 
@@ -32,13 +33,22 @@ class RunService:
     ) -> None:
         self._session_factory = session_factory
         self._config = config
-        # M2 单进程内封住 count+insert；M3 用 DB 约束/事务取代。
+        # SQLite 测试/单进程兼容路径由本地锁保护；PostgreSQL 在
+        # create() 事务内再取全局 advisory lock，协调多 API 进程。
         self._admission_lock = asyncio.Lock()
 
     async def create(self, user_id: int, query: str) -> str:
         query = query.strip()
         async with self._admission_lock:
             async with self._session_factory() as session:
+                bind = session.get_bind()
+                if bind.dialect.name == "postgresql":
+                    # 用户配额和全局 queued 上限都是跨行不变量。一把短事务锁
+                    # 将所有 API 副本的“计数 + INSERT”串行化，commit/rollback 自动释放。
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                        {"lock_id": RUN_ADMISSION_LOCK_ID},
+                    )
                 outstanding = await session.scalar(
                     select(func.count())
                     .select_from(Run)
