@@ -210,7 +210,3 @@ class RunWorker:
                 await self._queue.release(
                     work, status="interrupted", terminal_reason="server_shutdown"
                 )
-
-
-# Compatibility import for callers/tests from the single-process migration stages.
-EmbeddedWorker = RunWorker

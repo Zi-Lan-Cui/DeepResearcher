@@ -16,9 +16,12 @@ from deepsearch_agent.config import (
     SearchConfig,
     Settings,
 )
+from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import CLOSE_STREAM as CLOSE_STREAM_FLAG
 from deepsearch_agent.service.events.stream import FanoutSink
+from deepsearch_agent.service.execution.coordinator import WorkerCoordinator
 from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
 from deepsearch_agent.service.persistence.models import Run, RunEvent, User
 from deepsearch_agent.service.runs.manager import RunManager
@@ -119,6 +122,41 @@ def _completed_result():
     }
 
 
+class ServiceHarness:
+    """Expose control and execution planes explicitly in integration-style tests."""
+
+    def __init__(
+        self,
+        *,
+        controller,
+        execution,
+        config,
+        engine,
+        session_factory,
+        fanout,
+        holder,
+    ):
+        self.controller = controller
+        self.execution = execution
+        self.config = config
+        self.engine = engine
+        self.session_factory = session_factory
+        self.fanout = fanout
+        self.holder = holder
+
+    async def start(self, user_id, query):
+        return await self.controller.start(user_id, query)
+
+    async def cancel(self, user_id, run_id):
+        return await self.controller.cancel(user_id, run_id)
+
+    async def resume_with_input(self, user_id, run_id, answer):
+        return await self.controller.resume_with_input(user_id, run_id, answer)
+
+    async def shutdown(self):
+        await self.execution.shutdown()
+
+
 @pytest_asyncio.fixture
 async def manager(tmp_path):
     # 用文件库而非 :memory:+StaticPool：StaticPool 全共享一条连接，后台任务与
@@ -150,18 +188,46 @@ async def manager(tmp_path):
         graph._sink = event_sink
         return graph
 
-    manager = RunManager(
+    event_notifier = EventNotifier()
+    event_store = RunEventStore(
+        session_factory,
+        publish_persisted=fanout.publish_persisted,
+        notifier=event_notifier,
+    )
+    event_publisher = RunEventPublisher(
+        session_factory=session_factory,
+        fanout=fanout,
+        event_store=event_store,
+    )
+    execution = WorkerCoordinator(
         settings=_settings(tmp_path),
         session_factory=session_factory,
         config=config,
         fanout=fanout,
         http_client=SimpleNamespace(),
         graph_factory=graph_factory,
+        event_store=event_store,
+        event_publisher=event_publisher,
     )
-    manager.holder = holder  # type: ignore[attr-defined]
-    manager.engine = engine  # type: ignore[attr-defined]
-    manager.session_factory = session_factory  # type: ignore[attr-defined]
-    manager.fanout = fanout  # type: ignore[attr-defined]
+    controller = RunManager(
+        session_factory=session_factory,
+        config=config,
+        fanout=fanout,
+        event_notifier=event_notifier,
+        event_store=event_store,
+        event_publisher=event_publisher,
+        wake_worker=execution.wake,
+        cancel_worker=execution.request_cancel,
+    )
+    manager = ServiceHarness(
+        controller=controller,
+        execution=execution,
+        config=config,
+        engine=engine,
+        session_factory=session_factory,
+        fanout=fanout,
+        holder=holder,
+    )
     yield manager
     # 先收敛所有后台任务（它们的 finally 还要写库），再拆引擎，避免
     # “closed database / no such table” 竞态。
@@ -170,7 +236,7 @@ async def manager(tmp_path):
 
 
 async def _settle(manager, run_id):
-    task = manager._tasks.get(run_id)  # noqa: SLF001 - 测试观察内部收尾
+    task = manager.execution.tasks.get(run_id)
     if task is not None:
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=5)
@@ -190,7 +256,7 @@ async def _row(manager, run_id):
 
 async def test_manager_delegates_execution_without_building_graph_itself(manager):
     captured = {}
-    original_execute = manager._executor.execute  # noqa: SLF001
+    original_execute = manager.execution.executor.execute
 
     async def execute(run_id, user_id, query, **kwargs):
         captured.update(
@@ -201,7 +267,7 @@ async def test_manager_delegates_execution_without_building_graph_itself(manager
         )
         await original_execute(run_id, user_id, query, **kwargs)
 
-    manager._executor.execute = execute  # noqa: SLF001 - 验证 M1 职责接缝
+    manager.execution.executor.execute = execute
     run_id = await manager.start(USER_ID, "  委托执行  ")
     await _settle(manager, run_id)
 
@@ -230,13 +296,13 @@ async def test_running_status_is_announced_only_for_user_visible_claim(manager):
     manager.fanout.open(silent_id)
     manager.fanout.open(announced_id)
 
-    assert await manager._executor._mark_running(  # noqa: SLF001
+    assert await manager.execution.executor._mark_running(  # noqa: SLF001
         silent_id,
         announce_running=False,
     )
     assert manager.fanout.take_pending(silent_id) == []
 
-    assert await manager._executor._mark_running(  # noqa: SLF001
+    assert await manager.execution.executor._mark_running(  # noqa: SLF001
         announced_id,
         announce_running=True,
     )
@@ -302,26 +368,22 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
 
 async def test_remote_manager_cancel_is_observed_through_durable_intent(manager, tmp_path):
     gate = asyncio.Event()
-    manager._worker._heartbeat_seconds = 0.01  # noqa: SLF001 - cancellation probe seam
+    manager.execution.worker._heartbeat_seconds = 0.01  # noqa: SLF001 - cancellation probe seam
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     run_id = await manager.start(USER_ID, "remote cancel")
     while (await _row(manager, run_id)).status != "running":
         await asyncio.sleep(0.01)
 
     controller = RunManager(
-        settings=_settings(tmp_path),
         session_factory=manager.session_factory,
-        config=manager._config,
+        config=manager.config,
         fanout=FanoutSink(asyncio.get_running_loop()),
-        http_client=SimpleNamespace(),
-        graph_factory=lambda **_kwargs: FakeGraph(),
     )
     requested = await controller.cancel(USER_ID, run_id)
     assert requested.status == "running"
     assert requested.cancellation_requested_at is not None
     await _settle(manager, run_id)
     assert (await _row(manager, run_id)).status == "cancelled"
-    await controller.shutdown()
 
 
 async def test_cancel_after_completion_is_idempotent(manager):
@@ -336,7 +398,7 @@ async def test_shutdown_marks_interrupted_without_terminal_done(manager):
     gate = asyncio.Event()
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     run_id = await manager.start(USER_ID, "q")
-    while run_id not in manager._tasks or manager._tasks[run_id].done():  # noqa: SLF001
+    while run_id not in manager.execution.tasks or manager.execution.tasks[run_id].done():
         await asyncio.sleep(0.01)
 
     await manager.shutdown()
@@ -414,7 +476,7 @@ async def test_global_queue_quota_rejects_new_admission(manager):
 
 
 async def test_two_queue_instances_claim_a_run_only_once(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    service = RunService(session_factory=manager.session_factory, config=manager.config)
     run_id = await service.create(USER_ID, "atomic claim")
     first_queue = PostgresRunQueue(manager.session_factory)
     second_queue = PostgresRunQueue(manager.session_factory)
@@ -432,13 +494,13 @@ async def test_two_queue_instances_claim_a_run_only_once(manager):
 
 async def test_worker_polling_claims_run_created_by_another_process(manager):
     """Independent Worker does not rely on the API process calling wake()."""
-    manager._worker._poll_seconds = 0.01  # noqa: SLF001 - polling seam
+    manager.execution.worker._poll_seconds = 0.01  # noqa: SLF001 - polling seam
     graph = FakeGraph(result=_completed_result(), emit_events=1)
     manager.holder["graph"] = graph
-    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    service = RunService(session_factory=manager.session_factory, config=manager.config)
     run_id = await service.create(USER_ID, "external admission")
 
-    await manager.start_worker()
+    await manager.execution.start()
     async with asyncio.timeout(2):
         while (await _row(manager, run_id)).status != "completed":
             await asyncio.sleep(0.01)
@@ -459,7 +521,7 @@ async def test_worker_polling_claims_run_created_by_another_process(manager):
 
 
 async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    service = RunService(session_factory=manager.session_factory, config=manager.config)
     run_id = await service.create(USER_ID, "owner CAS")
     queue = PostgresRunQueue(manager.session_factory)
     claim = await queue.claim(worker_id="worker-a", lease_seconds=60)
@@ -468,14 +530,14 @@ async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
 
     assert await queue.renew(stale, lease_seconds=60) is False
     assert (
-        await manager._executor.persist_status(  # noqa: SLF001 - owner CAS contract
+        await manager.execution.executor.persist_status(
             run_id, status="completed", claim=stale
         )
         is False
     )
     assert (await _row(manager, run_id)).status == "running"
     assert (
-        await manager._executor.persist_status(  # noqa: SLF001 - owner CAS contract
+        await manager.execution.executor.persist_status(
             run_id, status="completed", claim=claim
         )
         is True
@@ -483,7 +545,7 @@ async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
 
 
 async def test_expired_lease_is_reaped_for_resume(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    service = RunService(session_factory=manager.session_factory, config=manager.config)
     run_id = await service.create(USER_ID, "expired")
     queue = PostgresRunQueue(manager.session_factory)
     claim = await queue.claim(worker_id="worker-a", lease_seconds=60)
@@ -502,7 +564,7 @@ async def test_expired_lease_is_reaped_for_resume(manager):
 
 
 async def test_two_event_stores_allocate_non_overlapping_sequences(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager._config)
+    service = RunService(session_factory=manager.session_factory, config=manager.config)
     run_id = await service.create(USER_ID, "event sequence")
     first_store = RunEventStore(manager.session_factory)
     second_store = RunEventStore(manager.session_factory)
@@ -526,7 +588,7 @@ async def test_two_event_stores_allocate_non_overlapping_sequences(manager):
 
 async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
     gate = asyncio.Event()
-    manager._worker._max_running = 1  # noqa: SLF001 - M2 容量接缝
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - capacity seam
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
 
     first = await manager.start(USER_ID, "q1")
@@ -535,7 +597,7 @@ async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
     while (await _row(manager, first)).status != "running":
         await asyncio.sleep(0.01)
     assert (await _row(manager, second)).status == "queued"
-    assert second not in manager._tasks  # noqa: SLF001
+    assert second not in manager.execution.tasks
 
     gate.set()
     await _settle(manager, first)
@@ -549,7 +611,7 @@ async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
 
 async def test_cancel_queued_run_never_executes_graph(manager):
     gate = asyncio.Event()
-    manager._worker._max_running = 1  # noqa: SLF001 - M2 容量接缝
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - capacity seam
     graph = FakeGraph(gate=gate, result=_completed_result())
     manager.holder["graph"] = graph
 
@@ -559,7 +621,7 @@ async def test_cancel_queued_run_never_executes_graph(manager):
 
     cancelled = await manager.cancel(USER_ID, queued)
     assert cancelled.status == "cancelled"
-    assert queued not in manager._tasks  # noqa: SLF001
+    assert queued not in manager.execution.tasks
 
     gate.set()
     await _settle(manager, first)
@@ -598,7 +660,7 @@ async def test_reconcile_startup_converts_stale_rows(manager):
             ]
         )
         await session.commit()
-    killed, resumable = await manager.reconcile_startup()
+    killed, resumable = await manager.execution.reconcile_startup()
     assert (killed, resumable) == (2, [])
     for run_id, expected in (
         ("run-stale-a", "failed"),
@@ -654,8 +716,8 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         async def publish(self, run_id, event):
             remote_previews.append((run_id, event))
 
-    manager._executor._ephemeral_bus = RecordingPreviewBus()  # noqa: SLF001
-    manager._worker._max_running = 1  # noqa: SLF001 - 订阅必须先于纯临时帧
+    manager.execution.executor._ephemeral_bus = RecordingPreviewBus()  # noqa: SLF001
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - subscription timing seam
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
         gate=gate,
@@ -712,7 +774,7 @@ class FakeSaver:
 
 async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(manager):
     gate = asyncio.Event()
-    manager._worker._max_running = 1  # noqa: SLF001 - keep resumed work queued
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - keep resumed work queued
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     active = await manager.start(USER_ID, "occupy slot")
     while (await _row(manager, active)).status != "running":
@@ -722,7 +784,7 @@ async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(man
     async with manager.session_factory() as session:
         session.add(Run(id=run_id, user_id=USER_ID, query="clarify", status="awaiting_input"))
         await session.commit()
-    manager._checkpointer = FakeSaver({run_id})  # noqa: SLF001
+    manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - injected fake saver
 
     assert await manager.resume_with_input(USER_ID, run_id, "选择第二项") == "queued"
     queued = await _row(manager, run_id)
@@ -774,29 +836,39 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         holder["graph"] = graph
         return graph
 
-    manager = RunManager(
+    config = ServiceConfig(
+        database_url="unused",
+        jwt_secret="s" * 40,
+        service_log_dir=tmp_path,
+        jsonl_events=False,
+    )
+    fanout = FanoutSink(asyncio.get_running_loop())
+    event_store = RunEventStore(factory, publish_persisted=fanout.publish_persisted)
+    event_publisher = RunEventPublisher(
+        session_factory=factory,
+        fanout=fanout,
+        event_store=event_store,
+    )
+    execution = WorkerCoordinator(
         settings=_settings(tmp_path),
         session_factory=factory,
-        config=ServiceConfig(
-            database_url="unused",
-            jwt_secret="s" * 40,
-            service_log_dir=tmp_path,
-            jsonl_events=False,
-        ),
-        fanout=FanoutSink(asyncio.get_running_loop()),
+        config=config,
+        fanout=fanout,
         http_client=SimpleNamespace(),
         graph_factory=graph_factory,
         checkpointer=FakeSaver({"run-orphan"}),
+        event_store=event_store,
+        event_publisher=event_publisher,
     )
-    killed, resumable = await manager.reconcile_startup()
+    killed, resumable = await execution.reconcile_startup()
     assert killed == 1
     assert resumable == [("run-orphan", USER_ID, "孤而可活")]
     async with factory() as session:
         assert (await session.get(Run, "run-dead")).status == "failed"
         assert (await session.get(Run, "run-orphan")).status == "interrupted"  # 未判死
 
-    assert await manager.resume_runs(resumable) == 1
-    task = manager._tasks.get("run-orphan")  # noqa: SLF001
+    assert await execution.resume_runs(resumable) == 1
+    task = execution.tasks.get("run-orphan")
     assert task is not None
     gate.set()
     await task
@@ -819,5 +891,6 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         run = await session.get(Run, "run-orphan")
     assert run.status == "completed"
     assert run.report_markdown.startswith("# 研究报告")
+    await execution.shutdown()
     await engine.dispose()
     await asyncio.sleep(0.1)
