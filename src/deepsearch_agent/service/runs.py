@@ -49,11 +49,11 @@ class RunManager:
     def __init__(
         self,
         *,
-        settings: Settings,
+        settings: Settings | None,
         session_factory: Callable[[], Any],
         config: ServiceConfig,
         fanout: FanoutSink,
-        http_client: Any,
+        http_client: Any = None,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
         event_notifier: EventNotifier | None = None,
@@ -75,33 +75,41 @@ class RunManager:
             fanout=fanout,
             event_store=self.event_store,
         )
-        self.usage_store = UsageStore(session_factory)
-        self.llm_gate = CapacityGate(settings.llm.max_concurrent_requests)
-        self.llm_rate_limiter = ProviderRateLimiter(
-            requests_per_minute=settings.llm.provider_requests_per_minute,
-            tokens_per_minute=settings.llm.provider_tokens_per_minute,
-        )
         self._run_service = RunService(session_factory=session_factory, config=config)
-        self._queue = PostgresRunQueue(
-            session_factory, max_global_running=config.max_global_running_runs
-        )
-        self._executor = RunExecutor(
-            settings=settings,
-            session_factory=session_factory,
-            config=config,
-            fanout=fanout,
-            event_store=self.event_store,
-            event_publisher=self._event_publisher,
-            usage_store=self.usage_store,
-            llm_gate=self.llm_gate,
-            llm_rate_limiter=self.llm_rate_limiter,
-            http_client=http_client,
-            graph_factory=graph_factory,
-            checkpointer=checkpointer,
-            tool_cache=tool_cache,
-        )
-        self._worker = (
-            RunWorker(
+        self.usage_store: UsageStore | None = None
+        self.llm_gate: CapacityGate | None = None
+        self.llm_rate_limiter: ProviderRateLimiter | None = None
+        self._queue: PostgresRunQueue | None = None
+        self._executor: RunExecutor | None = None
+        self._worker: RunWorker | None = None
+        if enable_worker:
+            if settings is None or http_client is None:
+                raise ValueError("Worker execution requires settings and http_client")
+            self.usage_store = UsageStore(session_factory)
+            self.llm_gate = CapacityGate(settings.llm.max_concurrent_requests)
+            self.llm_rate_limiter = ProviderRateLimiter(
+                requests_per_minute=settings.llm.provider_requests_per_minute,
+                tokens_per_minute=settings.llm.provider_tokens_per_minute,
+            )
+            self._queue = PostgresRunQueue(
+                session_factory, max_global_running=config.max_global_running_runs
+            )
+            self._executor = RunExecutor(
+                settings=settings,
+                session_factory=session_factory,
+                config=config,
+                fanout=fanout,
+                event_store=self.event_store,
+                event_publisher=self._event_publisher,
+                usage_store=self.usage_store,
+                llm_gate=self.llm_gate,
+                llm_rate_limiter=self.llm_rate_limiter,
+                http_client=http_client,
+                graph_factory=graph_factory,
+                checkpointer=checkpointer,
+                tool_cache=tool_cache,
+            )
+            self._worker = RunWorker(
                 queue=self._queue,
                 executor=self._executor,
                 max_running=config.max_global_running_runs,
@@ -110,9 +118,6 @@ class RunManager:
                 poll_seconds=config.worker_poll_seconds,
                 recover_expired=self._recover_expired,
             )
-            if enable_worker
-            else None
-        )
         # M2 兼容视图：权威运行事实已是 DB queued/running，测试与本地取消
         # 仍需观察当前 EmbeddedWorker 所持有的 asyncio.Task。
         self._tasks = self._worker.tasks if self._worker is not None else {}
@@ -186,6 +191,8 @@ class RunManager:
         """
         resumable: list[tuple[str, int, str]] = []
         killed = 0
+        if self._queue is None:
+            raise RuntimeError("startup reconciliation requires a Worker runtime")
         await self._queue.reap_expired()
         async with self._session_factory() as session:
             stale = (
@@ -247,6 +254,8 @@ class RunManager:
 
     async def _recover_expired(self, work: RunWork) -> RunWork | None:
         """Classify an expired lease without assuming a checkpoint exists."""
+        if self._executor is None:
+            raise RuntimeError("lease recovery requires a Worker executor")
         async with self._session_factory() as session:
             max_seq = await session.scalar(
                 select(func.max(RunEvent.seq)).where(RunEvent.run_id == work.run_id)
