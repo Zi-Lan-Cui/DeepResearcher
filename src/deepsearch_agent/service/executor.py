@@ -21,7 +21,7 @@ from deepsearch_agent.service.event_publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import CompositeSink, FanoutSink
 from deepsearch_agent.service.models import Run
-from deepsearch_agent.service.queue import RunWork
+from deepsearch_agent.service.runs.queue import RunWork
 from deepsearch_agent.service.settings import ServiceConfig
 from deepsearch_agent.service.usage import (
     CapacityGate,
