@@ -92,7 +92,7 @@ def build_graph(
     checkpointer 为 LangGraph BaseCheckpointSaver（如 AsyncPostgresSaver）：
     每个 superstep 结束持久化 state 通道，调用方以
     config={"configurable": {"thread_id": run_id}} 获得断点重放/续跑能力；
-    None（CLI/测试默认）行为与既往完全一致。
+    None（测试/直接库调用默认）行为与既往完全一致。
     """
     settings = settings or get_settings()
     llm = llm or build_llm(settings)
