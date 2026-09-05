@@ -155,6 +155,9 @@ async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
             )
             assert detail.json()["status"] == "queued"
             assert app.state.manager.worker_id is None
+            assert app.state.manager._executor is None  # noqa: SLF001 - process boundary contract
+            assert app.state.manager.llm_gate is None
+            assert app.state.tool_cache is None
             cancelled = await isolated.post(
                 f"/api/runs/{created.json()['run_id']}/cancel", headers=_auth(token)
             )

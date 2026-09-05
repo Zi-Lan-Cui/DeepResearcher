@@ -128,14 +128,17 @@ def create_app(
         await migrate_database(cfg.database_url)
         engine = make_engine(cfg.database_url)
         session_factory = make_session_factory(engine)
-        tool_cache = (
-            PostgresToolCache(session_factory)
-            if engine_settings.tool_cache.enabled
-            else NoOpToolCache()
-        )
-        await tool_cache.delete_expired()
-        # HttpClient 进程级一个：跨 run 共享 provider 信号量与断路器（图不会关闭外来的它）。
-        http_client = HttpClient(engine_settings.search)
+        tool_cache = None
+        http_client = None
+        if cfg.api_embedded_worker:
+            tool_cache = (
+                PostgresToolCache(session_factory)
+                if engine_settings.tool_cache.enabled
+                else NoOpToolCache()
+            )
+            await tool_cache.delete_expired()
+            # 仅单进程兼容模式由 API 持有执行面 HTTP 资源。
+            http_client = HttpClient(engine_settings.search)
         fanout = FanoutSink(asyncio.get_running_loop())
         event_notifier = EventNotifier()
         await event_notifier.start(cfg.database_url)
@@ -188,7 +191,8 @@ def create_app(
         finally:
             await manager.shutdown()
             await event_notifier.close()
-            await http_client.aclose()
+            if http_client is not None:
+                await http_client.aclose()
             if checkpoint_cm is not None:
                 await checkpoint_cm.__aexit__(None, None, None)
             await engine.dispose()
