@@ -11,7 +11,9 @@ from fastapi import FastAPI
 
 from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.service.auth import TokenCodec, make_current_user
+from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
 from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.persistence.database import (
     make_engine,
@@ -50,6 +52,15 @@ def make_lifespan(
         fanout = FanoutSink(asyncio.get_running_loop())
         event_notifier = EventNotifier()
         await event_notifier.start(cfg.database_url)
+        ephemeral_bus: EphemeralEventBus | None = None
+        # Embedded mode already shares FanoutSink with its Worker. Redis is only
+        # needed when API and execution are separate processes.
+        if cfg.redis_preview_enabled and not cfg.api_embedded_worker:
+            ephemeral_bus = await create_redis_ephemeral_bus(
+                cfg.redis_url,
+                channel_prefix=cfg.redis_channel_prefix,
+                queue_size=cfg.redis_preview_queue_size,
+            )
 
         checkpoint_cm = None
         checkpointer = None
@@ -89,6 +100,7 @@ def make_lifespan(
         app.state.manager = manager
         app.state.checkpointer = checkpointer
         app.state.tool_cache = tool_cache
+        app.state.ephemeral_bus = ephemeral_bus
         app.state.codec = TokenCodec(cfg.jwt_secret, cfg.token_ttl_hours)
         app.state.auth_dependency = make_current_user(app.state.codec, session_factory)
         try:
@@ -96,6 +108,8 @@ def make_lifespan(
         finally:
             await manager.shutdown()
             await event_notifier.close()
+            if ephemeral_bus is not None:
+                await ephemeral_bus.close()
             if http_client is not None:
                 await http_client.aclose()
             if checkpoint_cm is not None:
