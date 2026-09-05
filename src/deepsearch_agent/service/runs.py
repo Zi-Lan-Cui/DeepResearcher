@@ -24,6 +24,7 @@ from sqlalchemy import func, select, update
 
 from deepsearch_agent.config import Settings
 from deepsearch_agent.orchestration.graph import build_graph
+from deepsearch_agent.service.event_publisher import RunEventPublisher
 from deepsearch_agent.service.event_store import RunEventStore
 from deepsearch_agent.service.events import FanoutSink
 from deepsearch_agent.service.executor import RunExecutor
@@ -69,6 +70,11 @@ class RunManager:
             publish_persisted=fanout.publish_persisted,
             notifier=self.event_notifier,
         )
+        self._event_publisher = RunEventPublisher(
+            session_factory=session_factory,
+            fanout=fanout,
+            event_store=self.event_store,
+        )
         self.usage_store = UsageStore(session_factory)
         self.llm_gate = CapacityGate(settings.llm.max_concurrent_requests)
         self.llm_rate_limiter = ProviderRateLimiter(
@@ -85,6 +91,7 @@ class RunManager:
             config=config,
             fanout=fanout,
             event_store=self.event_store,
+            event_publisher=self._event_publisher,
             usage_store=self.usage_store,
             llm_gate=self.llm_gate,
             llm_rate_limiter=self.llm_rate_limiter,
@@ -124,9 +131,9 @@ class RunManager:
         query = query.strip()
         run_id = await self._run_service.create(user_id, query)
         self._fanout.open(run_id)
-        await self._executor.publish_status(run_id, "queued")
+        await self._event_publisher.publish_status(run_id, "queued")
         # queued 可能长时间等待，受理帧不能依赖 Executor 启动后的周期排水。
-        await self._executor.flush_events(run_id)
+        await self._event_publisher.flush(run_id)
         if self._worker is not None:
             await self._worker.wake()
         return run_id
@@ -155,8 +162,8 @@ class RunManager:
             # 取消请求可能落到任意 API 副本，不能假设本进程
             # 曾受理该 Run。先打开本地 sink，再持久唯一收尾帧。
             self._fanout.open(run_id)
-            await self._executor.publish_done(run_id)
-            await self._executor.flush_events(run_id)
+            await self._event_publisher.publish_done(run_id)
+            await self._event_publisher.flush(run_id)
             self._fanout.close(run_id)
         else:
             if self._worker is not None:
@@ -247,8 +254,8 @@ class RunManager:
         self._fanout.open(work.run_id)
         self._fanout.seed_seq(work.run_id, int(max_seq or 0))
         if await self._has_checkpoint(work.run_id):
-            await self._executor.publish_status(work.run_id, "resuming")
-            await self._executor.flush_events(work.run_id)
+            await self._event_publisher.publish_status(work.run_id, "resuming")
+            await self._event_publisher.flush(work.run_id)
             return RunWork(
                 run_id=work.run_id,
                 user_id=work.user_id,
@@ -261,8 +268,8 @@ class RunManager:
             terminal_reason="lease_expired_without_checkpoint",
             error_message="运行中断且没有可恢复断点，请重新发起。",
         )
-        await self._executor.publish_done(work.run_id)
-        await self._executor.flush_events(work.run_id)
+        await self._event_publisher.publish_done(work.run_id)
+        await self._event_publisher.flush(work.run_id)
         self._fanout.close(work.run_id)
         return None
 
@@ -279,8 +286,8 @@ class RunManager:
                 )
             self._fanout.open(run_id)
             self._fanout.seed_seq(run_id, int(max_seq or 0))
-            await self._executor.publish_status(run_id, "resuming")
-            await self._executor.flush_events(run_id)
+            await self._event_publisher.publish_status(run_id, "resuming")
+            await self._event_publisher.flush(run_id)
             if self._worker is not None:
                 await self._worker.submit(
                     RunWork(run_id=run_id, user_id=user_id, query=query, resume=True)
@@ -318,8 +325,8 @@ class RunManager:
             if result.rowcount != 1:
                 raise RuntimeError("already_resumed")
         self._fanout.open(run_id)
-        await self._executor.publish_status(run_id, "queued")
-        await self._executor.flush_events(run_id)
+        await self._event_publisher.publish_status(run_id, "queued")
+        await self._event_publisher.flush(run_id)
         if self._worker is not None:
             await self._worker.wake()
         async with self._session_factory() as session:

@@ -18,6 +18,7 @@ from sqlalchemy import update
 from deepsearch_agent.config import Settings
 from deepsearch_agent.observability import JsonlSink
 from deepsearch_agent.orchestration.graph import build_graph
+from deepsearch_agent.service.event_publisher import RunEventPublisher
 from deepsearch_agent.service.event_store import RunEventStore
 from deepsearch_agent.service.events import CompositeSink, FanoutSink
 from deepsearch_agent.service.models import Run
@@ -56,6 +57,7 @@ class RunExecutor:
         config: ServiceConfig,
         fanout: FanoutSink,
         event_store: RunEventStore,
+        event_publisher: RunEventPublisher | None = None,
         usage_store: UsageStore,
         llm_gate: CapacityGate,
         llm_rate_limiter: ProviderRateLimiter,
@@ -69,6 +71,11 @@ class RunExecutor:
         self._config = config
         self._fanout = fanout
         self._event_store = event_store
+        self._event_publisher = event_publisher or RunEventPublisher(
+            session_factory=session_factory,
+            fanout=fanout,
+            event_store=event_store,
+        )
         self._usage_store = usage_store
         self._llm_gate = llm_gate
         self._llm_rate_limiter = llm_rate_limiter
@@ -76,7 +83,6 @@ class RunExecutor:
         self._graph_factory = graph_factory
         self._checkpointer = checkpointer
         self._tool_cache = tool_cache
-        self._done_published: set[str] = set()
         self._shutdown_interrupts: set[str] = set()
         self._lost_leases: set[str] = set()
         self._cancellation_requests: set[str] = set()
@@ -412,37 +418,13 @@ class RunExecutor:
             return
 
     async def flush_events(self, run_id: str) -> None:
-        pending = self._fanout.take_pending(run_id)
-        if not pending:
-            return
-        try:
-            await self._event_store.append(run_id, pending)
-        except Exception:  # noqa: BLE001 - 事件排水不反噬主执行
-            logger.warning("run_event_flush_failed run_id=%s", run_id, exc_info=True)
+        await self._event_publisher.flush(run_id)
 
     async def publish_status(self, run_id: str, status: str) -> None:
-        self._fanout.write(
-            {"run_id": run_id, "event_type": "run_status", "payload": {"status": status}}
-        )
+        await self._event_publisher.publish_status(run_id, status)
 
     async def publish_done(self, run_id: str) -> None:
-        if run_id in self._done_published:
-            return
-        self._done_published.add(run_id)
-        async with self._session_factory() as session:
-            run = await session.get(Run, run_id)
-        status = run.status if run is not None else "failed"
-        self._fanout.write(
-            {
-                "run_id": run_id,
-                "event_type": "run_done",
-                "payload": {
-                    "status": status,
-                    "answer_mode": (run.answer_mode if run else None) or "",
-                    "report_available": bool(run and run.report_markdown),
-                },
-            }
-        )
+        await self._event_publisher.publish_done(run_id)
 
 
 def _field(container: Any, key: str, default: Any = None) -> Any:
