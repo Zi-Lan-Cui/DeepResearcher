@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import func, select, text, update
 
+from deepsearch_agent.service.coordination import RUN_CLAIM_CAPACITY_LOCK_ID
 from deepsearch_agent.service.models import Run
 
 
@@ -65,7 +66,10 @@ class PostgresRunQueue:
                     # SQLite 测试/单进程兼容路径由 _claim_lock 保护。
                     bind = session.get_bind()
                     if bind.dialect.name == "postgresql":
-                        await session.execute(text("SELECT pg_advisory_xact_lock(731904621)"))
+                        await session.execute(
+                            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                            {"lock_id": RUN_CLAIM_CAPACITY_LOCK_ID},
+                        )
                     running = await session.scalar(
                         select(func.count()).select_from(Run).where(Run.status == "running")
                     )

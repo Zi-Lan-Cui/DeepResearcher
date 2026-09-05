@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool, StaticPool
 
+from deepsearch_agent.service.coordination import DATABASE_MIGRATION_LOCK_ID
 from deepsearch_agent.service.models import Base
 
 
@@ -102,7 +103,10 @@ async def migrate_database(database_url: str) -> None:
         async with engine.connect() as connection:
             is_postgres = connection.dialect.name == "postgresql"
             if is_postgres:
-                await connection.execute(text("SELECT pg_advisory_lock(731904620)"))
+                await connection.execute(
+                    text("SELECT pg_advisory_lock(:lock_id)"),
+                    {"lock_id": DATABASE_MIGRATION_LOCK_ID},
+                )
             try:
                 tables = await connection.run_sync(
                     lambda sync: set(inspect(sync).get_table_names())
@@ -110,6 +114,9 @@ async def migrate_database(database_url: str) -> None:
                 await asyncio.to_thread(upgrade, tables)
             finally:
                 if is_postgres:
-                    await connection.execute(text("SELECT pg_advisory_unlock(731904620)"))
+                    await connection.execute(
+                        text("SELECT pg_advisory_unlock(:lock_id)"),
+                        {"lock_id": DATABASE_MIGRATION_LOCK_ID},
+                    )
     finally:
         await engine.dispose()
