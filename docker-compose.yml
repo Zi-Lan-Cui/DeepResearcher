@@ -1,4 +1,4 @@
-# API 与独立 Worker 共享 Postgres；本文件暂只编排基础设施。
+# API 与独立 Worker 共享 Postgres；Redis 只承载可丢弃的 token 预览。
 # 本机分别运行 server.py 和 python -m deepsearch_agent.worker。
 services:
   postgres:
@@ -13,6 +13,16 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepsearch} -d ${POSTGRES_DB:-deepsearch}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -258,7 +258,7 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 - PostgreSQL `LISTEN/NOTIFY` 唤醒其他 API 实例的 SSE；通知不携带业务帧。SSE 每次都按 `seq > last_seq` 从数据库 tail，因此通知重复或丢失都不影响正确性，并以 1 秒轮询兜底。
 - 真实 PostgreSQL 集成测试同时验证两个 EventStore 并发编号为 1/2 且跨连接通知可达。
 
-**边界**：到此事件回放与持久实时流已支持跨进程；token 级预览仍只在 Worker 与连接位于同一进程时可见。若独立 Worker 也需要逐 token 预览，应使用单独的可丢失通道，不把 token 写入 RunEvent 表。
+**边界**：到此事件回放与持久实时流已支持跨进程。后续已用独立的 Redis Pub/Sub 可丢失通道补齐独立 Worker 的 token 预览，但 token 始终不写入 RunEvent 表。
 
 ### M6：Usage、成本和分层容量闸（已完成）
 
@@ -330,7 +330,7 @@ uv run python -m deepsearch_agent.worker
 uv run python -m deepsearch_agent.worker
 ```
 
-Redis 未引入：当前 PostgreSQL 已承担权威队列、lease、事件通知和语义缓存。只有当压测证明 DB polling、冷键惊群或跨 Worker 供应商限流成为瓶颈时，才按现有窄协议逐项替换，不把 Redis 变成第二个事实源。
+Redis 已作为可选的跨进程 token 预览通道引入，但未替换 PostgreSQL 的权威队列、lease、持久事件通知和语义缓存。Worker 使用有界非阻塞队列发布，API 将 Pub/Sub 预览与 DB replay/live tail 合流；断线仅造成预览缺口，不影响回放、状态收敛或 `done`。只有当压测证明 DB polling、冷键惊群或跨 Worker 供应商限流成为瓶颈时，才按现有窄协议逐项替换，不把 Redis 变成第二个事实源。
 
 ## 12. 测试与发布策略
 
