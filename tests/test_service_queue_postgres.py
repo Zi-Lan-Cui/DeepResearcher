@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -13,6 +14,7 @@ from deepsearch_agent.service.event_store import RunEventStore
 from deepsearch_agent.service.models import Run, ToolCacheEntry, User
 from deepsearch_agent.service.notifier import EventNotifier
 from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
+from deepsearch_agent.service.run_service import QuotaExceededError, RunService
 from deepsearch_agent.service.settings import get_service_config
 from deepsearch_agent.service.tool_cache import PostgresToolCache
 from deepsearch_agent.tools.cache import CacheValue
@@ -24,6 +26,40 @@ pytestmark = [
         reason="set RUN_POSTGRES_INTEGRATION=1 to use the configured PostgreSQL",
     ),
 ]
+
+
+async def test_two_api_admission_services_share_postgres_quota_lock():
+    database_url = get_service_config().database_url
+    assert database_url.startswith("postgresql")
+    await migrate_database(database_url)
+    engine = make_engine(database_url)
+    factory = make_session_factory(engine)
+    email = f"{new_id('admission-pg-test')}@test.invalid"
+    try:
+        async with factory() as session:
+            user = User(email=email, password_hash="integration-test")
+            session.add(user)
+            await session.commit()
+            user_id = user.id
+
+        config = replace(
+            get_service_config(),
+            max_concurrent_runs_per_user=1,
+            max_global_queued_runs=100,
+        )
+        first, second = await asyncio.gather(
+            RunService(session_factory=factory, config=config).create(user_id, "first"),
+            RunService(session_factory=factory, config=config).create(user_id, "second"),
+            return_exceptions=True,
+        )
+        results = (first, second)
+        assert sum(isinstance(item, str) for item in results) == 1
+        assert sum(isinstance(item, QuotaExceededError) for item in results) == 1
+    finally:
+        async with factory() as session:
+            await session.execute(delete(User).where(User.email == email))
+            await session.commit()
+        await engine.dispose()
 
 
 async def test_two_postgres_claimers_cannot_own_the_same_run():
