@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select, update
 
 from deepsearch_agent.service.events.notifier import EventNotifier
-from deepsearch_agent.service.models import Run, RunEvent
+from deepsearch_agent.service.persistence.models import Run, RunEvent
 
 
 class RunEventStore:

@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import func, select, text, update
 
 from deepsearch_agent.service.coordination import RUN_CLAIM_CAPACITY_LOCK_ID
-from deepsearch_agent.service.models import Run
+from deepsearch_agent.service.persistence.models import Run
 
 
 def _utcnow() -> datetime:

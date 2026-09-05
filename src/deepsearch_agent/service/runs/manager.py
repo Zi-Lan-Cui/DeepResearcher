@@ -18,7 +18,7 @@ from deepsearch_agent.service.event_publisher import RunEventPublisher
 from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
-from deepsearch_agent.service.models import Run
+from deepsearch_agent.service.persistence.models import Run
 from deepsearch_agent.service.runs.service import QuotaExceededError as QuotaExceededError
 from deepsearch_agent.service.runs.service import RunService
 from deepsearch_agent.service.settings import ServiceConfig

@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 
-from deepsearch_agent.service.models import Run, RunEvent, User
+from deepsearch_agent.service.persistence.models import Run, RunEvent, User
 from deepsearch_agent.service.runs import QuotaExceededError
 from deepsearch_agent.service.web.dependencies import app_state, current_user, owned_run
 from deepsearch_agent.service.web.presenters import run_summary

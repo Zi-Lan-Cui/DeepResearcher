@@ -17,7 +17,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerifyMismatchError
 from fastapi import HTTPException, Request
 
-from deepsearch_agent.service.models import User
+from deepsearch_agent.service.persistence.models import User
 
 MIN_PASSWORD_CHARS = 8
 MAX_PASSWORD_CHARS = 128

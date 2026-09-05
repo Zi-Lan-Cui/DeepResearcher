@@ -18,7 +18,7 @@ from sqlalchemy import case, func, select, update
 
 from deepsearch_agent.config import LLMConfig
 from deepsearch_agent.observability.tracing.context import new_id
-from deepsearch_agent.service.models import Run, RunUsage
+from deepsearch_agent.service.persistence.models import Run, RunUsage
 
 logger = logging.getLogger("deepsearch_agent.service.usage")
 

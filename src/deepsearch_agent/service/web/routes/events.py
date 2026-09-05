@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from deepsearch_agent.service.events.projector import project
 from deepsearch_agent.service.events.stream import CLOSE_STREAM
-from deepsearch_agent.service.models import Run
+from deepsearch_agent.service.persistence.models import Run
 from deepsearch_agent.service.web.dependencies import app_state, owned_run
 
 router = APIRouter(prefix="/api/runs")
