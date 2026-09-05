@@ -3,18 +3,21 @@
 把深度研究引擎包成多用户 web 服务的第一个里程碑：注册登录、提交问题、
 实时看中文进度、收结构化报告、可取消、刷新可续看。
 
-## 组成（全部单进程，无 Redis/队列/checkpointer——那些各有触发条件，见文末）
+## 组成（API / Worker 可独立水平扩展）
 
 ```
-浏览器 (service/frontend/index.html)
+浏览器 (`service/frontend/index.html`)
    │  fetch + Bearer JWT；SSE 用 fetch 流式手解（EventSource 带不了 header）
    ▼
-FastAPI (service/api.py) ── 鉴权每请求第一步 (auth.py, HS256 12h 无状态)
+FastAPI 控制面 (`service/api.py` + `service/web/`)
+   │  RunManager (`service/runs/`): 受理/取消/恢复，不执行 Graph
    ▼
-RunManager (service/runs.py) ── asyncio.create_task 跑研究；runs/run_events 落库
-   ▼
-既有引擎零修改：build_graph(event_sink=CompositeSink(FanoutSink, JsonlSink))
-事件 → FanoutSink 统一发 seq → projector 白名单投影 → SSE 帧(tick/status/error/done)
+PostgreSQL: Run 队列 / lease / checkpoint / RunEvent / usage / tool cache
+   ▲
+   │  claim + heartbeat + owner/attempt CAS
+Worker 执行面 (`service/execution/`) × N
+   │  build_graph(event_sink=CompositeSink(FanoutSink, JsonlSink))
+   └─ 持久事件 → PostgreSQL NOTIFY 唤醒 API DB tail → `events/projector.py` 安全 SSE 帧
 ```
 
 ## 启动步骤

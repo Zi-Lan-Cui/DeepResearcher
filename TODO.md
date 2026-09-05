@@ -65,13 +65,13 @@
 
 > 先以当前调用链为基线补齐职责边界，再移动文件；不为了“看起来分层”而只做路径重命名。
 
-- [ ] 拆分 `RunManager` 的控制面与执行面职责：API 进程只保留 Run 创建/取消/恢复命令、持久事件发布和 checkpoint 可恢复性查询；Worker 进程持有 `RunExecutor`、LLM gates、HTTP client 与 Graph 组装。
-- [ ] 收口多 API 实例的准入竞态：将 `RunService.create()` 当前的进程内 `_admission_lock` + count/insert 改为 PostgreSQL 事务级互斥/原子准入，使用户并发配额和全局队列上限在 API 水平扩展后仍然准确。
-- [ ] 将 `api.py` 拆为组装根、请求/响应 schema、鉴权依赖和按领域划分的 routes；`create_app()` 只负责 lifespan 与路由注册。
-- [ ] 按稳定职责将平铺的 `service/` 逐步收纳为 `web/`、`runs/`、`execution/`、`events/`、`persistence/`；先增加兼容导入并分批迁移，最后删除旧路径。
-- [ ] 消除 PostgreSQL advisory lock 魔法数字：将 `731904620/621/622` 集中定义为带用途的常量（数据库迁移、Run claim 容量、Worker 启动恢复），由统一协调模块导出，并为 key 稳定性加回归测试。
-- [ ] 保持依赖方向 `web/control plane -> execution engine -> agents/tools`；Agent/Graph 不得反向导入 FastAPI、SQLAlchemy 或 SSE 投影层。
-- [ ] 每一批结构迁移后运行全量回归与 M8 真实多进程验收，重点保护 DB claim/lease CAS、SSE 断线回放、Clarifier resume、API 滚动替换和 Worker 接管语义。
+- [x] 拆分 `RunManager` 的控制面与执行面职责：API 进程只保留 Run 创建/取消/恢复命令、持久事件发布和 checkpoint 可恢复性查询；Worker 进程持有 `RunExecutor`、LLM gates、HTTP client 与 Graph 组装。
+- [x] 收口多 API 实例的准入竞态：`RunService.create()` 在 PostgreSQL 上用事务 advisory lock 串行化 count/insert，用户配额和全局 queued 上限对多 API 实例仍是原子的。
+- [x] 将 `api.py` 拆为组装根、请求/响应 schema、鉴权依赖和按领域划分的 routes；`create_app()` 只负责 lifespan 与路由注册。
+- [~] 按稳定职责将平铺的 `service/` 收纳为 `web/`、`runs/`、`execution/`、`events/`、`persistence/`；实现已迁入，旧路径仅留兼容导入，待下一个破坏性版本删除。
+- [x] 消除 PostgreSQL advisory lock 魔法数字：迁移、claim 容量、Worker 恢复和 API 准入 key 统一由 `service/coordination.py` 导出，并有稳定性回归。
+- [x] 保持依赖方向 `web/control plane -> execution engine -> agents/tools`；纯 Usage ContextVar/预算异常已从 SQLAlchemy 服务存储中拆出，AST 架构测试阻止 Agent/LLM/Graph/Tool 反向导入 service。
+- [x] 结构迁移批次均运行针对性回归，收尾全量 257 passed / 2 PostgreSQL-only skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。
 
 ### 接口与数据
 
@@ -98,7 +98,8 @@
 
 ## P2：不阻塞交付
 
-- [ ] **Clarifier 恢复状态对齐**：用户提交回答后按 resume API 返回的真实 `queued` 显示“排队中/等待恢复”，仅在 Worker claim 后收到 `running` 状态事件时切换为“进行中”，取消前端当前的乐观 `setStatus("running")`。
+- [x] **Clarifier 恢复状态对齐**：用户提交回答后按 resume API 返回的真实 `queued` 显示“排队中”，仅在 Worker claim 后收到 `running` 事件时切换为“进行中”；系统重启恢复仍保留 `resuming`。
+- [ ] **跨进程 token 预览通道**：持久阶段事件已能由任意 API 流式回放/tail；`text_delta` 仍是 Worker 本地 ephemeral 旁路。若要在 API/Worker 完全分进程时保留逐字预览，增加可丢弃的 Redis Pub/Sub 通道，不将 token 写入 RunEvent，不让它参与正确性。
 - [ ] **Router/Clarifier 解释流优化**：接入 `get_stream_writer()` + `stream_mode="custom"`；Router 在结构化校验完成后发送安全化 `reason`，Clarifier 开放正常文字预览，并在工具调用前解释判断依据。后端发送完整可信文本，逐字动画由前端完成，不用 `sleep()` 制造分片。
 - [ ] **Clarifier 工具呈现优化**：`AskClarification` 的问题与三个选项保持原子渲染；`ClarificationComplete` 只提交最终结构化判断；增加“工具调用前说明理由”的守卫与空解释降级文案。
 - [ ] **Supervisor 工具可视化**：为 `ResearchComplete`、`ResearchReady`、`ReadWorkingSet`、`ForgetEvidence` 补安全领域事件；区分永久阶段结论与低权重临时动作，不向前端暴露 Evidence ID、原始参数或异常详情。
