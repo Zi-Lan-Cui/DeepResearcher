@@ -12,8 +12,8 @@ from fastapi import FastAPI
 from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.service.auth import TokenCodec, make_current_user
 from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
-from deepsearch_agent.service.events import FanoutSink
-from deepsearch_agent.service.notifier import EventNotifier
+from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.runs import RunManager
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
 from deepsearch_agent.service.tool_cache import PostgresToolCache

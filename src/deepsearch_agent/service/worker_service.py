@@ -11,8 +11,8 @@ from sqlalchemy import func, select
 from deepsearch_agent.config import Settings
 from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.event_publisher import RunEventPublisher
-from deepsearch_agent.service.event_store import RunEventStore
-from deepsearch_agent.service.events import FanoutSink
+from deepsearch_agent.service.events.store import RunEventStore
+from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.executor import RunExecutor
 from deepsearch_agent.service.models import Run, RunEvent
 from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
