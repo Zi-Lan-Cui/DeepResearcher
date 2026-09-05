@@ -99,7 +99,8 @@
 ## P2：不阻塞交付
 
 - [x] **Clarifier 恢复状态对齐**：用户提交回答后按 resume API 返回的真实 `queued` 显示“排队中”，仅在 Worker claim 后收到 `running` 事件时切换为“进行中”；系统重启恢复仍保留 `resuming`。
-- [ ] **跨进程 token 预览通道**：持久阶段事件已能由任意 API 流式回放/tail；`text_delta` 仍是 Worker 本地 ephemeral 旁路。若要在 API/Worker 完全分进程时保留逐字预览，增加可丢弃的 Redis Pub/Sub 通道，不将 token 写入 RunEvent，不让它参与正确性。
+- [x] **跨进程 token 预览通道**：可选 Redis Pub/Sub 已接入 Worker 发布与 API SSE 合流；发送端和订阅端均使用有界丢旧队列。`text_delta` 无 seq、不落 RunEvent、不参与状态机，Redis 故障时自动退化为持久事件流。
+- [ ] **Redis 预览连接复用**：当单 API 实例长期承载大量 SSE 连接时，将“每 SSE 一个 Pub/Sub 订阅”升级为进程内单读取器 + run_id 本地分发；在压测证明 Redis 连接数成为瓶颈时实施。
 - [ ] **Router/Clarifier 解释流优化**：接入 `get_stream_writer()` + `stream_mode="custom"`；Router 在结构化校验完成后发送安全化 `reason`，Clarifier 开放正常文字预览，并在工具调用前解释判断依据。后端发送完整可信文本，逐字动画由前端完成，不用 `sleep()` 制造分片。
 - [ ] **Clarifier 工具呈现优化**：`AskClarification` 的问题与三个选项保持原子渲染；`ClarificationComplete` 只提交最终结构化判断；增加“工具调用前说明理由”的守卫与空解释降级文案。
 - [ ] **Supervisor 工具可视化**：为 `ResearchComplete`、`ResearchReady`、`ReadWorkingSet`、`ForgetEvidence` 补安全领域事件；区分永久阶段结论与低权重临时动作，不向前端暴露 Evidence ID、原始参数或异常详情。

@@ -14,6 +14,7 @@ from deepsearch_agent.service.events.ephemeral import (
 )
 
 logger = logging.getLogger("deepsearch_agent.service.events.redis_ephemeral")
+REDIS_PREVIEW_IO_TIMEOUT_SECONDS = 1.0
 
 
 class RedisEphemeralEventBus(EphemeralEventBus):
@@ -23,6 +24,10 @@ class RedisEphemeralEventBus(EphemeralEventBus):
         self._client = client
         self._prefix = channel_prefix.strip(":") or "deepsearch"
         self._queue_size = max(1, queue_size)
+        self._publish_queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue(
+            maxsize=self._queue_size
+        )
+        self._publisher: asyncio.Task[None] | None = None
         self._closed = False
 
     def _channel(self, run_id: str) -> str:
@@ -32,13 +37,31 @@ class RedisEphemeralEventBus(EphemeralEventBus):
         safe = preview_event(event, run_id=run_id)
         if safe is None or self._closed:
             return
-        try:
-            await self._client.publish(
-                self._channel(run_id),
-                json.dumps(safe, ensure_ascii=False, separators=(",", ":")),
+        if self._publish_queue.full():
+            try:
+                self._publish_queue.get_nowait()
+                self._publish_queue.task_done()
+            except asyncio.QueueEmpty:  # pragma: no cover - same-loop check/get
+                pass
+        self._publish_queue.put_nowait((run_id, safe))
+        if self._publisher is None or self._publisher.done():
+            self._publisher = asyncio.create_task(
+                self._drain_publishes(),
+                name="redis-preview-publisher",
             )
-        except Exception:  # noqa: BLE001 - preview loss must not fail a run
-            logger.warning("redis_preview_publish_failed run_id=%s", run_id, exc_info=True)
+
+    async def _drain_publishes(self) -> None:
+        while True:
+            run_id, event = await self._publish_queue.get()
+            try:
+                await self._client.publish(
+                    self._channel(run_id),
+                    json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+                )
+            except Exception:  # noqa: BLE001 - preview loss must not fail a run
+                logger.warning("redis_preview_publish_failed run_id=%s", run_id, exc_info=True)
+            finally:
+                self._publish_queue.task_done()
 
     async def subscribe(self, run_id: str) -> EphemeralSubscription:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=self._queue_size)
@@ -90,6 +113,9 @@ class RedisEphemeralEventBus(EphemeralEventBus):
         if self._closed:
             return
         self._closed = True
+        if self._publisher is not None:
+            self._publisher.cancel()
+            await asyncio.gather(self._publisher, return_exceptions=True)
         try:
             await self._client.aclose()
         except Exception:  # noqa: BLE001 - shutdown remains best effort
@@ -107,7 +133,12 @@ async def create_redis_ephemeral_bus(
     try:
         from redis.asyncio import Redis
 
-        client = Redis.from_url(redis_url, decode_responses=False)
+        client = Redis.from_url(
+            redis_url,
+            decode_responses=False,
+            socket_connect_timeout=REDIS_PREVIEW_IO_TIMEOUT_SECONDS,
+            socket_timeout=REDIS_PREVIEW_IO_TIMEOUT_SECONDS,
+        )
         await client.ping()
     except Exception:  # noqa: BLE001 - Redis is explicitly non-authoritative
         logger.warning("redis_preview_unavailable; durable SSE remains active", exc_info=True)
