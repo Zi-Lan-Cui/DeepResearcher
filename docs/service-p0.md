@@ -42,7 +42,7 @@ SERVICE_API_EMBEDDED_WORKER=false uv run python server.py
 uv run python -m deepsearch_agent.worker   # 可启动多份
 ```
 
-浏览器打开 `http://127.0.0.1:8080/` 注册即用。本地临时单进程模式可设 `SERVICE_API_EMBEDDED_WORKER=true`；CLI `main.py` 不受影响。
+浏览器打开 `http://127.0.0.1:8080/` 注册即用。本地临时单进程模式可设 `SERVICE_API_EMBEDDED_WORKER=true`。Web/API 是唯一产品入口。
 
 ## curl 冒烟
 

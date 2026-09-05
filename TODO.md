@@ -57,7 +57,7 @@
 - [x] ② resume 驱动（`9839258`）：分诊式 reconcile + `resume_runs` 续跑 + `seed_seq` 跨世续号 + `resuming` 播报。**真机验收**：提交深度研究攒 3 断点后 `kill -9`，重启日志 `resuming_orphan_runs count=1`，续跑至自然完成（status=completed / report_rendered，run_done 恰好 1 帧，seq 5→919 无洞无撞）。
 - [x] ③ 恢复期重复调用治理：PostgreSQL `ToolCache` 已覆盖 L1 规范化 query TTL、L2 canonical URL + parser/fetch version、L3 `content_hash + research_direction + extractor/model/schema/chunking version`。命中后仍产生当前 run/task 事件与 Evidence ID；失败、取消和部分 chunk 失败不写正向缓存。详见 [恢复期工具缓存方案](docs/恢复期工具缓存方案.md)。
 - [x] ④ Clarifier 子图 + `interrupt()` + resume API（`awaiting_input` 状态、配额不占、三选项 + Other）——与②共用全部基建。
-- [ ] `build_graph()` 显式持有/关闭依赖的 CLI 侧对齐（服务侧 lifespan 已做；CLI 仍在 main.py 手工组装）。
+- [x] 产品入口收口为 Web：删除绕过持久 Run、用量、恢复和安全边界的 `main.py` CLI；人工 eval 与未来评测器统一通过 HTTP API 执行。
 
 ## P1：服务深化
 

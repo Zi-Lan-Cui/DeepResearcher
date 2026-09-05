@@ -22,10 +22,11 @@ Supervisor 管全局研究，ResearchAgent 管单个方向，Writer 只负责成
 
 ```bash
 uv sync
-uv run python main.py "对比向量数据库的性能与成本"
 ```
 
 Agent 会读取 `env/.env` 中的 LLM 配置，并通过 OpenAI 兼容接口调用模型。缺少必要配置时在应用装配期失败，不会执行一段无效研究。不要将 `env/.env` 提交到版本库。
+
+网页是唯一产品入口：`server.py` 启动 API/前端，`python -m deepsearch_agent.worker` 启动执行面。项目不再提供直接执行 Graph 的命令行入口。
 
 统一配置入口为 `deepsearch_agent.config.get_settings()`。LLM、Agent 熔断参数和应用运行参数均由该模块读取并以 `Settings` 分发，业务模块不直接加载 dotenv。
 
@@ -85,4 +86,4 @@ uv run pyright
 
 ## 产品化状态
 
-当前项目已经是可运行的研究引擎，但还不是完整的多用户应用。下一阶段优先补齐 Run/Thread 上下文管理、checkpointer、数据库与对象存储、服务 API、进度推送和 UI。短期记忆指当前研究运行的状态与消息历史，是恢复运行所必需的；长期记忆指跨会话的用户偏好或可复用知识，暂不作为主链依赖。
+当前项目已形成可运行的多用户研究服务：具备持久 Run、checkpointer、独立 Worker、进度推送、恢复和 Web UI。长期记忆、人工修订与团队协作仍属于后续产品能力，不是当前主链依赖。
