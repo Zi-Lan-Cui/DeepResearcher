@@ -1,8 +1,7 @@
 """Run 执行面：驱动单个 LangGraph Run 并收敛其持久化结果。
 
-RunExecutor 不受理用户请求、不检查队列配额、不选择下一个 Run。
-当前它仍由 RunManager 在同一进程调用；这个窄边界是后续将 API 与
-Worker 分离的接缝。
+RunExecutor 不受理用户请求、不检查队列配额、不选择下一个 Run；
+它只由 WorkerCoordinator 在执行面调用。
 """
 
 from __future__ import annotations

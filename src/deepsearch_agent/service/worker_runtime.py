@@ -17,11 +17,13 @@ from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
+from deepsearch_agent.service.event_publisher import RunEventPublisher
+from deepsearch_agent.service.event_store import RunEventStore
 from deepsearch_agent.service.events import FanoutSink
 from deepsearch_agent.service.notifier import EventNotifier
-from deepsearch_agent.service.runs import RunManager
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
 from deepsearch_agent.service.tool_cache import PostgresToolCache
+from deepsearch_agent.service.worker_service import WorkerCoordinator
 from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient
 
@@ -59,7 +61,7 @@ async def worker_lifespan(
     config: ServiceConfig | None = None,
     *,
     graph_factory: Callable[..., Any] = build_graph,
-) -> AsyncIterator[RunManager]:
+) -> AsyncIterator[WorkerCoordinator]:
     """Create all resources owned by one independent Worker process."""
     import asyncio
 
@@ -89,33 +91,43 @@ async def worker_lifespan(
         checkpointer = await checkpoint_cm.__aenter__()
         await checkpointer.setup()
 
-    manager = RunManager(
+    event_store = RunEventStore(
+        session_factory,
+        publish_persisted=fanout.publish_persisted,
+        notifier=event_notifier,
+    )
+    event_publisher = RunEventPublisher(
+        session_factory=session_factory,
+        fanout=fanout,
+        event_store=event_store,
+    )
+    worker = WorkerCoordinator(
         settings=engine_settings,
         session_factory=session_factory,
         config=cfg,
         fanout=fanout,
+        event_store=event_store,
+        event_publisher=event_publisher,
         http_client=http_client,
         graph_factory=graph_factory,
         checkpointer=checkpointer,
-        event_notifier=event_notifier,
         tool_cache=tool_cache,
-        enable_worker=True,
     )
     try:
         async with _startup_recovery_lock(session_factory):
-            killed, resumable = await manager.reconcile_startup()
-            resumed = await manager.resume_runs(resumable)
-        await manager.start_worker()
+            killed, resumable = await worker.reconcile_startup()
+            resumed = await worker.resume_runs(resumable)
+        await worker.start()
         logger.info(
             "worker_started worker_id=%s reconciled=%d resumed=%d",
-            manager.worker_id,
+            worker.worker_id,
             killed,
             resumed,
         )
-        yield manager
+        yield worker
     finally:
-        logger.info("worker_stopping worker_id=%s", manager.worker_id)
-        await manager.shutdown()
+        logger.info("worker_stopping worker_id=%s", worker.worker_id)
+        await worker.shutdown()
         await event_notifier.close()
         await http_client.aclose()
         if checkpoint_cm is not None:
