@@ -10,7 +10,7 @@ from langgraph.types import Command
 
 from deepsearch_agent.observability.tracing.context import new_id
 from deepsearch_agent.service.executor import RunExecutor
-from deepsearch_agent.service.queue import PostgresRunQueue, RunWork
+from deepsearch_agent.service.runs.queue import PostgresRunQueue, RunWork
 
 
 class RunWorker:
