@@ -18,9 +18,9 @@ from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
 from deepsearch_agent.service.event_publisher import RunEventPublisher
-from deepsearch_agent.service.event_store import RunEventStore
-from deepsearch_agent.service.events import FanoutSink
-from deepsearch_agent.service.notifier import EventNotifier
+from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.store import RunEventStore
+from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
 from deepsearch_agent.service.tool_cache import PostgresToolCache
 from deepsearch_agent.service.worker_service import WorkerCoordinator

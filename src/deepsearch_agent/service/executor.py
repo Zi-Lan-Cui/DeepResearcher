@@ -18,8 +18,8 @@ from deepsearch_agent.config import Settings
 from deepsearch_agent.observability import JsonlSink
 from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.event_publisher import RunEventPublisher
-from deepsearch_agent.service.event_store import RunEventStore
-from deepsearch_agent.service.events import CompositeSink, FanoutSink
+from deepsearch_agent.service.events.store import RunEventStore
+from deepsearch_agent.service.events.stream import CompositeSink, FanoutSink
 from deepsearch_agent.service.models import Run
 from deepsearch_agent.service.queue import RunWork
 from deepsearch_agent.service.settings import ServiceConfig
