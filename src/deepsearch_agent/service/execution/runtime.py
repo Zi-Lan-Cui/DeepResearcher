@@ -16,8 +16,10 @@ from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
+from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
 from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.publisher import RunEventPublisher
+from deepsearch_agent.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
 from deepsearch_agent.service.execution.coordinator import WorkerCoordinator
@@ -78,6 +80,13 @@ async def worker_lifespan(
     fanout = FanoutSink(asyncio.get_running_loop())
     event_notifier = EventNotifier()
     await event_notifier.start(cfg.database_url)
+    ephemeral_bus: EphemeralEventBus | None = None
+    if cfg.redis_preview_enabled:
+        ephemeral_bus = await create_redis_ephemeral_bus(
+            cfg.redis_url,
+            channel_prefix=cfg.redis_channel_prefix,
+            queue_size=cfg.redis_preview_queue_size,
+        )
     tool_cache = (
         PostgresToolCache(session_factory)
         if engine_settings.tool_cache.enabled
@@ -116,6 +125,7 @@ async def worker_lifespan(
         graph_factory=graph_factory,
         checkpointer=checkpointer,
         tool_cache=tool_cache,
+        ephemeral_bus=ephemeral_bus,
     )
     try:
         async with _startup_recovery_lock(session_factory):
@@ -133,6 +143,8 @@ async def worker_lifespan(
         logger.info("worker_stopping worker_id=%s", worker.worker_id)
         await worker.shutdown()
         await event_notifier.close()
+        if ephemeral_bus is not None:
+            await ephemeral_bus.close()
         await http_client.aclose()
         if checkpoint_cm is not None:
             await checkpoint_cm.__aexit__(None, None, None)

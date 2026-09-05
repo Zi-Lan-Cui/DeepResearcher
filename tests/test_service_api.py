@@ -5,6 +5,7 @@ import pytest
 import pytest_asyncio
 
 from deepsearch_agent.service.api import create_app
+from deepsearch_agent.service.events.ephemeral import EphemeralSubscription
 from fakes_service import (
     FakeGraph,
     parse_sse,
@@ -307,6 +308,51 @@ async def test_sse_live_backlog_and_gate_release(client):
     stats = [data for event, data in frames if event == "stats"]
     assert stats and stats[0]["round"] == 1
     assert stats[0]["evidence_total"] == 3
+
+
+async def test_sse_merges_cross_process_preview_with_durable_events(client):
+    """Redis 预览只补充临时 token，done 仍由持久事件收尾。"""
+
+    class RecordingBus:
+        def __init__(self):
+            self.queue = None
+            self.closed = False
+
+        async def subscribe(self, _run_id):
+            self.queue = asyncio.Queue()
+
+            async def close():
+                self.closed = True
+
+            return EphemeralSubscription(queue=self.queue, _close=close)
+
+    token = await register(client)
+    gate = asyncio.Event()
+    client.graphs.append(FakeGraph(gate=gate))
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
+    bus = RecordingBus()
+    client.app.state.ephemeral_bus = bus
+    reader = asyncio.create_task(read_sse(client, token, run_id))
+    async with asyncio.timeout(1):
+        while bus.queue is None:
+            await asyncio.sleep(0)
+    await bus.queue.put(
+        {
+            "run_id": run_id,
+            "event_type": "text_delta",
+            "payload": {"channel": "supervisor", "text": "跨进程预览"},
+        }
+    )
+    await asyncio.sleep(0.05)
+    gate.set()
+
+    frames = await reader
+    previews = [data for event, data in frames if event == "text_delta"]
+    assert previews == [{"channel": "supervisor", "text": "跨进程预览"}]
+    assert frames[-1][0] == "done"
+    assert bus.closed
 
 
 async def test_static_frontend_served(client):

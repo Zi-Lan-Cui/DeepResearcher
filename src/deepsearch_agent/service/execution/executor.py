@@ -17,6 +17,7 @@ from sqlalchemy import update
 from deepsearch_agent.config import Settings
 from deepsearch_agent.observability import JsonlSink
 from deepsearch_agent.orchestration.graph import build_graph
+from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
 from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import CompositeSink, FanoutSink
@@ -64,6 +65,7 @@ class RunExecutor:
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
         tool_cache: ToolCache | None = None,
+        ephemeral_bus: EphemeralEventBus | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
@@ -82,6 +84,7 @@ class RunExecutor:
         self._graph_factory = graph_factory
         self._checkpointer = checkpointer
         self._tool_cache = tool_cache
+        self._ephemeral_bus = ephemeral_bus
         self._shutdown_interrupts: set[str] = set()
         self._lost_leases: set[str] = set()
         self._cancellation_requests: set[str] = set()
@@ -245,10 +248,10 @@ class RunExecutor:
                         interruption = value
                 continue
             if mode == "messages":
-                self._publish_message_preview(run_id, namespace, chunk)
+                await self._publish_message_preview(run_id, namespace, chunk)
         return final, interruption
 
-    def _publish_message_preview(self, run_id: str, namespace: Any, chunk: Any) -> None:
+    async def _publish_message_preview(self, run_id: str, namespace: Any, chunk: Any) -> None:
         try:
             message, _metadata = chunk
         except (TypeError, ValueError):
@@ -264,15 +267,17 @@ class RunExecutor:
             text = str(block.get("text") or "")
             if not text:
                 continue
+            event = {
+                "run_id": run_id,
+                "event_type": "text_delta",
+                "payload": {"channel": channel, "text": text[:200]},
+            }
             try:
-                self._fanout.publish_ephemeral(
-                    run_id,
-                    {
-                        "run_id": run_id,
-                        "event_type": "text_delta",
-                        "payload": {"channel": channel, "text": text[:200]},
-                    },
-                )
+                # Embedded mode keeps the zero-dependency local fast path. An
+                # independent Worker additionally publishes to Redis when enabled.
+                self._fanout.publish_ephemeral(run_id, event)
+                if self._ephemeral_bus is not None:
+                    await self._ephemeral_bus.publish(run_id, event)
             except Exception:  # noqa: BLE001 - 预览通道不反噬运行
                 logger.debug("delta_publish_failed run_id=%s", run_id, exc_info=True)
 

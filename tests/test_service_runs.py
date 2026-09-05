@@ -648,6 +648,13 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
     """官方 flag 形态：只有 supervisor 直下（ns 深度1）的 text 进预览；
     深层嵌套（tools 路径）、writer、空文本一律静默；帧无 seq、不落库。"""
     gate = asyncio.Event()
+    remote_previews = []
+
+    class RecordingPreviewBus:
+        async def publish(self, run_id, event):
+            remote_previews.append((run_id, event))
+
+    manager._executor._ephemeral_bus = RecordingPreviewBus()  # noqa: SLF001
     manager._worker._max_running = 1  # noqa: SLF001 - 订阅必须先于纯临时帧
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
@@ -676,6 +683,7 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
             frames.append(item)
     deltas = [f for f in frames if f["event_type"] == "text_delta"]
     assert [d["payload"] for d in deltas] == [{"channel": "supervisor", "text": "先梳理缺口，"}]
+    assert remote_previews == [(run_id, deltas[0])]
     assert all("seq" not in d for d in deltas)  # ephemeral：不占 seq
     async with manager.session_factory() as session:
         persisted = (

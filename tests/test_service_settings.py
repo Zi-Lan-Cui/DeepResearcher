@@ -22,6 +22,10 @@ def _clean_env(monkeypatch, tmp_path):
         "SERVICE_WORKER_HEARTBEAT_SECONDS",
         "SERVICE_WORKER_POLL_SECONDS",
         "SERVICE_API_EMBEDDED_WORKER",
+        "SERVICE_REDIS_PREVIEW_ENABLED",
+        "SERVICE_REDIS_URL",
+        "SERVICE_REDIS_CHANNEL_PREFIX",
+        "SERVICE_REDIS_PREVIEW_QUEUE_SIZE",
         "SERVICE_PORT",
         "APP_ENV",
     ):
@@ -53,6 +57,9 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert config.worker_heartbeat_seconds == 20
     assert config.worker_poll_seconds == 1.0
     assert config.api_embedded_worker is False
+    assert config.redis_preview_enabled is False
+    assert config.redis_url == "redis://127.0.0.1:6379/0"
+    assert config.redis_preview_queue_size == 128
     assert config.port == 8080
     assert config.jsonl_events is True
 
@@ -72,11 +79,15 @@ def test_env_overrides_are_clamped(_clean_env, monkeypatch):
     monkeypatch.setenv("SERVICE_MAX_CONCURRENT_RUNS_PER_USER", "not-a-number")  # 回落默认
     monkeypatch.setenv("SERVICE_WORKER_POLL_SECONDS", "0")
     monkeypatch.setenv("SERVICE_API_EMBEDDED_WORKER", "true")
+    monkeypatch.setenv("SERVICE_REDIS_PREVIEW_ENABLED", "true")
+    monkeypatch.setenv("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", "0")
     config = get_service_config()
     assert config.token_ttl_hours == 1
     assert config.max_concurrent_runs_per_user == 2
     assert config.worker_poll_seconds == 0.05
     assert config.api_embedded_worker is True
+    assert config.redis_preview_enabled is True
+    assert config.redis_preview_queue_size == 1
 
 
 def test_explicit_config_usable_without_env(_clean_env):

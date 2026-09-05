@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from deepsearch_agent.config import Settings
 from deepsearch_agent.orchestration.graph import build_graph
+from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
 from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
@@ -42,6 +43,7 @@ class WorkerCoordinator:
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
         tool_cache: ToolCache | None = None,
+        ephemeral_bus: EphemeralEventBus | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._fanout = fanout
@@ -70,6 +72,7 @@ class WorkerCoordinator:
             graph_factory=graph_factory,
             checkpointer=checkpointer,
             tool_cache=tool_cache,
+            ephemeral_bus=ephemeral_bus,
         )
         self.worker = RunWorker(
             queue=self.queue,

@@ -66,6 +66,10 @@ class ServiceConfig:
     worker_heartbeat_seconds: int = 20
     worker_poll_seconds: float = 1.0
     api_embedded_worker: bool = False
+    redis_preview_enabled: bool = False
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_channel_prefix: str = "deepsearch"
+    redis_preview_queue_size: int = 128
     host: str = "127.0.0.1"
     port: int = 8080
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
@@ -105,6 +109,10 @@ def get_service_config() -> ServiceConfig:
         worker_heartbeat_seconds=max(1, _int_env("SERVICE_WORKER_HEARTBEAT_SECONDS", 20)),
         worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 1.0)),
         api_embedded_worker=_bool_env("SERVICE_API_EMBEDDED_WORKER", False),
+        redis_preview_enabled=_bool_env("SERVICE_REDIS_PREVIEW_ENABLED", False),
+        redis_url=_env("SERVICE_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        redis_channel_prefix=_env("SERVICE_REDIS_CHANNEL_PREFIX", "deepsearch"),
+        redis_preview_queue_size=max(1, _int_env("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", 128)),
         host=_env("SERVICE_HOST", "127.0.0.1"),
         port=_int_env("SERVICE_PORT", 8080),
         service_log_dir=Path(_env("SERVICE_LOG_DIR", str(_PROJECT_ROOT / "var" / "service"))),
