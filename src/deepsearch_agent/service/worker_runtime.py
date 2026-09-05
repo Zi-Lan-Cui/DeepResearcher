@@ -15,6 +15,7 @@ from sqlalchemy import text
 from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.orchestration.graph import build_graph
+from deepsearch_agent.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepsearch_agent.service.db import make_engine, make_session_factory, migrate_database
 from deepsearch_agent.service.events import FanoutSink
 from deepsearch_agent.service.notifier import EventNotifier
@@ -25,7 +26,6 @@ from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient
 
 logger = get_logger("deepsearch_agent.service.worker_runtime")
-_RECOVERY_LOCK_ID = 731_904_622
 
 
 @asynccontextmanager
@@ -40,11 +40,17 @@ async def _startup_recovery_lock(session_factory: Callable[[], Any]) -> AsyncIte
         if session.get_bind().dialect.name != "postgresql":
             yield
             return
-        await session.execute(text(f"SELECT pg_advisory_lock({_RECOVERY_LOCK_ID})"))
+        await session.execute(
+            text("SELECT pg_advisory_lock(:lock_id)"),
+            {"lock_id": WORKER_STARTUP_RECOVERY_LOCK_ID},
+        )
         try:
             yield
         finally:
-            await session.execute(text(f"SELECT pg_advisory_unlock({_RECOVERY_LOCK_ID})"))
+            await session.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": WORKER_STARTUP_RECOVERY_LOCK_ID},
+            )
 
 
 @asynccontextmanager
