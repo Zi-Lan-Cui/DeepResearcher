@@ -992,11 +992,12 @@ $("clarification-submit").onclick = async () => {
   $("clarification-submit").disabled = true;
   $("clarification-error").textContent = "";
   try {
-    await api("/api/runs/" + currentRunId + "/resume", {
+    const resumed = await api("/api/runs/" + currentRunId + "/resume", {
       method: "POST", body: JSON.stringify({ answer }),
     });
     $("clarification-card").classList.add("hide");
-    setStatus("running");
+    // API 只完成持久化入队；真正开始执行必须等 Worker claim 后的 running 事件。
+    setStatus(resumed.status || "queued");
     consumeStream(currentRunId);
   } catch (e) {
     $("clarification-error").textContent = e.message;
