@@ -121,7 +121,14 @@ class RunExecutor:
         )
         suspended = False
         try:
-            if not await self._mark_running(run_id, resume=resume, claim=claim):
+            # 系统重启续跑已经播报 resuming，保持该状态直到后续阶段事件；
+            # 人工澄清恢复则必须在 Worker 真正 claim 后从 queued 切到 running。
+            announce_running = not resume or resume_input is not None
+            if not await self._mark_running(
+                run_id,
+                announce_running=announce_running,
+                claim=claim,
+            ):
                 if run_id not in self._cancellation_requests:
                     self.mark_lease_lost(run_id)
                 return
@@ -277,7 +284,11 @@ class RunExecutor:
         return head if head == "supervisor" else None
 
     async def _mark_running(
-        self, run_id: str, *, resume: bool = False, claim: RunWork | None = None
+        self,
+        run_id: str,
+        *,
+        announce_running: bool = True,
+        claim: RunWork | None = None,
     ) -> bool:
         transitioned = False
         async with self._session_factory() as session:
@@ -297,7 +308,7 @@ class RunExecutor:
                     run.started_at = _utcnow()
                 transitioned = True
                 await session.commit()
-        if transitioned and not resume:
+        if transitioned and announce_running:
             await self.publish_status(run_id, "running")
         return transitioned
 

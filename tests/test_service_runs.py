@@ -214,6 +214,41 @@ async def test_manager_delegates_execution_without_building_graph_itself(manager
     assert captured["kwargs"]["claim"].claimed is True
 
 
+async def test_running_status_is_announced_only_for_user_visible_claim(manager):
+    """Human resume leaves queued only when waiting; restart resume keeps resuming."""
+
+    silent_id = "run-system-resume"
+    announced_id = "run-human-resume"
+    async with manager.session_factory() as session:
+        session.add_all(
+            [
+                Run(id=silent_id, user_id=USER_ID, query="system", status="interrupted"),
+                Run(id=announced_id, user_id=USER_ID, query="human", status="queued"),
+            ]
+        )
+        await session.commit()
+    manager.fanout.open(silent_id)
+    manager.fanout.open(announced_id)
+
+    assert await manager._executor._mark_running(  # noqa: SLF001
+        silent_id,
+        announce_running=False,
+    )
+    assert manager.fanout.take_pending(silent_id) == []
+
+    assert await manager._executor._mark_running(  # noqa: SLF001
+        announced_id,
+        announce_running=True,
+    )
+    assert manager.fanout.take_pending(announced_id) == [
+        {
+            "run_id": announced_id,
+            "event_type": "run_status",
+            "payload": {"status": "running"},
+        }
+    ]
+
+
 async def test_success_persists_terminal_and_injects_run_id(manager):
     graph = FakeGraph(result=_completed_result())
     manager.holder["graph"] = graph

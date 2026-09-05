@@ -318,6 +318,8 @@ async def test_static_frontend_served(client):
     assert "html2pdf.bundle.min.js" in response.text
     assert "reportExportText()" in response.text
     assert '.from($("report-card"))' in response.text
+    assert 'setStatus(resumed.status || "queued")' in response.text
+    assert 'setStatus("running")' not in response.text
 
 
 async def test_concurrent_register_same_email_single_winner(client):
