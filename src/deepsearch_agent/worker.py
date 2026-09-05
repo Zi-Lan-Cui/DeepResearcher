@@ -7,7 +7,7 @@ import signal
 
 from deepsearch_agent.config import get_settings
 from deepsearch_agent.observability import configure_logging
-from deepsearch_agent.service.worker_runtime import worker_lifespan
+from deepsearch_agent.service.execution.runtime import worker_lifespan
 
 
 async def run() -> None:
