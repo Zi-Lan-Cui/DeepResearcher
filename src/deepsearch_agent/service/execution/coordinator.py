@@ -120,11 +120,7 @@ class WorkerCoordinator:
             ).all()
             for run in stale:
                 if run.status == "queued":
-                    max_seq = await session.scalar(
-                        select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id)
-                    )
                     self._fanout.open(run.id)
-                    self._fanout.seed_seq(run.id, int(max_seq or 0))
                     continue
                 if await self._has_checkpoint(run.id):
                     resumable.append((run.id, run.user_id, run.query))
@@ -168,12 +164,7 @@ class WorkerCoordinator:
         return tuple_ is not None
 
     async def _recover_expired(self, work: RunWork) -> RunWork | None:
-        async with self._session_factory() as session:
-            max_seq = await session.scalar(
-                select(func.max(RunEvent.seq)).where(RunEvent.run_id == work.run_id)
-            )
         self._fanout.open(work.run_id)
-        self._fanout.seed_seq(work.run_id, int(max_seq or 0))
         if await self._has_checkpoint(work.run_id):
             await self.executor.publish_status(work.run_id, "resuming")
             await self.executor.flush_events(work.run_id)
@@ -196,12 +187,7 @@ class WorkerCoordinator:
 
     async def resume_runs(self, pending: list[tuple[str, int, str]]) -> int:
         for run_id, user_id, query in pending:
-            async with self._session_factory() as session:
-                max_seq = await session.scalar(
-                    select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id)
-                )
             self._fanout.open(run_id)
-            self._fanout.seed_seq(run_id, int(max_seq or 0))
             await self.executor.publish_status(run_id, "resuming")
             await self.executor.flush_events(run_id)
             await self.worker.submit(

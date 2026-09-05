@@ -13,8 +13,11 @@ from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.service.auth import TokenCodec, make_current_user
 from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
 from deepsearch_agent.service.events.notifier import EventNotifier
+from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.redis_ephemeral import create_redis_ephemeral_bus
+from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
+from deepsearch_agent.service.execution.coordinator import WorkerCoordinator
 from deepsearch_agent.service.persistence.database import (
     make_engine,
     make_session_factory,
@@ -72,25 +75,49 @@ def make_lifespan(
             checkpointer = await checkpoint_cm.__aenter__()
             await checkpointer.setup()
 
+        event_store = RunEventStore(
+            session_factory,
+            publish_persisted=fanout.publish_persisted,
+            notifier=event_notifier,
+        )
+        event_publisher = RunEventPublisher(
+            session_factory=session_factory,
+            fanout=fanout,
+            event_store=event_store,
+        )
+        execution = None
+        if cfg.api_embedded_worker:
+            execution = WorkerCoordinator(
+                settings=engine_settings,
+                session_factory=session_factory,
+                config=cfg,
+                fanout=fanout,
+                event_store=event_store,
+                event_publisher=event_publisher,
+                http_client=http_client,
+                graph_factory=graph_factory,
+                checkpointer=checkpointer,
+                tool_cache=tool_cache,
+            )
         manager = RunManager(
-            settings=engine_settings,
             session_factory=session_factory,
             config=cfg,
             fanout=fanout,
-            http_client=http_client,
-            graph_factory=graph_factory,
             checkpointer=checkpointer,
             event_notifier=event_notifier,
-            tool_cache=tool_cache,
-            enable_worker=cfg.api_embedded_worker,
+            event_store=event_store,
+            event_publisher=event_publisher,
+            wake_worker=execution.wake if execution is not None else None,
+            cancel_worker=execution.request_cancel if execution is not None else None,
         )
-        if cfg.api_embedded_worker:
-            killed, resumable = await manager.reconcile_startup()
+        if execution is not None:
+            killed, resumable = await execution.reconcile_startup()
             if killed:
                 app.state.service_logger.info("reconciled_stale_runs count=%d", killed)
-            resumed = await manager.resume_runs(resumable)
+            resumed = await execution.resume_runs(resumable)
             if resumed:
                 app.state.service_logger.info("resuming_orphan_runs count=%d", resumed)
+            await execution.start()
 
         app.state.config = cfg
         app.state.settings = engine_settings
@@ -98,6 +125,7 @@ def make_lifespan(
         app.state.session_factory = session_factory
         app.state.fanout = fanout
         app.state.manager = manager
+        app.state.execution = execution
         app.state.checkpointer = checkpointer
         app.state.tool_cache = tool_cache
         app.state.ephemeral_bus = ephemeral_bus
@@ -106,7 +134,8 @@ def make_lifespan(
         try:
             yield
         finally:
-            await manager.shutdown()
+            if execution is not None:
+                await execution.shutdown()
             await event_notifier.close()
             if ephemeral_bus is not None:
                 await ephemeral_bus.close()

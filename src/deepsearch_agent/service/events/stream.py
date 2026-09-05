@@ -103,9 +103,6 @@ class FanoutSink:
             self._subs.get(run_id, {}).pop(key, None)
             self._dropped.pop((run_id, key), None)
 
-    def seed_seq(self, run_id: str, value: int) -> None:
-        """Compatibility no-op: M5 moved sequence ownership to RunEventStore."""
-
     def publish_persisted(self, run_id: str, records: Sequence[dict]) -> None:
         """Deliver records only after their database transaction committed."""
         with self._lock:
