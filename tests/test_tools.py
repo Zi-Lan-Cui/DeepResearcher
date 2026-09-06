@@ -149,6 +149,7 @@ def test_fetch_parses_html_without_network():
     assert document["title"] == "Example"
     assert "Hello world" in document["text"]
     assert document["content_hash"]
+    assert fake.last_kwargs["request_kind"] == "fetch"
 
 
 def test_fetch_rejects_captcha_page_before_evidence_extraction():

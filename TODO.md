@@ -86,7 +86,7 @@
 
 ### 安全与运维（公网托管前逐项补齐）
 
-- [ ] **SSRF 守卫**：fetcher 拦截私网/回环/云元数据地址 + DNS 重绑定防护——一票否决项。
+- [x] **SSRF 守卫**：Researcher 的 fetch 请求仅允许 HTTP(S) 公网地址；拒绝凭据、私网、回环、链路本地与保留地址；逐跳校验重定向，并用 `CURLOPT_RESOLVE` 将连接固定到预检 DNS 结果以封闭重绑定窗口。
 - [ ] 请求限流（登录/注册/创建 run）；token 吊销（sessions 表或黑名单）。
 - [x] LLM/搜索/抓取用量与成本归集：`run_usage` 明细 + Run 聚合，actual/estimated 显式区分，详情 API 下发 token/费用/耗时/并发数据。
 - [x] Alembic：`0001_initial`–`0004_run_usage`，应用启动自动 upgrade；旧库采纳与真实 PostgreSQL 迁移已验证。
