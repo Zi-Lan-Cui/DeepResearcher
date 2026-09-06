@@ -102,7 +102,12 @@ class WebFetcher:
             fetch_started = asyncio.get_running_loop().time()
             try:
                 response = await asyncio.wait_for(
-                    self.http.arequest("GET", url, timeout=fetch_timeout or self.timeout),
+                    self.http.arequest(
+                        "GET",
+                        url,
+                        timeout=fetch_timeout or self.timeout,
+                        request_kind="fetch",
+                    ),
                     timeout=fetch_timeout or self.timeout,
                 )
             except asyncio.TimeoutError as exc:

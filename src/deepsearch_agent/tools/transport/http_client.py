@@ -7,7 +7,9 @@ import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, cast
+from urllib.parse import urljoin
 
+from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession, Response
 from curl_cffi.requests.exceptions import RequestException, Timeout
 from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI
@@ -15,6 +17,7 @@ from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFA
 from deepsearch_agent.config import SearchConfig
 from deepsearch_agent.observability.usage_runtime import record_external_request
 from deepsearch_agent.tools.errors import ToolRequestError
+from deepsearch_agent.tools.transport.url_guard import PublicUrlGuard
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # 429/503 是“配额/限流”型失败：除了退避重试，还要给调用方留下跨请求的恢复点。
@@ -22,6 +25,8 @@ _RATE_LIMITED_STATUS = {429, 503}
 _DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 30.0
 _IMPERSONATE_TARGETS = (DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI)
 _JITTER_RATIO = 0.25
+_REDIRECT_STATUS = {301, 302, 303, 307, 308}
+_MAX_PUBLIC_REDIRECTS = 5
 
 
 def parse_retry_after(value: str | None) -> float | None:
@@ -47,10 +52,17 @@ def parse_retry_after(value: str | None) -> float | None:
 class HttpClient:
     """项目内唯一的异步 HTTP 客户端实现。"""
 
-    def __init__(self, config: SearchConfig, client: AsyncSession | None = None):
+    def __init__(
+        self,
+        config: SearchConfig,
+        client: AsyncSession | None = None,
+        *,
+        url_guard: PublicUrlGuard | None = None,
+    ):
         self.config = config
         self.client = client or AsyncSession(timeout=config.timeout)
         self._owns_client = client is None
+        self._url_guard = url_guard or PublicUrlGuard()
         self._capacity = {
             "search": asyncio.Semaphore(config.max_concurrent_requests),
             "fetch": asyncio.Semaphore(config.max_concurrent_fetches),
@@ -65,7 +77,7 @@ class HttpClient:
         json: Mapping | None = None,
         headers: Mapping | None = None,
         timeout: float | None = None,
-        request_kind: str = "fetch",
+        request_kind: str = "generic",
     ) -> Response:
         last_error: Exception | None = None
         rate_limit_reset_ts: float | None = None
@@ -74,19 +86,18 @@ class HttpClient:
             try:
                 # curl_cffi 的类型存根只接受受限的字面量集合；项目边界允许
                 # 调用方继续使用通用的 HTTP 方法和 Mapping 类型。
-                request = cast(Any, self.client.request)
                 started = time.monotonic()
                 semaphore = self._capacity.get(request_kind, self._capacity["fetch"])
                 async with semaphore:
                     try:
-                        response = await request(
-                            method,
-                            url,
+                        response = await self._request_with_policy(
+                            method=method,
+                            url=url,
                             params=params,
                             json=json,
                             headers=headers,
                             timeout=timeout,
-                            impersonate=random.choice(_IMPERSONATE_TARGETS),
+                            request_kind=request_kind,
                         )
                     except Exception:
                         await record_external_request(
@@ -141,6 +152,118 @@ class HttpClient:
         # 把最后一次观测到的限流恢复点附在错误上，供调用方做跨请求断路。
         error.rate_limit_reset_ts = rate_limit_reset_ts
         raise error from last_error
+
+    async def _request_with_policy(
+        self,
+        *,
+        method: str,
+        url: str,
+        params: Mapping | None,
+        json: Mapping | None,
+        headers: Mapping | None,
+        timeout: float | None,
+        request_kind: str,
+    ) -> Response:
+        if request_kind != "fetch":
+            return await self._request_once(
+                self.client,
+                method=method,
+                url=url,
+                params=params,
+                json=json,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+
+        current_url = url
+        current_method = method
+        current_params = params
+        current_json = json
+        for redirect_count in range(_MAX_PUBLIC_REDIRECTS + 1):
+            resolved = await self._url_guard.resolve(current_url)
+            if self._owns_client:
+                # A dedicated handle lets CURLOPT_RESOLVE pin this hop to the
+                # addresses checked above. trust_env=False also prevents an
+                # ambient proxy from bypassing the destination policy.
+                async with AsyncSession(
+                    timeout=self.config.timeout,
+                    trust_env=False,
+                    allow_redirects=False,
+                    curl_options={CurlOpt.RESOLVE: resolved.curl_resolve},
+                ) as guarded_client:
+                    response = await self._request_once(
+                        guarded_client,
+                        method=current_method,
+                        url=resolved.url,
+                        params=current_params,
+                        json=current_json,
+                        headers=headers,
+                        timeout=timeout,
+                        allow_redirects=False,
+                    )
+            else:
+                # Dependency-injected clients are used by deterministic tests.
+                # They still receive normalized URLs and manual redirect policy.
+                response = await self._request_once(
+                    self.client,
+                    method=current_method,
+                    url=resolved.url,
+                    params=current_params,
+                    json=current_json,
+                    headers=headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
+
+            primary_ip = str(getattr(response, "primary_ip", "") or "")
+            if primary_ip:
+                self._url_guard.ensure_public_ip(primary_ip)
+                if primary_ip not in resolved.addresses:
+                    raise ToolRequestError("连接目标与已校验的 DNS 地址不一致。", retryable=False)
+
+            if response.status_code not in _REDIRECT_STATUS:
+                return response
+            location = response.headers.get("Location")
+            if not location:
+                return response
+            if redirect_count >= _MAX_PUBLIC_REDIRECTS:
+                raise ToolRequestError("来源重定向次数过多。", retryable=False)
+            current_url = urljoin(resolved.url, location)
+            current_params = None
+            if response.status_code == 303 or (
+                response.status_code in {301, 302} and current_method.upper() == "POST"
+            ):
+                current_method = "GET"
+                current_json = None
+
+        raise ToolRequestError("来源重定向次数过多。", retryable=False)
+
+    @staticmethod
+    async def _request_once(
+        client: AsyncSession,
+        *,
+        method: str,
+        url: str,
+        params: Mapping | None,
+        json: Mapping | None,
+        headers: Mapping | None,
+        timeout: float | None,
+        allow_redirects: bool,
+    ) -> Response:
+        # curl_cffi's stubs expose narrower literal/collection types than this
+        # project boundary intentionally accepts.
+        request = cast(Any, client.request)
+        return await request(
+            method,
+            url,
+            params=params,
+            json=json,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            impersonate=random.choice(_IMPERSONATE_TARGETS),
+        )
 
     async def aclose(self) -> None:
         if self._owns_client:

@@ -20,6 +20,13 @@ class ToolRequestError(ToolError):
     rate_limit_reset_ts: float | None = None
 
 
+class UnsafeUrlError(ToolRequestError):
+    """A source URL violates the public-network fetching policy."""
+
+    code = "unsafe_url"
+    retryable = False
+
+
 class ToolParseError(ToolError):
     """响应或文档解析失败。"""
 
