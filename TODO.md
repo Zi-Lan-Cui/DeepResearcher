@@ -38,7 +38,7 @@
 
 ### 当前版本封板
 
-- [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时，当前全量基线为 **264 passed / 3 infrastructure-gated skipped**。
+- [x] 本轮回归：Python 3.13 默认 asyncio loop 下 LangChain wrapper 静默挂起已用最小矩阵定位；测试对齐 Uvicorn 在 Linux 上的 uvloop 运行时，当前全量基线为 **280 passed / 3 infrastructure-gated skipped**。
 - [x] 浏览器冒烟：10/15/20 条自适应分页、箭头/圆点换页、390px 窄屏无横向溢出、Clarifier 三选项 `等待回答 → 进行中`、服务重启后 `恢复续跑中` + 阶段回放 + `resuming` 事件，四条路径均已真机验证。
 - [x] Worker 迁移 M1–M8：API 默认为纯控制面，`python -m deepsearch_agent.worker` 独立消费持久队列；多 Worker 原子 claim、lease 接管、恢复分诊选主、API 滚动重启回归均已落地。
 - [x] M8 多进程故障/容量验收脚本：真实 Uvicorn + 2 Worker + PostgreSQL，自动覆盖 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换、owner `SIGKILL` 后 `attempt=2` 接管与 `run_done` 唯一性；可控 Graph 零 LLM/provider 费用。
@@ -72,7 +72,7 @@
 - [x] 消除 PostgreSQL advisory lock 魔法数字：迁移、claim 容量、Worker 恢复和 API 准入 key 统一由 `service/coordination.py` 导出，并有稳定性回归。
 - [x] 保持依赖方向 `web/control plane -> execution engine -> agents/tools`；纯 Usage ContextVar/预算异常已从 SQLAlchemy 服务存储中拆出，AST 架构测试阻止 Agent/LLM/Graph/Tool 反向导入 service。
 - [x] 删除迁移期执行面代理：`RunManager` 不再持有 WorkerCoordinator、RunExecutor、RunWorker 或 tasks，embedded 模式由 lifespan 显式组装两个平面，仅注入 wake/cancel 窄回调。
-- [x] 结构迁移批次均运行针对性回归，当前全量 264 passed / 3 infrastructure-gated skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。
+- [x] 结构迁移批次均运行针对性回归，当前全量 280 passed / 3 infrastructure-gated skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。
 - [ ] 定义有类型的 `ApiRuntime`，将分散的 `app.state.*` 收口为单一 lifespan 资源对象，减少 Web 层 `Any` 传播。
 - [ ] 按责任拆分 `service/usage.py`：capacity/rate limiter 归 execution，UsageStore 归 persistence，LangChain callback 归 observability/integration。
 - [~] 前端已从 1027 行单文件拆为语义 HTML、独立 CSS 与原生 ES module，静态资源有 HTTP 契约回归；后续随功能修改再按 api/state/sse/history/report 拆细模块，不为目录形式一次性重写稳定逻辑。
