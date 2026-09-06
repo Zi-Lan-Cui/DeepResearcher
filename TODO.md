@@ -75,7 +75,7 @@
 - [x] 结构迁移批次均运行针对性回归，当前全量 264 passed / 3 infrastructure-gated skipped；M8 真实多进程验收通过 100 SSE、100 HTTP、1/2/4/8 并发、API 滚动替换及 Worker `SIGKILL` 后 attempt=2 接管。
 - [ ] 定义有类型的 `ApiRuntime`，将分散的 `app.state.*` 收口为单一 lifespan 资源对象，减少 Web 层 `Any` 传播。
 - [ ] 按责任拆分 `service/usage.py`：capacity/rate limiter 归 execution，UsageStore 归 persistence，LangChain callback 归 observability/integration。
-- [ ] 将单文件 `frontend/index.html` 拆为 HTML + CSS + 原生 JS modules（api/state/sse/history/report），不在此批次顺带引入前端框架。
+- [~] 前端已从 1027 行单文件拆为语义 HTML、独立 CSS 与原生 ES module，静态资源有 HTTP 契约回归；后续随功能修改再按 api/state/sse/history/report 拆细模块，不为目录形式一次性重写稳定逻辑。
 
 ### 接口与数据
 

@@ -360,10 +360,22 @@ async def test_static_frontend_served(client):
     assert 'id="report-copy"' in response.text
     assert 'id="report-download"' in response.text
     assert "html2pdf.bundle.min.js" in response.text
-    assert "reportExportText()" in response.text
-    assert '.from($("report-card"))' in response.text
-    assert 'setStatus(resumed.status || "queued")' in response.text
-    assert 'setStatus("running")' not in response.text
+    assert '<link rel="stylesheet" href="/styles.css" />' in response.text
+    assert '<script type="module" src="/app.js"></script>' in response.text
+    assert "<style>" not in response.text
+
+    stylesheet = await client.get("/styles.css")
+    assert stylesheet.status_code == 200
+    assert stylesheet.headers["content-type"].startswith("text/css")
+    assert ".stage-block.running" in stylesheet.text
+
+    application = await client.get("/app.js")
+    assert application.status_code == 200
+    assert "javascript" in application.headers["content-type"]
+    assert "reportExportText()" in application.text
+    assert '.from($("report-card"))' in application.text
+    assert 'setStatus(resumed.status || "queued")' in application.text
+    assert 'setStatus("running")' not in application.text
 
 
 async def test_concurrent_register_same_email_single_winner(client):
