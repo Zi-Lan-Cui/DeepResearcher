@@ -20,7 +20,13 @@ def main() -> None:
         settings.app.log_level,
         log_path=settings.observability.log_dir / settings.observability.log_file,
     )
-    uvicorn.run(create_app(), host=config.host, port=config.port)
+    uvicorn.run(
+        create_app(),
+        host=config.host,
+        port=config.port,
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+    )
 
 
 if __name__ == "__main__":

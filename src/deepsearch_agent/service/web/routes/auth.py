@@ -47,14 +47,24 @@ async def register(body: RegisterBody, request: Request) -> JSONResponse:
 async def login(body: LoginBody, request: Request) -> dict[str, Any]:
     email = normalize_email(body.email)
     state = app_state(request)
+    client_ip = request.client.host if request.client is not None else "unknown"
+    admission = await state.login_rate_limiter.consume(client_ip=client_ip, email=email)
+    if not admission.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="登录尝试过于频繁，请稍后再试。",
+            headers={"Retry-After": str(admission.retry_after_seconds)},
+        )
     async with state.session_factory() as session:
         user = await session.scalar(select(User).where(User.email == email))
         if user is None or not verify_password(body.password, user.password_hash):
             raise HTTPException(status_code=401, detail="邮箱或密码不正确。")
-        return {
-            "token": state.codec.encode(user.id),
-            "user": {"id": user.id, "email": user.email},
-        }
+        user_id, user_email = user.id, user.email
+    await state.login_rate_limiter.clear_account(email)
+    return {
+        "token": state.codec.encode(user_id),
+        "user": {"id": user_id, "email": user_email},
+    }
 
 
 @router.get("/me")

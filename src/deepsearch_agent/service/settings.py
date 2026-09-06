@@ -70,6 +70,11 @@ class ServiceConfig:
     redis_url: str = "redis://127.0.0.1:6379/0"
     redis_channel_prefix: str = "deepsearch"
     redis_preview_queue_size: int = 128
+    login_account_attempts: int = 5
+    login_ip_attempts: int = 20
+    login_rate_window_seconds: int = 5 * 60
+    login_block_seconds: int = 15 * 60
+    forwarded_allow_ips: str = "127.0.0.1"
     host: str = "127.0.0.1"
     port: int = 8080
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
@@ -113,6 +118,11 @@ def get_service_config() -> ServiceConfig:
         redis_url=_env("SERVICE_REDIS_URL", "redis://127.0.0.1:6379/0"),
         redis_channel_prefix=_env("SERVICE_REDIS_CHANNEL_PREFIX", "deepsearch"),
         redis_preview_queue_size=max(1, _int_env("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", 128)),
+        login_account_attempts=max(1, _int_env("SERVICE_LOGIN_ACCOUNT_ATTEMPTS", 5)),
+        login_ip_attempts=max(1, _int_env("SERVICE_LOGIN_IP_ATTEMPTS", 20)),
+        login_rate_window_seconds=max(1, _int_env("SERVICE_LOGIN_RATE_WINDOW_SECONDS", 300)),
+        login_block_seconds=max(1, _int_env("SERVICE_LOGIN_BLOCK_SECONDS", 900)),
+        forwarded_allow_ips=_env("SERVICE_FORWARDED_ALLOW_IPS", "127.0.0.1"),
         host=_env("SERVICE_HOST", "127.0.0.1"),
         port=_int_env("SERVICE_PORT", 8080),
         service_log_dir=Path(_env("SERVICE_LOG_DIR", str(_PROJECT_ROOT / "var" / "service"))),
