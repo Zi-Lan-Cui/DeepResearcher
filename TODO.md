@@ -90,7 +90,7 @@
 - [~] 请求限流：登录已使用 PostgreSQL 共享的账号/IP 双维度窗口与阻断期（HMAC 键、429 + `Retry-After`），多 API 实例不能换进程绕过；注册/创建 run 限流待补。token 吊销仍待 sessions 表或黑名单。
 - [x] LLM/搜索/抓取用量与成本归集：`run_usage` 明细 + Run 聚合，actual/estimated 显式区分，详情 API 下发 token/费用/耗时/并发数据。
 - [x] Alembic：`0001_initial`–`0004_run_usage`，应用启动自动 upgrade；旧库采纳与真实 PostgreSQL 迁移已验证。
-- [ ] HTTPS/反代（Caddy 或 Nginx）与真实部署形态决策（BYO key 与否）。
+- [x] HTTPS/反代基线：`deploy/Caddyfile` 负责自动证书、HTTP→HTTPS、SSE 低延迟转发和基础安全响应头；Uvicorn 默认仅监听回环并只信任本机代理。真实域名/DNS/防火墙属于部署环境配置。
 - [ ] 健康检查：分离 `/health/live` 与 `/health/ready`；PostgreSQL/迁移影响 readiness，可丢失的 Redis 预览不作为业务就绪的硬条件。
 - [ ] 制定 `run_events` / `run_usage` / tool cache / checkpoints / JSONL 的 TTL、分批清理、索引维护、备份与恢复演练策略。
 - [ ] 生产密钥与连接边界：JWT secret 托管、PostgreSQL/Redis 私网或 TLS、按 API/Worker 总实例数核算连接池。

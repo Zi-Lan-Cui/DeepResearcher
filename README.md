@@ -62,6 +62,10 @@ SERVICE_API_EMBEDDED_WORKER=false SERVICE_REDIS_PREVIEW_ENABLED=true uv run pyth
 SERVICE_REDIS_PREVIEW_ENABLED=true uv run python -m deepsearch_agent.worker
 ```
 
+公网部署由 Caddy 在 FastAPI 前终止 TLS，并自动申请/续期证书；应用端保持回环
+HTTP，避免把证书生命周期耦合进 Python 进程。域名、可信代理与验收步骤见
+[HTTPS 部署](docs/HTTPS部署.md)。
+
 可启动多个 Worker，它们通过 PostgreSQL claim/lease 共享队列且不重复执行。本地单进程调试可设 `SERVICE_API_EMBEDDED_WORKER=true`。
 
 Redis 在当前阶段只是跨进程 `text_delta` 的可丢弃旁路：Worker 发布模型预览，API 将它与 SSE 合流。Run 状态、队列、事件序号、回放和最终 `done` 仍以 PostgreSQL 为唯一事实源。Redis 不可用时研究仍可正常完成，只会缺少逐 token 预览。单进程 embedded 模式继续使用本地 Fanout，无需启用 Redis。
