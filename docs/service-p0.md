@@ -73,7 +73,7 @@ curl -s localhost:8080/api/runs/$RUN -H "authorization: Bearer $TOKEN" | python 
 | 服务端 token 吊销 / sessions 表 | 有真实安全需求或加"退出所有设备"时 |
 | ~~checkpointer / resume 驱动~~ **已完成** | PG `checkpoints*` 以 thread_id=run_id 保存快照；reconcile、lease 接管、seq 原子续号和 Clarifier `Command(resume=...)` 均已真机验收 |
 | Redis 替换 PG 队列/缓存/集群限流 | PG 轮询、冷键惊群或跨 Worker 限流成为实测瓶颈时；当前 Redis 仅用于临时预览 |
-| 登录限流、HTTPS/反代 | 对外部署前补；成本计量和 Alembic 已完成 |
+| 登录限流、HTTPS/反代 | 已完成 PostgreSQL 共享登录限流与 Caddy HTTPS 基线；域名、DNS、证书签发和防火墙在实际部署环境验收 |
 | SSRF 守卫（fetcher 拦私网/元数据地址） | **任何公网托管前的一票否决项** |
 
 ## 开发门检

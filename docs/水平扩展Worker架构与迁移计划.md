@@ -293,6 +293,7 @@ API 和 Worker 都只在自己的 lifespan 内创建/关闭 DB、checkpointer、
 **实施结果**：
 
 - Alembic `0005_tool_cache` 新增 `tool_cache_entries`，以 `namespace + cache_key` 为联合主键，持久 JSON 结果、content hash、schema version、TTL、最后访问时间和命中数。
+- Alembic `0006_login_throttles` 新增账号/IP 双维度登录窗口；HMAC 键不落明文身份，多 API 实例通过 PostgreSQL 事务 advisory lock 原子消费额度。
 - `ToolCache` 是工具层仅依赖的窄协议；服务使用 `PostgresToolCache`，测试/直接库调用可使用 `NoOpToolCache`。数据库读写失败时 fail-open 直连，不改变研究正确性。
 - L1 使用 NFKC/空白/casefold 规范化查询，键包含 provider、effective limit 和 search version；保留进程内 L0 热缓存。
 - L2 使用去 fragment、host 小写的 canonical URL，键包含 fetch policy/parser version；只缓存公开、完整成功的抓取+解析结果，带 URL 凭证的请求直接 bypass。
