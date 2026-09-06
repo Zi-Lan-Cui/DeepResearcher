@@ -26,6 +26,7 @@ from deepsearch_agent.service.persistence.database import (
 from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
 from deepsearch_agent.service.runs.manager import RunManager
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
+from deepsearch_agent.service.web.login_rate_limit import LoginRateLimiter
 from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient
 
@@ -130,6 +131,14 @@ def make_lifespan(
         app.state.tool_cache = tool_cache
         app.state.ephemeral_bus = ephemeral_bus
         app.state.codec = TokenCodec(cfg.jwt_secret, cfg.token_ttl_hours)
+        app.state.login_rate_limiter = LoginRateLimiter(
+            session_factory,
+            secret=cfg.jwt_secret,
+            account_attempts=cfg.login_account_attempts,
+            ip_attempts=cfg.login_ip_attempts,
+            window_seconds=cfg.login_rate_window_seconds,
+            block_seconds=cfg.login_block_seconds,
+        )
         app.state.auth_dependency = make_current_user(app.state.codec, session_factory)
         try:
             yield

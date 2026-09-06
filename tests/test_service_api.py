@@ -107,6 +107,36 @@ async def test_register_login_and_me_roundtrip(client):
     assert (await client.get("/api/me", headers=_auth("garbage"))).status_code == 401
 
 
+async def test_login_rate_limit_blocks_account_and_returns_retry_after(client):
+    await register(client)
+    payload = {"email": "a@test.dev", "password": "wrong-password"}
+
+    for _ in range(5):
+        assert (await client.post("/api/login", json=payload)).status_code == 401
+    blocked = await client.post("/api/login", json=payload)
+
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == "登录尝试过于频繁，请稍后再试。"
+    assert int(blocked.headers["retry-after"]) > 0
+
+
+async def test_successful_login_clears_only_the_account_budget(client):
+    await register(client)
+    wrong = {"email": "a@test.dev", "password": "wrong-password"}
+    for _ in range(4):
+        assert (await client.post("/api/login", json=wrong)).status_code == 401
+
+    success = await client.post(
+        "/api/login", json={"email": "a@test.dev", "password": PASSWORD}
+    )
+    assert success.status_code == 200
+
+    # The previous account failures were cleared; a fresh full budget is available.
+    for _ in range(5):
+        assert (await client.post("/api/login", json=wrong)).status_code == 401
+    assert (await client.post("/api/login", json=wrong)).status_code == 429
+
+
 # ---- 运行生命周期 ----
 
 

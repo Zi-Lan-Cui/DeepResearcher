@@ -44,6 +44,18 @@ class User(Base):
     runs: Mapped[list["Run"]] = relationship(back_populates="user")
 
 
+class LoginThrottle(Base):
+    """Shared login-attempt window; keys are HMACs, never raw email/IP values."""
+
+    __tablename__ = "login_throttles"
+
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Run(Base):
     __tablename__ = "runs"
 

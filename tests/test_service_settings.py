@@ -26,6 +26,11 @@ def _clean_env(monkeypatch, tmp_path):
         "SERVICE_REDIS_URL",
         "SERVICE_REDIS_CHANNEL_PREFIX",
         "SERVICE_REDIS_PREVIEW_QUEUE_SIZE",
+        "SERVICE_LOGIN_ACCOUNT_ATTEMPTS",
+        "SERVICE_LOGIN_IP_ATTEMPTS",
+        "SERVICE_LOGIN_RATE_WINDOW_SECONDS",
+        "SERVICE_LOGIN_BLOCK_SECONDS",
+        "SERVICE_FORWARDED_ALLOW_IPS",
         "SERVICE_PORT",
         "APP_ENV",
     ):
@@ -60,6 +65,11 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert config.redis_preview_enabled is False
     assert config.redis_url == "redis://127.0.0.1:6379/0"
     assert config.redis_preview_queue_size == 128
+    assert config.login_account_attempts == 5
+    assert config.login_ip_attempts == 20
+    assert config.login_rate_window_seconds == 300
+    assert config.login_block_seconds == 900
+    assert config.forwarded_allow_ips == "127.0.0.1"
     assert config.port == 8080
     assert config.jsonl_events is True
 
