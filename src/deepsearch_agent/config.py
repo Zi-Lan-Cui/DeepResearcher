@@ -111,6 +111,8 @@ class AgentConfig:
     reflection_retry_initial_seconds: float = 2.0
     max_subtasks_per_round: int = 12
     max_parallel_workers: int = 3
+    # Supervisor 当前可激活并交给研究综合稿选择的 Evidence 上限。
+    supervisor_max_active_evidences: int = 30
     supervisor_preview_chars: int = 300
     # Supervisor 交给 Writer 的报告任务书输出限制。
     report_max_topics: int = 6
@@ -127,6 +129,8 @@ class AgentConfig:
     # 一个方向级 ResearchAgent 最多带回的 Evidence 数；限制上下文与成本，
     # 但不等同于单网页抽取上限。
     research_agent_max_evidences_per_direction: int = 6
+    # 单方向发现过的完整候选档案上限；活跃工作集仍由上一项限制。
+    research_agent_max_evidence_candidates_per_direction: int = 12
     research_agent_read_concurrency: int = 3
     # 来源处理的分层 deadline；总时限必须大于各阶段的正常预算。
     source_fetch_timeout: float = 30.0
@@ -283,6 +287,9 @@ def _agent_config() -> AgentConfig:
         ),
         max_subtasks_per_round=max(1, _int_env("AGENT_MAX_SUBTASKS_PER_ROUND", 12)),
         max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),
+        supervisor_max_active_evidences=max(
+            1, _int_env("AGENT_SUPERVISOR_MAX_ACTIVE_EVIDENCES", 30)
+        ),
         supervisor_preview_chars=max(100, _int_env("AGENT_SUPERVISOR_PREVIEW_CHARS", 300)),
         report_max_topics=max(1, _int_env("AGENT_REPORT_MAX_TOPICS", 6)),
         report_max_caveats=max(1, _int_env("AGENT_REPORT_MAX_CAVEATS", 6)),
@@ -301,6 +308,9 @@ def _agent_config() -> AgentConfig:
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),
         research_agent_max_evidences_per_direction=max(
             1, _int_env("AGENT_RESEARCH_MAX_EVIDENCES_PER_DIRECTION", 6)
+        ),
+        research_agent_max_evidence_candidates_per_direction=max(
+            1, _int_env("AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION", 12)
         ),
         research_agent_read_concurrency=max(1, _int_env("AGENT_RESEARCH_READ_CONCURRENCY", 3)),
         source_fetch_timeout=max(1.0, _float_env("AGENT_SOURCE_FETCH_TIMEOUT", 30.0)),

@@ -42,6 +42,7 @@ from deepsearch_agent.schemas import (
     ResearchAgentResult,
     ResearchDirectionResult,
     ResearchProgress,
+    ResearchSynthesis,
     ReviewProgress,
     RunLifecycle,
     StopReason,
@@ -55,7 +56,7 @@ _SUPERVISOR_SYSTEM_PROMPT = """【身份】你是深度研究系统的 Superviso
 【职责】你决定何时派发互补方向、何时现有 Evidence 足以进入写作，以及 Reflection 拒绝后应改写或补研究。
 你不直接撰写报告、不伪造 Evidence，也不把来源数量当作充分性。系统会持续提供方向结果和审阅回流；
 请基于完整管理历史作决定。
-【工具】你有五个工具：
+【工具】你有七个工具：
 - ResearchDelegate：派发一个方向级研究任务。每次可派发 1 到 N 个互补方向（不超过并行上限）；
  互不依赖的方向必须在同一次回复中以多个 ResearchDelegate 调用并行派发，不要一次只派一个再苦等下一个。
  每次派发前先用一句话（40 字内）说明当前证据缺口与派发理由——这句话会直接展示给用户，只写实质判断。
@@ -64,19 +65,24 @@ _SUPERVISOR_SYSTEM_PROMPT = """【身份】你是深度研究系统的 Superviso
  补缺时只针对当前 Evidence 暴露出的一个或几个明确缺口，缩小范围；不要重新派发一个覆盖整段历史、
  整个流派或全部对象的宽泛任务。任务是否与历史方向重复由你根据研究语义判断，不要依赖程序替你判断。
   每次调用的结果会带着该方向带回的 Evidence 事实与结论注入历史。
-- ResearchComplete：宣布现有 Evidence 已足以成文，必须同时给出 report_brief
-  （成文目标、覆盖主题、必要结论和限定）。只有确实充分时才调用。
-- ResearchReady：记录现有 Evidence 虽未完整覆盖、但已经能够形成一篇基本成立的部分报告，必须同时给出
-  report_brief。它不是停止信号；只要还有研究轮次，仍应继续补齐并优先争取 ResearchComplete。
+- ReviseResearchSynthesis：当新方向使结论、Evidence 选择、缺口、冲突、下一步或可交付状态发生实质变化时，
+  提交当前完整研究综合稿的新版本。它不是行动日志，也不结束研究；事实总结只能引用当前活跃 Evidence。
+  每次方向结果改变工作集后，调用 ResearchReady 或 ResearchComplete 前必须先修订到工具返回的最新
+  working_set_revision。
+- ResearchComplete：只接收 synthesis_revision；冻结最新、未过期且 readiness=complete_candidate 的综合版本，
+  然后进入写作。不要在这里重新提交另一份报告计划。
+- ResearchReady：把最新、未过期且至少 partial_ready 的综合版本保存为部分报告回退点。它不是停止信号；
+  只要还有合理研究方向和轮次，仍应继续补齐并争取 ResearchComplete。
   只有轮次耗尽或没有新方向时，才把这份部分报告交给 Writer；Writer 必须诚实说明未覆盖主题、证据限制和剩余缺口。
  - ReadWorkingSet：查看当前活跃 Evidence 的轻量摘要和数量；不返回完整 quote。
- - ForgetEvidence：将重复、偏题或当前阶段不需要的 Evidence 从活跃工作集中释放；不删除全局 Evidence 档案。
+ - ReleaseEvidence / RestoreEvidence：在不删除全局档案的前提下释放或恢复 Evidence；任何变更都会使旧综合稿过期。
 【预算约束】ResearchDelegate 受本轮派发配额与总轮次预算双重限制。若工具返回 status=blocked、
 reason=round_budget_exhausted，或被本轮配额拦截：不要再尝试派发或读取工作集，
-立即基于现有 Evidence 调用 ResearchComplete（足以成文）或 ResearchReady（可出部分报告）收尾。
+立即先把研究综合稿修订到最新工作集，再调用 ResearchComplete（足以成文）或 ResearchReady（保存部分报告回退点）收尾。
 ResearchComplete 与 ResearchReady 不能在同一轮同时使用；如果连一篇有证据支撑的基本报告都无法形成，继续派发 ResearchDelegate。
 ResearchAgent 返回的 remaining_gaps 只是局部观察，不是全局结论。你必须综合原问题、所有方向结果和全部
 Evidence 自己判断覆盖度；核心主题均覆盖时调用 ResearchComplete；核心主题尚未全部覆盖但已有清晰论证主线时调用 ResearchReady。"""
+
 
 def _model_call_limit_hit(messages: list[BaseMessage]) -> bool:
     """判断本次 Agent 运行是否被 ModelCallLimitMiddleware 掐断而非模型正常收尾。"""
@@ -115,19 +121,31 @@ class ResearchSupervisor:
             + "\n"
             + language_directive(config.output_language),
             context_schema=SupervisorRuntimeContext,
-            middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
-                agent_name="Supervisor",
-                model=getattr(self.llm, "chat_model", None),
-                # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
-                # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
-                # 轮次配额由 remaining_rounds 提示 + delegate() 的本地 hard check 执行。
-                max_turns=config.max_subtasks_per_round + 10,
-                context_window_tokens=context_window_tokens,
-                retry_tools=[(["ResearchDelegate"], "ResearchDelegate")],
-                serial_tools={"ReadWorkingSet", "ForgetEvidence", "ResearchComplete", "ResearchReady"},
-                tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
-                emit=self._emit_audit_event,
-            ))),
+            middleware=cast(
+                Any,
+                build_agent_middleware(
+                    MiddlewareProfile(
+                        agent_name="Supervisor",
+                        model=getattr(self.llm, "chat_model", None),
+                        # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
+                        # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
+                        # 轮次配额由 remaining_rounds 提示 + delegate() 的本地 hard check 执行。
+                        max_turns=config.max_subtasks_per_round + 10,
+                        context_window_tokens=context_window_tokens,
+                        retry_tools=[(["ResearchDelegate"], "ResearchDelegate")],
+                        serial_tools={
+                            "ReadWorkingSet",
+                            "ReleaseEvidence",
+                            "RestoreEvidence",
+                            "ReviseResearchSynthesis",
+                            "ResearchComplete",
+                            "ResearchReady",
+                        },
+                        tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
+                        emit=self._emit_audit_event,
+                    )
+                ),
+            ),
             name="supervisor",
         )
 
@@ -160,7 +178,7 @@ class ResearchSupervisor:
         """注入审阅回流（如有），然后执行有界的研究工具调用循环。
 
         改写还是补研究不由独立决策判定，而由工具循环里的模型直接表达：
-        ResearchComplete 进入改写，ResearchDelegate 继续补研究。
+        ResearchComplete 冻结最新综合版本进入改写，ResearchDelegate 继续补研究。
         """
         history = self._build_supervisor_context(state)
         # 首次运行时 _build_supervisor_context 会补入初始 System/Human 消息；
@@ -171,7 +189,9 @@ class ResearchSupervisor:
         if review.status == "rejected":
             if review.attempts > self.config.max_post_review_recovery_cycles:
                 update = SupervisorStateUpdate(
-                    run=RunLifecycle(phase="rendering", terminal_reason="review_recovery_exhausted"),
+                    run=RunLifecycle(
+                        phase="rendering", terminal_reason="review_recovery_exhausted"
+                    ),
                     research=section(state, "research", ResearchProgress),
                     writer=section(state, "writer", WriterProgress),
                 )
@@ -191,13 +211,31 @@ class ResearchSupervisor:
             state.get("attempted_source_urls", []),
             normalize_url=self._normalize_source_url,
         )
-        working = WorkingState(state, dedup_key=self._task_deduplication_key)
+        working = WorkingState(
+            state,
+            dedup_key=self._task_deduplication_key,
+            active_evidence_limit=self.config.supervisor_max_active_evidences,
+        )
         research = section(state, "research", ResearchProgress)
         round_no = research.current_round + 1
         working.current_round = round_no
         self._append_research_observation(
             history,
-            {"remaining_rounds": max(0, self.config.max_research_rounds - research.current_round)},
+            {
+                "remaining_rounds": max(
+                    0, self.config.max_research_rounds - research.current_round
+                ),
+                "working_set_revision": working.working_set_revision,
+                "working_set": self._working_set_snapshot(working),
+                "research_synthesis": self._research_synthesis_observation(
+                    working.research_synthesis
+                ),
+                "partial_ready_revision": (
+                    working.partial_ready_synthesis.revision
+                    if working.partial_ready_synthesis
+                    else None
+                ),
+            },
         )
 
         async def delegate(topic: str) -> dict[str, object]:
@@ -223,7 +261,7 @@ class ResearchSupervisor:
                     {
                         "status": "blocked",
                         "reason": "round_budget_exhausted",
-                        "instruction": "研究轮次预算已耗尽；请基于现有 Evidence 立即调用 ResearchComplete 或 ResearchReady。",
+                        "instruction": "研究轮次预算已耗尽；请先修订最新研究综合稿，再调用 ResearchComplete 或 ResearchReady。",
                     }
                 )
             async with runtime.tool_lock:
@@ -247,7 +285,9 @@ class ResearchSupervisor:
                 )
             if not new_tasks:
                 working.stop_reason = StopReason.NO_NEW_TASKS
-                return _reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
+                return _reported(
+                    {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
+                )
             execution = await self._execute_research_task(
                 new_tasks[0],
                 tool_call_id=f"delegate-{new_tasks[0]['id']}",
@@ -266,7 +306,16 @@ class ResearchSupervisor:
                     "remaining_gaps": execution.task_result.remaining_gaps,
                     "conclusion": execution.task_result.conclusion,
                     "failures": execution.task_result.failures,
-                    "evidence": [item.claim for item in execution.evidences],
+                    "working_set_revision": working.working_set_revision,
+                    "evidence": [
+                        {
+                            "evidence_id": item.evidence_id,
+                            "claim": item.claim,
+                            "support": item.support,
+                        }
+                        for item in execution.evidences
+                        if item.evidence_id in working.active_evidence_ids
+                    ],
                 }
             )
 
@@ -323,7 +372,7 @@ class ResearchSupervisor:
                             "fatal_gaps": list(review.gaps),
                             "decision_rules": {
                                 "rewrite": "Evidence 已覆盖核心问题，问题仅是措辞、范围、组织或已知材料利用不足；"
-                                "调用 ResearchComplete 并提供 report_brief，进入改写。",
+                                "确认综合稿仍是最新版本后调用 ResearchComplete，进入改写。",
                                 "research": "核心结论缺少直接证据、来源矛盾，或必须补定义、比较对象或关键事实；"
                                 "调用 ResearchDelegate 补充方向。",
                             },
@@ -333,7 +382,6 @@ class ResearchSupervisor:
                 )
             )
         )
-
 
     def _append_research_observation(
         self,
@@ -395,6 +443,7 @@ class ResearchSupervisor:
                 )
                 task_result = agent_result.task_result
                 evidences = list(agent_result.evidences)
+                selected_ids = list(agent_result.selected_evidence_ids)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -415,14 +464,17 @@ class ResearchSupervisor:
                 {**task_context, **task_result.model_dump()},
                 component="research_agent",
             )
+            selected_set = set(selected_ids)
+            selected_evidences = [item for item in evidences if item.evidence_id in selected_set]
             return TaskExecution(
                 task_result=task_result,
                 evidences=evidences,
+                selected_evidence_ids=selected_ids,
                 source_refs=list(agent_result.source_refs),
                 message=TaskExecution._result_message(
                     task,
                     task_result,
-                    evidences,
+                    selected_evidences,
                     tool_call_id=tool_call_id,
                 ),
             )
@@ -477,21 +529,24 @@ class ResearchSupervisor:
         """把工作状态转为 State 增量与路由决策。"""
         if not working.sufficient and working.stop_reason is None:
             working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
-        meets_material_floor = self._meets_partial_report_threshold(working)
-        # ResearchReady 提供语义判断，但不能绕过本地最低材料安全线；预算耗尽时，
-        # 达到安全线即可兜底进入 Writer，并由 Writer 明确披露未完成部分。
-        can_generate_partial = meets_material_floor and (
-            working.partial_ready
-            or (working.stop_reason is not None and working.stop_reason.allows_partial_report)
+        full_synthesis = working.completed_synthesis
+        partial_synthesis = working.partial_ready_synthesis
+        meets_material_floor = self._meets_partial_report_threshold(working, partial_synthesis)
+        can_generate_partial = partial_synthesis is not None and meets_material_floor
+        if partial_synthesis is not None and not meets_material_floor:
+            working.coverage_gaps.append("已保存的部分报告综合版本未达到本地最低材料门槛。")
+        selected_synthesis = full_synthesis or (partial_synthesis if can_generate_partial else None)
+        can_write = selected_synthesis is not None
+        report_brief = (
+            self._report_brief_from_synthesis(selected_synthesis)
+            if selected_synthesis is not None
+            else None
         )
-        if working.partial_ready and not meets_material_floor:
-            working.coverage_gaps.append(
-                "Supervisor 判断可以形成部分报告，但当前材料未达到本地最低生成门槛。"
-            )
-        if can_generate_partial and working.report_brief is None:
-            working.report_brief = self._build_partial_report_brief(working)
-        can_write = working.sufficient or can_generate_partial
-        writer_directive = self._build_writer_directive(state, working) if can_write else None
+        writer_directive = (
+            self._build_writer_directive(state, working, selected_synthesis, report_brief)
+            if selected_synthesis is not None and report_brief is not None
+            else None
+        )
         deltas = working.deltas()
         research_status = "completed" if working.sufficient else "incomplete"
         generation_mode = (
@@ -503,7 +558,10 @@ class ResearchSupervisor:
             source_refs=cast(list[str], deltas["source_refs"]),
             task_results=cast(list[ResearchDirectionResult], deltas["task_results"]),
             attempted_source_urls=url_reservations.newly_attempted,
-            report_brief=working.report_brief,
+            working_set_revision=working.working_set_revision,
+            research_synthesis=working.research_synthesis,
+            partial_ready_synthesis=working.partial_ready_synthesis,
+            report_brief=report_brief,
             writer_directive=writer_directive,
             active_evidence_ids=sorted(working.active_evidence_ids),
             run=RunLifecycle(
@@ -532,10 +590,10 @@ class ResearchSupervisor:
         self,
         state: ResearchState,
         working: WorkingState,
+        synthesis: ResearchSynthesis,
+        report_brief: ReportBrief,
     ) -> WriterDirective:
-        """把 Supervisor 的判断整理成 Writer 唯一可见的写作指令。"""
-        if working.report_brief is None:
-            raise RuntimeError("WriterDirective 需要 ReportBrief。")
+        """从冻结综合版本派生 Writer 唯一可见的写作指令。"""
         review = section(state, "review", ReviewProgress)
         previous_draft = str(state.get("report_draft") or state.get("writer_draft") or "")
         revision_instructions = (
@@ -548,21 +606,30 @@ class ResearchSupervisor:
         )
         return WriterDirective(
             query=str(state.get("clarified_query") or state.get("query") or ""),
-            report_brief=working.report_brief,
+            report_brief=report_brief,
             research_status="completed" if working.sufficient else "incomplete",
             generation_mode="full" if working.sufficient else "partial",
-            evidence_ids=[item.evidence_id for item in working.active_evidences()],
-            known_gaps=list(dict.fromkeys(working.coverage_gaps))[: self.config.report_max_caveats],
+            evidence_ids=list(synthesis.selected_evidence_ids),
+            known_gaps=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
+                : self.config.report_max_caveats
+            ],
             revision_instructions=revision_instructions,
             previous_draft=previous_draft,
         )
 
-    def _meets_partial_report_threshold(self, working: WorkingState) -> bool:
+    def _meets_partial_report_threshold(
+        self,
+        working: WorkingState,
+        synthesis: ResearchSynthesis | None,
+    ) -> bool:
         """判断材料是否足以写一份明确标注缺口的部分报告。"""
-        active_evidences = working.active_evidences()
-        if len(active_evidences) < self.config.partial_report_min_evidences:
+        if synthesis is None:
             return False
-        source_count = len({item.source_url for item in active_evidences if item.source_url})
+        selected = set(synthesis.selected_evidence_ids)
+        evidences = [item for item in working.evidences if item.evidence_id in selected]
+        if len(evidences) < self.config.partial_report_min_evidences:
+            return False
+        source_count = len({item.source_url for item in evidences if item.source_url})
         return source_count >= self.config.partial_report_min_sources
 
     @staticmethod
@@ -582,35 +649,54 @@ class ResearchSupervisor:
             "active_evidence_count": len(active),
         }
 
-    def _build_partial_report_brief(self, working: WorkingState) -> ReportBrief:
-        """预算耗尽且没有 ResearchComplete 时，为 Writer 生成保守任务书。"""
+    @staticmethod
+    def _research_synthesis_observation(
+        synthesis: ResearchSynthesis | None,
+    ) -> dict[str, object] | None:
+        """每轮固定注入当前综合稿，避免上下文压缩后丢失研究认知。"""
+        if synthesis is None:
+            return None
+        return {
+            "revision": synthesis.revision,
+            "based_on_working_set_revision": synthesis.based_on_working_set_revision,
+            "answer_goal": synthesis.answer_goal,
+            "overall_summary": synthesis.overall_summary,
+            "aspects": [
+                {
+                    "aspect_id": item.aspect_id,
+                    "topic": item.topic,
+                    "status": item.status,
+                    "summary": item.summary,
+                    "evidence_ids": item.evidence_ids,
+                    "remaining_gap": item.remaining_gap,
+                }
+                for item in synthesis.aspects
+            ],
+            "selected_evidence_ids": synthesis.selected_evidence_ids,
+            "open_gaps": synthesis.open_gaps,
+            "conflicts": synthesis.conflicts,
+            "next_actions": synthesis.next_actions,
+            "readiness": synthesis.readiness,
+        }
+
+    def _report_brief_from_synthesis(self, synthesis: ResearchSynthesis) -> ReportBrief:
+        """从冻结综合版本派生报告任务书，避免 Complete 再提交第二事实源。"""
         topics = [
             CoveredTopic(
-                topic=result.research_direction or result.question,
-                role="已获得证据的局部方向",
-                reason="该方向已返回可用于成文的 Evidence。",
-                required=False,
+                topic=aspect.topic,
+                role=aspect.role,
+                reason=aspect.summary or aspect.remaining_gap,
+                required=aspect.required,
             )
-            for result in working.task_results
-            if result.evidence_count > 0
+            for aspect in synthesis.aspects
         ]
-        if not topics:
-            topics = [
-                CoveredTopic(
-                    topic=working.research_query or "已有研究材料",
-                    role="部分证据",
-                    reason="当前仅允许基于已获得材料进行有限回答。",
-                    required=False,
-                )
-            ]
         return ReportBrief(
-            answer_goal=(
-                working.research_query
-                or "基于已获得 Evidence 形成一份明确标注范围和缺口的部分研究报告。"
-            ),
-            covered_topics=topics[: self.config.report_max_topics],
-            required_points=[],
-            caveats=list(dict.fromkeys(working.coverage_gaps))[: self.config.report_max_caveats],
+            answer_goal=synthesis.answer_goal,
+            covered_topics=topics,
+            required_points=[aspect.topic for aspect in synthesis.aspects if aspect.required],
+            caveats=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
+                : self.config.report_max_caveats
+            ],
         )
 
     @staticmethod
@@ -623,7 +709,11 @@ class ResearchSupervisor:
         detail = next(
             (gap for gap in reversed(coverage_gaps) if gap.strip()), "未形成可验证的完整覆盖。"
         )
-        prefix = stop_reason.description if stop_reason else "Supervisor 未确认现有材料足以形成完整研究报告。"
+        prefix = (
+            stop_reason.description
+            if stop_reason
+            else "Supervisor 未确认现有材料足以形成完整研究报告。"
+        )
         return f"{prefix} {detail}"
 
     def _emit_audit_event(

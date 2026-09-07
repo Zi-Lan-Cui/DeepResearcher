@@ -1,5 +1,6 @@
 """ResearchAgent 的方向级运行状态和工具执行上下文。"""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypedDict
@@ -42,11 +43,16 @@ class ResearchRuntimeContext:
     read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
     on_url_already_attempted: Callable[[str], None] | None = None
     event_context: dict[str, object] = field(default_factory=dict)
+    tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass
 class DirectionRunState:
+    # evidences 是有界完整候选档案；active_evidence_ids 才是模型当前工作集。
     evidences: list[Evidence] = field(default_factory=list)
+    active_evidence_ids: set[str] = field(default_factory=set)
+    active_evidence_limit: int = 6
+    evidence_archive_limit: int = 12
     source_refs: list[str] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     read_urls: list[str] = field(default_factory=list)
@@ -59,3 +65,33 @@ class DirectionRunState:
     conclusion: str = ""
     stop_reason: str = "step_budget_exhausted"
     stop_detail: str = "方向级探索步数预算已耗尽。"
+
+    def active_evidences(self) -> list[Evidence]:
+        return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
+
+    def add_evidences(self, evidences: list[Evidence]) -> list[Evidence]:
+        """加入候选档案，并按剩余槽位自动激活新 Evidence。"""
+        existing = {item.evidence_id for item in self.evidences}
+        archive_slots = max(0, self.evidence_archive_limit - len(self.evidences))
+        added = [item for item in evidences if item.evidence_id not in existing][:archive_slots]
+        self.evidences.extend(added)
+        slots = max(0, self.active_evidence_limit - len(self.active_evidence_ids))
+        self.active_evidence_ids.update(item.evidence_id for item in added[:slots])
+        return added
+
+    def release_evidence(self, evidence_ids: list[str]) -> list[str]:
+        released = self.active_evidence_ids.intersection(evidence_ids)
+        self.active_evidence_ids.difference_update(released)
+        return sorted(released)
+
+    def restore_evidence(self, evidence_ids: list[str]) -> list[str]:
+        archived = {item.evidence_id for item in self.evidences}
+        candidates = [
+            item
+            for item in dict.fromkeys(evidence_ids)
+            if item in archived and item not in self.active_evidence_ids
+        ]
+        slots = max(0, self.active_evidence_limit - len(self.active_evidence_ids))
+        restored = candidates[:slots]
+        self.active_evidence_ids.update(restored)
+        return restored

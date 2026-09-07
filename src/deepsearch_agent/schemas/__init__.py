@@ -21,6 +21,8 @@ from deepsearch_agent.schemas.reporting import (
     MarkdownReportDraft,
     ParagraphBinding,
     ReportBrief,
+    ResearchAspect,
+    ResearchSynthesis,
     WriterDirective,
 )
 from deepsearch_agent.schemas.sections import (
@@ -37,14 +39,16 @@ from deepsearch_agent.schemas.sections import (
     WriterResult,
 )
 from deepsearch_agent.schemas.tool_args import (
-    ForgetEvidence,
     ReadSources,
     ReadWorkingSet,
+    ReleaseEvidence,
     ResearchComplete,
     ResearchDelegate,
     ResearchDirectionComplete,
     ResearchReady,
     ResearchToolResult,
+    RestoreEvidence,
+    ReviseResearchSynthesis,
     SearchSources,
 )
 
@@ -52,13 +56,14 @@ __all__ = [
     "Citation",
     "ClarificationDecision",
     "CoveredTopic",
-    "ForgetEvidence",
+    "ReleaseEvidence",
     "MarkdownReportDraft",
     "ParagraphBinding",
     "ReadSources",
     "ReadWorkingSet",
     "ReflectionDecision",
     "ReportBrief",
+    "ResearchAspect",
     "ResearchAgentResult",
     "ResearchComplete",
     "ResearchDelegate",
@@ -67,7 +72,10 @@ __all__ = [
     "ResearchDirectionResult",
     "ResearchProgress",
     "ResearchReady",
+    "ResearchSynthesis",
     "ResearchToolResult",
+    "RestoreEvidence",
+    "ReviseResearchSynthesis",
     "ReviewIssue",
     "ReviewProgress",
     "RouteDecision",

@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from deepsearch_agent.errors import AgentError
 from deepsearch_agent.evidence.models import Evidence
@@ -19,6 +19,7 @@ from deepsearch_agent.schemas.reporting import (
     Citation,
     ParagraphBinding,
     ReportBrief,
+    ResearchSynthesis,
     WriterDirective,
 )
 
@@ -47,7 +48,9 @@ class StopReason(StrEnum):
 
     @property
     def description(self) -> str:
-        return _STOP_REASON_DESCRIPTIONS.get(self, "Supervisor 未确认现有材料足以形成完整研究报告。")
+        return _STOP_REASON_DESCRIPTIONS.get(
+            self, "Supervisor 未确认现有材料足以形成完整研究报告。"
+        )
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
@@ -91,8 +94,14 @@ class RunError(BaseModel):
 
 class RunLifecycle(BaseModel):
     phase: Literal[
-        "routing", "clarification", "researching", "writing", "reviewing",
-        "rendering", "completed", "failed",
+        "routing",
+        "clarification",
+        "researching",
+        "writing",
+        "reviewing",
+        "rendering",
+        "completed",
+        "failed",
     ] = "routing"
     terminal_reason: str = ""
     error: RunError | None = None
@@ -159,8 +168,21 @@ class ResearchAgentResult(BaseModel):
     """ResearchAgent 完成一个方向后的完整返回契约。"""
 
     evidences: list[Evidence] = Field(default_factory=list)
+    selected_evidence_ids: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     task_result: ResearchDirectionResult
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "ResearchAgentResult":
+        archived = {item.evidence_id for item in self.evidences}
+        selected = set(self.selected_evidence_ids)
+        if len(selected) != len(self.selected_evidence_ids):
+            raise ValueError("方向结果不能重复选择同一 Evidence。")
+        if not selected.issubset(archived):
+            raise ValueError("方向选择的 Evidence 必须存在于方向候选档案。")
+        if self.task_result.evidence_count != len(selected):
+            raise ValueError("方向结果 evidence_count 必须等于选中的 Evidence 数量。")
+        return self
 
 
 class SupervisorStateUpdate(BaseModel):
@@ -171,6 +193,9 @@ class SupervisorStateUpdate(BaseModel):
     task_results: list[ResearchDirectionResult] = Field(default_factory=list)
     attempted_source_urls: list[str] = Field(default_factory=list)
     active_evidence_ids: list[str] = Field(default_factory=list)
+    working_set_revision: int = Field(default=0, ge=0)
+    research_synthesis: ResearchSynthesis | None = None
+    partial_ready_synthesis: ResearchSynthesis | None = None
     report_brief: ReportBrief | None = None
     writer_directive: WriterDirective | None = None
     run: RunLifecycle
@@ -190,6 +215,9 @@ class SupervisorStateUpdate(BaseModel):
             "task_results": self.task_results,
             "attempted_source_urls": self.attempted_source_urls,
             "active_evidence_ids": self.active_evidence_ids,
+            "working_set_revision": self.working_set_revision,
+            "research_synthesis": self.research_synthesis,
+            "partial_ready_synthesis": self.partial_ready_synthesis,
             "report_brief": self.report_brief,
             "writer_directive": self.writer_directive,
         }

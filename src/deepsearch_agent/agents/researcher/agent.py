@@ -40,10 +40,10 @@ _RESEARCHER_SYSTEM_PROMPT = """【身份】你是深度研究系统中的方向�
 你不决定整项研究是否完成，不写最终报告，也不把原任务原样交给搜索引擎。
 【行动】调用 SearchSources 请求一到两条短、可直接搜索的检索式；观察候选目录后，调用 ReadSources
 选择真正需要读取的候选来源。可调用 ReadWorkingSet 查看当前已保留 Evidence 的摘要；材料过多或偏题时，
-调用 ForgetEvidence 释放当前工作集中的 Evidence，再继续读取。最后调用 ResearchDirectionComplete 宣布本方向结束。
+调用 ReleaseEvidence 释放活跃槽位，必要时用 RestoreEvidence 恢复候选。最后调用 ResearchDirectionComplete 宣布本方向结束。
 检索式必须针对当前缺口，不能重复历史查询，也不能扩展到 Supervisor 未委派的对象。
 SearchSources 只发现来源，不会自动读取；只有 ReadSources 选择的来源才会抓取和抽取 Evidence。
-ReadWorkingSet 只返回当前工作集摘要，不返回完整 quote；ForgetEvidence 只释放当前方向的工作集，不删除全局档案。
+ReadWorkingSet 只返回当前工作集摘要，不返回完整 quote；ReleaseEvidence 不删除方向候选档案。
 Complete 只表示你已完成本方向的有界执行，不能表示整项研究完成。
 【标准】Evidence 的 claim/quote 才是事实基础；搜索标题、失败 URL 和常识不能充当证据。
 你可因来源被拦截而换术语、语言、资料类型或缩小到可验证子问题，但不得虚构来源。
@@ -82,14 +82,30 @@ class ResearchAgent:
             + "\n"
             + language_directive(config.output_language),
             context_schema=ResearchRuntimeContext,
-            middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
-                agent_name="ResearchAgent",
-                model=getattr(self.llm, "chat_model", None),
-                max_turns=self.config.research_agent_max_turns + 1,
-                context_window_tokens=context_window_tokens,
-                retry_tools=[(["SearchSources"], "SearchSources"), (["ReadSources"], "ReadSources")],
-                emit=self._emit,
-            ))),
+            middleware=cast(
+                Any,
+                build_agent_middleware(
+                    MiddlewareProfile(
+                        agent_name="ResearchAgent",
+                        model=getattr(self.llm, "chat_model", None),
+                        max_turns=self.config.research_agent_max_turns + 1,
+                        context_window_tokens=context_window_tokens,
+                        retry_tools=[
+                            (["SearchSources"], "SearchSources"),
+                            (["ReadSources"], "ReadSources"),
+                        ],
+                        serial_tools={
+                            "SearchSources",
+                            "ReadSources",
+                            "ReadWorkingSet",
+                            "ReleaseEvidence",
+                            "RestoreEvidence",
+                            "ResearchDirectionComplete",
+                        },
+                        emit=self._emit,
+                    )
+                ),
+            ),
             name="researcher",
         )
 
@@ -101,7 +117,12 @@ class ResearchAgent:
         on_url_already_attempted: Callable[[str], None] | None = None,
     ) -> ResearchAgentResult:
         """运行方向级 Agent loop，返回方向级研究结论与轨迹。"""
-        run_state = DirectionRunState()
+        run_state = DirectionRunState(
+            active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
+            evidence_archive_limit=(
+                self.config.research_agent_max_evidence_candidates_per_direction
+            ),
+        )
         runtime = self._runtime_context(
             task,
             run_state,
@@ -190,7 +211,9 @@ class ResearchAgent:
         """读取模型选中的候选来源，并返回紧凑的工具结果。"""
         del reason
         selected_ids = list(dict.fromkeys(candidate_ids))
-        selected = [run_state.candidates[item] for item in selected_ids if item in run_state.candidates]
+        selected = [
+            run_state.candidates[item] for item in selected_ids if item in run_state.candidates
+        ]
         unknown_ids = [item for item in selected_ids if item not in run_state.candidates]
         if unknown_ids:
             run_state.failures.append(f"unknown_candidate_ids: {', '.join(unknown_ids)}")
@@ -215,33 +238,65 @@ class ResearchAgent:
                 raise read_result
             if isinstance(read_result, Exception):
                 run_state.failures.append(f"{url}: {read_result}")
-                self._emit("source_read_failed", {**event_context, "research_direction": task["question"], "url": url, "error": str(read_result)[:500]})
+                self._emit(
+                    "source_read_failed",
+                    {
+                        **event_context,
+                        "research_direction": task["question"],
+                        "url": url,
+                        "error": str(read_result)[:500],
+                    },
+                )
                 continue
             result = SourceReaderToolResult.model_validate(read_result)
             if result.status == "completed":
-                remaining = self.config.research_agent_max_evidences_per_direction - len(run_state.evidences)
-                accepted = list(result.evidences)[:max(0, remaining)]
-                run_state.evidences.extend(accepted)
+                remaining = run_state.evidence_archive_limit - len(run_state.evidences)
+                accepted = list(result.evidences)[: max(0, remaining)]
+                accepted = run_state.add_evidences(accepted)
                 accepted_evidence.extend(accepted)
                 if accepted and result.source_url:
                     run_state.source_refs.append(result.source_url)
             elif result.status == "skipped":
                 reason_code = result.reason_code or "unknown"
                 run_state.skipped.append(reason_code)
-                self._emit("source_read_skipped", {**event_context, "research_direction": task["question"], "url": url, "reason_code": reason_code})
+                self._emit(
+                    "source_read_skipped",
+                    {
+                        **event_context,
+                        "research_direction": task["question"],
+                        "url": url,
+                        "reason_code": reason_code,
+                    },
+                )
             else:
                 error = result.error or "read_failed"
                 run_state.failures.append(f"{url}: {error}")
-                self._emit("source_read_failed", {**event_context, "research_direction": task["question"], "url": url, "error": error})
+                self._emit(
+                    "source_read_failed",
+                    {
+                        **event_context,
+                        "research_direction": task["question"],
+                        "url": url,
+                        "error": error,
+                    },
+                )
         return {
             "candidate_ids": selected_ids,
             "read_candidate_count": len(candidates),
             "unknown_candidate_ids": unknown_ids,
             "evidence": [
-                {"claim": item.claim, "quote": item.quote[: self.config.research_observation_quote_chars], "source": item.source_url, "support": item.support}
+                {
+                    "claim": item.claim,
+                    "quote": item.quote[: self.config.research_observation_quote_chars],
+                    "source": item.source_url,
+                    "support": item.support,
+                }
                 for item in accepted_evidence
             ],
-            "total_evidence_count": len(run_state.evidences),
+            "archive_evidence_count": len(run_state.evidences),
+            "active_evidence_count": len(run_state.active_evidence_ids),
+            "active_evidence_limit": run_state.active_evidence_limit,
+            "archive_evidence_limit": run_state.evidence_archive_limit,
             "skip_reasons": sorted(set(run_state.skipped)),
             "recent_failures": run_state.failures[-4:],
         }
@@ -262,7 +317,11 @@ class ResearchAgent:
         if not new_queries:
             error = "没有新的可执行检索式；请基于已有候选读取来源或调用 Complete。"
             run_state.failures.append(f"no_novel_queries: {error}")
-            return {"status": "skipped", "reason": "no_novel_queries", "proposed_queries": proposed_queries}
+            return {
+                "status": "skipped",
+                "reason": "no_novel_queries",
+                "proposed_queries": proposed_queries,
+            }
         run_state.queries.extend(new_queries)
         result = SearchToolResult.model_validate(
             await self.search_tool.arun_queries(task, queries=new_queries)
@@ -320,7 +379,10 @@ class ResearchAgent:
             "research_direction": task["question"],
             "remaining_budget": {
                 "queries": self.config.research_agent_max_queries,
-                "evidence": self.config.research_agent_max_evidences_per_direction,
+                "active_evidence": self.config.research_agent_max_evidences_per_direction,
+                "evidence_archive": (
+                    self.config.research_agent_max_evidence_candidates_per_direction
+                ),
                 "turns": self.config.research_agent_max_turns,
             },
         }
@@ -332,7 +394,9 @@ class ResearchAgent:
             ),
         ]
 
-    async def _read_candidates(self, task: SubTask, candidates: list[SearchCandidate]) -> list[object]:
+    async def _read_candidates(
+        self, task: SubTask, candidates: list[SearchCandidate]
+    ) -> list[object]:
         semaphore = asyncio.Semaphore(self.config.research_agent_read_concurrency)
 
         async def read_one(candidate: SearchCandidate) -> object:
@@ -373,6 +437,10 @@ class ResearchAgent:
         status: Literal["completed", "failed", "cancelled"],
         run_state: DirectionRunState,
     ) -> ResearchAgentResult:
+        active_evidences = run_state.active_evidences()
+        active_sources = list(
+            dict.fromkeys(item.source_url for item in active_evidences if item.source_url)
+        )
         task_result = ResearchDirectionResult(
             task_id=task["id"],
             round=int(task.get("round", 1)),
@@ -382,13 +450,13 @@ class ResearchAgent:
             execution_status=status,
             coverage_status=(
                 "sufficient"
-                if run_state.stop_reason == "complete" and run_state.evidences
+                if run_state.stop_reason == "complete" and active_evidences
                 else "partial"
-                if run_state.evidences
+                if active_evidences
                 else "insufficient"
             ),
-            evidence_count=len(run_state.evidences),
-            source_count=len(run_state.source_refs),
+            evidence_count=len(active_evidences),
+            source_count=len(active_sources),
             answered_points=run_state.answered_points,
             conclusion=run_state.conclusion,
             remaining_gaps=run_state.remaining_gaps,
@@ -401,6 +469,7 @@ class ResearchAgent:
         )
         return ResearchAgentResult(
             evidences=run_state.evidences,
+            selected_evidence_ids=[item.evidence_id for item in active_evidences],
             source_refs=list(dict.fromkeys(run_state.source_refs)),
             task_result=task_result,
         )
