@@ -20,13 +20,14 @@ from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMInvoker
 from deepsearch_agent.schemas import (
     Citation,
-    ForgetEvidence,
     MarkdownReportDraft,
     ParagraphBinding,
     ReadWorkingSet,
+    ReleaseEvidence,
     ReportBrief,
     ResearchDirectionComplete,
     ResearchDirectionDecision,
+    RestoreEvidence,
     SearchSources,
     WriterDirective,
 )
@@ -213,12 +214,18 @@ class DirectionLLM:
         elif decision.action == "inspect":
             args = ReadWorkingSet(reason=decision.reason).model_dump()
             name = "ReadWorkingSet"
-        elif decision.action == "forget":
-            args = ForgetEvidence(
+        elif decision.action == "release":
+            args = ReleaseEvidence(
                 evidence_ids=decision.evidence_ids,
                 reason=decision.reason,
             ).model_dump()
-            name = "ForgetEvidence"
+            name = "ReleaseEvidence"
+        elif decision.action == "restore":
+            args = RestoreEvidence(
+                evidence_ids=decision.evidence_ids,
+                reason=decision.reason,
+            ).model_dump()
+            name = "RestoreEvidence"
         else:
             args = ResearchDirectionComplete(
                 reason=decision.reason,
