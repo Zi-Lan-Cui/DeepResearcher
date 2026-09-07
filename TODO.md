@@ -30,6 +30,7 @@
 - [x] UI：阶段块（Router/Clarify/Supervisor/Writer/Reviewer/Render 事件驱动出现，绿呼吸点→灰/红收束）+ 方向卡（编号、滚动动作行、▸ 展开明细、状态配色）+ 全局时间线 + stats 指标条 + 论文式上标角标与来源面板互跳 + Clarifier 三选项/Other + 历史列表响应式宽度与 10/15/20 条自适应分页。
 - [x] 语义修正：`completed ≠ 成功`（部分报告琥珀徽章）；reflection 对内容审查/坏 JSON 定向重试（`AGENT_REFLECTION_RETRY_ATTEMPTS`）；引用条数硬上限移除（曾制造两起 writer 死循环，聚焦交由提示词+审阅把关）。
 - [x] writer 工具契约单一数字（读窗口 50 / 每轮交付 30 / 无引用上限），机制描述归工具、角色边界归系统提示词。
+- [x] Evidence 两级有界工作集：Researcher 方向候选档案/活跃集合与 Supervisor 全局档案/活跃集合分离，Release 可恢复且不物理删除；版本化 `ResearchSynthesis` 以 `working_set_revision` 防止旧判断进入 Complete，Ready 保存可部分交付回退版本，WriterDirective 仅从冻结版本派生。
 - [x] 输出语言运行时配置（`AGENT_OUTPUT_LANGUAGE`）注入全部六处生成用户可见文字的提示词；quote 保持原文例外。
 - [x] 测试按引擎/服务/前端契约分主题组织；服务层测试跑文件 SQLite 还原 asyncpg 并发语义；测试进程显式使用与 Uvicorn 生产运行时一致的 uvloop，并有 LangChain model/tool wrapper 超时冒烟回归。
 - [x] 真机端到端已验证：注册→提交→逐字流→报告→取消→kill -9 收敛→回放闭环→内容审查事故复盘。
@@ -110,7 +111,7 @@
 - [ ] **Redis 预览连接复用**：当单 API 实例长期承载大量 SSE 连接时，将“每 SSE 一个 Pub/Sub 订阅”升级为进程内单读取器 + run_id 本地分发；在压测证明 Redis 连接数成为瓶颈时实施。
 - [ ] **Router/Clarifier 解释流优化**：接入 `get_stream_writer()` + `stream_mode="custom"`；Router 在结构化校验完成后发送安全化 `reason`，Clarifier 开放正常文字预览，并在工具调用前解释判断依据。后端发送完整可信文本，逐字动画由前端完成，不用 `sleep()` 制造分片。
 - [ ] **Clarifier 工具呈现优化**：`AskClarification` 的问题与三个选项保持原子渲染；`ClarificationComplete` 只提交最终结构化判断；增加“工具调用前说明理由”的守卫与空解释降级文案。
-- [ ] **Supervisor 工具可视化**：为 `ResearchComplete`、`ResearchReady`、`ReadWorkingSet`、`ForgetEvidence` 补安全领域事件；区分永久阶段结论与低权重临时动作，不向前端暴露 Evidence ID、原始参数或异常详情。
+- [ ] **Supervisor 工具可视化**：为 `ReviseResearchSynthesis`、`ResearchComplete`、`ResearchReady`、`ReadWorkingSet`、`ReleaseEvidence` / `RestoreEvidence` 补安全领域事件；区分永久阶段结论与低权重临时动作，不向前端暴露 Evidence ID、原始参数或异常详情。
 - [ ] **排除方向智能渲染**：`delegate_completed(status=skipped|blocked)` 携带安全化方向摘要和标准原因（duplicate / budget / out_of_scope / covered），前端以灰色可折叠方向卡展示，不再统一压成“已跳过”。
 - [ ] **统一工具活动协议**：评估 `tool_activity {stage, tool, phase, presentation}` 投影层，形成“模型解释 → 工具动作 → 权威阶段结论”的一致交互；custom 流只负责观感，持久化聚合事件负责回放与纠正。
 - [ ] 跨 Run 语义检索与研究档案复用（先等短期上下文/checkpointer 落地）。
