@@ -7,10 +7,11 @@ from langchain_core.tools import BaseTool, tool
 
 from deepsearch_agent.agents.researcher.state import DirectionRunState, ResearchRuntimeContext
 from deepsearch_agent.schemas import (
-    ForgetEvidence,
     ReadSources,
     ReadWorkingSet,
+    ReleaseEvidence,
     ResearchDirectionComplete,
+    RestoreEvidence,
     SearchSources,
 )
 
@@ -23,7 +24,7 @@ def _tool_result(payload: object) -> str:
 
 
 def _working_set_snapshot(run_state: DirectionRunState) -> dict[str, object]:
-    evidences = run_state.evidences
+    evidences = run_state.active_evidences()
     return {
         "active_evidence": [
             {
@@ -35,6 +36,10 @@ def _working_set_snapshot(run_state: DirectionRunState) -> dict[str, object]:
             for item in evidences
         ],
         "active_evidence_count": len(evidences),
+        "active_evidence_limit": run_state.active_evidence_limit,
+        "reserve_evidence_count": len(run_state.evidences) - len(evidences),
+        "archive_evidence_count": len(run_state.evidences),
+        "archive_evidence_limit": run_state.evidence_archive_limit,
     }
 
 
@@ -70,8 +75,8 @@ def build_researcher_tools() -> list[BaseTool]:
         del reason
         return _tool_result(_working_set_snapshot(runtime.context.run_state))
 
-    @tool("ForgetEvidence", args_schema=ForgetEvidence)
-    async def forget_evidence(
+    @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
+    async def release_evidence(
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[ResearchRuntimeContext],
@@ -80,15 +85,33 @@ def build_researcher_tools() -> list[BaseTool]:
         del reason
         run_state = runtime.context.run_state
         requested = list(dict.fromkeys(evidence_ids))
-        existing = {item.evidence_id for item in run_state.evidences}
-        forgotten = [item for item in requested if item in existing]
-        run_state.evidences = [
-            item for item in run_state.evidences if item.evidence_id not in forgotten
-        ]
+        existing = set(run_state.active_evidence_ids)
+        released = run_state.release_evidence(requested)
         return _tool_result(
             {
-                "forgotten_evidence_ids": forgotten,
+                "released_evidence_ids": released,
                 "unknown_evidence_ids": [item for item in requested if item not in existing],
+                **_working_set_snapshot(run_state),
+            }
+        )
+
+    @tool("RestoreEvidence", args_schema=RestoreEvidence)
+    async def restore_evidence(
+        evidence_ids: list[str],
+        reason: str,
+        runtime: ToolRuntime[ResearchRuntimeContext],
+    ) -> str:
+        """从方向候选档案恢复 Evidence；不会超过活跃工作集上限。"""
+        del reason
+        run_state = runtime.context.run_state
+        requested = list(dict.fromkeys(evidence_ids))
+        archived = {item.evidence_id for item in run_state.evidences}
+        restored = run_state.restore_evidence(requested)
+        return _tool_result(
+            {
+                "restored_evidence_ids": restored,
+                "not_restored_evidence_ids": [item for item in requested if item not in restored],
+                "unknown_evidence_ids": [item for item in requested if item not in archived],
                 **_working_set_snapshot(run_state),
             }
         )
@@ -96,6 +119,7 @@ def build_researcher_tools() -> list[BaseTool]:
     @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
     async def complete_direction(
         reason: str,
+        selected_evidence_ids: list[str],
         answered_points: list[str],
         conclusion: str,
         remaining_gaps: list[str],
@@ -106,7 +130,13 @@ def build_researcher_tools() -> list[BaseTool]:
         run_state.remaining_gaps = list(
             dict.fromkeys(gap.strip() for gap in remaining_gaps if gap.strip())
         )
-        if run_state.evidences:
+        requested = list(dict.fromkeys(selected_evidence_ids))
+        if requested:
+            active = set(run_state.active_evidence_ids)
+            selected = [item for item in requested if item in active]
+            run_state.active_evidence_ids = set(selected)
+        active_evidences = run_state.active_evidences()
+        if active_evidences:
             run_state.answered_points = list(dict.fromkeys(answered_points))
             run_state.conclusion = conclusion.strip()
             run_state.stop_reason = "complete"
@@ -120,8 +150,17 @@ def build_researcher_tools() -> list[BaseTool]:
             {
                 "status": "accepted",
                 "stop_reason": run_state.stop_reason,
-                "evidence_count": len(run_state.evidences),
+                "selected_evidence_ids": [item.evidence_id for item in active_evidences],
+                "evidence_count": len(active_evidences),
+                "archive_evidence_count": len(run_state.evidences),
             }
         )
 
-    return [search_sources, read_sources, read_working_set, forget_evidence, complete_direction]
+    return [
+        search_sources,
+        read_sources,
+        read_working_set,
+        release_evidence,
+        restore_evidence,
+        complete_direction,
+    ]

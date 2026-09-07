@@ -25,6 +25,59 @@ class ReportBrief(BaseModel):
     caveats: list[str] = Field(default_factory=list, max_length=6)
 
 
+class ResearchAspect(BaseModel):
+    """版本化研究综合稿中的一个稳定论证方面。"""
+
+    aspect_id: str = Field(min_length=1, max_length=80)
+    topic: str = Field(min_length=1, max_length=500)
+    role: str = Field(min_length=1, max_length=500)
+    required: bool = True
+    status: Literal["covered", "partial", "uncovered", "conflicted"]
+    summary: str = Field(default="", max_length=2_000)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=30)
+    remaining_gap: str = Field(default="", max_length=1_000)
+
+    @model_validator(mode="after")
+    def validate_grounding(self) -> "ResearchAspect":
+        if self.status == "covered" and not self.evidence_ids:
+            raise ValueError("covered 研究方面必须绑定至少一条 Evidence。")
+        if self.status == "uncovered" and self.evidence_ids:
+            raise ValueError("uncovered 研究方面不能绑定 Evidence。")
+        if self.status in {"partial", "uncovered", "conflicted"} and not self.remaining_gap:
+            raise ValueError(f"{self.status} 研究方面必须明确 remaining_gap。")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("同一研究方面不能重复绑定 Evidence。")
+        return self
+
+
+class ResearchSynthesis(BaseModel):
+    """Supervisor 持续修订、最终冻结后交给 Writer 的研究综合稿。"""
+
+    revision: int = Field(ge=1)
+    based_on_working_set_revision: int = Field(ge=0)
+    answer_goal: str = Field(min_length=1, max_length=2_000)
+    overall_summary: str = Field(min_length=1, max_length=4_000)
+    aspects: list[ResearchAspect] = Field(min_length=1, max_length=6)
+    selected_evidence_ids: list[str] = Field(default_factory=list, max_length=50)
+    open_gaps: list[str] = Field(default_factory=list, max_length=12)
+    conflicts: list[str] = Field(default_factory=list, max_length=8)
+    next_actions: list[str] = Field(default_factory=list, max_length=8)
+    readiness: Literal["not_ready", "partial_ready", "complete_candidate"]
+    decision_rationale: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "ResearchSynthesis":
+        if len(set(self.selected_evidence_ids)) != len(self.selected_evidence_ids):
+            raise ValueError("研究综合稿不能重复选择同一 Evidence。")
+        selected = set(self.selected_evidence_ids)
+        referenced = {item for aspect in self.aspects for item in aspect.evidence_ids}
+        if not referenced.issubset(selected):
+            raise ValueError("研究方面引用的 Evidence 必须包含在 selected_evidence_ids 中。")
+        if self.readiness != "not_ready" and not selected:
+            raise ValueError("可交付研究综合稿必须选择至少一条 Evidence。")
+        return self
+
+
 class WriterDirective(BaseModel):
     """Supervisor 交给 Writer 的唯一写作交接契约。"""
 

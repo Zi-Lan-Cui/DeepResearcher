@@ -23,6 +23,7 @@ from deepsearch_agent.schemas import (
     ReportBrief,
     ResearchDirectionResult,
     ResearchProgress,
+    ResearchSynthesis,
     ReviewProgress,
     RunLifecycle,
     WriterDirective,
@@ -120,6 +121,9 @@ class ResearchState(TypedDict, total=False):
     attempted_source_urls: Annotated[list[str], merge_unique]
     # Supervisor 当前工作集；完整 Evidence 档案仍保存在 evidences 中。
     active_evidence_ids: list[str]
+    working_set_revision: int
+    research_synthesis: ResearchSynthesis | None
+    partial_ready_synthesis: ResearchSynthesis | None
     report_brief: ReportBrief | None
     writer_directive: WriterDirective | None
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
@@ -148,11 +152,18 @@ def restore_state_models(state: dict[str, object]) -> None:
         ("review", ReviewProgress),
         ("report_brief", ReportBrief),
         ("writer_directive", WriterDirective),
+        ("research_synthesis", ResearchSynthesis),
+        ("partial_ready_synthesis", ResearchSynthesis),
     )
     for key, model_cls in scalar_models:
         value = state.get(key)
         if value is None:
-            if key in {"report_brief", "writer_directive"}:
+            if key in {
+                "report_brief",
+                "writer_directive",
+                "research_synthesis",
+                "partial_ready_synthesis",
+            }:
                 continue
             state[key] = model_cls()  # type: ignore[call-arg]
         elif not isinstance(value, model_cls):

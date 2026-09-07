@@ -10,9 +10,9 @@ from langchain_core.messages import ToolMessage
 from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import (
-    ReportBrief,
     ResearchDirectionResult,
     ResearchProgress,
+    ResearchSynthesis,
     ResearchToolResult,
     StopReason,
 )
@@ -42,9 +42,7 @@ class RunUrlReservations:
     ):
         self._normalize_url = normalize_url
         self._attempted = {
-            normalized
-            for url in attempted_urls
-            if (normalized := normalize_url(url))
+            normalized for url in attempted_urls if (normalized := normalize_url(url))
         }
         self._newly_attempted: list[str] = []
         self._lock = asyncio.Lock()
@@ -71,6 +69,7 @@ class TaskExecution:
 
     task_result: ResearchDirectionResult
     evidences: list[Evidence]
+    selected_evidence_ids: list[str]
     source_refs: list[str]
     message: ToolMessage
 
@@ -101,6 +100,7 @@ class TaskExecution:
         return cls(
             task_result=task_result,
             evidences=[],
+            selected_evidence_ids=[],
             source_refs=[],
             message=cls._result_message(task, task_result, [], tool_call_id=tool_call_id),
         )
@@ -152,14 +152,23 @@ class WorkingState:
     工作副本分离；这些簿记集中在这里，而不是散落成一组平行局部变量。
     """
 
-    def __init__(self, state: ResearchState, *, dedup_key: Callable[[str], str]):
+    def __init__(
+        self,
+        state: ResearchState,
+        *,
+        dedup_key: Callable[[str], str],
+        active_evidence_limit: int,
+    ):
         self._dedup_key = dedup_key
         self.evidences = list(state.get("evidences", []))
         active_ids = state.get("active_evidence_ids")
         self.active_evidence_ids = (
-            set(active_ids) if active_ids is not None else {item.evidence_id for item in self.evidences}
+            set(active_ids)
+            if active_ids is not None
+            else {item.evidence_id for item in self.evidences}
         )
         self.released_evidence_ids: set[str] = set()
+        self.active_evidence_limit = active_evidence_limit
         self.source_refs = list(state.get("source_refs", []))
         self.task_results = list(state.get("task_results", []))
         research = section(state, "research", ResearchProgress)
@@ -171,11 +180,21 @@ class WorkingState:
         }
         self._snapshot = (len(self.evidences), len(self.source_refs), len(self.task_results))
         self.sufficient = False
-        self.partial_ready = False
-        self.report_brief: ReportBrief | None = None
+        self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
+        self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
+        self.partial_ready_synthesis = self._restore_synthesis(state.get("partial_ready_synthesis"))
+        self.completed_synthesis: ResearchSynthesis | None = None
         self.stop_reason: StopReason | None = None
 
         self._task_counter: int = 0
+
+    @staticmethod
+    def _restore_synthesis(value: object) -> ResearchSynthesis | None:
+        if value is None:
+            return None
+        if isinstance(value, ResearchSynthesis):
+            return value
+        return ResearchSynthesis.model_validate(value)
 
     def allocate_task_index(self) -> int:
         """分配独立的任务序号，不把研究轮次编码进任务 ID。
@@ -210,18 +229,46 @@ class WorkingState:
         但必须保留下来，避免最终状态丢失诊断信息。
         """
         self.evidences.extend(execution.evidences)
-        self.active_evidence_ids.update(item.evidence_id for item in execution.evidences)
+        available = {item.evidence_id for item in execution.evidences}
+        selected = [item for item in execution.selected_evidence_ids if item in available]
+        slots = max(0, self.active_evidence_limit - len(self.active_evidence_ids))
+        self.active_evidence_ids.update(selected[:slots])
         self.source_refs.extend(execution.source_refs)
         self.task_results.append(execution.task_result)
         self.coverage_gaps.extend(execution.task_result.remaining_gaps)
         self.coverage_gaps = list(dict.fromkeys(gap for gap in self.coverage_gaps if gap.strip()))
+        self.working_set_revision += 1
 
     def release_evidence(self, evidence_ids: list[str]) -> list[str]:
         """从 Supervisor 当前工作集释放 Evidence；全量档案仍保留。"""
         existing = self.active_evidence_ids.intersection(evidence_ids)
         self.active_evidence_ids.difference_update(existing)
         self.released_evidence_ids.update(existing)
+        if existing:
+            self.working_set_revision += 1
         return sorted(existing)
+
+    def restore_evidence(self, evidence_ids: list[str]) -> list[str]:
+        """从全局 Evidence 档案恢复候选，同时遵守活跃工作集上限。"""
+        archived = {item.evidence_id for item in self.evidences}
+        candidates = [
+            item
+            for item in dict.fromkeys(evidence_ids)
+            if item in archived and item not in self.active_evidence_ids
+        ]
+        slots = max(0, self.active_evidence_limit - len(self.active_evidence_ids))
+        restored = candidates[:slots]
+        self.active_evidence_ids.update(restored)
+        self.released_evidence_ids.difference_update(restored)
+        if restored:
+            self.working_set_revision += 1
+        return restored
+
+    def synthesis_is_fresh(self, synthesis: ResearchSynthesis | None) -> bool:
+        return bool(
+            synthesis is not None
+            and synthesis.based_on_working_set_revision == self.working_set_revision
+        )
 
     def active_evidences(self) -> list[Evidence]:
         """返回当前工作集中的 Evidence。"""

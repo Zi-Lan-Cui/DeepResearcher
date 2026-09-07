@@ -10,7 +10,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
-from deepsearch_agent.schemas.reporting import ReportBrief
+from deepsearch_agent.schemas.reporting import ResearchAspect
 from deepsearch_agent.schemas.sections import ResearchDirectionResult
 
 
@@ -48,13 +48,22 @@ class ReadWorkingSet(BaseModel):
     reason: str = Field(default="", description="说明需要重新检查工作集的原因。")
 
 
-class ForgetEvidence(BaseModel):
-    """从当前 Agent 工作集释放 Evidence；不删除全局 Evidence 档案。"""
+class ReleaseEvidence(BaseModel):
+    """从当前 Agent 活跃工作集释放 Evidence；不删除 Evidence 档案。"""
 
     allow_parallel: ClassVar[bool] = False
 
     evidence_ids: list[str] = Field(min_length=1, max_length=8)
     reason: str = Field(description="说明这些 Evidence 为什么应从当前工作集中释放。")
+
+
+class RestoreEvidence(BaseModel):
+    """将 Evidence 档案中的候选重新放回当前活跃工作集。"""
+
+    allow_parallel: ClassVar[bool] = False
+
+    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+    reason: str = Field(description="说明为什么需要重新启用这些 Evidence。")
 
 
 class ResearchDirectionComplete(BaseModel):
@@ -63,6 +72,11 @@ class ResearchDirectionComplete(BaseModel):
     allow_parallel: ClassVar[bool] = False
 
     reason: str = Field(description="为什么当前方向可以停止继续探索。")
+    selected_evidence_ids: list[str] = Field(
+        default_factory=list,
+        max_length=12,
+        description="本方向最终推荐给 Supervisor 的活跃 Evidence ID。",
+    )
     answered_points: list[str] = Field(default_factory=list, max_length=4)
     conclusion: str = ""
     remaining_gaps: list[str] = Field(
@@ -86,25 +100,45 @@ class ResearchDelegate(BaseModel):
 
 
 class ResearchComplete(BaseModel):
-    """Supervisor 的终止信号:现有 Evidence 已足以成文。
-
-    尚未充分时不调用本工具,继续用 ResearchDelegate 派发互补方向;
-    是否存在"不足"这一中间态不由模型声明,而由它是否继续派发来表达。
-    """
+    """冻结最新研究综合稿并终止研究阶段。"""
 
     allow_parallel: ClassVar[bool] = False
 
-    reason: str
-    report_brief: ReportBrief
+    synthesis_revision: int = Field(ge=1)
+    reason: str = Field(description="为什么该综合版本已经足以形成完整报告。")
 
 
 class ResearchReady(BaseModel):
-    """Supervisor 判断已有材料可以先形成一份带缺口声明的部分报告。"""
+    """把当前综合版本保存为可部分交付回退点；不会终止研究。"""
 
     allow_parallel: ClassVar[bool] = False
 
-    reason: str = Field(description="说明为什么材料足以形成基本但可能不完整的报告。")
-    report_brief: ReportBrief
+    synthesis_revision: int = Field(ge=1)
+    reason: str = Field(description="为什么该版本已建立可诚实交付的最小证据链。")
+
+
+class ReviseResearchSynthesis(BaseModel):
+    """提交 Supervisor 对当前研究状态的下一版完整规范化综合稿。"""
+
+    allow_parallel: ClassVar[bool] = False
+
+    expected_revision: int = Field(
+        ge=0,
+        description="当前综合稿版本；尚未建立综合稿时传 0。",
+    )
+    expected_working_set_revision: int = Field(
+        ge=0,
+        description="当前工具观察到的 Evidence/任务工作集版本。",
+    )
+    answer_goal: str = Field(min_length=1, max_length=2_000)
+    overall_summary: str = Field(min_length=1, max_length=4_000)
+    aspects: list[ResearchAspect] = Field(min_length=1, max_length=6)
+    selected_evidence_ids: list[str] = Field(default_factory=list, max_length=50)
+    open_gaps: list[str] = Field(default_factory=list, max_length=12)
+    conflicts: list[str] = Field(default_factory=list, max_length=8)
+    next_actions: list[str] = Field(default_factory=list, max_length=8)
+    readiness: Literal["not_ready", "partial_ready", "complete_candidate"]
+    decision_rationale: str = Field(min_length=1, max_length=2_000)
 
 
 class ResearchToolResult(BaseModel):
