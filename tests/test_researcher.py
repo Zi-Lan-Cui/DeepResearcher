@@ -5,6 +5,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from deepsearch_agent.agents.researcher import ResearchAgent
+from deepsearch_agent.agents.researcher.state import DirectionRunState
 from deepsearch_agent.config import AgentConfig
 from deepsearch_agent.evidence.extractor import ExtractionResult
 from deepsearch_agent.evidence.models import Evidence
@@ -71,21 +72,20 @@ def test_research_agent_autonomously_decides_queries_then_collects_direction_evi
 
 def test_research_agent_records_context_observations_and_tool_results():
     agent = researcher_agent(
-            AgentConfig(
-                research_agent_max_evidences_per_direction=2,
-                research_agent_max_turns=3,
+        AgentConfig(
+            research_agent_max_evidences_per_direction=2,
+            research_agent_max_turns=3,
+        ),
+        [
+            ResearchDirectionDecision(action="search", reason="先查直接事实", queries=["方向定义"]),
+            ResearchDirectionDecision(
+                action="read",
+                reason="读取候选来源",
+                candidate_ids=[
+                    "c-" + hashlib.sha1("https://example.com/方向定义/a".encode()).hexdigest()[:10]
+                ],
             ),
-            [
-                ResearchDirectionDecision(action="search", reason="先查直接事实", queries=["方向定义"]),
-                ResearchDirectionDecision(
-                    action="read",
-                    reason="读取候选来源",
-                    candidate_ids=[
-                        "c-"
-                        + hashlib.sha1("https://example.com/方向定义/a".encode()).hexdigest()[:10]
-                    ],
-                ),
-                ResearchDirectionDecision(action="complete", reason="材料已足够"),
+            ResearchDirectionDecision(action="complete", reason="材料已足够"),
         ],
     )
 
@@ -118,14 +118,20 @@ def test_research_agent_can_inspect_and_forget_its_working_set():
                 ],
             ),
             ResearchDirectionDecision(action="inspect", reason="确认工作集"),
-            ResearchDirectionDecision(action="forget", reason="释放当前材料", evidence_ids=["r1-1-src-unknown-ev-1"]),
+            ResearchDirectionDecision(
+                action="release", reason="释放当前材料", evidence_ids=["r1-1-src-unknown-ev-1"]
+            ),
             ResearchDirectionDecision(action="complete", reason="停止"),
         ],
     )
-    # 该测试只验证工具协议和观察回流；ID 不匹配时 ForgetEvidence 应安全返回 unknown。
+    # 该测试只验证工具协议和观察回流；ID 不匹配时 ReleaseEvidence 应安全返回 unknown。
     result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
     assert result.task_result.execution_status == "completed"
-    assert any("工作集" in str(message.content) for snapshot in agent.llm.seen_messages for message in snapshot)
+    assert any(
+        "工作集" in str(message.content)
+        for snapshot in agent.llm.seen_messages
+        for message in snapshot
+    )
 
 
 def test_research_agent_can_stop_a_direction_without_unnecessary_search():
@@ -334,3 +340,32 @@ def test_source_reader_caps_search_summary_evidence_at_partial_support():
 
 async def _true() -> bool:
     return True
+
+
+def test_direction_evidence_pool_releases_slots_without_deleting_archive():
+    pool = DirectionRunState(active_evidence_limit=2, evidence_archive_limit=4)
+    first = [
+        Evidence(
+            evidence_id=f"e{index}",
+            subtask_id="task-1",
+            research_direction="方向",
+            claim=f"事实 {index}",
+            quote=f"原文 {index}",
+            source_url=f"https://example.com/{index}",
+        )
+        for index in range(1, 5)
+    ]
+
+    pool.add_evidences(first[:2])
+    assert pool.active_evidence_ids == {"e1", "e2"}
+
+    assert pool.release_evidence(["e1"]) == ["e1"]
+    pool.add_evidences(first[2:])
+
+    assert [item.evidence_id for item in pool.evidences] == ["e1", "e2", "e3", "e4"]
+    assert pool.active_evidence_ids == {"e2", "e3"}
+    assert pool.restore_evidence(["e1"]) == []  # 活跃槽位已满
+
+    pool.release_evidence(["e2"])
+    assert pool.restore_evidence(["e1"]) == ["e1"]
+    assert pool.active_evidence_ids == {"e1", "e3"}

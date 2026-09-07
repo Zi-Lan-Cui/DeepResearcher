@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import json
+import re
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -24,18 +26,97 @@ class SupervisorLLM:
     bind_tools 返回的模型直接返回带 tool_calls 的 AIMessage。
     """
 
-    def __init__(self, *, delegate_topics, complete_args=None):
+    def __init__(self, *, delegate_topics, complete_args=None, ready=False):
         self.delegate_topics = delegate_topics
         self.complete_args = complete_args
+        self.ready = ready
 
     def bind_tools(self, _tools, tool_choice="any"):
         return self
 
     async def ainvoke(self, messages):
         history = "\n".join(str(message.content) for message in messages)
-        if self.complete_args is not None and (
+        revised = next(
+            (
+                message
+                for message in reversed(messages)
+                if isinstance(message, ToolMessage)
+                and message.name == "ReviseResearchSynthesis"
+                and '"status": "accepted"' in str(message.content)
+            ),
+            None,
+        )
+        if self.ready and any(
+            isinstance(message, ToolMessage)
+            and message.name == "ResearchReady"
+            and '"status": "recorded"' in str(message.content)
+            for message in messages
+        ):
+            return AIMessage(content="已保存部分报告回退版本。")
+        if (self.complete_args is not None or self.ready) and revised is not None:
+            payload = json.loads(str(revised.content).split("\n", 1)[-1])
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ResearchReady" if self.ready else "ResearchComplete",
+                        "args": {
+                            "synthesis_revision": payload["synthesis_revision"],
+                            "reason": (
+                                "已建立最小证据链。" if self.ready else self.complete_args["reason"]
+                            ),
+                        },
+                        "id": "call_ready" if self.ready else "call_complete",
+                    }
+                ],
+            )
+        if (self.complete_args is not None or self.ready) and (
             "research_direction" in history or not self.delegate_topics
         ):
+            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
+            if evidence_ids:
+                revisions = [
+                    int(item) for item in re.findall(r'"working_set_revision":\s*(\d+)', history)
+                ]
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ReviseResearchSynthesis",
+                            "args": {
+                                "expected_revision": 0,
+                                "expected_working_set_revision": max(revisions, default=0),
+                                "answer_goal": "回答测试问题",
+                                "overall_summary": "已有 Evidence 支撑核心结论。",
+                                "aspects": [
+                                    {
+                                        "aspect_id": "core",
+                                        "topic": "核心结论",
+                                        "role": "主线",
+                                        "required": True,
+                                        "status": "covered",
+                                        "summary": "直接回答问题",
+                                        "evidence_ids": evidence_ids,
+                                        "remaining_gap": "",
+                                    }
+                                ],
+                                "selected_evidence_ids": evidence_ids,
+                                "open_gaps": [],
+                                "conflicts": [],
+                                "next_actions": [],
+                                "readiness": (
+                                    "partial_ready" if self.ready else "complete_candidate"
+                                ),
+                                "decision_rationale": (
+                                    "已建立最小证据链。"
+                                    if self.ready
+                                    else self.complete_args["reason"]
+                                ),
+                            },
+                            "id": "call_revise",
+                        }
+                    ],
+                )
             return AIMessage(
                 content="",
                 tool_calls=[
@@ -64,6 +145,7 @@ class FixedResearchAgent:
         item = evidence(task["id"], task_id=task["id"])
         return ResearchAgentResult(
             evidences=[item],
+            selected_evidence_ids=[item.evidence_id],
             source_refs=[item.source_url],
             task_result=ResearchDirectionResult(
                 task_id=task["id"],
@@ -82,14 +164,7 @@ class FixedResearchAgent:
 
 _COMPLETE_ARGS = {
     "reason": "两个方向均有直接来源。",
-    "report_brief": {
-        "answer_goal": "回答测试问题",
-        "covered_topics": [
-            {"topic": "核心结论", "role": "主线", "reason": "直接回答问题", "required": True},
-        ],
-        "required_points": ["给出有来源的结论"],
-        "caveats": [],
-    },
+    "synthesis_revision": 1,
 }
 
 
@@ -105,7 +180,7 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
             complete_args=_COMPLETE_ARGS,
         ),
         config,
-            research_agent=FixedResearchAgent(),
+        research_agent=FixedResearchAgent(),
     )
     result = asyncio.run(
         supervisor.run({"query": "研究问题", "clarified_query": "研究问题", "evidences": []})
@@ -317,32 +392,108 @@ def test_supervisor_rejects_completion_without_evidence():
 
     assert result["research"].is_sufficient is False
     assert result["supervisor_next"] == "render_final_report"
-    assert "矛盾" in result["writer"].feedback
+    assert "ResearchComplete 拒绝" in result["writer"].feedback
+
+
+def test_supervisor_rejects_complete_when_new_evidence_makes_synthesis_stale():
+    class StaleCompleteLLM:
+        def bind_tools(self, _tools, tool_choice="any"):
+            return self
+
+        async def ainvoke(self, messages):
+            history = "\n".join(str(message.content) for message in messages)
+            if "research_direction" not in history:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ResearchDelegate",
+                            "args": {"research_topic": "新增证据方向"},
+                            "id": "call_delegate",
+                        }
+                    ],
+                )
+            # 工作集已由 delegate 推进到 revision=1，但故意跳过综合稿修订。
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ResearchComplete",
+                        "args": {"synthesis_revision": 1, "reason": "错误使用旧版本"},
+                        "id": "call_complete",
+                    }
+                ],
+            )
+
+    supervisor = ResearchSupervisor(
+        StaleCompleteLLM(),
+        AgentConfig(max_research_rounds=1),
+        research_agent=FixedResearchAgent(),
+    )
+    result = asyncio.run(
+        supervisor.run(
+            {
+                "query": "研究问题",
+                "clarified_query": "研究问题",
+                "evidences": [],
+                "working_set_revision": 0,
+                "research_synthesis": {
+                    "revision": 1,
+                    "based_on_working_set_revision": 0,
+                    "answer_goal": "回答研究问题",
+                    "overall_summary": "尚无新增方向结果。",
+                    "aspects": [
+                        {
+                            "aspect_id": "core",
+                            "topic": "核心结论",
+                            "role": "主线",
+                            "required": True,
+                            "status": "uncovered",
+                            "remaining_gap": "尚未研究",
+                        }
+                    ],
+                    "selected_evidence_ids": [],
+                    "open_gaps": ["尚未研究"],
+                    "conflicts": [],
+                    "next_actions": ["新增证据方向"],
+                    "readiness": "not_ready",
+                    "decision_rationale": "等待方向结果。",
+                },
+            }
+        )
+    )
+
+    assert result["working_set_revision"] == 1
+    assert result["research"].is_sufficient is False
+    assert result["supervisor_next"] == "render_final_report"
+    assert "ResearchComplete 拒绝" in result["writer"].feedback
 
 
 def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
     supervisor = ResearchSupervisor(
-        SupervisorLLM(delegate_topics=["一个局部方向"], complete_args=None),
+        SupervisorLLM(delegate_topics=["一个局部方向"], ready=True),
         AgentConfig(
             max_research_rounds=1,
             partial_report_min_evidences=1,
             partial_report_min_sources=1,
         ),
-            research_agent=researcher_agent(
-                AgentConfig(research_agent_max_evidences_per_direction=1, research_agent_max_turns=3),
-                [
-                    ResearchDirectionDecision(action="search", reason="检索局部事实", queries=["局部事实"]),
-                    ResearchDirectionDecision(
-                        action="read",
-                        reason="读取局部来源",
-                        candidate_ids=[
-                            "c-"
-                            + hashlib.sha1("https://example.com/局部事实/a".encode()).hexdigest()[:10]
-                        ],
-                    ),
-                    ResearchDirectionDecision(action="complete", reason="方向材料已收集"),
-                ],
-            ),
+        research_agent=researcher_agent(
+            AgentConfig(research_agent_max_evidences_per_direction=1, research_agent_max_turns=3),
+            [
+                ResearchDirectionDecision(
+                    action="search", reason="检索局部事实", queries=["局部事实"]
+                ),
+                ResearchDirectionDecision(
+                    action="read",
+                    reason="读取局部来源",
+                    candidate_ids=[
+                        "c-"
+                        + hashlib.sha1("https://example.com/局部事实/a".encode()).hexdigest()[:10]
+                    ],
+                ),
+                ResearchDirectionDecision(action="complete", reason="方向材料已收集"),
+            ],
+        ),
     )
 
     result = asyncio.run(
@@ -389,8 +540,7 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
                 action="read",
                 reason="读取补充来源",
                 candidate_ids=[
-                    "c-"
-                    + hashlib.sha1("https://example.com/补充方向/a".encode()).hexdigest()[:10]
+                    "c-" + hashlib.sha1("https://example.com/补充方向/a".encode()).hexdigest()[:10]
                 ],
             ),
             ResearchDirectionDecision(action="complete", reason="补充完成"),
@@ -459,6 +609,31 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
                         source_url="https://example.com",
                     )
                 ],
+                "active_evidence_ids": ["e1"],
+                "working_set_revision": 1,
+                "research_synthesis": {
+                    "revision": 1,
+                    "based_on_working_set_revision": 1,
+                    "answer_goal": "回答研究问题",
+                    "overall_summary": "已有事实可以支撑改写。",
+                    "aspects": [
+                        {
+                            "aspect_id": "core",
+                            "topic": "核心结论",
+                            "role": "主线",
+                            "required": True,
+                            "status": "covered",
+                            "summary": "已有事实",
+                            "evidence_ids": ["e1"],
+                        }
+                    ],
+                    "selected_evidence_ids": ["e1"],
+                    "open_gaps": [],
+                    "conflicts": [],
+                    "next_actions": [],
+                    "readiness": "complete_candidate",
+                    "decision_rationale": "只需根据审阅意见改写。",
+                },
                 "review": {
                     "status": "rejected",
                     "attempts": 1,
@@ -488,6 +663,7 @@ class _OneEvidenceAgent:
         item = evidence(f"t{self.run_count}", task_id=task["id"])
         return {
             "evidences": [item],
+            "selected_evidence_ids": [item.evidence_id],
             "source_refs": [item.source_url],
             "task_result": {
                 "task_id": task["id"],
@@ -517,11 +693,67 @@ class _DelegateUntilBlockedLLM:
         tool_output = "\n".join(
             str(message.content) for message in messages if isinstance(message, ToolMessage)
         )
-        if "limit exceeded" in tool_output or "round_budget_exhausted" in tool_output:
+        revised = next(
+            (
+                message
+                for message in reversed(messages)
+                if isinstance(message, ToolMessage)
+                and message.name == "ReviseResearchSynthesis"
+                and '"status": "accepted"' in str(message.content)
+            ),
+            None,
+        )
+        if revised is not None:
+            payload = json.loads(str(revised.content).split("\n", 1)[-1])
             return AIMessage(
                 content="",
                 tool_calls=[
-                    {"name": "ResearchComplete", "args": _COMPLETE_ARGS, "id": "call_done"}
+                    {
+                        "name": "ResearchComplete",
+                        "args": {
+                            "synthesis_revision": payload["synthesis_revision"],
+                            "reason": "轮次耗尽，现有综合稿足以成文。",
+                        },
+                        "id": "call_done",
+                    }
+                ],
+            )
+        if "limit exceeded" in tool_output or "round_budget_exhausted" in tool_output:
+            history = "\n".join(str(message.content) for message in messages)
+            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
+            revisions = [
+                int(item) for item in re.findall(r'"working_set_revision":\s*(\d+)', history)
+            ]
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ReviseResearchSynthesis",
+                        "args": {
+                            "expected_revision": 0,
+                            "expected_working_set_revision": max(revisions, default=0),
+                            "answer_goal": "回答测试问题",
+                            "overall_summary": "现有事实足以回答问题。",
+                            "aspects": [
+                                {
+                                    "aspect_id": "core",
+                                    "topic": "核心结论",
+                                    "role": "主线",
+                                    "required": True,
+                                    "status": "covered",
+                                    "summary": "已有直接事实",
+                                    "evidence_ids": evidence_ids,
+                                }
+                            ],
+                            "selected_evidence_ids": evidence_ids,
+                            "open_gaps": [],
+                            "conflicts": [],
+                            "next_actions": [],
+                            "readiness": "complete_candidate",
+                            "decision_rationale": "轮次耗尽且现有材料足以成文。",
+                        },
+                        "id": "call_revise",
+                    }
                 ],
             )
         self._index += 1
