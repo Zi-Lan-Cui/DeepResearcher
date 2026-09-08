@@ -12,7 +12,6 @@ from fastapi import FastAPI
 from deepsearch_agent.config import Settings, get_settings
 from deepsearch_agent.service.auth import TokenCodec, make_current_user
 from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
-from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepsearch_agent.service.events.store import RunEventStore
@@ -26,6 +25,7 @@ from deepsearch_agent.service.persistence.database import (
 from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
 from deepsearch_agent.service.runs.manager import RunManager
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
+from deepsearch_agent.service.signals import PostgresSignalBus, SignalKind
 from deepsearch_agent.service.web.login_rate_limit import LoginRateLimiter
 from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient
@@ -54,8 +54,8 @@ def make_lifespan(
             await tool_cache.delete_expired()
             http_client = HttpClient(engine_settings.search)
         fanout = FanoutSink(asyncio.get_running_loop())
-        event_notifier = EventNotifier()
-        await event_notifier.start(cfg.database_url)
+        signal_bus = PostgresSignalBus()
+        await signal_bus.start(cfg.database_url)
         ephemeral_bus: EphemeralEventBus | None = None
         # Embedded mode already shares FanoutSink with its Worker. Redis is only
         # needed when API and execution are separate processes.
@@ -79,7 +79,7 @@ def make_lifespan(
         event_store = RunEventStore(
             session_factory,
             publish_persisted=fanout.publish_persisted,
-            notifier=event_notifier,
+            signal_bus=signal_bus,
         )
         event_publisher = RunEventPublisher(
             session_factory=session_factory,
@@ -105,13 +105,24 @@ def make_lifespan(
             config=cfg,
             fanout=fanout,
             checkpointer=checkpointer,
-            event_notifier=event_notifier,
+            signal_bus=signal_bus,
             event_store=event_store,
             event_publisher=event_publisher,
-            wake_worker=execution.wake if execution is not None else None,
-            cancel_worker=execution.request_cancel if execution is not None else None,
         )
+        worker_signal_subscriptions: list[tuple[SignalKind, int]] = []
         if execution is not None:
+            worker_signal_subscriptions = [
+                (
+                    "run_available",
+                    signal_bus.subscribe("run_available", lambda _payload: execution.wake()),
+                ),
+                (
+                    "run_cancel_requested",
+                    signal_bus.subscribe(
+                        "run_cancel_requested", execution.handle_cancel_notification
+                    ),
+                ),
+            ]
             killed, resumable = await execution.reconcile_startup()
             if killed:
                 app.state.service_logger.info("reconciled_stale_runs count=%d", killed)
@@ -143,9 +154,11 @@ def make_lifespan(
         try:
             yield
         finally:
+            for kind, key in worker_signal_subscriptions:
+                signal_bus.unsubscribe(kind, key)
             if execution is not None:
                 await execution.shutdown()
-            await event_notifier.close()
+            await signal_bus.close()
             if ephemeral_bus is not None:
                 await ephemeral_bus.close()
             if http_client is not None:

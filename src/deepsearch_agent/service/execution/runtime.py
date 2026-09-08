@@ -17,7 +17,6 @@ from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
-from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepsearch_agent.service.events.store import RunEventStore
@@ -30,6 +29,7 @@ from deepsearch_agent.service.persistence.database import (
 )
 from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
 from deepsearch_agent.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
+from deepsearch_agent.service.signals import PostgresSignalBus
 from deepsearch_agent.tools.cache import NoOpToolCache
 from deepsearch_agent.tools.transport import HttpClient
 
@@ -78,8 +78,8 @@ async def worker_lifespan(
     session_factory = make_session_factory(engine)
     http_client = HttpClient(engine_settings.search)
     fanout = FanoutSink(asyncio.get_running_loop())
-    event_notifier = EventNotifier()
-    await event_notifier.start(cfg.database_url)
+    signal_bus = PostgresSignalBus()
+    await signal_bus.start(cfg.database_url)
     ephemeral_bus: EphemeralEventBus | None = None
     if cfg.redis_preview_enabled:
         ephemeral_bus = await create_redis_ephemeral_bus(
@@ -107,7 +107,7 @@ async def worker_lifespan(
     event_store = RunEventStore(
         session_factory,
         publish_persisted=fanout.publish_persisted,
-        notifier=event_notifier,
+        signal_bus=signal_bus,
     )
     event_publisher = RunEventPublisher(
         session_factory=session_factory,
@@ -127,6 +127,10 @@ async def worker_lifespan(
         tool_cache=tool_cache,
         ephemeral_bus=ephemeral_bus,
     )
+    work_subscription = signal_bus.subscribe("run_available", lambda _payload: worker.wake())
+    cancel_subscription = signal_bus.subscribe(
+        "run_cancel_requested", worker.handle_cancel_notification
+    )
     try:
         async with _startup_recovery_lock(session_factory):
             killed, resumable = await worker.reconcile_startup()
@@ -141,8 +145,10 @@ async def worker_lifespan(
         yield worker
     finally:
         logger.info("worker_stopping worker_id=%s", worker.worker_id)
+        signal_bus.unsubscribe("run_available", work_subscription)
+        signal_bus.unsubscribe("run_cancel_requested", cancel_subscription)
         await worker.shutdown()
-        await event_notifier.close()
+        await signal_bus.close()
         if ephemeral_bus is not None:
             await ephemeral_bus.close()
         await http_client.aclose()

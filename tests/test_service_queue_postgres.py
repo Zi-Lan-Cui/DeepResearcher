@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import delete, update
 
 from deepsearch_agent.observability.tracing.context import new_id
-from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.persistence.database import (
     make_engine,
@@ -21,6 +20,7 @@ from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
 from deepsearch_agent.service.runs.queue import PostgresRunQueue, RunWork
 from deepsearch_agent.service.runs.service import QuotaExceededError, RunService
 from deepsearch_agent.service.settings import get_service_config
+from deepsearch_agent.service.signals import PostgresSignalBus
 from deepsearch_agent.tools.cache import CacheValue
 
 pytestmark = [
@@ -30,6 +30,33 @@ pytestmark = [
         reason="set RUN_POSTGRES_INTEGRATION=1 to use the configured PostgreSQL",
     ),
 ]
+
+
+async def test_postgres_service_signals_cross_connections():
+    database_url = get_service_config().database_url
+    assert database_url.startswith("postgresql")
+    sender = PostgresSignalBus()
+    receiver = PostgresSignalBus()
+    cancel_received = asyncio.Event()
+    work_received = asyncio.Event()
+    await sender.start(database_url)
+    await receiver.start(database_url)
+    cancel_key = receiver.subscribe(
+        "run_cancel_requested",
+        lambda run_id: cancel_received.set() if run_id == "control-notifier-probe" else None,
+    )
+    work_key = receiver.subscribe("run_available", lambda _payload: work_received.set())
+    try:
+        await sender.notify_cancel("control-notifier-probe")
+        await sender.notify_work_available()
+        await asyncio.wait_for(
+            asyncio.gather(cancel_received.wait(), work_received.wait()), timeout=1
+        )
+    finally:
+        receiver.unsubscribe("run_cancel_requested", cancel_key)
+        receiver.unsubscribe("run_available", work_key)
+        await receiver.close()
+        await sender.close()
 
 
 async def test_two_api_admission_services_share_postgres_quota_lock():
@@ -98,24 +125,24 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
         assert len(winners) == 1
         assert winners[0].attempt == 1
 
-        sender = EventNotifier()
-        receiver = EventNotifier()
+        sender = PostgresSignalBus()
+        receiver = PostgresSignalBus()
         await sender.start(database_url)
         await receiver.start(database_url)
-        notify_key, notification = receiver.subscribe(run_id)
+        notify_key, notification = receiver.subscribe_event(run_id)
         try:
             batches = await asyncio.gather(
-                RunEventStore(factory, notifier=sender).append(
+                RunEventStore(factory, signal_bus=sender).append(
                     run_id, [{"event_type": "pg-event-a", "payload": {}}]
                 ),
-                RunEventStore(factory, notifier=sender).append(
+                RunEventStore(factory, signal_bus=sender).append(
                     run_id, [{"event_type": "pg-event-b", "payload": {}}]
                 ),
             )
             assert sorted(batch[0]["seq"] for batch in batches) == [1, 2]
             await asyncio.wait_for(notification.get(), timeout=2)
         finally:
-            receiver.unsubscribe(run_id, notify_key)
+            receiver.unsubscribe("event_committed", notify_key)
             await sender.close()
             await receiver.close()
 
