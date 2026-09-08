@@ -132,6 +132,27 @@
   .src-item:target, .src-item.flash { background:#fef9c3; border-left-color:#eab308; }
   .src-item blockquote { margin:2px 0 0; padding-left:10px; color:var(--mut); font-style:italic; }
   #report a[href^="#src-"] { color:var(--ac); text-decoration:none; cursor:pointer; }
+  /* PDF 使用独立、固定纸张宽度的 DOM 副本，避免把页面纵向位置变成首页留白。 */
+  .pdf-export-host { position:fixed; top:0; left:0; z-index:-10000; width:186mm;
+                     background:#fff; pointer-events:none; }
+  .pdf-export-report { width:186mm; margin:0; padding:0; border:0; border-radius:0;
+                       box-shadow:none; background:#fff; }
+  .pdf-export-report .report-head { margin-bottom:8px; }
+  .pdf-export-report h1, .pdf-export-report h2, .pdf-export-report h3,
+  .pdf-export-report h4, .pdf-export-report h5, .pdf-export-report h6 {
+    break-after:avoid-page; page-break-after:avoid;
+  }
+  .pdf-export-report .pdf-paragraph-fragment, .pdf-export-report li,
+  .pdf-export-report table,
+  .pdf-export-report blockquote, .pdf-export-report pre, .pdf-export-report figure {
+    break-inside:avoid-page; page-break-inside:avoid;
+  }
+  /* 一条来源可能包含长标题、URL 和引文，禁止整块分页会制造大片空洞。 */
+  .pdf-export-report .src-item { break-inside:auto; page-break-inside:auto; }
+  .pdf-export-report .pdf-paragraph-group { margin:1em 0; }
+  .pdf-export-report .pdf-paragraph-group .pdf-paragraph-fragment { margin:0; }
+  .pdf-export-report .pdf-paragraph-fragment { orphans:3; widows:3; }
+  .pdf-export-report pre { white-space:pre-wrap; overflow-wrap:anywhere; }
   @media (max-width:720px) {
     main { margin-top:12px; padding:0 10px; }
     .card { padding:14px; }

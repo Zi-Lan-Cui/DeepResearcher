@@ -636,6 +636,87 @@ $("report-copy").onclick = () => showActionResult(
   () => writeClipboard(reportExportText()),
 );
 
+function createPdfExportNode() {
+  // 不直接截图页面中的卡片：它带有当前屏幕位置、宽度和交互按钮，容易产生
+  // 首页空白及错误分页。固定尺寸副本只承载报告和参考来源。
+  const host = document.createElement("div");
+  host.className = "pdf-export-host";
+  const report = $("report-card").cloneNode(true);
+  // 避免 html2pdf/html2canvas 在处理重复 id 时重新命中页面里的原卡片。
+  report.removeAttribute("id");
+  report.classList.remove("hide");
+  report.classList.add("pdf-export-report");
+  Object.assign(report.style, {
+    width: "186mm",
+    margin: "0",
+    padding: "0",
+    border: "0",
+    borderRadius: "0",
+    boxShadow: "none",
+    background: "#fff",
+  });
+  report.querySelector(".report-actions")?.remove();
+  splitLongPdfParagraphs(report);
+  host.appendChild(report);
+  document.body.appendChild(host);
+  return { report, remove: () => host.remove() };
+}
+
+function textBoundary(root, absoluteOffset) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = absoluteOffset;
+  let node = walker.nextNode();
+  while (node) {
+    if (remaining <= node.data.length) return { node, offset: remaining };
+    remaining -= node.data.length;
+    node = walker.nextNode();
+  }
+  return { node: root, offset: root.childNodes.length };
+}
+
+function paragraphCutPoints(text, targetLength = 140) {
+  if (text.length <= targetLength * 1.4) return [];
+  const sentenceEnds = [];
+  const pattern = /[。！？；.!?](?:[”’」』】])?\s*/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) sentenceEnds.push(match.index + match[0].length);
+  const cuts = [];
+  let start = 0;
+  while (text.length - start > targetLength * 1.4) {
+    const preferred = sentenceEnds.filter(point => point > start + 70 && point <= start + 190);
+    const cut = preferred.length ? preferred[preferred.length - 1] : start + targetLength;
+    cuts.push(cut);
+    start = cut;
+  }
+  return cuts;
+}
+
+function splitLongPdfParagraphs(report) {
+  for (const paragraph of report.querySelectorAll("#report p")) {
+    const text = paragraph.textContent || "";
+    const cuts = paragraphCutPoints(text);
+    if (!cuts.length) {
+      paragraph.classList.add("pdf-paragraph-fragment");
+      continue;
+    }
+    const group = document.createElement("div");
+    group.className = "pdf-paragraph-group";
+    const boundaries = [0, ...cuts, text.length];
+    for (let index = 0; index < boundaries.length - 1; index++) {
+      const range = document.createRange();
+      const start = textBoundary(paragraph, boundaries[index]);
+      const end = textBoundary(paragraph, boundaries[index + 1]);
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      const fragment = paragraph.cloneNode(false);
+      fragment.classList.add("pdf-paragraph-fragment");
+      fragment.appendChild(range.cloneContents());
+      group.appendChild(fragment);
+    }
+    paragraph.replaceWith(group);
+  }
+}
+
 $("report-download").onclick = () => showActionResult(
   $("report-download"),
   "生成中…",
@@ -644,17 +725,31 @@ $("report-download").onclick = () => showActionResult(
     if (!window.html2pdf || window.__html2pdf_failed) {
       throw new Error("PDF 组件加载失败，请检查网络后刷新页面。");
     }
-    await window.html2pdf()
-      .set({
-        margin: [12, 12, 14, 12],
-        filename: reportPdfFilename(),
-        image: { type: "jpeg", quality: 0.96 },
-        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-        pagebreak: { mode: ["css", "legacy"], avoid: [".src-item", "blockquote", "pre"] },
-      })
-      .from($("report-card"))
-      .save();
+    const exported = createPdfExportNode();
+    try {
+      await window.html2pdf()
+        .set({
+          margin: [10, 12, 12, 12],
+          filename: reportPdfFilename(),
+          image: { type: "jpeg", quality: 0.97 },
+          html2canvas: {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: "#ffffff",
+            scrollX: 0,
+            scrollY: 0,
+          },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: {
+            mode: ["css", "legacy"],
+            avoid: [".pdf-paragraph-fragment", "li", "table", "blockquote", "pre", "figure"],
+          },
+        })
+        .from(exported.report)
+        .save();
+    } finally {
+      exported.remove();
+    }
   },
 );
 
