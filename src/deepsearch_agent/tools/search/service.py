@@ -5,7 +5,7 @@ import time
 from typing import cast
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.observability.events import JsonlSink, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context

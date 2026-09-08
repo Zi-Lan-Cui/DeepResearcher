@@ -20,7 +20,6 @@ from deepsearch_agent.agents.middleware import (
     build_agent_middleware,
 )
 from deepsearch_agent.agents.researcher import ResearchAgent
-from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.agents.supervisor.state import (
     RunUrlReservations,
     SupervisorRuntimeContext,
@@ -31,6 +30,7 @@ from deepsearch_agent.agents.supervisor.tools import (
     build_supervisor_tools,
 )
 from deepsearch_agent.config import AgentConfig, language_directive
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, emit_agent_event

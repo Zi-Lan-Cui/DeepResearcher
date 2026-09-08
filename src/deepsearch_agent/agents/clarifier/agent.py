@@ -18,8 +18,8 @@ from deepsearch_agent.agents.middleware.factory import (
     build_agent_middleware,
 )
 from deepsearch_agent.agents.middleware.profile import MiddlewareProfile
-from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.config import AgentConfig, language_directive
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 
 _SYSTEM_PROMPT = """
@@ -63,10 +63,6 @@ class Clarifier:
                         max_turns=MAX_CLARIFICATION_ROUNDS + 4,
                         context_window_tokens=context_window_tokens,
                         serial_tools={"AskClarification", "ClarificationComplete"},
-                        tool_call_limits=[
-                            ("AskClarification", MAX_CLARIFICATION_ROUNDS),
-                            ("ClarificationComplete", 1),
-                        ],
                     )
                 ),
             ),

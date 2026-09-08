@@ -13,8 +13,34 @@ from deepsearch_agent.schemas import (
     ResearchAgentResult,
     ResearchDirectionDecision,
     ResearchDirectionResult,
+    ReviseResearchSynthesis,
 )
 from fakes import evidence, researcher_agent
+
+
+def test_synthesis_arguments_require_complete_selected_evidence_union():
+    with pytest.raises(ValueError, match="当前缺少：e1"):
+        ReviseResearchSynthesis.model_validate(
+            {
+                "expected_revision": 0,
+                "expected_working_set_revision": 1,
+                "answer_goal": "回答问题",
+                "overall_summary": "已有一项事实。",
+                "aspects": [
+                    {
+                        "aspect_id": "core",
+                        "topic": "核心",
+                        "role": "主线",
+                        "status": "covered",
+                        "summary": "已有依据",
+                        "evidence_ids": ["e1"],
+                    }
+                ],
+                "selected_evidence_ids": [],
+                "readiness": "partial_ready",
+                "decision_rationale": "足以部分交付",
+            }
+        )
 
 
 class SupervisorLLM:

@@ -11,7 +11,6 @@ from deepsearch_agent.config import SearchConfig
 from deepsearch_agent.parsers import (
     DocumentBlock,
     DocumentModality,
-    ParsedDocument,
     parse_docx,
     parse_html_blocks,
     parse_pdf,
@@ -20,6 +19,7 @@ from deepsearch_agent.parsers import (
 from deepsearch_agent.tools.cache import CacheValue, NoOpToolCache, ToolCache
 from deepsearch_agent.tools.cache_keys import canonical_url, semantic_cache_key
 from deepsearch_agent.tools.errors import SourceUnavailableError
+from deepsearch_agent.tools.sources.models import SourceDocument
 from deepsearch_agent.tools.transport.http_client import HttpClient
 
 _CHALLENGE_TITLE_MARKERS = ("验证码", "安全验证", "访问验证", "just a moment", "security check")
@@ -58,7 +58,7 @@ class WebFetcher:
         *,
         fetch_timeout: float | None = None,
         parse_timeout: float | None = None,
-    ) -> ParsedDocument:
+    ) -> SourceDocument:
         normalized_url = canonical_url(url)
         if not normalized_url or not normalized_url.startswith(("http://", "https://")):
             return await self._afetch_uncached(
@@ -83,7 +83,7 @@ class WebFetcher:
             schema_version=self.parser_version,
             compute=compute,
         )
-        document = cast(ParsedDocument, dict(cached.value))
+        document = cast(SourceDocument, dict(cached.value))
         document["source_url"] = url
         document["cache_hit"] = cached.hit
         if cached.hit:
@@ -97,7 +97,7 @@ class WebFetcher:
         *,
         fetch_timeout: float | None = None,
         parse_timeout: float | None = None,
-    ) -> ParsedDocument:
+    ) -> SourceDocument:
         try:
             fetch_started = asyncio.get_running_loop().time()
             try:

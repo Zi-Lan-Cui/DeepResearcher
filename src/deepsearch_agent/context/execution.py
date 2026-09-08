@@ -1,4 +1,4 @@
-"""Agent 单次执行的稳定归属信息。"""
+"""单次 Agent 执行的非持久化归属信息。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 class AgentExecutionScope:
     """标识一次 Agent 执行属于哪个 run/任务。
 
-    Scope 随 ``RuntimeContext`` 注入，不进入 checkpoint；工具名、
-    tool_call_id、turn 和耗时由中间件在调用现场补充。
+    Scope 随运行时上下文注入，不进入 checkpoint；工具名、tool_call_id、
+    turn 和耗时由中间件在调用现场补充。
     """
 
     run_id: str

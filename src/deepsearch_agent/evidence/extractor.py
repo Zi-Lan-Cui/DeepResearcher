@@ -15,11 +15,12 @@ from deepsearch_agent.evidence.validator import validate_evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker, ainvoke_structured
 from deepsearch_agent.observability.events import JsonlSink, make_audit_event, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
-from deepsearch_agent.parsers.models import DocumentBlock, ParsedDocument
+from deepsearch_agent.parsers.models import DocumentBlock
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools.cache import CacheResult, CacheValue, NoOpToolCache, ToolCache
 from deepsearch_agent.tools.cache_keys import normalize_text, semantic_cache_key
 from deepsearch_agent.tools.search.models import SearchResult
+from deepsearch_agent.tools.sources.models import SourceDocument
 
 _EXTRACTION_SYSTEM_PROMPT = (
     "【运行背景】你是深度研究流水线的 Evidence 抽取器。输入是某个来源的局部原文与一个研究子问题；"
@@ -98,12 +99,12 @@ class EvidenceExtractor:
         self.logger = get_logger("deepsearch_agent.evidence.extractor")
 
     async def aextract(
-        self, task: SubTask, document: ParsedDocument, result: SearchResult
+        self, task: SubTask, document: SourceDocument, result: SearchResult
     ) -> list[Evidence]:
         return (await self.aextract_result(task, document, result)).evidences
 
     async def aextract_result(
-        self, task: SubTask, document: ParsedDocument, result: SearchResult
+        self, task: SubTask, document: SourceDocument, result: SearchResult
     ) -> "ExtractionResult":
         blocks = cast(list[DocumentBlock], document.get("blocks", []))
         if not blocks and document.get("text"):
@@ -198,7 +199,7 @@ class EvidenceExtractor:
     async def _extract_chunks_cached(
         self,
         task: SubTask,
-        document: ParsedDocument,
+        document: SourceDocument,
         result: SearchResult,
         chunks: list[list[DocumentBlock]],
     ) -> CacheResult:

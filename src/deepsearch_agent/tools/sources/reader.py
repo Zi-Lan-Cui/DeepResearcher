@@ -3,14 +3,13 @@
 import asyncio
 import time
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.evidence import EvidenceExtractor
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.observability.tracing.context import SpanContext, current_span_context
 from deepsearch_agent.observability.tracing.recorder import TraceRecorder
-from deepsearch_agent.parsers.models import ParsedDocument
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools.cache import ToolCache
 from deepsearch_agent.tools.errors import (
@@ -20,7 +19,12 @@ from deepsearch_agent.tools.errors import (
 )
 from deepsearch_agent.tools.search.models import SearchResult
 from deepsearch_agent.tools.sources.fetcher import WebFetcher
-from deepsearch_agent.tools.sources.models import SourceReaderToolResult, failed_read, skipped_read
+from deepsearch_agent.tools.sources.models import (
+    SourceDocument,
+    SourceReaderToolResult,
+    failed_read,
+    skipped_read,
+)
 
 
 class SourceReaderTool:
@@ -402,7 +406,7 @@ class SourceReaderTool:
 
         source_url = str(result.get("url", ""))
         provider = str(result.get("content_provider", "search"))
-        document: ParsedDocument = {
+        document: SourceDocument = {
             "title": str(result.get("title", "")),
             "final_url": source_url,
             "text": text,

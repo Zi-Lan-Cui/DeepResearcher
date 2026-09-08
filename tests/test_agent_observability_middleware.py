@@ -4,7 +4,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from deepsearch_agent.agents.middleware import AgentObservabilityMiddleware
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 
 
 def _request() -> SimpleNamespace:

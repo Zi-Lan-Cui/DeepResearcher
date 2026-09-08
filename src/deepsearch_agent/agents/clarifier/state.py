@@ -8,7 +8,7 @@ from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.schemas import RunLifecycle
 
 

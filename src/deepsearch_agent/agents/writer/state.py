@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import Citation, ParagraphBinding
 

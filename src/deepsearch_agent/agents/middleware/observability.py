@@ -10,7 +10,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.observability.usage_runtime import enforce_usage_budget
 
@@ -160,7 +160,3 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         except Exception:
             # 可观测性是旁路：sink 异常不得阻断、重试或改写工具执行。
             self._logger.exception("%s emission failed", event_type)
-
-
-# 保留旧类名，避免外部导入在一次重构中断裂。
-TurnLoggingMiddleware = AgentObservabilityMiddleware
