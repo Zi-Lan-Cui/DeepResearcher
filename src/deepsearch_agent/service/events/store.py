@@ -7,8 +7,8 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.persistence.models import Run, RunEvent
+from deepsearch_agent.service.signals import PostgresSignalBus
 
 
 class RunEventStore:
@@ -17,11 +17,11 @@ class RunEventStore:
         session_factory: Callable[[], Any],
         *,
         publish_persisted: Callable[[str, Sequence[dict]], None] | None = None,
-        notifier: EventNotifier | None = None,
+        signal_bus: PostgresSignalBus | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._publish_persisted = publish_persisted
-        self._notifier = notifier
+        self._signal_bus = signal_bus
 
     async def append(self, run_id: str, records: Sequence[dict]) -> list[dict]:
         if not records:
@@ -54,8 +54,8 @@ class RunEventStore:
             await session.commit()
         if self._publish_persisted is not None:
             self._publish_persisted(run_id, assigned)
-        if self._notifier is not None:
-            await self._notifier.notify(run_id)
+        if self._signal_bus is not None:
+            await self._signal_bus.notify_event(run_id)
         return assigned
 
     async def after(self, run_id: str, seq: int) -> list[RunEvent]:

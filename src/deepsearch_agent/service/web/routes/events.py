@@ -37,7 +37,7 @@ async def run_events(
 
     async def stream() -> AsyncIterator[str]:
         key, queue = state.fanout.subscribe(run.id)
-        notify_key, notify_queue = state.manager.event_notifier.subscribe(run.id)
+        notify_key, notify_queue = state.manager.signal_bus.subscribe_event(run.id)
         preview_subscription = None
         if state.ephemeral_bus is not None:
             try:
@@ -96,7 +96,7 @@ async def run_events(
                             yield _sse(frame)
         finally:
             state.fanout.unsubscribe(run.id, key)
-            state.manager.event_notifier.unsubscribe(run.id, notify_key)
+            state.manager.signal_bus.unsubscribe("event_committed", notify_key)
             if preview_subscription is not None:
                 await preview_subscription.close()
 

@@ -1,4 +1,5 @@
 import asyncio
+import time
 import traceback
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,6 @@ from deepsearch_agent.config import (
     SearchConfig,
     Settings,
 )
-from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import CLOSE_STREAM as CLOSE_STREAM_FLAG
@@ -28,6 +28,7 @@ from deepsearch_agent.service.runs.manager import RunManager
 from deepsearch_agent.service.runs.queue import PostgresRunQueue
 from deepsearch_agent.service.runs.service import QuotaExceededError, RunService
 from deepsearch_agent.service.settings import ServiceConfig
+from deepsearch_agent.service.signals import PostgresSignalBus
 
 pytestmark = pytest.mark.asyncio
 
@@ -135,6 +136,7 @@ class ServiceHarness:
         session_factory,
         fanout,
         holder,
+        signal_bus,
     ):
         self.controller = controller
         self.execution = execution
@@ -143,6 +145,7 @@ class ServiceHarness:
         self.session_factory = session_factory
         self.fanout = fanout
         self.holder = holder
+        self.signal_bus = signal_bus
 
     async def start(self, user_id, query):
         return await self.controller.start(user_id, query)
@@ -155,6 +158,7 @@ class ServiceHarness:
 
     async def shutdown(self):
         await self.execution.shutdown()
+        await self.signal_bus.close()
 
 
 @pytest_asyncio.fixture
@@ -188,11 +192,11 @@ async def manager(tmp_path):
         graph._sink = event_sink
         return graph
 
-    event_notifier = EventNotifier()
+    signal_bus = PostgresSignalBus()
     event_store = RunEventStore(
         session_factory,
         publish_persisted=fanout.publish_persisted,
-        notifier=event_notifier,
+        signal_bus=signal_bus,
     )
     event_publisher = RunEventPublisher(
         session_factory=session_factory,
@@ -213,12 +217,12 @@ async def manager(tmp_path):
         session_factory=session_factory,
         config=config,
         fanout=fanout,
-        event_notifier=event_notifier,
+        signal_bus=signal_bus,
         event_store=event_store,
         event_publisher=event_publisher,
-        wake_worker=execution.wake,
-        cancel_worker=execution.request_cancel,
     )
+    signal_bus.subscribe("run_available", lambda _payload: execution.wake())
+    signal_bus.subscribe("run_cancel_requested", execution.handle_cancel_notification)
     manager = ServiceHarness(
         controller=controller,
         execution=execution,
@@ -227,6 +231,7 @@ async def manager(tmp_path):
         session_factory=session_factory,
         fanout=fanout,
         holder=holder,
+        signal_bus=signal_bus,
     )
     yield manager
     # 先收敛所有后台任务（它们的 finally 还要写库），再拆引擎，避免
@@ -366,24 +371,35 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
     assert len(dones) == 1  # 不变式 2/3：done 恰一次且在 DB（可回放）
 
 
-async def test_remote_manager_cancel_is_observed_through_durable_intent(manager, tmp_path):
+async def test_remote_manager_cancel_uses_notification_without_waiting_for_heartbeat(manager):
     gate = asyncio.Event()
-    manager.execution.worker._heartbeat_seconds = 0.01  # noqa: SLF001 - cancellation probe seam
+    manager.execution.worker._heartbeat_seconds = 20  # noqa: SLF001 - prove fast path is independent
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     run_id = await manager.start(USER_ID, "remote cancel")
     while (await _row(manager, run_id)).status != "running":
         await asyncio.sleep(0.01)
 
-    controller = RunManager(
-        session_factory=manager.session_factory,
-        config=manager.config,
-        fanout=FanoutSink(asyncio.get_running_loop()),
+    signal_bus = PostgresSignalBus()
+    subscription = signal_bus.subscribe(
+        "run_cancel_requested", manager.execution.handle_cancel_notification
     )
-    requested = await controller.cancel(USER_ID, run_id)
-    assert requested.status == "running"
-    assert requested.cancellation_requested_at is not None
-    await _settle(manager, run_id)
-    assert (await _row(manager, run_id)).status == "cancelled"
+    try:
+        controller = RunManager(
+            session_factory=manager.session_factory,
+            config=manager.config,
+            fanout=FanoutSink(asyncio.get_running_loop()),
+            signal_bus=signal_bus,
+        )
+        started = time.monotonic()
+        requested = await controller.cancel(USER_ID, run_id)
+        assert requested.status == "running"
+        assert requested.cancellation_requested_at is not None
+        await _settle(manager, run_id)
+        assert time.monotonic() - started < 1.0
+        assert (await _row(manager, run_id)).status == "cancelled"
+    finally:
+        signal_bus.unsubscribe("run_cancel_requested", subscription)
+        await signal_bus.close()
 
 
 async def test_cancel_after_completion_is_idempotent(manager):

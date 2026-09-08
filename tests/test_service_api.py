@@ -390,8 +390,8 @@ async def test_static_frontend_served(client):
     assert 'id="report-copy"' in response.text
     assert 'id="report-download"' in response.text
     assert "html2pdf.bundle.min.js" in response.text
-    assert '<link rel="stylesheet" href="/styles.css" />' in response.text
-    assert '<script type="module" src="/app.js"></script>' in response.text
+    assert '<link rel="stylesheet" href="/styles.css?v=' in response.text
+    assert '<script type="module" src="/app.js?v=' in response.text
     assert "<style>" not in response.text
 
     stylesheet = await client.get("/styles.css")
@@ -403,9 +403,15 @@ async def test_static_frontend_served(client):
     assert application.status_code == 200
     assert "javascript" in application.headers["content-type"]
     assert "reportExportText()" in application.text
-    assert '.from($("report-card"))' in application.text
+    assert "createPdfExportNode()" in application.text
+    assert ".from(exported.report)" in application.text
+    assert 'avoid: [".pdf-paragraph-fragment", "li", "table"' in application.text
+    assert 'report.removeAttribute("id")' in application.text
+    assert "splitLongPdfParagraphs(report)" in application.text
     assert 'setStatus(resumed.status || "queued")' in application.text
     assert 'setStatus("running")' not in application.text
+    assert ".pdf-export-host" in stylesheet.text
+    assert "page-break-inside:avoid" in stylesheet.text
 
 
 async def test_concurrent_register_same_email_single_winner(client):

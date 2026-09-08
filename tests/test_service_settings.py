@@ -60,7 +60,7 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert config.max_global_queued_runs == 100
     assert config.worker_lease_seconds == 60
     assert config.worker_heartbeat_seconds == 20
-    assert config.worker_poll_seconds == 1.0
+    assert config.worker_poll_seconds == 15.0
     assert config.api_embedded_worker is False
     assert config.redis_preview_enabled is False
     assert config.redis_url == "redis://127.0.0.1:6379/0"

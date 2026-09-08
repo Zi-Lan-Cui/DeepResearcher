@@ -101,6 +101,10 @@ class WorkerCoordinator:
     def request_cancel(self, run_id: str) -> None:
         self.worker.request_cancel(run_id)
 
+    async def handle_cancel_notification(self, run_id: str) -> None:
+        """Fast path for cross-process cancel; the queue row is rechecked first."""
+        await self.worker.cancel_if_requested(run_id)
+
     async def shutdown(self) -> None:
         await self.worker.shutdown()
 

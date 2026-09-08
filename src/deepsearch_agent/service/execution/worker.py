@@ -14,7 +14,7 @@ from deepsearch_agent.service.runs.queue import PostgresRunQueue, RunWork
 
 
 class RunWorker:
-    """Poll and fill process-local slots from the durable run queue."""
+    """Fill local slots on signals, with slow polling as a recovery path."""
 
     def __init__(
         self,
@@ -24,7 +24,7 @@ class RunWorker:
         max_running: int,
         lease_seconds: int,
         heartbeat_seconds: int,
-        poll_seconds: float = 1.0,
+        poll_seconds: float = 15.0,
         worker_id: str | None = None,
         recover_expired: Callable[[RunWork], Awaitable[RunWork | None]] | None = None,
     ) -> None:
@@ -55,7 +55,7 @@ class RunWorker:
         return self._worker_id
 
     async def start(self) -> None:
-        """Start autonomous polling; safe to call more than once."""
+        """Start signal-ready dispatch and fallback polling; safe to call repeatedly."""
         if self._closed:
             return
         self._ensure_background_tasks()
@@ -74,6 +74,12 @@ class RunWorker:
         if task is not None and not task.done():
             self._executor.mark_cancellation_requested(run_id)
             task.cancel()
+
+    async def cancel_if_requested(self, run_id: str) -> None:
+        """Verify a notification against durable state before cancelling local work."""
+        work = self._claims.get(run_id)
+        if work is not None and await self._queue.cancellation_requested(work):
+            self.request_cancel(run_id)
 
     async def wake(self) -> None:
         """Fill all currently free slots; safe to call after every state transition."""

@@ -6,13 +6,12 @@ execution, capacity gates, and crash recovery live in ``WorkerCoordinator``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, update
 
-from deepsearch_agent.service.events.notifier import EventNotifier
 from deepsearch_agent.service.events.publisher import RunEventPublisher
 from deepsearch_agent.service.events.store import RunEventStore
 from deepsearch_agent.service.events.stream import FanoutSink
@@ -20,6 +19,7 @@ from deepsearch_agent.service.persistence.models import Run
 from deepsearch_agent.service.runs.service import QuotaExceededError as QuotaExceededError
 from deepsearch_agent.service.runs.service import RunService
 from deepsearch_agent.service.settings import ServiceConfig
+from deepsearch_agent.service.signals import PostgresSignalBus
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
@@ -38,34 +38,31 @@ class RunManager:
         config: ServiceConfig,
         fanout: FanoutSink,
         checkpointer: Any = None,
-        event_notifier: EventNotifier | None = None,
+        signal_bus: PostgresSignalBus | None = None,
         event_store: RunEventStore | None = None,
         event_publisher: RunEventPublisher | None = None,
-        wake_worker: Callable[[], Awaitable[None]] | None = None,
-        cancel_worker: Callable[[str], None] | None = None,
     ) -> None:
         self._checkpointer = checkpointer
         self._session_factory = session_factory
         self._config = config
         self._fanout = fanout
-        self.event_notifier = event_notifier or EventNotifier()
+        self.signal_bus = signal_bus or PostgresSignalBus()
         self.event_store = event_store or RunEventStore(
-            session_factory, publish_persisted=fanout.publish_persisted, notifier=self.event_notifier
+            session_factory,
+            publish_persisted=fanout.publish_persisted,
+            signal_bus=self.signal_bus,
         )
         self._event_publisher = event_publisher or RunEventPublisher(
             session_factory=session_factory, fanout=fanout, event_store=self.event_store
         )
         self._run_service = RunService(session_factory=session_factory, config=config)
-        self._wake_worker = wake_worker
-        self._cancel_worker = cancel_worker
 
     async def start(self, user_id: int, query: str) -> str:
         run_id = await self._run_service.create(user_id, query.strip())
         self._fanout.open(run_id)
         await self._event_publisher.publish_status(run_id, "queued")
         await self._event_publisher.flush(run_id)
-        if self._wake_worker is not None:
-            await self._wake_worker()
+        await self.signal_bus.notify_work_available()
         return run_id
 
     async def cancel(self, user_id: int, run_id: str) -> Run:
@@ -93,8 +90,8 @@ class RunManager:
             await self._event_publisher.publish_done(run_id)
             await self._event_publisher.flush(run_id)
             self._fanout.close(run_id)
-        elif self._cancel_worker is not None:
-            self._cancel_worker(run_id)
+        else:
+            await self.signal_bus.notify_cancel(run_id)
         async with self._session_factory() as session:
             return await session.get(Run, run_id)
 
@@ -135,8 +132,7 @@ class RunManager:
         self._fanout.open(run_id)
         await self._event_publisher.publish_status(run_id, "queued")
         await self._event_publisher.flush(run_id)
-        if self._wake_worker is not None:
-            await self._wake_worker()
+        await self.signal_bus.notify_work_available()
         async with self._session_factory() as session:
             current = await session.get(Run, run_id)
         return current.status if current is not None else "queued"

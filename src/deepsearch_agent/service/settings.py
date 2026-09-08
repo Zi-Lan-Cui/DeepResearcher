@@ -64,7 +64,7 @@ class ServiceConfig:
     max_global_queued_runs: int = 100
     worker_lease_seconds: int = 60
     worker_heartbeat_seconds: int = 20
-    worker_poll_seconds: float = 1.0
+    worker_poll_seconds: float = 15.0
     api_embedded_worker: bool = False
     redis_preview_enabled: bool = False
     redis_url: str = "redis://127.0.0.1:6379/0"
@@ -112,7 +112,7 @@ def get_service_config() -> ServiceConfig:
         max_global_queued_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_QUEUED_RUNS", 100)),
         worker_lease_seconds=max(10, _int_env("SERVICE_WORKER_LEASE_SECONDS", 60)),
         worker_heartbeat_seconds=max(1, _int_env("SERVICE_WORKER_HEARTBEAT_SECONDS", 20)),
-        worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 1.0)),
+        worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 15.0)),
         api_embedded_worker=_bool_env("SERVICE_API_EMBEDDED_WORKER", False),
         redis_preview_enabled=_bool_env("SERVICE_REDIS_PREVIEW_ENABLED", False),
         redis_url=_env("SERVICE_REDIS_URL", "redis://127.0.0.1:6379/0"),
