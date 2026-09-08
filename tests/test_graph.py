@@ -28,7 +28,6 @@ from deepsearch_agent.routing import (
 )
 from deepsearch_agent.schemas import (
     Citation,
-    ClarificationDecision,
     ParagraphBinding,
     ResearchProgress,
     ReviewIssue,
@@ -482,35 +481,3 @@ def test_terminal_phase_trunk_overrides_every_business_handoff():
         route_after_supervisor({"run": {"phase": "failed"}, "supervisor_next": NodeName.WRITER})
         == NodeName.RENDER_FINAL_REPORT
     )
-
-
-def test_clarify_preserves_open_question_and_only_adds_research_brief(monkeypatch):
-    async def clarified(llm, schema, messages, **kwargs):
-        assert schema is ClarificationDecision
-        return ClarificationDecision(
-            intent_summary="分析理想化世界在 Galgame 与文学中的叙事功能和意义。",
-            research_focus=["现实复杂性的取舍", "情感体验与主题表达", "理想化的边界"],
-        )
-
-    monkeypatch.setattr(nodes, "ainvoke_structured", clarified)
-    query = "如何看待galgame或者文学作品中的理想简化的世界"
-    result = asyncio.run(nodes.clarify({"query": query}, object()))
-
-    assert result["clarified_query"] == query
-    assert "叙事功能" in result["research_brief"]
-    assert result.get("answer_mode") is None
-
-
-def test_clarify_stops_only_for_material_user_choice(monkeypatch):
-    async def needs_input(llm, schema, messages, **kwargs):
-        return ClarificationDecision(
-            needs_user_input=True,
-            intent_summary="用户需要选择分析对象。",
-            clarification_question="你希望讨论具体作品，还是只讨论一般叙事机制？",
-        )
-
-    monkeypatch.setattr(nodes, "ainvoke_structured", needs_input)
-    result = asyncio.run(nodes.clarify({"query": "分析它"}, object()))
-
-    assert result["answer_mode"] == "clarification_needed"
-    assert "具体作品" in result["report"]

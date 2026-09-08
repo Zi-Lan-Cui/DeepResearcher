@@ -1,11 +1,34 @@
-"""来源读取层的输入输出契约。"""
+"""来源抓取与读取层的输入输出契约。"""
 
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from deepsearch_agent.evidence.models import Evidence
+from deepsearch_agent.parsers.models import ParsedContent
 from deepsearch_agent.state import SubTask
+
+
+class SourceDocument(ParsedContent, total=False):
+    """解析正文及其来源、传输、缓存元数据。"""
+
+    status: Literal["completed", "failed"]
+    source_url: str
+    final_url: str
+    name: str
+    ext: str
+    content_type: str
+    modality: str
+    raw_bytes: int
+    status_code: int
+    content_hash: str
+    error: str
+    error_code: str
+    retrieval_method: str
+    support_ceiling: str
+    fetch_duration_ms: float
+    parse_duration_ms: float
+    cache_hit: bool
 
 
 class SourceReaderToolResult(BaseModel):

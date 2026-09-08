@@ -18,24 +18,9 @@ class DocumentBlock(TypedDict):
     char_end: NotRequired[int]
 
 
-class ParsedDocument(TypedDict):
+class ParsedContent(TypedDict):
+    """格式解析器的纯输出，不包含网络抓取与缓存状态。"""
+
     text: str
-    status: NotRequired[Literal["completed", "failed"]]
-    source_url: NotRequired[str]
-    final_url: NotRequired[str]
-    name: NotRequired[str]
-    ext: NotRequired[str]
-    content_type: NotRequired[str]
-    modality: NotRequired[str]
     title: NotRequired[str]
     blocks: NotRequired[list[DocumentBlock]]
-    raw_bytes: NotRequired[int]
-    status_code: NotRequired[int]
-    content_hash: NotRequired[str]
-    error: NotRequired[str]
-    error_code: NotRequired[str]
-    retrieval_method: NotRequired[str]
-    support_ceiling: NotRequired[str]
-    fetch_duration_ms: NotRequired[float]
-    parse_duration_ms: NotRequired[float]
-    cache_hit: NotRequired[bool]

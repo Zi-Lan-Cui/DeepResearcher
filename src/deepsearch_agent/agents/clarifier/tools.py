@@ -1,16 +1,37 @@
 """Clarifier 的询问/提交工具；无外部副作用。"""
 
 import json
+import re
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from langgraph.graph import END
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from deepsearch_agent.agents.clarifier.state import ClarifierAgentState
 
 MAX_CLARIFICATION_ROUNDS = 2
+
+
+def _normalize_string_list(value: object) -> object:
+    """修复模型把 JSON 字符串数组再次编码成字符串的常见偏差。"""
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, list):
+        return parsed
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1].strip()
+    # 兼容内部引号未转义、但数组元素分隔符仍明确的模型输出。
+    parts = re.split(r'["”]\s*,\s*["“]', raw)
+    return [item.strip().strip('"“”') for item in parts if item.strip().strip('"“”')]
 
 
 class AskClarificationArgs(BaseModel):
@@ -31,6 +52,11 @@ class AskClarificationArgs(BaseModel):
         ),
     )
 
+    @field_validator("options", mode="before")
+    @classmethod
+    def normalize_options(cls, value: object) -> object:
+        return _normalize_string_list(value)
+
 
 class ClarificationCompleteArgs(BaseModel):
     intent_summary: str = Field(
@@ -49,9 +75,14 @@ class ClarificationCompleteArgs(BaseModel):
         description="仍需由系统采用的显式假设，最多三项；没有假设时传空列表。",
     )
 
+    @field_validator("research_focus", "assumptions", mode="before")
+    @classmethod
+    def normalize_string_lists(cls, value: object) -> object:
+        return _normalize_string_list(value)
+
 
 def build_clarifier_tools():
-    @tool("AskClarification", args_schema=AskClarificationArgs, return_direct=True)
+    @tool("AskClarification", args_schema=AskClarificationArgs)
     async def ask_clarification(
         question: str,
         options: list[str],
@@ -97,7 +128,7 @@ def build_clarifier_tools():
             },
         )
 
-    @tool("ClarificationComplete", args_schema=ClarificationCompleteArgs, return_direct=True)
+    @tool("ClarificationComplete", args_schema=ClarificationCompleteArgs)
     async def clarification_complete(
         intent_summary: str,
         research_focus: list[str],

@@ -7,6 +7,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from deepsearch_agent.agents.supervisor.state import SupervisorRuntimeContext, WorkingState
 from deepsearch_agent.schemas import (
@@ -222,19 +223,36 @@ def build_supervisor_tools() -> list[BaseTool]:
                     **_working_set_snapshot(working),
                 }
             )
-        synthesis = ResearchSynthesis(
-            revision=current_revision + 1,
-            based_on_working_set_revision=working.working_set_revision,
-            answer_goal=answer_goal,
-            overall_summary=overall_summary,
-            aspects=aspects,
-            selected_evidence_ids=selected_evidence_ids,
-            open_gaps=open_gaps,
-            conflicts=conflicts,
-            next_actions=next_actions,
-            readiness=readiness,
-            decision_rationale=decision_rationale,
-        )
+        try:
+            synthesis = ResearchSynthesis(
+                revision=current_revision + 1,
+                based_on_working_set_revision=working.working_set_revision,
+                answer_goal=answer_goal,
+                overall_summary=overall_summary,
+                aspects=aspects,
+                selected_evidence_ids=selected_evidence_ids,
+                open_gaps=open_gaps,
+                conflicts=conflicts,
+                next_actions=next_actions,
+                readiness=readiness,
+                decision_rationale=decision_rationale,
+            )
+        except ValidationError as exc:
+            issues = [
+                {
+                    "field": ".".join(str(part) for part in error["loc"]),
+                    "message": error["msg"],
+                }
+                for error in exc.errors(include_url=False, include_input=False)
+            ]
+            return _result(
+                {
+                    "status": "rejected",
+                    "reason": "研究综合稿不满足提交契约，请按 issues 修正后重试。",
+                    "issues": issues,
+                    **_working_set_snapshot(working),
+                }
+            )
         working.research_synthesis = synthesis
         return _result({"status": "accepted", **_synthesis_snapshot(synthesis)})
 

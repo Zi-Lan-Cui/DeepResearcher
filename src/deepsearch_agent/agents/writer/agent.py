@@ -17,7 +17,6 @@ from deepsearch_agent.agents.middleware import (
     SubmissionGuard,
     build_agent_middleware,
 )
-from deepsearch_agent.agents.runtime import AgentExecutionScope
 from deepsearch_agent.agents.writer.state import (
     PreparedEvidence,
     ValidatedDraft,
@@ -25,6 +24,7 @@ from deepsearch_agent.agents.writer.state import (
 )
 from deepsearch_agent.agents.writer.tools import build_writer_tools
 from deepsearch_agent.config import AgentConfig, language_directive
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.errors import WriterGenerationError
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker

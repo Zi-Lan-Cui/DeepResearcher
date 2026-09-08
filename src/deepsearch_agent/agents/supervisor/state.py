@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from langchain_core.messages import ToolMessage
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import (
     ResearchDirectionResult,

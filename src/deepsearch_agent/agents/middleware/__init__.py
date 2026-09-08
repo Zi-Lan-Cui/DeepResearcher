@@ -4,7 +4,6 @@ from deepsearch_agent.agents.middleware.factory import AGENT_RECURSION_LIMIT, bu
 from deepsearch_agent.agents.middleware.observability import (
     LIMIT_MESSAGE_MARKER,
     AgentObservabilityMiddleware,
-    TurnLoggingMiddleware,
 )
 from deepsearch_agent.agents.middleware.profile import MiddlewareProfile, SubmissionGuard
 from deepsearch_agent.agents.middleware.retry import model_retry, tool_retry
@@ -19,7 +18,6 @@ __all__ = [
     "SerialToolMiddleware",
     "SubmissionGuard",
     "ToolLoopGuardMiddleware",
-    "TurnLoggingMiddleware",
     "build_agent_middleware",
     "model_retry",
     "tool_retry",

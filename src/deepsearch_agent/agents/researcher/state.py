@@ -7,7 +7,7 @@ from typing import TypedDict
 
 from langchain_core.messages import BaseMessage
 
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools.search.models import SearchCandidate

@@ -63,7 +63,7 @@ def build_clarifier_graph(agent: ClarifierAgentNode):
         focus = [str(item) for item in state.get("research_focus", []) if str(item)]
         assumptions = [str(item) for item in state.get("assumptions", []) if str(item)]
         if not state.get("clarification_completed"):
-            assumptions.append("Clarifier 回合耗尽，按原问题并列覆盖合理解释。")
+            assumptions.append("未取得额外澄清，按原问题并列覆盖合理解释。")
         parts = [summary, *focus]
         if assumptions:
             parts.append("研究假设：" + "、".join(assumptions))

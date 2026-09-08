@@ -11,7 +11,11 @@ from deepsearch_agent.agents.clarifier.state import (
     ClarifierAgentState,
     ClarifierRuntimeContext,
 )
-from deepsearch_agent.agents.clarifier.tools import build_clarifier_tools
+from deepsearch_agent.agents.clarifier.tools import (
+    AskClarificationArgs,
+    ClarificationCompleteArgs,
+    build_clarifier_tools,
+)
 from deepsearch_agent.state import ResearchState
 
 
@@ -68,6 +72,28 @@ def test_complete_is_the_only_submission_signal():
     assert command.update["clarification_completed"] is True
     assert command.update["intent_summary"] == "比较两种方案"
     assert command.update["research_focus"] == ["成本", "效果"]
+
+
+def test_clarifier_normalizes_string_encoded_list_arguments():
+    complete = ClarificationCompleteArgs.model_validate(
+        {
+            "intent_summary": "研究不争思想",
+            "research_focus": '["《道德经》中"不争"思想", "现代应用"]',
+            "assumptions": '["采用通行译本"]',
+        }
+    )
+    ask = AskClarificationArgs.model_validate(
+        {"question": "选择范围", "options": '["古代", "现代", "跨时期"]'}
+    )
+
+    assert complete.research_focus == ['《道德经》中"不争"思想', "现代应用"]
+    assert complete.assumptions == ["采用通行译本"]
+    assert ask.options == ["古代", "现代", "跨时期"]
+
+
+def test_invalid_clarifier_tool_arguments_return_to_model_for_correction():
+    assert _tool("AskClarification").return_direct is False
+    assert _tool("ClarificationComplete").return_direct is False
 
 
 def test_clarifier_run_injects_serial_tool_context():

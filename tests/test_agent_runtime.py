@@ -1,4 +1,4 @@
-from deepsearch_agent.agents.runtime import AgentExecutionScope
+from deepsearch_agent.context.execution import AgentExecutionScope
 
 
 def test_execution_scope_builds_stable_task_identity():

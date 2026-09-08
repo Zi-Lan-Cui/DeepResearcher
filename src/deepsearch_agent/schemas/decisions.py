@@ -14,15 +14,6 @@ class RouteDecision(BaseModel):
     reason: str
 
 
-class ClarificationDecision(BaseModel):
-    """澄清只补齐研究意图，不改写或缩窄用户原问题。"""
-
-    needs_user_input: bool = False
-    intent_summary: str = ""
-    research_focus: list[str] = Field(default_factory=list, max_length=4)
-    clarification_question: str = ""
-
-
 class ResearchDirectionDecision(BaseModel):
     """ResearchAgent 的内部统一决策；来源是 ResearchDirection* 工具调用。"""
 

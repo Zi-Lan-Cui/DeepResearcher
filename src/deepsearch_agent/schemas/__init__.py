@@ -10,7 +10,6 @@
 """
 
 from deepsearch_agent.schemas.decisions import (
-    ClarificationDecision,
     ReflectionDecision,
     ResearchDirectionDecision,
     RouteDecision,
@@ -54,7 +53,6 @@ from deepsearch_agent.schemas.tool_args import (
 
 __all__ = [
     "Citation",
-    "ClarificationDecision",
     "CoveredTopic",
     "ReleaseEvidence",
     "MarkdownReportDraft",
