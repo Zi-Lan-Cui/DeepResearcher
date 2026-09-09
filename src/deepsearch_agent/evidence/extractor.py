@@ -16,41 +16,19 @@ from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker, ainvoke_stru
 from deepsearch_agent.observability.events import JsonlSink, make_audit_event, make_tool_event
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.parsers.models import DocumentBlock
+from deepsearch_agent.prompts import load_prompt
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools.cache import CacheResult, CacheValue, NoOpToolCache, ToolCache
 from deepsearch_agent.tools.cache_keys import normalize_text, semantic_cache_key
 from deepsearch_agent.tools.search.models import SearchResult
 from deepsearch_agent.tools.sources.models import SourceDocument
 
-_EXTRACTION_SYSTEM_PROMPT = (
-    "【运行背景】你是深度研究流水线的 Evidence 抽取器。输入是某个来源的局部原文与一个研究子问题；"
-    "你的输出会被 Writer 和审阅器当作唯一允许引用的事实基础。"
-    "【任务目标】挑选能直接回答该子问题的少量原文证据，并把每条证据压缩为可核验的 claim 与逐字 quote。"
-    "【判定标准】quote 必须逐字来自给定原文，且应包含使 claim 成立的主体、条件、数字、时间、范围与限制。"
-    "claim 只能忠实改写 quote，不得补充背景知识、评价、因果、常识推断或标题中未被正文支持的信息。"
-    "若原文只有标题、导航、验证码、无关内容，或无法直接支撑子问题，返回空 evidences；空结果优于猜测。"
-    "【输出约束】只返回 JSON object，不要输出 Markdown、代码围栏或解释。JSON 示例："
-    '{"evidences":[{"claim":"原文支持的结论","quote":"原文逐字引文",'
-    '"support":"direct","confidence":0.8}]}'
-    '；没有足够证据时返回：{"evidences":[]}。'
-)
+_EXTRACTION_SYSTEM_PROMPT = load_prompt("evidence_extraction")
 
 # 摘要回退模式：输入不是页面全文而是搜索提供方给出的转述摘要。放宽的是
 # “什么样的句子值得提取”（单句即可成证、不要求信息完备），
 # quote 逐字性由确定性 validator 独立保证，此处不承诺也不放松。
-_SUMMARY_EXTRACTION_SYSTEM_PROMPT = (
-    "【运行背景】你是深度研究流水线的 Evidence 抽取器。输入是搜索提供方提供的来源内容摘要"
-    "（不是页面全文）与一个研究子问题；你的输出会被作为 partial 级部分证据使用。"
-    "【任务目标】从摘要中提取与研究子问题直接相关的可核验事实：quote 取摘要自身的完整句子（逐字），"
-    "claim 是该句的忠实转写。"
-    "【判定标准】不要求摘要具备全文式的信息完备性；一句能明确表达观点归属、概念关系、事实或评价的话"
-    "即可构成一条证据；不得补充摘要之外的评价、因果或背景知识。"
-    "support 一律填 partial。若摘要与子问题无关或是导航、空泛内容，返回空 evidences；空结果优于硬凑。"
-    "【输出约束】只返回 JSON object，不要输出 Markdown、代码围栏或解释。JSON 示例："
-    '{"evidences":[{"claim":"摘要支持的结论","quote":"摘要中的完整句子",'
-    '"support":"partial","confidence":0.7}]}'
-    '；没有足够证据时返回：{"evidences":[]}。'
-)
+_SUMMARY_EXTRACTION_SYSTEM_PROMPT = load_prompt("evidence_extraction_summary")
 
 
 class EvidenceExtractor:

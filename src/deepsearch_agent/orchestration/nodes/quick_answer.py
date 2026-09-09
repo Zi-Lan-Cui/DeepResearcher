@@ -3,6 +3,7 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from deepsearch_agent.orchestration.nodes.common import content_text
+from deepsearch_agent.prompts import load_prompt
 from deepsearch_agent.schemas import ResearchProgress, RunLifecycle
 
 
@@ -11,7 +12,7 @@ async def quick_answer(state, llm):
     answer = content_text(
         await llm.ainvoke_text(
             [
-                SystemMessage(content="简洁回答用户事实问题；如果无法确定请明确说明。"),
+                SystemMessage(content=load_prompt("quick_answer")),
                 HumanMessage(content=query),
             ]
         )
