@@ -71,10 +71,13 @@ class FakeGraph:
         self.interrupt_payload = interrupt_payload
 
     async def _run(self, input):  # noqa: A002 - 与 LangGraph 契约同名
-        run_id = input["run_id"] if input is not None else self.resume_run_id
-        if input is None:  # resume 形态：astream(None)，thread_id 定位断点
+        # resume 有两种形态：astream(None)（系统重启续跑）与 astream(Command(resume=…))
+        # （澄清回答续跑）；两者都不是 dict，都不能按输入字典取 run_id。
+        if not isinstance(input, dict) or not input:
+            run_id = self.resume_run_id
             self.none_inputs += 1
         else:
+            run_id = input["run_id"]
             self.ainvoke_inputs.append(dict(input))
         for i in range(self.emit_events):
             self._sink.write({"run_id": run_id, "event_type": f"engine_{i}", "payload": {}})
@@ -474,6 +477,37 @@ async def test_graph_interrupt_persists_awaiting_input_without_done(manager):
         ).all()
     assert "clarification_requested" in [event.event_type for event in events]
     assert "run_done" not in [event.event_type for event in events]
+
+
+async def test_real_suspend_then_resume_matches_is_null_cas(manager):
+    """回归守卫：真实挂起（worker claim 分支写 resume_payload=None）必须让
+    resume 的 `is_(None)` CAS 命中。JSON 列默认把 None 存成 JSON 字面量 null，
+    Python 读回同样是 None，肉眼与 ORM 都看不出，却令 `IS NULL` 恒 false →
+    澄清后永久 409 卡死。故断言必须在 SQL 层用 is_(None)，不能比对 Python None。
+    """
+    manager.holder["graph"] = FakeGraph(
+        result=_completed_result(),
+        interrupt_payload={"kind": "clarification", "question": "哪方面？", "options": ["成本"]},
+    )
+    run_id = await manager.start(USER_ID, "房价值得投资吗")
+    await _settle(manager, run_id)
+    assert (await _row(manager, run_id)).status == "awaiting_input"
+
+    # SQL 层不变量：挂起后载荷必须是真正的 SQL NULL（而非 JSON null）。
+    # 这是 bug 的精确探针——旧代码在此失败（is_ 判 false），且 Python 读回仍是 None。
+    async with manager.session_factory() as session:
+        is_sql_null = await session.scalar(
+            select(Run.resume_payload.is_(None)).where(Run.id == run_id)
+        )
+    assert is_sql_null is True, "挂起写入把 None 存成了 JSON null，resume 的 CAS 将永远落空"
+
+    # 换一张能收束的图，让 resume→claim 后这次执行跑到 completed，避免挂起态残留干扰收尾。
+    manager.holder["graph"] = FakeGraph(result=_completed_result(), resume_run_id=run_id)
+    manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - resume 需要断点在
+    advanced = await manager.resume_with_input(USER_ID, run_id, "成本")
+    assert advanced != "awaiting_input"  # 旧代码此处抛 RuntimeError（already_resumed）→ 永久 409
+    await _settle(manager, run_id)
+    assert (await _row(manager, run_id)).status == "completed"
 
 
 async def test_cancel_other_users_run_raises_lookup(manager):
