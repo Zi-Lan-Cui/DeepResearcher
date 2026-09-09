@@ -106,9 +106,7 @@ class PostgresSignalBus:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             logger.warning("service_signal_invalid payload=%r", raw)
             return
-        task = asyncio.create_task(
-            self._dispatch(kind, payload), name=f"service-signal-{kind}"
-        )
+        task = asyncio.create_task(self._dispatch(kind, payload), name=f"service-signal-{kind}")
         self._callback_tasks.add(task)
         task.add_done_callback(self._callback_tasks.discard)
 

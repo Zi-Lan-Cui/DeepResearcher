@@ -49,9 +49,7 @@ def route_after_router(state: Mapping[str, object]) -> str:
     # "quick_answer" 是 RouteDecision 的业务取值，不是节点名，两个词汇空间不混用。
     return route_after(
         state,
-        NodeName.QUICK_ANSWER
-        if state.get("route") == "quick_answer"
-        else NodeName.CLARIFY,
+        NodeName.QUICK_ANSWER if state.get("route") == "quick_answer" else NodeName.CLARIFY,
     )
 
 

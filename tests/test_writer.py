@@ -453,9 +453,7 @@ def test_writer_does_not_parse_cite_markers_inside_fenced_or_inline_code():
         },
     )
 
-    assert result["paragraph_bindings"] == [
-        _binding("真正需要引用的结论。", ["e1"]).model_dump()
-    ]
+    assert result["paragraph_bindings"] == [_binding("真正需要引用的结论。", ["e1"]).model_dump()]
 
 
 def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
@@ -604,7 +602,10 @@ def test_writer_recovers_inline_draft_without_complete_report(tmp_path):
 
     import json
 
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert any(item["event_type"] == "writer_inline_draft_recovered" for item in events)
 
 
@@ -713,21 +714,27 @@ class _BulkReadThenWriteLLM:
         if read_calls == 0:
             return AIMessage(
                 content="",
-                tool_calls=[{
-                    "name": "ReadEvidence",
-                    "args": {"evidence_ids": ["e1", "e2", "e3", "e4", "ghost-1"],
-                             "reason": "写作需要"},
-                    "id": "r1",
-                }],
+                tool_calls=[
+                    {
+                        "name": "ReadEvidence",
+                        "args": {
+                            "evidence_ids": ["e1", "e2", "e3", "e4", "ghost-1"],
+                            "reason": "写作需要",
+                        },
+                        "id": "r1",
+                    }
+                ],
             )
         if read_calls == 1:
             return AIMessage(
                 content="",
-                tool_calls=[{
-                    "name": "ReadEvidence",
-                    "args": {"evidence_ids": ["e3", "e4"], "reason": "补齐截断"},
-                    "id": "r2",
-                }],
+                tool_calls=[
+                    {
+                        "name": "ReadEvidence",
+                        "args": {"evidence_ids": ["e3", "e4"], "reason": "补齐截断"},
+                        "id": "r2",
+                    }
+                ],
             )
         report = (
             "## 一\n\n甲事实。[[cite:e1]] 乙事实。[[cite:e2]] "
@@ -735,11 +742,13 @@ class _BulkReadThenWriteLLM:
         )
         return AIMessage(
             content="",
-            tool_calls=[{
-                "name": "CompleteReport",
-                "args": {"selected_evidence_ids": ["e1", "e2", "e3", "e4"], "markdown": report},
-                "id": "c1",
-            }],
+            tool_calls=[
+                {
+                    "name": "CompleteReport",
+                    "args": {"selected_evidence_ids": ["e1", "e2", "e3", "e4"], "markdown": report},
+                    "id": "c1",
+                }
+            ],
         )
 
 
@@ -774,7 +783,7 @@ def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
         for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     reads = [r for r in records if r["event_type"] == "writer_evidence_read"]
-    assert reads[0]["payload"]["truncated_ids"] == ["e3", "e4"]     # 截断显式
-    assert reads[0]["payload"]["unknown_ids"] == ["ghost-1"]        # 编造 id 被点名
-    assert reads[0]["payload"]["read_ids"] == ["e1", "e2"]          # 未知 id 不占配额
-    assert result["writer"].status == "completed"                   # 两步内自愈
+    assert reads[0]["payload"]["truncated_ids"] == ["e3", "e4"]  # 截断显式
+    assert reads[0]["payload"]["unknown_ids"] == ["ghost-1"]  # 编造 id 被点名
+    assert reads[0]["payload"]["read_ids"] == ["e1", "e2"]  # 未知 id 不占配额
+    assert result["writer"].status == "completed"  # 两步内自愈

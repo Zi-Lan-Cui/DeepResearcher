@@ -179,22 +179,44 @@ def test_evidence_extractor_keeps_successful_chunks_when_one_chunk_fails(monkeyp
             evidences=[ExtractedEvidence(claim="保留下来的事实", quote=quote)]
         )
 
-    monkeypatch.setattr(
-        "deepsearch_agent.evidence.extractor.ainvoke_structured", extract_one_chunk
-    )
+    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", extract_one_chunk)
     document = {
         "title": "部分失败来源",
         "final_url": "https://example.com/partial",
         "text": "甲段落\n乙段落\n丙段落",
         "blocks": [
-            {"block_id": "b-1", "block_type": "paragraph", "text": "甲段落", "heading_path": [], "order": 1},
-            {"block_id": "b-2", "block_type": "paragraph", "text": "乙段落", "heading_path": [], "order": 2},
-            {"block_id": "b-3", "block_type": "paragraph", "text": "丙段落", "heading_path": [], "order": 3},
+            {
+                "block_id": "b-1",
+                "block_type": "paragraph",
+                "text": "甲段落",
+                "heading_path": [],
+                "order": 1,
+            },
+            {
+                "block_id": "b-2",
+                "block_type": "paragraph",
+                "text": "乙段落",
+                "heading_path": [],
+                "order": 2,
+            },
+            {
+                "block_id": "b-3",
+                "block_type": "paragraph",
+                "text": "丙段落",
+                "heading_path": [],
+                "order": 3,
+            },
         ],
     }
     outcome = asyncio.run(
         EvidenceExtractor(llm=object(), input_budget_tokens=3, chunk_concurrency=2).aextract_result(
-            {"id": "r1-1", "question": "方向", "type": "search", "status": "pending", "assigned_agent": "search"},
+            {
+                "id": "r1-1",
+                "question": "方向",
+                "type": "search",
+                "status": "pending",
+                "assigned_agent": "search",
+            },
             document,
             {"title": "部分失败来源", "url": document["final_url"], "snippet": "", "score": 0.8},
         )

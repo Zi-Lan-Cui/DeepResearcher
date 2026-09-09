@@ -88,9 +88,7 @@ async def migrate_database(database_url: str) -> None:
     # Do not couple migration discovery to this module's package depth: the
     # persistence layer can move without silently pointing Alembic at ``src/``.
     root = next(
-        parent
-        for parent in Path(__file__).resolve().parents
-        if (parent / "alembic.ini").is_file()
+        parent for parent in Path(__file__).resolve().parents if (parent / "alembic.ini").is_file()
     )
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "migrations"))

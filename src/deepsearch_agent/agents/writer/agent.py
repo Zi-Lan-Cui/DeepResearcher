@@ -50,44 +50,43 @@ _INLINE_DRAFT_MIN_CHARS = 300
 
 _WRITER_SYSTEM_PROMPT = "\n".join(
     [
-    "【角色与边界】",
-    "你是深度研究报告作者。Supervisor 已完成充分性判断并提供报告任务书；"
-    "你必须按其 covered_topics、required_points 与 caveats 写作，"
-    "而不重新决定是否研究或要求补材料。",
-    "【引用协议（必须遵守）】",
-    "凡是来自 Evidence 的可验证事实、数字、观点归属、具体案例，都必须在对应句子或段落末尾写"
-    "[[cite:evidence_id1,evidence_id2]]。cite 内只能使用输入中已有的 evidence_id，最多三个，以逗号分隔。",
-    "正文只能引用已通过工具读取过完整内容的 Evidence；不得凭目录中的 claim 补写细节。"
-    "工具的选择、批量与轮次规则以各工具自身的说明为准。",
-    "不要手写 [来源N]，不要把 cite 放入代码围栏、行内代码或 URL。",
-    "正确示例：Evidence 给出‘e1：某作品于 2020 年发行’，应写："
-    "该作品于 2020 年发行。[[cite:e1]]",
-    "不要写：该作品于 2020 年发行。[来源1]；"
-    "不要写：该作品于 2020 年发行。[[cite:未知来源]]。",
-    "【写作要求】",
-    "只使用给定的已验证 Evidence 写成围绕用户问题展开的正式__LANG__研究报告，"
-    "不能按来源逐条罗列资料，也不能写成只有结论句的资料摘要。",
-    "你不能凭目录中的 claim 补写 quote 未提供的细节；需要完整依据时先调用 ReadEvidence。",
-    "如果研究状态为 incomplete 或报告生成模式为 partial，必须在报告中明确说明覆盖范围、未解决问题和证据限制；"
-    "不要把局部证据写成完整综述，不要用模型内部知识填补缺口。",
-    "除非 Evidence 明显不足，输出 3 到 4 个有信息量的小节；每节 2 到 4 个完整段落。"
-    "报告应先直接回应问题，再形成清楚的论证链：界定讨论对象、解释证据与问题的关系、"
-    "比较不同情况或观点，并说明适用范围与限制。",
-    "每个段落通常用 2 到 5 句完成一个完整论点，而不是把单条 Evidence 改写成一句话。"
-    "目标是约 1,000 到 1,800 个__LANG__字符；不得用重复、空泛修辞或外部知识凑篇幅。"
-    "省略与问题无关的 Evidence。",
-    "直接输出 Markdown 正文：可按论证需要使用 ##/### 标题、列表、引用块和表格；"
-    "只有确实存在可比较的多个对象或维度时才使用表格，表格之后必须有解释，不能为排版而造表。",
-    "不要输出 # 一级标题、‘研究问题’、‘参考来源’或文末参考文献，这些由本地程序统一生成。",
-    "纯粹的衔接、范围说明或方法限制可以不加 cite，但绝不能新增外部事实。"
-    "不得编造、不得扩大事实的时间、范围或条件；不能把推荐、题材特征自动写成价值证明。",
-    "段落必须可独立阅读、自然衔接，并解释引用 Evidence 在本段论证中的作用。",
-    "【输出前最后检查】",
-    "1. selected_evidence_ids 非空且只含 evidence_id；"
-    "2. 每个 cite 标记使用 selected_evidence_ids 中的 evidence_id；"
-    "3. 每个 cite 必须是完整的 [[cite:id]]；"
-    "4. 不输出‘参考来源’小节；"
-    "5. 不用无引用的外部知识补全事实。",
+        "【角色与边界】",
+        "你是深度研究报告作者。Supervisor 已完成充分性判断并提供报告任务书；"
+        "你必须按其 covered_topics、required_points 与 caveats 写作，"
+        "而不重新决定是否研究或要求补材料。",
+        "【引用协议（必须遵守）】",
+        "凡是来自 Evidence 的可验证事实、数字、观点归属、具体案例，都必须在对应句子或段落末尾写"
+        "[[cite:evidence_id1,evidence_id2]]。cite 内只能使用输入中已有的 evidence_id，最多三个，以逗号分隔。",
+        "正文只能引用已通过工具读取过完整内容的 Evidence；不得凭目录中的 claim 补写细节。"
+        "工具的选择、批量与轮次规则以各工具自身的说明为准。",
+        "不要手写 [来源N]，不要把 cite 放入代码围栏、行内代码或 URL。",
+        "正确示例：Evidence 给出‘e1：某作品于 2020 年发行’，应写："
+        "该作品于 2020 年发行。[[cite:e1]]",
+        "不要写：该作品于 2020 年发行。[来源1]；不要写：该作品于 2020 年发行。[[cite:未知来源]]。",
+        "【写作要求】",
+        "只使用给定的已验证 Evidence 写成围绕用户问题展开的正式__LANG__研究报告，"
+        "不能按来源逐条罗列资料，也不能写成只有结论句的资料摘要。",
+        "你不能凭目录中的 claim 补写 quote 未提供的细节；需要完整依据时先调用 ReadEvidence。",
+        "如果研究状态为 incomplete 或报告生成模式为 partial，必须在报告中明确说明覆盖范围、未解决问题和证据限制；"
+        "不要把局部证据写成完整综述，不要用模型内部知识填补缺口。",
+        "除非 Evidence 明显不足，输出 3 到 4 个有信息量的小节；每节 2 到 4 个完整段落。"
+        "报告应先直接回应问题，再形成清楚的论证链：界定讨论对象、解释证据与问题的关系、"
+        "比较不同情况或观点，并说明适用范围与限制。",
+        "每个段落通常用 2 到 5 句完成一个完整论点，而不是把单条 Evidence 改写成一句话。"
+        "目标是约 1,000 到 1,800 个__LANG__字符；不得用重复、空泛修辞或外部知识凑篇幅。"
+        "省略与问题无关的 Evidence。",
+        "直接输出 Markdown 正文：可按论证需要使用 ##/### 标题、列表、引用块和表格；"
+        "只有确实存在可比较的多个对象或维度时才使用表格，表格之后必须有解释，不能为排版而造表。",
+        "不要输出 # 一级标题、‘研究问题’、‘参考来源’或文末参考文献，这些由本地程序统一生成。",
+        "纯粹的衔接、范围说明或方法限制可以不加 cite，但绝不能新增外部事实。"
+        "不得编造、不得扩大事实的时间、范围或条件；不能把推荐、题材特征自动写成价值证明。",
+        "段落必须可独立阅读、自然衔接，并解释引用 Evidence 在本段论证中的作用。",
+        "【输出前最后检查】",
+        "1. selected_evidence_ids 非空且只含 evidence_id；"
+        "2. 每个 cite 标记使用 selected_evidence_ids 中的 evidence_id；"
+        "3. 每个 cite 必须是完整的 [[cite:id]]；"
+        "4. 不输出‘参考来源’小节；"
+        "5. 不用无引用的外部知识补全事实。",
     ]
 )
 
@@ -124,28 +123,33 @@ class ReportWriter:
                 turn_budget=config.writer_max_turns,
                 read_batch=config.writer_read_batch_size,
             ),
-            system_prompt=_WRITER_SYSTEM_PROMPT.replace(
-                "__LANG__", config.output_language
-            )
+            system_prompt=_WRITER_SYSTEM_PROMPT.replace("__LANG__", config.output_language)
             + "\n"
             + language_directive(config.output_language),
             context_schema=WriterRuntimeContext,
-            middleware=cast(Any, build_agent_middleware(MiddlewareProfile(
-                agent_name="Writer",
-                model=getattr(self.llm, "chat_model", None),
-                max_turns=self.config.writer_max_turns,
-                context_window_tokens=context_window_tokens,
-                # 提交前输出纯文本不算结束：踢回重试，耗尽后由 _recover_inline_draft 兜底。
-                submission_guard=SubmissionGuard(
-                    nudge_message=(
-                        "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
-                        "请立即调用 CompleteReport，把完整 Markdown 正文作为参数提交，"
-                        "并在 selected_evidence_ids 填入真正支撑正文的已读 evidence_id。"
-                    ),
-                    submitted_probe=lambda ctx: getattr(ctx, "validated_draft", None) is not None,
+            middleware=cast(
+                Any,
+                build_agent_middleware(
+                    MiddlewareProfile(
+                        agent_name="Writer",
+                        model=getattr(self.llm, "chat_model", None),
+                        max_turns=self.config.writer_max_turns,
+                        context_window_tokens=context_window_tokens,
+                        # 提交前输出纯文本不算结束：踢回重试，耗尽后由 _recover_inline_draft 兜底。
+                        submission_guard=SubmissionGuard(
+                            nudge_message=(
+                                "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
+                                "请立即调用 CompleteReport，把完整 Markdown 正文作为参数提交，"
+                                "并在 selected_evidence_ids 填入真正支撑正文的已读 evidence_id。"
+                            ),
+                            submitted_probe=lambda ctx: (
+                                getattr(ctx, "validated_draft", None) is not None
+                            ),
+                        ),
+                        emit=self._emit,
+                    )
                 ),
-                emit=self._emit,
-            ))),
+            ),
             name="writer",
         )
 
@@ -269,9 +273,7 @@ class ReportWriter:
                 return
             cited = extract_cite_ids(text)
             selected = [
-                item
-                for item in dict.fromkeys(sorted(cited))
-                if item in runtime.read_evidence_ids
+                item for item in dict.fromkeys(sorted(cited)) if item in runtime.read_evidence_ids
             ]
             if not selected:
                 runtime.last_error = "模型直接输出的正文未引用任何已读取 Evidence。"
@@ -360,7 +362,9 @@ class ReportWriter:
     ) -> list[BaseMessage]:
         revision_note = ""
         if directive.revision_instructions:
-            feedback = "；".join(directive.revision_instructions)[: self.config.writer_feedback_chars]
+            feedback = "；".join(directive.revision_instructions)[
+                : self.config.writer_feedback_chars
+            ]
             revision_note = (
                 "【上一稿审阅意见】以下意见已经由 Supervisor 判定为应通过改写处理；"
                 f"必须修正其中的 fatal 问题：{feedback}"
@@ -373,7 +377,9 @@ class ReportWriter:
             f"上一稿（如有，必须在其基础上修订）：\n{directive.previous_draft}\n"
             f"可选 Evidence 目录：\n{evidence_catalogue}"
         )
-        return [HumanMessage(content="\n".join(part for part in [revision_note, user_prompt] if part))]
+        return [
+            HumanMessage(content="\n".join(part for part in [revision_note, user_prompt] if part))
+        ]
 
     def _render_exhausted_result(
         self,

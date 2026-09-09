@@ -71,9 +71,7 @@ class TokenCodec:
 
     def decode(self, token: str) -> int:
         try:
-            payload: dict[str, Any] = jwt.decode(
-                token, self._secret, algorithms=["HS256"]
-            )
+            payload: dict[str, Any] = jwt.decode(token, self._secret, algorithms=["HS256"])
             return int(payload["sub"])
         except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
             raise TokenError("无效或已过期的登录凭证。") from exc

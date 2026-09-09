@@ -132,9 +132,7 @@ def make_tool_event(
         payload=payload,
         component=component,
     )
-    return event.model_copy(
-        update={"event_type": event_name or "tool_" + status, "node": tool}
-    )
+    return event.model_copy(update={"event_type": event_name or "tool_" + status, "node": tool})
 
 
 def make_node_event(

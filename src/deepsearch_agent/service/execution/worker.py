@@ -196,9 +196,7 @@ class RunWorker:
 
     async def shutdown(self) -> None:
         self._closed = True
-        background = [
-            task for task in (self._poll_task, self._reaper_task) if task is not None
-        ]
+        background = [task for task in (self._poll_task, self._reaper_task) if task is not None]
         for task in background:
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
