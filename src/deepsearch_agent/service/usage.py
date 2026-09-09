@@ -15,7 +15,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from sqlalchemy import case, func, select, update
 
 from deepsearch_agent.config import LLMConfig
-from deepsearch_agent.observability.tracing.context import new_id
+from deepsearch_agent.observability.tracing.context import current_span_context, new_id
 from deepsearch_agent.observability.usage_runtime import (
     UsageBudgetExceeded,
     UsageRuntime,
@@ -292,7 +292,15 @@ class RunUsageCallback(AsyncCallbackHandler):
         async with self._active_lock:
             self._active += 1
             active = self._active
-        self._starts[run_id] = (monotonic(), active, prompt_chars, metadata or {})
+        invocation_metadata = dict(metadata or {})
+        link = current_span_context()
+        if link.trace_id:
+            invocation_metadata["trace_id"] = link.trace_id
+        if link.span_id:
+            invocation_metadata["span_id"] = link.span_id
+        if link.node_id:
+            invocation_metadata["node_id"] = link.node_id
+        self._starts[run_id] = (monotonic(), active, prompt_chars, invocation_metadata)
 
     async def on_llm_end(self, response: Any, *, run_id: UUID, **_kwargs: Any) -> None:
         started, active, prompt_chars, metadata = self._starts.pop(run_id, (monotonic(), 1, 0, {}))
@@ -364,7 +372,15 @@ class RunUsageCallback(AsyncCallbackHandler):
                 cost_usd=_cost(self._config, input_tokens, output_tokens, cached_tokens),
                 duration_ms=round((monotonic() - started) * 1000),
                 active=active,
-                detail={"price_version": self._config.price_version, **(detail or {})},
+                detail={
+                    "price_version": self._config.price_version,
+                    **{
+                        key: metadata[key]
+                        for key in ("trace_id", "span_id", "node_id")
+                        if metadata.get(key)
+                    },
+                    **(detail or {}),
+                },
             )
         except Exception:  # noqa: BLE001 - 计量故障不能破坏研究交付
             logger.warning("usage_record_failed run_id=%s", self._run_id, exc_info=True)

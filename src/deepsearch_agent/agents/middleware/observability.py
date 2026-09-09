@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from time import monotonic
 from typing import Any
@@ -18,6 +19,7 @@ _LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 LIMIT_MESSAGE_MARKER = _LIMIT_MESSAGE_MARKER
 _PREVIEW_CHARS = 800
 _ERROR_PREVIEW_CHARS = 400
+_TOOL_ARGUMENT_PREVIEW_CHARS = 2_000
 
 
 class AgentObservabilityMiddleware(AgentMiddleware):
@@ -81,6 +83,10 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             "tool_name": str(tool_call.get("name", "")),
             "tool_call_id": str(tool_call.get("id", "")),
             "turn": self._call_count(request.state),
+            "argument_keys": sorted(str(key) for key in (tool_call.get("args") or {}))
+            if isinstance(tool_call.get("args"), dict)
+            else [],
+            "arguments_preview": self._preview(tool_call.get("args")),
         }
         started_at = monotonic()
         self._log_event(f"{self.agent_name.lower()}_tool_started", base)
@@ -143,13 +149,24 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     def _duration_ms(started_at: float) -> int:
         return max(0, round((monotonic() - started_at) * 1_000))
 
-    @staticmethod
-    def _result_summary(result: Any) -> dict[str, object]:
+    @classmethod
+    def _result_summary(cls, result: Any) -> dict[str, object]:
         summary: dict[str, object] = {"result_type": type(result).__name__}
         if isinstance(result, ToolMessage):
             content = result.content
             summary["content_chars"] = len(content) if isinstance(content, str) else 0
+            summary["content_preview"] = cls._preview(content)
         return summary
+
+    @staticmethod
+    def _preview(value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            rendered = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            rendered = str(value)
+        return rendered[:_TOOL_ARGUMENT_PREVIEW_CHARS]
 
     def _log_event(self, event_type: str, payload: dict[str, object]) -> None:
         try:

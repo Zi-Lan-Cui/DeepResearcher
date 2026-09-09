@@ -16,6 +16,7 @@ from sqlalchemy import update
 
 from deepsearch_agent.config import Settings
 from deepsearch_agent.observability import JsonlSink
+from deepsearch_agent.observability.tracing import TraceRecorder
 from deepsearch_agent.orchestration.graph import build_graph
 from deepsearch_agent.service.events.ephemeral import EphemeralEventBus
 from deepsearch_agent.service.events.publisher import RunEventPublisher
@@ -118,60 +119,33 @@ class RunExecutor:
         if self._config.jsonl_events:
             sinks.append(JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl"))
         sink = CompositeSink(*sinks)
+        trace_recorder = TraceRecorder(sink)
         flusher = asyncio.create_task(self._periodic_flush(run_id))
         usage_token = bind_usage_runtime(
             UsageRuntime(run_id=run_id, store=self._usage_store, config=self._settings.llm)
         )
         suspended = False
         try:
-            # 系统重启续跑已经播报 resuming，保持该状态直到后续阶段事件；
-            # 人工澄清恢复则必须在 Worker 真正 claim 后从 queued 切到 running。
-            announce_running = not resume or resume_input is not None
-            if not await self._mark_running(
-                run_id,
-                announce_running=announce_running,
-                claim=claim,
-            ):
-                if run_id not in self._cancellation_requests:
-                    self.mark_lease_lost(run_id)
-                return
-            graph = self._graph_factory(
-                settings=self._settings_for(user_id),
-                event_sink=sink,
-                http_client=self._http_client,
-                checkpointer=self._checkpointer,
-                tool_cache=self._tool_cache,
-            )
-            # resume 时传 None 或 Command，由 checkpointer + thread_id 从断点继续。
-            inputs = (
-                resume_input if resume else {"query": query, "run_id": run_id, "session_id": run_id}
-            )
-            callback = RunUsageCallback(
+            with trace_recorder.trace(
+                "research_run",
                 run_id=run_id,
-                store=self._usage_store,
-                gate=self._llm_gate,
-                rate_limiter=self._llm_rate_limiter,
-                config=self._settings.llm,
-            )
-            result, interruption = await self._run_graph(
-                run_id, graph, inputs, callbacks=[callback]
-            )
-            if interruption is not None:
-                if not await self._persist_awaiting_input(run_id, claim=claim):
-                    self.mark_lease_lost(run_id)
-                    return
-                suspended = True
-                self._fanout.write(
-                    {
-                        "run_id": run_id,
-                        "event_type": "clarification_requested",
-                        "payload": interruption,
-                    }
+                session_id=run_id,
+                metadata={
+                    "attempt": claim.attempt if claim is not None else 0,
+                    "resume": resume,
+                    "worker": claim.lease_owner if claim is not None else "",
+                },
+            ):
+                suspended = await self._execute_traced(
+                    run_id,
+                    user_id,
+                    query,
+                    sink=sink,
+                    trace_recorder=trace_recorder,
+                    resume=resume,
+                    resume_input=resume_input,
+                    claim=claim,
                 )
-                await self.publish_status(run_id, "awaiting_input")
-            else:
-                if not await self._persist_terminal(run_id, result, claim=claim):
-                    self.mark_lease_lost(run_id)
         except asyncio.CancelledError:
             if run_id not in self._shutdown_interrupts and run_id not in self._lost_leases:
                 persisted = await self.persist_status(
@@ -219,6 +193,67 @@ class RunExecutor:
             self._lost_leases.discard(run_id)
             self._cancellation_requests.discard(run_id)
             reset_usage_runtime(usage_token)
+
+    async def _execute_traced(
+        self,
+        run_id: str,
+        user_id: int,
+        query: str,
+        *,
+        sink: CompositeSink,
+        trace_recorder: TraceRecorder,
+        resume: bool,
+        resume_input: Any,
+        claim: RunWork | None,
+    ) -> bool:
+        """Execute the graph while the run TraceContext is bound."""
+        # 系统重启续跑已经播报 resuming，保持该状态直到后续阶段事件；
+        # 人工澄清恢复则必须在 Worker 真正 claim 后从 queued 切到 running。
+        announce_running = not resume or resume_input is not None
+        if not await self._mark_running(
+            run_id,
+            announce_running=announce_running,
+            claim=claim,
+        ):
+            if run_id not in self._cancellation_requests:
+                self.mark_lease_lost(run_id)
+            return False
+        graph = self._graph_factory(
+            settings=self._settings_for(user_id),
+            event_sink=sink,
+            trace_recorder=trace_recorder,
+            http_client=self._http_client,
+            checkpointer=self._checkpointer,
+            tool_cache=self._tool_cache,
+        )
+        # resume 时传 None 或 Command，由 checkpointer + thread_id 从断点继续。
+        inputs = (
+            resume_input if resume else {"query": query, "run_id": run_id, "session_id": run_id}
+        )
+        callback = RunUsageCallback(
+            run_id=run_id,
+            store=self._usage_store,
+            gate=self._llm_gate,
+            rate_limiter=self._llm_rate_limiter,
+            config=self._settings.llm,
+        )
+        result, interruption = await self._run_graph(run_id, graph, inputs, callbacks=[callback])
+        if interruption is not None:
+            if not await self._persist_awaiting_input(run_id, claim=claim):
+                self.mark_lease_lost(run_id)
+                return False
+            self._fanout.write(
+                {
+                    "run_id": run_id,
+                    "event_type": "clarification_requested",
+                    "payload": interruption,
+                }
+            )
+            await self.publish_status(run_id, "awaiting_input")
+            return True
+        if not await self._persist_terminal(run_id, result, claim=claim):
+            self.mark_lease_lost(run_id)
+        return False
 
     def _settings_for(self, user_id: int) -> Settings:
         """BYO-keys 预留缝：未来可按用户返回 replace(...) 的 Settings。"""
