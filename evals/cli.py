@@ -89,13 +89,22 @@ async def cmd_run(args: argparse.Namespace) -> None:
         print(f"共 {len(cases)} 题")
         return
     harness = RunHarness(out_dir=RESULTS_DIR)
+    failures: list[str] = []
     try:
         for case in cases:
             for attempt in range(1, case.repeat + 1):
-                print(f"running {case.case_id} attempt={attempt}/{case.repeat} ...")
-                await harness.run_case(case, attempt)
+                print(f"running {case.case_id} attempt={attempt}/{case.repeat} ...", flush=True)
+                try:
+                    await harness.run_case(case, attempt)
+                except Exception as exc:  # noqa: BLE001 - 单题失败不拖垮整批（超时/澄清环/网关抖动）
+                    failures.append(f"{case.case_id}#{attempt}: {type(exc).__name__}: {exc}")
+                    print(f"  FAILED {case.case_id} attempt={attempt}: {exc}", flush=True)
     finally:
         await harness.close()
+    if failures:
+        print(f"\n{len(failures)} 个 run 失败（其余照常评分）：")
+        for line in failures:
+            print("  " + line)
 
 
 async def cmd_capture(args: argparse.Namespace) -> None:
