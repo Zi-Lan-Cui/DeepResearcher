@@ -170,6 +170,37 @@ def _gate(results, name):
     return next(r for r in results if r.criterion_id == f"gate:{name}")
 
 
+def test_process_metrics_carries_cache_and_token_fields():
+    """效率块不能静默漏字段：cached/saved tokens 必须在 process_metrics 里（曾因缺
+    字段令 report 显示 0，尽管 DB/detail 有 941k cached）。"""
+    from evals.deterministic import process_metrics
+
+    art = _artifact(
+        detail={
+            "status": "completed",
+            "report_markdown": "",
+            "citations": [],
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "cached_input_tokens": 800,
+            "saved_tokens": 5000,
+            "saved_external_request_count": 7,
+            "external_request_count": 59,
+            "llm_call_count": 93,
+            "cache_hit_count": 12,
+            "estimated_cost_usd": 0.0,
+            "elapsed_ms": 1234,
+        }
+    )
+    metrics = process_metrics(art)
+    assert metrics["cached_input_tokens"] == 800
+    assert metrics["saved_tokens"] == 5000
+    assert metrics["saved_external_request_count"] == 7
+    agg = aggregate.summarize_metrics([metrics, metrics])
+    assert agg["cached_input_tokens"] == 1600 and agg["llm_call_count"] == 186
+    assert agg["cost_note"]  # token-only 口径显式标注
+
+
 def test_citation_gate_pass_and_dangling():
     results = score_artifact(_artifact(), _case(criteria=()))
     assert _gate(results, "citation_integrity").verdict == "yes"

@@ -239,12 +239,24 @@ def cmd_report(args: argparse.Namespace) -> None:
             sum(s.unknown_count for s in scores) / max(1, sum(s.judge_count for s in scores)), 4
         ),
         "gate_failures": sorted({f for s in scores for f in s.gate_failures}),
+        "efficiency": aggregate.summarize_metrics(_all_round_metrics()),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     (RESULTS_DIR / "summary.json").write_text(
         json.dumps({"summary": summary, "per_case": metrics}, ensure_ascii=False, indent=1) + "\n",
         "utf-8",
     )
+
+
+def _all_round_metrics() -> list[dict]:
+    """从所有 round 产物里抽 process_metrics（token/时长/成本效率块的数据源）。"""
+    rows: list[dict] = []
+    for _case_id, round_path in _iter_result_rounds(None):
+        for row in json.loads(round_path.read_text("utf-8")):
+            metrics = row.get("metrics")
+            if metrics:
+                rows.append(metrics)
+    return rows
 
 
 def _mean_quality(scores: list[aggregate.CaseScore]) -> float | None:

@@ -232,3 +232,32 @@ def _cohen_kappa(a: list[str], b: list[str]) -> float | None:
     if pe >= 1.0:
         return None  # 单类别退化，kappa 无定义
     return (po - pe) / (1 - pe)
+
+
+def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """把各 artifact 的 process_metrics 汇成效率块。
+
+    成本口径：token 已从网关实采（usage_estimated=false）；`estimated_cost_usd`
+    未配 LLM 单价时恒 0——这不是缺失，是当前"只记录 token"的刻意口径。
+    """
+    if not rows:
+        return {"runs": 0}
+    total_in = sum(int(r.get("input_tokens") or 0) for r in rows)
+    total_out = sum(int(r.get("output_tokens") or 0) for r in rows)
+    return {
+        "runs": len(rows),
+        "input_tokens": total_in,
+        "output_tokens": total_out,
+        "total_tokens": total_in + total_out,
+        "cached_input_tokens": sum(int(r.get("cached_input_tokens") or 0) for r in rows),
+        "llm_call_count": sum(int(r.get("llm_call_count") or 0) for r in rows),
+        "external_request_count": sum(int(r.get("external_request_count") or 0) for r in rows),
+        "cache_hit_count": sum(int(r.get("cache_hit_count") or 0) for r in rows),
+        "saved_tokens": sum(int(r.get("saved_tokens") or 0) for r in rows),
+        "mean_total_tokens_per_run": round((total_in + total_out) / len(rows)),
+        "mean_elapsed_ms": round(sum(int(r.get("elapsed_ms") or 0) for r in rows) / len(rows)),
+        "estimated_cost_usd": round(
+            sum(float(r.get("estimated_cost_usd") or 0) for r in rows), 6
+        ),
+        "cost_note": "tokens 实采；$ 需配 LLM_*_USD_PER_MILLION 单价才计",
+    }
