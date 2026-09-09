@@ -64,6 +64,21 @@ def test_public_url_guard_rejects_non_public_dns_answers(monkeypatch, address):
         asyncio.run(guard.resolve("https://attacker.example/resource"))
 
 
+def test_public_url_guard_admits_dual_stack_with_one_global_record(monkeypatch):
+    """双栈主机同时返回一条全局 + 一条非全局记录时，旧实现整源拒绝，误杀大量
+    合法来源（评测里一个研究方向被拦 50+ 次）。修正后放行并只钉全局地址。"""
+    guard = PublicUrlGuard()
+
+    async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("127.0.0.1", "93.184.216.34")
+
+    monkeypatch.setattr(guard, "_resolve_addresses", resolve)
+    result = asyncio.run(guard.resolve("https://dual-stack.example/paper"))
+
+    assert result.addresses == ("93.184.216.34",)
+    assert result.curl_resolve == ["dual-stack.example:443:93.184.216.34"]
+
+
 def test_http_client_validates_every_redirect_before_following():
     class Guard:
         def __init__(self):

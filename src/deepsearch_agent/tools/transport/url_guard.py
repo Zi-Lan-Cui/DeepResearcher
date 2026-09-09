@@ -45,11 +45,17 @@ class PublicUrlGuard:
             raise UnsafeUrlError("URL 主机名不是有效的 IDNA 名称。") from exc
 
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        addresses = await self._resolve_addresses(ascii_hostname, port)
-        if not addresses:
+        resolved = await self._resolve_addresses(ascii_hostname, port)
+        if not resolved:
             raise UnsafeUrlError("URL 主机名没有可连接的地址。")
-        for address in addresses:
-            self.ensure_public_ip(address)
+        # 双栈主机会同时返回 A 与 AAAA；某些公开站点的一条记录（或本机 DNS 的
+        # 一条）可能落在非全局段。旧实现"任一地址非全局即整源拒绝"会误杀大量合法
+        # 来源（量子网络评测里一个方向被拦 50+ 次，Writer 无源可写→吐 0 引用残卷）。
+        # 正确策略：只要存在一个全局地址就放行，并把连接固定到全局地址集合；仅当
+        # 全部地址都非全局（真 SSRF）才拒绝。
+        addresses = tuple(a for a in resolved if self._is_global(a))
+        if not addresses:
+            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
 
         # Normalize the host used by URL and CURLOPT_RESOLVE to the same ASCII
         # spelling. Preserve path/query/fragment; fragments are not sent on wire.
@@ -76,7 +82,15 @@ class PublicUrlGuard:
         return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
 
     @staticmethod
+    def _is_global(address: str) -> bool:
+        try:
+            return ipaddress.ip_address(address).is_global
+        except ValueError:
+            return False
+
+    @staticmethod
     def ensure_public_ip(address: str) -> None:
+        # 用于重定向逐跳校验：单个目标地址非全局即拒绝。
         try:
             ip = ipaddress.ip_address(address)
         except ValueError as exc:
