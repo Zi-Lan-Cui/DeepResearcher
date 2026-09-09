@@ -335,13 +335,30 @@ def test_external_weighted_score_and_threshold():
     assert score.quality_score == 100.0 and score.passed
 
 
-def test_behavior_judge_unknown_fails_the_case():
+def test_behavior_judge_only_positive_no_fails_not_unknown():
+    """条件化语义：unknown=判不准（非确定性/rubric 歧义），记入 unknown_rate 交人工，
+    不制造假失败；只有确凿的 no 才 fail。"""
     case = _case(criteria=(Criterion(id="j", dimension="grounding", text="未编造", weight=1),))
-    results = [
-        CriterionResult("x-1", 1, "j", "grounding", "unknown", "judge"),
+    gates = [
+        CriterionResult("x-1", 1, "gate:citation_integrity", "grounding", "yes", "deterministic"),
+        CriterionResult("x-1", 1, "gate:done_exactly_once", "grounding", "yes", "deterministic"),
+        CriterionResult("x-1", 1, "gate:seq_continuous", "grounding", "yes", "deterministic"),
     ]
-    score = aggregate.score_case(case, 1, results)
+    undecidable = [*gates, CriterionResult("x-1", 1, "j", "grounding", "unknown", "judge")]
+    score = aggregate.score_case(case, 1, undecidable)
+    assert score.passed and score.unknown_count == 1 and not score.judge_failures
+    violated = [*gates, CriterionResult("x-1", 1, "j", "grounding", "no", "judge")]
+    score = aggregate.score_case(case, 1, violated)
     assert not score.passed and score.judge_failures == ["j"]
+
+
+def test_clarify_flow_is_vacuously_true_when_no_clarification():
+    """未触发澄清 → 前件假 → 条件断言空真（yes），不因模型这次没问而假失败。"""
+    from evals.deterministic import CHECKS
+
+    art = _artifact()  # 状态只有 queued/running/done，无 awaiting_input
+    result = CHECKS["clarify_flow"](art, Criterion(id="cf", dimension="behavior", text="t"))
+    assert result.verdict == "yes" and "空真" in result.reason
 
 
 def test_k_metrics_pass_any_vs_all():
