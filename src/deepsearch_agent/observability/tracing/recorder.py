@@ -1,9 +1,9 @@
 import asyncio
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from time import perf_counter
-from typing import Iterator
+from typing import Any, Protocol
 
-from deepsearch_agent.observability.events.sink import JsonlSink
 from deepsearch_agent.observability.tracing.context import (
     TraceContext,
     current_context,
@@ -13,15 +13,24 @@ from deepsearch_agent.observability.tracing.context import (
 )
 
 
+class TraceSink(Protocol):
+    def write(self, record: Mapping[str, Any] | Any) -> None: ...
+
+
 class TraceRecorder:
     """记录一棵 Trace 树；Span 通过 ContextVar 自动关联父子关系。"""
 
-    def __init__(self, sink: JsonlSink):
+    def __init__(self, sink: TraceSink):
         self.sink = sink
 
     @contextmanager
     def trace(
-        self, name: str = "research", *, run_id: str | None = None, session_id: str | None = None
+        self,
+        name: str = "research",
+        *,
+        run_id: str | None = None,
+        session_id: str | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> Iterator[str]:
         trace_id = new_id("trace")
         started = perf_counter()
@@ -45,6 +54,7 @@ class TraceRecorder:
                 "session_id": effective_session_id,
                 "node_id": parent.node_id if parent else None,
                 "name": name,
+                "metadata": dict(metadata or {}),
             }
         )
         error = None
@@ -68,6 +78,7 @@ class TraceRecorder:
                 "session_id": effective_session_id,
                 "node_id": parent.node_id if parent else None,
                 "duration_ms": round((perf_counter() - started) * 1000, 2),
+                "metadata": dict(metadata or {}),
             }
             if error:
                 record["error"] = error
