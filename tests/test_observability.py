@@ -17,14 +17,16 @@ from deepsearch_agent.service.events.projector import project
 def test_trace_records_nested_spans(tmp_path):
     path = tmp_path / "traces.jsonl"
     recorder = TraceRecorder(JsonlSink(path))
-    with recorder.trace("test") as trace_id:
+    with recorder.trace("test", metadata={"attempt": 2, "resume": True}) as trace_id:
         with recorder.span("planner") as parent_span_id:
             with recorder.span("llm", kind="llm"):
                 pass
 
     records = [json.loads(line) for line in path.read_text().splitlines()]
     assert records[0]["event_type"] == "trace_started"
+    assert records[0]["metadata"] == {"attempt": 2, "resume": True}
     assert records[-1]["event_type"] == "trace_completed"
+    assert records[-1]["metadata"] == {"attempt": 2, "resume": True}
     child_start = next(
         record
         for record in records

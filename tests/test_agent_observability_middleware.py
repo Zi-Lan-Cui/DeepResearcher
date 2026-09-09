@@ -9,7 +9,11 @@ from deepsearch_agent.context.execution import AgentExecutionScope
 
 def _request() -> SimpleNamespace:
     return SimpleNamespace(
-        tool_call={"name": "SearchSources", "id": "call-1", "args": {}},
+        tool_call={
+            "name": "SearchSources",
+            "id": "call-1",
+            "args": {"query": "Redis 恢复", "limit": 5},
+        },
         state={"run_model_call_count": 2},
         runtime=SimpleNamespace(
             context=SimpleNamespace(
@@ -50,9 +54,12 @@ async def test_tool_lifecycle_records_scope_and_preserves_result():
     assert started["tool_name"] == "SearchSources"
     assert started["tool_call_id"] == "call-1"
     assert started["turn"] == 2
+    assert started["argument_keys"] == ["limit", "query"]
+    assert '"query": "Redis 恢复"' in started["arguments_preview"]
     completed = events[1][1]
     assert completed["result_type"] == "ToolMessage"
     assert completed["content_chars"] == 2
+    assert completed["content_preview"] == '"ok"'
     assert isinstance(completed["duration_ms"], int)
 
 
