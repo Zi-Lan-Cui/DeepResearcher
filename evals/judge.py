@@ -102,7 +102,7 @@ class OpenAICompatJudge:
             raise RuntimeError("LLM_API_KEY/LLM_BASE_URL/LLM_MODEL_ID 未配置，无法构造 judge")
         self._client = AsyncOpenAI(api_key=llm.api_key, base_url=llm.base_url)
         self._model = os.environ.get("EVAL_JUDGE_MODEL", "").strip() or llm.model
-        self._max_tokens = int(os.environ.get("EVAL_JUDGE_MAX_TOKENS", "8"))
+        self._max_tokens = int(os.environ.get("EVAL_JUDGE_MAX_TOKENS", "16"))
 
     async def complete(self, system: str, user: str) -> str:
         response = await self._client.chat.completions.create(
@@ -113,5 +113,8 @@ class OpenAICompatJudge:
             ],
             temperature=0,
             max_tokens=self._max_tokens,
+            # 该网关是思考型模型（引擎各处亦如此关闭）：不禁用则 token 预算全花在
+            # 隐藏思考上、content 返回空串 → 解析成 unknown，把整批评测器打成 0 命中。
+            extra_body={"thinking": {"type": "disabled"}},
         )
         return response.choices[0].message.content or ""
