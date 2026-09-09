@@ -176,6 +176,31 @@ class RunHarness:
             self._persist(case, attempt, artifacts)
         return artifacts
 
+    async def capture(self, case: EvalCase, run_id: str, attempt: int) -> Artifact:
+        """把一次已经发生（或崩溃恢复中）的 durable run 收成产物，不重跑。
+
+        评测可以附着到飞行中的 run：clarify/故障注入这类跨进程流程常常需要
+        人工或外部推动，capture 让我们用真实 API + DB 现状补齐 artifact，
+        而不必为收集结果再花一遍钱。
+        """
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            headers = await self._auth(client)
+            detail = (
+                await client.get(f"{self.base_url}/api/runs/{run_id}", headers=headers)
+            ).json()
+        events, run_row = await self._read_db(run_id)
+        artifact = Artifact(
+            case_id=case.case_id,
+            attempt=attempt,
+            run_id=run_id,
+            detail=detail,
+            events=events,
+            run_row=run_row,
+        )
+        if self.out_dir is not None:
+            self._persist(case, attempt, [artifact])
+        return artifact
+
     def _persist(self, case: EvalCase, attempt: int, artifacts: list[Artifact]) -> None:
         target = self.out_dir / case.case_id
         target.mkdir(parents=True, exist_ok=True)
