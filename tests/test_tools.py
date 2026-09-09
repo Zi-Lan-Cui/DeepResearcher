@@ -47,6 +47,19 @@ def response(payload, *, url="https://example.com", content=b"", content_type="a
     )
 
 
+def test_classify_source_flags_primary_domains_conservatively():
+    from deepsearch_agent.tools.search.models import classify_source
+
+    assert classify_source("https://arxiv.org/pdf/1706.03762") == "primary"
+    assert classify_source("https://www.stats.gov.cn/x") == "primary"
+    assert classify_source("https://cs.stanford.edu/~person") == "primary"
+    assert classify_source("https://nsfc.gov.cn/p1") == "primary"
+    # 商业门户/学生报纸/会议营销站 → general（不冒充一手权威）
+    assert classify_source("https://www.thecrimson.com/article") == "general"
+    assert classify_source("https://uppersideconferences.com/2024") == "general"
+    assert classify_source("https://m.36kr.com/p/1") == "general"
+
+
 def test_search_parses_tavily_response_without_network():
     config = SearchConfig(tavily_api_key="test", max_results=2)
     client = SearchClient(

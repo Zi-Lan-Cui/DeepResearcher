@@ -33,7 +33,12 @@ from deepsearch_agent.schemas import (
 )
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools import SearchTool, SourceReaderTool
-from deepsearch_agent.tools.search.models import SearchCandidate, SearchResult, SearchToolResult
+from deepsearch_agent.tools.search.models import (
+    SearchCandidate,
+    SearchResult,
+    SearchToolResult,
+    classify_source,
+)
 from deepsearch_agent.tools.sources.models import SourceReaderToolResult
 
 _RESEARCHER_SYSTEM_PROMPT = load_prompt("researcher")
@@ -346,6 +351,7 @@ class ResearchAgent:
                 score=float(item.get("score", 0.0)),
                 content_provider=str(item.get("content_provider", "")),
                 published_at=str(item.get("published_at", "")),
+                source_tier=classify_source(url),
             )
             run_state.candidates[candidate_id] = candidate
             candidates.append(candidate.model_dump())
