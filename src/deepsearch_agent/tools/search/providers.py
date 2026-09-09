@@ -32,15 +32,20 @@ class TavilySearchProvider:
             request_kind="search",
         )
         try:
+            # 关键：Tavily advanced depth 对无法抽取正文的页面（付费墙/JS 页/多数站点）
+            # 显式返回 JSON null。`item.get(k, "")` 只在键“缺失”时给默认值，键存在但为
+            # null 时返回 None —— 会把 None 灌进 str 契约，令 SearchToolResult 的
+            # Pydantic 校验整批失败（真实评测中被毒化到每次搜索，researcher 反复重试空转）。
+            # `or ""` 同时折叠缺失与 null，且避免 str(None)=="None" 的字符串污染。
             return [
                 {
-                    "title": item.get("title", ""),
+                    "title": str(item.get("title") or ""),
                     "url": item["url"],
-                    "snippet": item.get("content", ""),
-                    "raw_content": item.get("raw_content", ""),
+                    "snippet": str(item.get("content") or ""),
+                    "raw_content": str(item.get("raw_content") or ""),
                     "content_provider": "tavily",
-                    "score": float(item.get("score", 0.0)),
-                    "published_at": str(item.get("published_date", "")),
+                    "score": float(item.get("score") or 0.0),
+                    "published_at": str(item.get("published_date") or ""),
                 }
                 for item in response.json().get("results", [])
                 if item.get("url")
@@ -73,12 +78,12 @@ class SerpApiSearchProvider:
                 )
             return [
                 {
-                    "title": item.get("title", ""),
+                    "title": str(item.get("title") or ""),
                     "url": item["link"],
-                    "snippet": item.get("snippet", ""),
+                    "snippet": str(item.get("snippet") or ""),
                     "content_provider": "serpapi",
                     "score": float(limit - index) / limit,
-                    "published_at": str(item.get("date", "")),
+                    "published_at": str(item.get("date") or ""),
                 }
                 for index, item in enumerate(data.get("organic_results", []))
                 if item.get("link")
@@ -120,12 +125,12 @@ class BaiduSearchProvider:
                 raise TypeError("references 不是列表")
             return [
                 {
-                    "title": str(item.get("title", "")),
+                    "title": str(item.get("title") or ""),
                     "url": clean_url(str(item.get("url", ""))),
-                    "snippet": str(item.get("content", "")),
+                    "snippet": str(item.get("content") or ""),
                     "content_provider": "baidu",
                     "score": float(limit - index) / limit,
-                    "published_at": str(item.get("date", "")),
+                    "published_at": str(item.get("date") or ""),
                 }
                 for index, item in enumerate(references[:limit])
                 if clean_url(str(item.get("url", ""))) and item.get("type", "web") == "web"
