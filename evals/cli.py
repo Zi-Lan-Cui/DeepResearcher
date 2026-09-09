@@ -92,8 +92,9 @@ async def cmd_run(args: argparse.Namespace) -> None:
     failures: list[str] = []
     try:
         for case in cases:
-            for attempt in range(1, case.repeat + 1):
-                print(f"running {case.case_id} attempt={attempt}/{case.repeat} ...", flush=True)
+            repeats = args.attempts or case.repeat
+            for attempt in range(1, repeats + 1):
+                print(f"running {case.case_id} attempt={attempt}/{repeats} ...", flush=True)
                 try:
                     await harness.run_case(case, attempt)
                 except Exception as exc:  # noqa: BLE001 - 单题失败不拖垮整批（超时/澄清环/网关抖动）
@@ -321,6 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("run")
     add_filters(sp)
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--attempts", type=int, default=0, help="覆盖每题次数（pass^k 用）")
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("capture")
