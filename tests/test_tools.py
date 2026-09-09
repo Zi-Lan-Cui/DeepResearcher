@@ -80,6 +80,49 @@ def test_search_parses_tavily_response_without_network():
     ]
 
 
+def test_tavily_null_raw_content_still_validates_as_result():
+    """回归守卫：Tavily advanced depth 对无法抽取正文的页返回 JSON null（非缺键）。
+    `.get(k,"")` 只在缺键时兜底，null 会漏成 None，进而令 SearchToolResult 的
+    Pydantic 校验整批失败 → researcher 反复重试空转（真实评测被卡 684 事件零产出）。
+    必须：null 归一为 ""，且能过 model_validate。"""
+    from deepsearch_agent.tools.search.models import SearchToolResult
+
+    config = SearchConfig(tavily_api_key="test", max_results=5)
+    client = SearchClient(
+        config,
+        FakeHttpClient(
+            response(
+                {
+                    "results": [
+                        {
+                            "title": None,
+                            "url": "https://a.test",
+                            "content": None,
+                            "raw_content": None,  # 付费墙/JS 页：显式 null
+                            "score": None,
+                            "published_date": None,
+                        },
+                        {
+                            "title": "OK",
+                            "url": "https://b.test",
+                            "content": "有摘要",
+                            "raw_content": "有正文",
+                            "score": 0.4,
+                            "published_date": "2026-01-01",
+                        },
+                    ]
+                }
+            )
+        ),
+    )
+    results = asyncio.run(client.asearch("中国一线城市 租金回报率"))
+    assert [type(r["raw_content"]).__name__ for r in results] == ["str", "str"]
+    assert results[0]["raw_content"] == "" and results[0]["title"] == ""
+    assert results[0]["published_at"] == ""  # str(None) 会得到 "None" 字符串污染
+    # 关键：整批能被真实消费方（researcher）的 Pydantic 校验接受
+    SearchToolResult.model_validate({"task_id": "t", "status": "completed", "results": results})
+
+
 def test_search_parses_baidu_references_through_common_result_contract():
     config = SearchConfig(provider="baidu", baidu_api_key="test", max_results=2)
     client = SearchClient(
