@@ -19,20 +19,31 @@ class TavilySearchProvider:
 
     async def asearch(self, query: str, limit: int) -> list[SearchResult]:
         response = await self.http.arequest(
-            "POST", "https://api.tavily.com/search",
-            json={"api_key": self.config.tavily_api_key, "query": query,
-                  "search_depth": "advanced", "max_results": limit,
-                  "include_answer": False,
-                  "include_raw_content": self.config.tavily_include_raw_content},
+            "POST",
+            "https://api.tavily.com/search",
+            json={
+                "api_key": self.config.tavily_api_key,
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": limit,
+                "include_answer": False,
+                "include_raw_content": self.config.tavily_include_raw_content,
+            },
             request_kind="search",
         )
         try:
-            return [{"title": item.get("title", ""), "url": item["url"],
-                     "snippet": item.get("content", ""),
-                     "raw_content": item.get("raw_content", ""),
-                     "content_provider": "tavily",
-                     "score": float(item.get("score", 0.0))}
-                    for item in response.json().get("results", []) if item.get("url")]
+            return [
+                {
+                    "title": item.get("title", ""),
+                    "url": item["url"],
+                    "snippet": item.get("content", ""),
+                    "raw_content": item.get("raw_content", ""),
+                    "content_provider": "tavily",
+                    "score": float(item.get("score", 0.0)),
+                }
+                for item in response.json().get("results", [])
+                if item.get("url")
+            ]
         except (KeyError, TypeError, ValueError) as exc:
             raise ToolParseError(f"Tavily 响应格式异常：{exc}") from exc
 
@@ -43,20 +54,33 @@ class SerpApiSearchProvider:
 
     async def asearch(self, query: str, limit: int) -> list[SearchResult]:
         response = await self.http.arequest(
-            "GET", "https://serpapi.com/search.json",
-            params={"engine": "google", "q": query,
-                    "api_key": self.config.serpapi_api_key, "num": limit},
+            "GET",
+            "https://serpapi.com/search.json",
+            params={
+                "engine": "google",
+                "q": query,
+                "api_key": self.config.serpapi_api_key,
+                "num": limit,
+            },
             request_kind="search",
         )
         try:
             data = response.json()
             if data.get("error"):
-                raise ToolRequestError(f"SerpAPI 返回错误：{str(data['error'])[:500]}", retryable=False)
-            return [{"title": item.get("title", ""), "url": item["link"],
-                     "snippet": item.get("snippet", ""), "content_provider": "serpapi",
-                     "score": float(limit - index) / limit}
-                    for index, item in enumerate(data.get("organic_results", []))
-                    if item.get("link")]
+                raise ToolRequestError(
+                    f"SerpAPI 返回错误：{str(data['error'])[:500]}", retryable=False
+                )
+            return [
+                {
+                    "title": item.get("title", ""),
+                    "url": item["link"],
+                    "snippet": item.get("snippet", ""),
+                    "content_provider": "serpapi",
+                    "score": float(limit - index) / limit,
+                }
+                for index, item in enumerate(data.get("organic_results", []))
+                if item.get("link")
+            ]
         except (KeyError, TypeError, ValueError) as exc:
             raise ToolParseError(f"SerpAPI 响应格式异常：{exc}") from exc
 
@@ -71,12 +95,17 @@ class BaiduSearchProvider:
 
     async def asearch(self, query: str, limit: int) -> list[SearchResult]:
         response = await self.http.arequest(
-            "POST", self.endpoint,
-            headers={"X-Appbuilder-Authorization": f"Bearer {self.config.baidu_api_key}",
-                     "Content-Type": "application/json"},
-            json={"messages": [{"content": query, "role": "user"}],
-                  "search_source": "baidu_search_v2",
-                  "resource_type_filter": [{"type": "web", "top_k": min(limit, 50)}]},
+            "POST",
+            self.endpoint,
+            headers={
+                "X-Appbuilder-Authorization": f"Bearer {self.config.baidu_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messages": [{"content": query, "role": "user"}],
+                "search_source": "baidu_search_v2",
+                "resource_type_filter": [{"type": "web", "top_k": min(limit, 50)}],
+            },
             request_kind="search",
         )
         try:
@@ -87,15 +116,18 @@ class BaiduSearchProvider:
             references = data.get("references", [])
             if not isinstance(references, list):
                 raise TypeError("references 不是列表")
-            return [{"title": str(item.get("title", "")),
-                     "url": clean_url(str(item.get("url", ""))),
-                     "snippet": str(item.get("content", "")),
-                     "content_provider": "baidu",
-                     "score": float(limit - index) / limit,
-                     "published_at": str(item.get("date", ""))}
-                    for index, item in enumerate(references[:limit])
-                    if clean_url(str(item.get("url", "")))
-                    and item.get("type", "web") == "web"]
+            return [
+                {
+                    "title": str(item.get("title", "")),
+                    "url": clean_url(str(item.get("url", ""))),
+                    "snippet": str(item.get("content", "")),
+                    "content_provider": "baidu",
+                    "score": float(limit - index) / limit,
+                    "published_at": str(item.get("date", "")),
+                }
+                for index, item in enumerate(references[:limit])
+                if clean_url(str(item.get("url", ""))) and item.get("type", "web") == "web"
+            ]
         except (KeyError, TypeError, ValueError) as exc:
             raise ToolParseError(f"百度搜索响应格式异常：{exc}") from exc
 

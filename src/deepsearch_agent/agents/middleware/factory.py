@@ -37,17 +37,22 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
 
     trigger = max(1_024, int(profile.context_window_tokens * 0.8))
     keep = max(1_024, int(profile.context_window_tokens * 0.25))
-    middleware: list[AgentMiddleware] = [ContextEditingMiddleware(
+    middleware: list[AgentMiddleware] = [
+        ContextEditingMiddleware(
             edits=[ClearToolUsesEdit(trigger=trigger, keep=3)],
             token_counter=count_message_tokens,
-        )]
+        )
+    ]
     if profile.model is not None:
-        middleware.insert(0, SummarizationMiddleware(
-            model=profile.model,
-            trigger=("tokens", trigger),
-            keep=("tokens", keep),
-            token_counter=count_message_tokens,
-        ))
+        middleware.insert(
+            0,
+            SummarizationMiddleware(
+                model=profile.model,
+                trigger=("tokens", trigger),
+                keep=("tokens", keep),
+                token_counter=count_message_tokens,
+            ),
+        )
     middleware.append(model_retry(profile.agent_name))
     middleware.extend(tool_retry(names, label) for names, label in profile.retry_tools)
     if profile.serial_tools:

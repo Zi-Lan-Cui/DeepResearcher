@@ -39,10 +39,7 @@ async def list_runs(
     async with state.session_factory() as session:
         runs = (
             await session.scalars(
-                select(Run)
-                .where(Run.user_id == user.id)
-                .order_by(Run.created_at.desc())
-                .limit(50)
+                select(Run).where(Run.user_id == user.id).order_by(Run.created_at.desc()).limit(50)
             )
         ).all()
     return [run_summary(run) for run in runs]

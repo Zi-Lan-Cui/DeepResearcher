@@ -20,6 +20,7 @@ from deepsearch_agent.tools.transport import HttpClient
 @pytest.fixture(autouse=True)
 def _run_parser_inline(monkeypatch):
     """当前受限测试容器中 BeautifulSoup 在线程池会阻塞；不改变生产线程隔离。"""
+
     async def run_inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
@@ -221,7 +222,9 @@ def test_http_client_prefers_retry_after_over_local_backoff(monkeypatch):
     """429 的 Retry-After 优先于本地指数曲线，且不被 retry_max_seconds 截断。"""
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=2, retry_initial_seconds=1.0, retry_max_seconds=10.0,
+        retry_attempts=2,
+        retry_initial_seconds=1.0,
+        retry_max_seconds=10.0,
         retry_after_max_seconds=60.0,
     )
     client = HttpClient(config, _StatusClient(429, {"Retry-After": "30"}))
@@ -237,7 +240,9 @@ def test_http_client_caps_retry_after_at_independent_limit(monkeypatch):
     """服务端要求过长等待时按 retry_after_max_seconds 截断，避免病态挂起。"""
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=2, retry_initial_seconds=1.0, retry_max_seconds=10.0,
+        retry_attempts=2,
+        retry_initial_seconds=1.0,
+        retry_max_seconds=10.0,
         retry_after_max_seconds=45.0,
     )
     client = HttpClient(config, _StatusClient(503, {"Retry-After": "3600"}))
@@ -254,7 +259,9 @@ def test_http_client_parses_http_date_retry_after(monkeypatch):
     when = datetime.now(timezone.utc) + timedelta(seconds=12)
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=2, retry_initial_seconds=1.0, retry_max_seconds=10.0,
+        retry_attempts=2,
+        retry_initial_seconds=1.0,
+        retry_max_seconds=10.0,
         retry_after_max_seconds=60.0,
     )
     client = HttpClient(config, _StatusClient(429, {"Retry-After": format_datetime(when)}))
@@ -268,7 +275,9 @@ def test_http_client_keeps_exponential_backoff_without_retry_after(monkeypatch):
     """无 Retry-After 时保持原指数曲线（外加至多 25% jitter）。"""
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=3, retry_initial_seconds=2.0, retry_max_seconds=10.0,
+        retry_attempts=3,
+        retry_initial_seconds=2.0,
+        retry_max_seconds=10.0,
     )
     client = HttpClient(config, _StatusClient(500))
     with pytest.raises(ToolRequestError):

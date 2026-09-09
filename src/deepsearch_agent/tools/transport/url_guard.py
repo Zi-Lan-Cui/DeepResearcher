@@ -57,7 +57,9 @@ class PublicUrlGuard:
         if parsed.port is not None:
             host_for_url = f"{host_for_url}:{parsed.port}"
         normalized = urlunsplit(
-            SplitResult(parsed.scheme, host_for_url, parsed.path or "/", parsed.query, parsed.fragment)
+            SplitResult(
+                parsed.scheme, host_for_url, parsed.path or "/", parsed.query, parsed.fragment
+            )
         )
         return ResolvedPublicUrl(normalized, ascii_hostname, port, addresses)
 

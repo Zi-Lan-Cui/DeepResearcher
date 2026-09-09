@@ -65,8 +65,12 @@ def test_render_final_report_strips_writer_authored_reference_section():
     citation 依既有规则不进参考表。
     """
     citations = [
-        Citation(id="e1", url="https://example.com/one", title="来源一", quote="第一条。", claim="第一条"),
-        Citation(id="e2", url="https://example.com/two", title="来源二", quote="第二条。", claim="第二条"),
+        Citation(
+            id="e1", url="https://example.com/one", title="来源一", quote="第一条。", claim="第一条"
+        ),
+        Citation(
+            id="e2", url="https://example.com/two", title="来源二", quote="第二条。", claim="第二条"
+        ),
     ]
     report = render_final_report(
         clarified_query="q",
@@ -96,8 +100,20 @@ def test_render_final_report_strip_stops_at_next_same_level_heading():
             "## 补充论证\n这里还要引用[[cite:e1]]收尾。"
         ),
         citations=[
-            Citation(id="e1", url="https://example.com/one", title="来源一", quote="第一条。", claim="第一条"),
-            Citation(id="e2", url="https://example.com/two", title="来源二", quote="第二条。", claim="第二条"),
+            Citation(
+                id="e1",
+                url="https://example.com/one",
+                title="来源一",
+                quote="第一条。",
+                claim="第一条",
+            ),
+            Citation(
+                id="e2",
+                url="https://example.com/two",
+                title="来源二",
+                quote="第二条。",
+                claim="第二条",
+            ),
         ],
     )
     assert "这里还要引用" in report  # 误剥会吃掉后文

@@ -29,9 +29,7 @@ class _WrapperSmokeModel(BaseChatModel):
         else:
             response = AIMessage(
                 content="",
-                tool_calls=[
-                    {"name": "LoopSmokeEcho", "args": {"value": "ok"}, "id": "call-1"}
-                ],
+                tool_calls=[{"name": "LoopSmokeEcho", "args": {"value": "ok"}, "id": "call-1"}],
             )
         return ChatResult(generations=[ChatGeneration(message=response)])
 

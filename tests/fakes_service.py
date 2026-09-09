@@ -70,9 +70,7 @@ class FakeGraph:
 
 def completed_result() -> dict:
     return {
-        "run": SimpleNamespace(
-            phase="completed", terminal_reason="report_rendered", error=None
-        ),
+        "run": SimpleNamespace(phase="completed", terminal_reason="report_rendered", error=None),
         "answer_mode": "deep_research",
         "report": "# 研究报告\n结论。",
         "citations": [{"id": "e1", "url": "https://a", "title": "A", "quote": "q", "claim": "c"}],

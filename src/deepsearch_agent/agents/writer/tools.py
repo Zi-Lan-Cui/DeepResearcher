@@ -68,16 +68,20 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
         # 轮次（run-e10d1229 事故）。截断现在必须显式回传给模型。
         unknown = [item for item in requested if item not in context.evidence_by_id]
         already_read = [
-            item for item in requested if item in context.evidence_by_id
-            and item in context.read_evidence_ids
+            item
+            for item in requested
+            if item in context.evidence_by_id and item in context.read_evidence_ids
         ]
         fresh = [
-            item for item in requested if item in context.evidence_by_id
-            and item not in context.read_evidence_ids
+            item
+            for item in requested
+            if item in context.evidence_by_id and item not in context.read_evidence_ids
         ]
-        capacity = min(context.read_batch_size, len(context.evidence_by_id) - len(context.read_evidence_ids))
+        capacity = min(
+            context.read_batch_size, len(context.evidence_by_id) - len(context.read_evidence_ids)
+        )
         ids = fresh[: max(0, capacity)]
-        not_read = fresh[max(0, capacity):]
+        not_read = fresh[max(0, capacity) :]
         readable = [context.evidence_by_id[item] for item in ids]
         context.read_evidence_ids.update(ids)
         payload: dict[str, object] = {

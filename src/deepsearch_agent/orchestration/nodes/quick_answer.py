@@ -21,5 +21,7 @@ async def quick_answer(state, llm):
         "draft_answer": answer,
         "answer_mode": "quick_answer",
         "run": RunLifecycle(phase="writing"),
-        "research": ResearchProgress(status="completed", generation_mode="full", is_sufficient=True),
+        "research": ResearchProgress(
+            status="completed", generation_mode="full", is_sufficient=True
+        ),
     }

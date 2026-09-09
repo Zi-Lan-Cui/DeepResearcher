@@ -81,6 +81,7 @@ class SearchClient:
             SerpApiSearchProvider,
             TavilySearchProvider,
         )
+
         providers = {
             "baidu": (self.config.baidu_api_key, BaiduSearchProvider),
             "tavily": (self.config.tavily_api_key, TavilySearchProvider),
