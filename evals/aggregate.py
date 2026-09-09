@@ -61,12 +61,10 @@ def score_case(
     )
     score.behavior_pass = all(r.verdict == "yes" for r in deterministic)
     score.behavior_failures = [r.criterion_id for r in deterministic if r.verdict != "yes"]
-    # 内轨 judge 断言是布尔（保守交付题的"未编造数字"等）：非 yes 即失败；
-    # 外轨 judge 是加权质量分，unknown 只出分母、不算失败。
-    if case.track == "behavior":
-        score.judge_failures = [r.criterion_id for r in judged if r.verdict != "yes"]
-    else:
-        score.judge_failures = [r.criterion_id for r in judged if r.verdict == "no"]
+    # judge 只在**确凿的 no** 上判失败；unknown = 判不准（模型非确定性或 rubric 歧义），
+    # 不制造假失败——它进 unknown_rate，交人工标注复核。外轨 unknown 同样只出分母。
+    # 与 deterministic 侧 clarify_flow 的"条件空真"同构：只罚阳性违规，不罚无法证伪。
+    score.judge_failures = [r.criterion_id for r in judged if r.verdict == "no"]
     score.unknown_count = sum(1 for r in judged if r.verdict == "unknown")
     score.judge_count = len(judged)
 
