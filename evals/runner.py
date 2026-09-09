@@ -29,6 +29,8 @@ from evals.deterministic import Artifact, process_metrics
 from evals.schemas import EvalCase
 
 TERMINAL = ("completed", "failed", "cancelled")
+# 外轨题偶发被 Clarifier 追问时的代答语：把范围界定交回给系统、要求直接研究。
+DEFAULT_CLARIFY_ANSWER = "请以我的原问题为准，按你认为最合理的范围直接开展研究，不必再追问。"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 POLL_SECONDS = 5.0
@@ -107,13 +109,21 @@ class RunHarness:
         detail = await self._await_state(client, headers, run_id)
 
         while detail.get("status") == "awaiting_input":
-            if not case.clarify_answer:
-                raise RuntimeError(
-                    f"{case.case_id} 进入 awaiting_input 但 case 没配澄清回答；先 cancel 清理。"
-                )
+            answer = case.clarify_answer
+            if not answer:
+                # 外轨 DRB 题本就是"直接作答"式，没配澄清回答；Clarifier 偶发追问时
+                # 代答一次、放它继续研究。仍追问（第二轮）说明它会卡死 → 取消本 run 并
+                # 抛出，交由 cmd_run 记为该题失败而不拖垮整批。
+                if control.get("auto_resumed"):
+                    await client.post(
+                        f"{self.base_url}/api/runs/{run_id}/cancel", headers=headers
+                    )
+                    raise RuntimeError(f"{case.case_id} 连续多轮澄清，评测放弃该题")
+                answer = DEFAULT_CLARIFY_ANSWER
+                control["auto_resumed"] = True
             resume = await client.post(
                 f"{self.base_url}/api/runs/{run_id}/resume",
-                json={"answer": case.clarify_answer},
+                json={"answer": answer},
                 headers=headers,
             )
             control["first_resume_status"] = resume.status_code
