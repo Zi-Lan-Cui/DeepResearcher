@@ -146,11 +146,12 @@ class AgentConfig:
 
 
 def language_directive(language: str) -> str:
-    """生成注入各 agent/node system prompt 的语言纪律行。"""
-    return (
-        f"【语言】除专有名词、需引用的原文（quote 必须逐字保留其原始语言）与代码外，"
-        f"所有自然语言输出——包括判断理由、规划旁白、任务描述和正文——必须使用{language}。"
+    """生成注入各 agent/node system prompt 的语言纪律行（模板见 prompts/language.md）。"""
+    from deepsearch_agent.prompts import (
+        load_prompt,  # 延迟导入，避免 config 被 prompts 反向依赖时成环
     )
+
+    return load_prompt("language").format(language=language)
 
 
 @dataclass(frozen=True)

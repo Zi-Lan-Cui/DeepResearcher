@@ -102,3 +102,5 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deepsearch_agent"]
+# 提示词外置层是随包分发的数据文件（importlib.resources 读取），强制打入 wheel。
+artifacts = ["src/deepsearch_agent/prompts/*.md"]
