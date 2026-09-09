@@ -113,10 +113,12 @@ async def resume_run(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except RuntimeError as exc:
-        detail = (
-            "恢复断点不存在，请重新发起。"
-            if str(exc) == "checkpoint_missing"
-            else "该运行当前不在等待输入。"
-        )
+        # 三种 RuntimeError 语义不同，必须分开文案：诊断时曾因把
+        # already_resumed（CAS 未命中）误显为"不在等待输入"而掩盖了 resume 无法命中的真 bug。
+        reason = str(exc)
+        detail = {
+            "checkpoint_missing": "恢复断点不存在，请重新发起。",
+            "already_resumed": "该澄清回答已被处理，无需重复提交。",
+        }.get(reason, "该运行当前不在等待输入。")
         raise HTTPException(status_code=409, detail=detail) from None
     return {"id": run.id, "status": status}
