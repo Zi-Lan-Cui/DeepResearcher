@@ -20,3 +20,6 @@ var/
 
 # coverage artifacts
 .coverage
+
+# eval outputs (contains reports/scores; datasets are never vendored here)
+evals/results/
