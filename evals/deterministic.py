@@ -229,8 +229,11 @@ def process_metrics(artifact: Artifact) -> dict[str, Any]:
         "llm_call_count": detail.get("llm_call_count"),
         "input_tokens": detail.get("input_tokens"),
         "output_tokens": detail.get("output_tokens"),
+        "cached_input_tokens": detail.get("cached_input_tokens"),
         "estimated_cost_usd": detail.get("estimated_cost_usd"),
         "external_request_count": detail.get("external_request_count"),
         "cache_hit_count": detail.get("cache_hit_count"),
+        "saved_tokens": detail.get("saved_tokens"),
+        "saved_external_request_count": detail.get("saved_external_request_count"),
         "elapsed_ms": detail.get("elapsed_ms"),
     }
