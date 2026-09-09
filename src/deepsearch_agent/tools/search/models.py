@@ -28,6 +28,7 @@ class SearchCandidate(BaseModel):
     snippet: str = ""
     score: float = 0.0
     content_provider: str = ""
+    published_at: str = ""  # 搜索引擎给出的发布时间（时效性判断用，非正文事实）
 
 
 class SearchFailure(BaseModel):

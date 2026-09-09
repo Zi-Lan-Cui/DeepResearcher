@@ -476,6 +476,40 @@ def test_search_summary_document_uses_relaxed_summary_prompt(monkeypatch):
     assert "support 一律填 partial" in prompt
 
 
+def test_published_at_shown_as_metadata_not_prose(monkeypatch):
+    """发布时间进抽取提示的元信息行；缺失时整行不出现——quote 只认候选原文。"""
+    captured: list[str] = []
+
+    async def fake(llm, schema, messages, **kwargs):
+        captured.append(messages[1].content)
+        return EvidenceExtraction(evidences=[])
+
+    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", fake)
+    task = {
+        "id": "r1-1",
+        "question": "A 的延迟",
+        "type": "search",
+        "status": "pending",
+        "assigned_agent": "search",
+    }
+    result_info = {"title": "来源", "url": "https://example.com/x", "snippet": "", "score": 0.8}
+    base_document = {
+        "title": "来源",
+        "final_url": "https://example.com/x",
+        "text": "在相同硬件环境下，A 的平均延迟为 20ms。",
+        "blocks": blocks(),
+    }
+    extractor = EvidenceExtractor(llm=object())
+    asyncio.run(extractor.aextract_result(task, dict(base_document), result_info))
+    assert "发布时间" not in captured[-1]
+    asyncio.run(
+        extractor.aextract_result(
+            task, {**base_document, "published_at": "2026-07-04"}, result_info
+        )
+    )
+    assert "发布时间（元信息，非正文）：2026-07-04" in captured[-1]
+
+
 def test_summary_mode_still_requires_verbatim_quote(monkeypatch):
     """放宽的是提取门槛，不是来源契约：摘要里没有的句子仍然必须被拒绝。"""
     out, _prompt = _run_with_captured_prompt(

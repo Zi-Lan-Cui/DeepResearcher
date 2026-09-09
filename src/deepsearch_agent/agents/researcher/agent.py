@@ -358,6 +358,7 @@ class ResearchAgent:
                 snippet=str(item.get("snippet", "")),
                 score=float(item.get("score", 0.0)),
                 content_provider=str(item.get("content_provider", "")),
+                published_at=str(item.get("published_at", "")),
             )
             run_state.candidates[candidate_id] = candidate
             candidates.append(candidate.model_dump())

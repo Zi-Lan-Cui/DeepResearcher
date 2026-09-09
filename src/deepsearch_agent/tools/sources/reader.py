@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from typing import cast
 
 from deepsearch_agent.context.execution import AgentExecutionScope
 from deepsearch_agent.evidence import EvidenceExtractor
@@ -122,6 +123,11 @@ class SourceReaderTool:
                 )
             if document.get("error"):
                 raise ToolParseError(str(document.get("error", "来源解析失败")))
+            published_at = str(result.get("published_at", "")).strip()
+            if published_at:
+                # 搜索引擎给出的时效信息：附加于文档之上供抽取提示参考，
+                # 不来自页面本身，因此绝不能写进 L2 抓取缓存的正文。
+                document = cast(SourceDocument, {**document, "published_at": published_at})
             text = document.get("text", "")
             if not text:
                 raise SourceUnavailableError("empty_content", "来源没有可读取正文。")
@@ -421,6 +427,7 @@ class SourceReaderTool:
             ],
             "retrieval_method": retrieval_method,
             "support_ceiling": support_ceiling,
+            "published_at": str(result.get("published_at", "")),
         }
         self.logger.info(
             "source_content_fallback task=%s url=%s provider=%s method=%s chars=%d fetch_error=%s",

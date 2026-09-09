@@ -26,6 +26,7 @@ class SourceDocument(ParsedContent, total=False):
     error_code: str
     retrieval_method: str
     support_ceiling: str
+    published_at: str  # 由搜索结果携带的发布时间；reader 读取后附加，不进 L2 抓取缓存
     fetch_duration_ms: float
     parse_duration_ms: float
     cache_hit: bool

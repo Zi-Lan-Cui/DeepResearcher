@@ -55,7 +55,13 @@ def test_search_parses_tavily_response_without_network():
             response(
                 {
                     "results": [
-                        {"title": "A", "url": "https://a.test", "content": "text", "score": 0.8}
+                        {
+                            "title": "A",
+                            "url": "https://a.test",
+                            "content": "text",
+                            "score": 0.8,
+                            "published_date": "2026-07-04T00:00:00Z",
+                        }
                     ]
                 }
             )
@@ -69,6 +75,7 @@ def test_search_parses_tavily_response_without_network():
             "raw_content": "",
             "content_provider": "tavily",
             "score": 0.8,
+            "published_at": "2026-07-04T00:00:00Z",
         }
     ]
 
