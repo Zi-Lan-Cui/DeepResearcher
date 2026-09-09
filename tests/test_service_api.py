@@ -30,7 +30,10 @@ def _tick_events(frames):
 async def client(tmp_path):
     graphs: list[FakeGraph] = []
 
-    def graph_factory(*, settings, event_sink, http_client, checkpointer=None, tool_cache=None):
+    def graph_factory(
+        *, settings, event_sink, trace_recorder, http_client, checkpointer=None, tool_cache=None
+    ):
+        del trace_recorder
         del tool_cache
         graph = graphs.pop(0) if graphs else FakeGraph()
         graph._sink = event_sink
@@ -126,9 +129,7 @@ async def test_successful_login_clears_only_the_account_budget(client):
     for _ in range(4):
         assert (await client.post("/api/login", json=wrong)).status_code == 401
 
-    success = await client.post(
-        "/api/login", json={"email": "a@test.dev", "password": PASSWORD}
-    )
+    success = await client.post("/api/login", json={"email": "a@test.dev", "password": PASSWORD})
     assert success.status_code == 200
 
     # The previous account failures were cleared; a fresh full budget is available.

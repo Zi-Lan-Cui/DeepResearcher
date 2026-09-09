@@ -184,9 +184,12 @@ async def manager(tmp_path):
     )
     holder: dict = {}
 
-    def graph_factory(*, settings, event_sink, http_client, checkpointer=None, tool_cache=None):
+    def graph_factory(
+        *, settings, event_sink, trace_recorder, http_client, checkpointer=None, tool_cache=None
+    ):
         del tool_cache
         holder["sink"] = event_sink
+        holder["trace_recorder"] = trace_recorder
         holder["checkpointer"] = checkpointer
         graph = holder.get("graph") or FakeGraph()
         graph._sink = event_sink
@@ -335,6 +338,23 @@ async def test_success_persists_terminal_and_injects_run_id(manager):
     assert run.citations_json == graph.result["citations"]
     assert (run.evidence_count, run.source_count) == (41, 12)
     assert run.query == "测试问题"  # strip 生效
+    async with manager.session_factory() as session:
+        trace_events = list(
+            (
+                await session.scalars(
+                    select(RunEvent)
+                    .where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type.in_(("trace_started", "trace_completed")),
+                    )
+                    .order_by(RunEvent.seq)
+                )
+            ).all()
+        )
+    assert [event.event_type for event in trace_events] == ["trace_started", "trace_completed"]
+    assert trace_events[0].record["trace_id"] == trace_events[1].record["trace_id"]
+    assert trace_events[0].record["metadata"]["resume"] is False
+    assert manager.holder["trace_recorder"] is not None
 
 
 async def test_failure_persists_failed_with_truncated_message(manager):
@@ -546,16 +566,12 @@ async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
 
     assert await queue.renew(stale, lease_seconds=60) is False
     assert (
-        await manager.execution.executor.persist_status(
-            run_id, status="completed", claim=stale
-        )
+        await manager.execution.executor.persist_status(run_id, status="completed", claim=stale)
         is False
     )
     assert (await _row(manager, run_id)).status == "running"
     assert (
-        await manager.execution.executor.persist_status(
-            run_id, status="completed", claim=claim
-        )
+        await manager.execution.executor.persist_status(run_id, status="completed", claim=claim)
         is True
     )
 
@@ -840,7 +856,10 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     holder: dict = {}
     gate = asyncio.Event()
 
-    def graph_factory(*, settings, event_sink, http_client, checkpointer=None, tool_cache=None):
+    def graph_factory(
+        *, settings, event_sink, trace_recorder, http_client, checkpointer=None, tool_cache=None
+    ):
+        del trace_recorder
         del tool_cache
         graph = FakeGraph(
             result=_completed_result(),
@@ -891,17 +910,23 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
 
     assert holder["graph"].none_inputs == 1  # 续跑用 astream(None)
     async with factory() as session:
-        seqs = list(
+        persisted = list(
             (
                 await session.scalars(
-                    select(RunEvent.seq)
-                    .where(RunEvent.run_id == "run-orphan")
-                    .order_by(RunEvent.seq)
+                    select(RunEvent).where(RunEvent.run_id == "run-orphan").order_by(RunEvent.seq)
                 )
             ).all()
         )
-        # 旧 1..5 → resuming=6 → engine×3=7..9 → run_done=10：跨世连续、无主键冲突
-        assert seqs == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        # 旧 1..5 → resuming=6 → trace + engine + done：跨世连续、无主键冲突。
+        assert [event.seq for event in persisted] == list(range(1, 13))
+        assert [event.event_type for event in persisted[6:]] == [
+            "trace_started",
+            "engine_0",
+            "engine_1",
+            "engine_2",
+            "trace_completed",
+            "run_done",
+        ]
         resuming = await session.get(RunEvent, ("run-orphan", 6))
         assert resuming.record["payload"]["status"] == "resuming"  # 6 号帧确为续跑播报
         run = await session.get(Run, "run-orphan")

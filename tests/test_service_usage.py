@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import select
 
 from deepsearch_agent.config import LLMConfig
+from deepsearch_agent.observability.tracing import TraceRecorder
+from deepsearch_agent.observability.tracing.context import bind_context
 from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
 from deepsearch_agent.service.persistence.models import Run, RunUsage, User
 from deepsearch_agent.service.usage import (
@@ -60,12 +62,17 @@ async def test_usage_store_records_details_and_aggregates(usage_db):
         config=config,
     )
     callback_run_id = uuid4()
-    await callback.on_chat_model_start(
-        {},
-        [[HumanMessage(content="prompt")]],
-        run_id=callback_run_id,
-        metadata={"langgraph_node": "router", "ls_provider": "fake"},
-    )
+    trace_records: list[dict] = []
+    recorder = TraceRecorder(SimpleNamespace(write=trace_records.append))
+    with recorder.trace("research_run", run_id="run-usage") as trace_id:
+        with recorder.span("router", kind="node") as span_id:
+            with bind_context(node_id="router"):
+                await callback.on_chat_model_start(
+                    {},
+                    [[HumanMessage(content="prompt")]],
+                    run_id=callback_run_id,
+                    metadata={"langgraph_node": "router", "ls_provider": "fake"},
+                )
     response = SimpleNamespace(
         generations=[
             [
@@ -108,6 +115,9 @@ async def test_usage_store_records_details_and_aggregates(usage_db):
     ]
     assert records[0].usage_estimated is False
     assert records[0].detail_json["price_version"] == "test-v1"
+    assert records[0].detail_json["trace_id"] == trace_id
+    assert records[0].detail_json["span_id"] == span_id
+    assert records[0].detail_json["node_id"] == "router"
 
 
 async def test_usage_budget_blocks_the_next_model_request(usage_db):
