@@ -71,7 +71,6 @@ def score_case(
     score.judge_count = len(judged)
 
     if judged:
-        weighted: defaultdict[str, list[float]] = defaultdict(list)
         dim_totals: defaultdict[str, float] = defaultdict(float)
         dim_hits: defaultdict[str, float] = defaultdict(float)
         for r in judged:

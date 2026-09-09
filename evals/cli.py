@@ -98,6 +98,26 @@ async def cmd_run(args: argparse.Namespace) -> None:
         await harness.close()
 
 
+async def cmd_capture(args: argparse.Namespace) -> None:
+    """把一次已经跑过/恢复中的 run 收成产物（不重跑、不再花钱）。"""
+    all_cases = {c.case_id: c for c in load_cases(BEHAVIOR_FILE)}
+    try:
+        for c in drb.build_cases(drb.drb_root(None)):
+            all_cases.setdefault(c.case_id, c)
+    except FileNotFoundError:
+        pass  # 外轨 case 需要 DRB 在场；capture 行为题时没有也无妨
+    case = all_cases.get(args.case_id)
+    if case is None:
+        sys.exit(f"未知 case_id: {args.case_id}")
+    harness = RunHarness(out_dir=RESULTS_DIR)
+    try:
+        artifact = await harness.capture(case, args.run_id, args.attempt)
+        print(f"captured {args.run_id} → {case.case_id} attempt={args.attempt} "
+              f"status={artifact.detail.get('status')} events={len(artifact.events)}")
+    finally:
+        await harness.close()
+
+
 def cmd_score(args: argparse.Namespace) -> None:
     results: list[CriterionResult] = []
     behavior = {c.case_id: c for c in load_cases(BEHAVIOR_FILE)}
@@ -282,6 +302,12 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_run)
 
+    sp = sub.add_parser("capture")
+    sp.add_argument("--case-id", required=True)
+    sp.add_argument("--run-id", required=True)
+    sp.add_argument("--attempt", type=int, default=1)
+    sp.set_defaults(func=cmd_capture)
+
     for name, func in (("score", cmd_score), ("annotate", cmd_annotate)):
         sp = sub.add_parser(name)
         sp.add_argument("--case", default=None)
@@ -299,9 +325,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    if args.command == "run":
-        asyncio.run(args.func(args))
-    elif args.command == "judge":
+    if args.command in {"run", "judge", "capture"}:
         asyncio.run(args.func(args))
     else:
         args.func(args)

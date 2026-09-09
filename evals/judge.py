@@ -98,7 +98,7 @@ class OpenAICompatJudge:
         from deepsearch_agent.config import get_settings
 
         llm = get_settings().llm
-        if not llm.available:
+        if not llm.configured:
             raise RuntimeError("LLM_API_KEY/LLM_BASE_URL/LLM_MODEL_ID 未配置，无法构造 judge")
         self._client = AsyncOpenAI(api_key=llm.api_key, base_url=llm.base_url)
         self._model = os.environ.get("EVAL_JUDGE_MODEL", "").strip() or llm.model
