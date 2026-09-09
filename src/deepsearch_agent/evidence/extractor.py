@@ -491,10 +491,14 @@ class EvidenceExtractor:
                 f"最多返回 {max_evidences} 条 Evidence；优先选择最直接回答当前子问题、"
                 "信息密度最高且包含必要限定条件的证据。"
             )
+        published_at = str(document.get("published_at", "")).strip()
         user_prompt = (
             f"研究子问题：{task['question']}\n"
             f"来源标题：{document.get('title', result.get('title', ''))}\n"
-            f"候选原文：\n{context}"
+            # 发布时间是搜索引擎给出的元信息（不在原文内）：只帮助判断时效性，
+            # 不能作为 quote 来源——quote 逐字校验仍以候选原文为唯一依据。
+            + (f"发布时间（元信息，非正文）：{published_at}\n" if published_at else "")
+            + f"候选原文：\n{context}"
         )
         messages = [
             SystemMessage(content=system_prompt),

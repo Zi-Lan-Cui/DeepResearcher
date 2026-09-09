@@ -40,6 +40,7 @@ class TavilySearchProvider:
                     "raw_content": item.get("raw_content", ""),
                     "content_provider": "tavily",
                     "score": float(item.get("score", 0.0)),
+                    "published_at": str(item.get("published_date", "")),
                 }
                 for item in response.json().get("results", [])
                 if item.get("url")
@@ -77,6 +78,7 @@ class SerpApiSearchProvider:
                     "snippet": item.get("snippet", ""),
                     "content_provider": "serpapi",
                     "score": float(limit - index) / limit,
+                    "published_at": str(item.get("date", "")),
                 }
                 for index, item in enumerate(data.get("organic_results", []))
                 if item.get("link")

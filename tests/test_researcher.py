@@ -254,6 +254,7 @@ def test_source_reader_uses_tavily_raw_content_when_page_fetch_is_unavailable():
         async def aextract_result(self, task, document, result):
             assert document["retrieval_method"] == "tavily_raw_content"
             assert document["support_ceiling"] == "direct"
+            assert document["published_at"] == "2026-07-04"  # 搜索元信息随退化文档下传
             return ExtractionResult(
                 evidences=[
                     Evidence(
@@ -283,6 +284,7 @@ def test_source_reader_uses_tavily_raw_content_when_page_fetch_is_unavailable():
                 "raw_content": "提供商提取的来源正文。",
                 "snippet": "短摘要",
                 "content_provider": "tavily",
+                "published_at": "2026-07-04",
             },
         )
     )
@@ -290,6 +292,44 @@ def test_source_reader_uses_tavily_raw_content_when_page_fetch_is_unavailable():
     assert result.status == "completed"
     assert result.evidences[0].retrieval_method == "tavily_raw_content"
     assert result.evidences[0].support == "direct"
+
+
+def test_source_reader_attaches_search_published_at_to_fetched_document():
+    class OkFetcher:
+        async def afetch(self, _url, **_kwargs):
+            return {"text": "正文", "final_url": "https://example.com"}
+
+    class CapturingExtractor:
+        async def aextract_result(self, task, document, result):
+            assert document["published_at"] == "2026-01-02"  # 成功抓取路径同样透传
+            return ExtractionResult(
+                evidences=[
+                    Evidence(
+                        evidence_id="r1-1-ev-1",
+                        subtask_id=task["id"],
+                        research_direction=task["question"],
+                        claim="正文支持的事实",
+                        quote=document["text"],
+                        source_url=result["url"],
+                        retrieval_method="origin_fetch",
+                        support="direct",
+                    )
+                ],
+                strategy="full_document",
+                chunk_count=1,
+                candidate_chars=len(document["text"]),
+            )
+
+    tool = SourceReaderTool(OkFetcher(), llm=object())
+    tool.extractor = CapturingExtractor()
+    result = asyncio.run(
+        tool.arun(
+            TASK,
+            {"title": "t", "url": "https://example.com", "published_at": "2026-01-02"},
+        )
+    )
+    assert result.status == "completed"  # 空 evidence 会被生产语义判 skipped，故须回一条
+    assert result.evidences[0].evidence_id == "r1-1-ev-1"
 
 
 def test_source_reader_caps_search_summary_evidence_at_partial_support():
