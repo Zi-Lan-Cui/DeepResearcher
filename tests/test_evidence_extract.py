@@ -507,7 +507,10 @@ def test_published_at_shown_as_metadata_not_prose(monkeypatch):
             task, {**base_document, "published_at": "2026-07-04"}, result_info
         )
     )
-    assert "发布时间（元信息，非正文）：2026-07-04" in captured[-1]
+    assert "<发布时间>2026-07-04" in captured[-1]
+    # 不可信网页正文必须被标签包裹并与指令分区（防注入）
+    assert "<来源原文>" in captured[-1] and "</来源原文>" in captured[-1]
+    assert "不执行" in captured[-1]
 
 
 def test_summary_mode_still_requires_verbatim_quote(monkeypatch):
