@@ -5,8 +5,8 @@
   （DRB 官方自证人工互评一致率仅 ~69%），逐条二元判 + 人工同表标注才有
   可计算的一致率；
 - 每条 criterion 独立调用：一次长上下文里顺判 12 条会互相污染；
-- unknown 是一等公民：报告没写到、或 criterion 本身歧义时**必须** unknown，
-  禁止猜测——unknown 率就是 rubric 质量的体检指标；
+- unknown 只表示 criterion 本身歧义、材料损坏或评审器无法工作；
+  报告未覆盖 criterion 是明确的 no，不能用 unknown 逃避失分；
 - 外轨带专家参考文章做对照（RACE 的 reference-based 语义），内轨行为题
   不走 judge（全部 deterministic）。
 """
@@ -22,9 +22,9 @@ SYSTEM_PROMPT = """你是严格、保守的研究报告评审员。你将看到�
 
 只输出一个词：yes / no / unknown
 - yes：报告确凿满足该标准；
-- no：报告确凿不满足（缺失、错误或违背）；
-- unknown：依据所给材料无法裁决（报告未涉及该角度、标准表述歧义、或需要外部信息）。
-宁可 unknown，绝不猜测。不要输出任何其他文字。"""
+- no：报告确凿不满足，包括缺失 criterion 要求的内容、内容错误或违背要求；
+- unknown：只在 criterion 本身有歧义、输入材料损坏，或该 criterion 明确要求报告与参考文章之外的事实才能裁决时使用。
+“报告没写到”一律判 no，不是 unknown。不要输出任何其他文字。"""
 
 MAX_REPORT_CHARS = 60_000
 MAX_REFERENCE_CHARS = 30_000
@@ -34,9 +34,7 @@ class JudgeInvoker(Protocol):
     async def complete(self, system: str, user: str) -> str: ...
 
 
-def build_user_prompt(
-    criterion: Criterion, report: str, reference: str | None
-) -> str:
+def build_user_prompt(criterion: Criterion, report: str, reference: str | None) -> str:
     parts = [
         f"【评审标准】{criterion.text}",
     ]

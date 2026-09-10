@@ -115,9 +115,7 @@ class RunHarness:
                 # 代答一次、放它继续研究。仍追问（第二轮）说明它会卡死 → 取消本 run 并
                 # 抛出，交由 cmd_run 记为该题失败而不拖垮整批。
                 if control.get("auto_resumed"):
-                    await client.post(
-                        f"{self.base_url}/api/runs/{run_id}/cancel", headers=headers
-                    )
+                    await client.post(f"{self.base_url}/api/runs/{run_id}/cancel", headers=headers)
                     raise RuntimeError(f"{case.case_id} 连续多轮澄清，评测放弃该题")
                 answer = DEFAULT_CLARIFY_ANSWER
                 control["auto_resumed"] = True

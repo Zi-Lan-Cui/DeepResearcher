@@ -105,13 +105,35 @@ def load_cases(path: Path) -> list[EvalCase]:
 
 
 def results_to_jsonl(results: list[CriterionResult]) -> str:
-    return "".join(
-        json.dumps(asdict(r), ensure_ascii=False) + "\n" for r in results
-    )
+    return "".join(json.dumps(asdict(r), ensure_ascii=False) + "\n" for r in results)
 
 
 def load_results(path: Path) -> list[CriterionResult]:
-    return [CriterionResult(**json.loads(line)) for line in path.read_text("utf-8").splitlines() if line.strip()]
+    return [
+        CriterionResult(**json.loads(line))
+        for line in path.read_text("utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def merge_results(
+    path: Path,
+    replacements: list[CriterionResult],
+    evaluated: set[tuple[str, int]],
+) -> list[CriterionResult]:
+    """原子替换本次已评估的 case/attempt，保留其他轮次。
+
+    ``--case`` 是局部重评工具，不应把全局结果文件截成当前一题。
+    已评估但本次没有产生结果的轮次也会清除旧值，避免残留过期判定。
+    """
+    existing = load_results(path) if path.is_file() else []
+    merged = [row for row in existing if (row.case_id, row.attempt) not in evaluated]
+    merged.extend(replacements)
+    merged.sort(key=lambda row: (row.case_id, row.attempt, row.criterion_id, row.source))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(results_to_jsonl(merged), "utf-8")
+    temporary.replace(path)
+    return merged
 
 
 # ---- 校验 ----

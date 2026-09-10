@@ -139,7 +139,9 @@ def check_clarify_flow(artifact: Artifact, criterion: Criterion) -> CriterionRes
         return _result(artifact, criterion, "no", "回答后未走完 queued→running")
     router_starts = [e for e in artifact.events_of("node_started") if e.get("node") == "router"]
     if len(router_starts) != 1:
-        return _result(artifact, criterion, "no", f"Router 执行 {len(router_starts)} 次（恢复重跑）")
+        return _result(
+            artifact, criterion, "no", f"Router 执行 {len(router_starts)} 次（恢复重跑）"
+        )
     return _result(artifact, criterion, "yes")
 
 

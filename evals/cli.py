@@ -22,7 +22,7 @@ from evals import aggregate, drb
 from evals.deterministic import Artifact, score_artifact
 from evals.judge import OpenAICompatJudge, judge_case
 from evals.runner import RunHarness
-from evals.schemas import CriterionResult, EvalCase, load_cases, load_results, results_to_jsonl
+from evals.schemas import CriterionResult, EvalCase, load_cases, load_results, merge_results
 
 EVALS_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = EVALS_DIR / "results"
@@ -122,25 +122,29 @@ async def cmd_capture(args: argparse.Namespace) -> None:
     harness = RunHarness(out_dir=RESULTS_DIR)
     try:
         artifact = await harness.capture(case, args.run_id, args.attempt)
-        print(f"captured {args.run_id} → {case.case_id} attempt={args.attempt} "
-              f"status={artifact.detail.get('status')} events={len(artifact.events)}")
+        print(
+            f"captured {args.run_id} → {case.case_id} attempt={args.attempt} "
+            f"status={artifact.detail.get('status')} events={len(artifact.events)}"
+        )
     finally:
         await harness.close()
 
 
 def cmd_score(args: argparse.Namespace) -> None:
     results: list[CriterionResult] = []
+    evaluated: set[tuple[str, int]] = set()
     behavior = {c.case_id: c for c in load_cases(BEHAVIOR_FILE)}
     for case_id, round_path in _iter_result_rounds(args.case):
         artifacts = _artifacts_from_round(case_id, round_path)
         case = behavior.get(case_id)
         for artifact in artifacts:
+            evaluated.add((artifact.case_id, artifact.attempt))
             if case is None:
                 case = EvalCase(case_id=case_id, track="external", prompt="", criteria=())
             results.extend(score_artifact(artifact, case))
     out = RESULTS_DIR / "deterministic.jsonl"
-    out.write_text(results_to_jsonl(results), "utf-8")
-    print(f"确定性判定 {len(results)} 条 → {out}")
+    merged = merge_results(out, results, evaluated)
+    print(f"本次确定性判定 {len(results)} 条，累计 {len(merged)} 条 → {out}")
 
 
 async def cmd_judge(args: argparse.Namespace) -> None:
@@ -152,25 +156,30 @@ async def cmd_judge(args: argparse.Namespace) -> None:
     }
     invoker = OpenAICompatJudge()
     results: list[CriterionResult] = []
+    evaluated: set[tuple[str, int]] = set()
     for case_id, round_path in _iter_result_rounds(args.case):
         case = external.get(case_id) or behavior.get(case_id)
         if case is None or not case.judge_criteria():
             continue
         for artifact in _artifacts_from_round(case_id, round_path):
+            evaluated.add((artifact.case_id, artifact.attempt))
             report = artifact.report
             if not report:
                 continue
             reference = references.get(_drb_numeric(case_id))
             results.extend(
                 await judge_case(
-                    case, report=report, attempt=artifact.attempt,
-                    invoker=invoker, reference=reference,
+                    case,
+                    report=report,
+                    attempt=artifact.attempt,
+                    invoker=invoker,
+                    reference=reference,
                 )
             )
             print(f"judged {case_id} attempt={artifact.attempt}")
     out = RESULTS_DIR / "judge.jsonl"
-    out.write_text(results_to_jsonl(results), "utf-8")
-    print(f"judge 判定 {len(results)} 条 → {out}")
+    merged = merge_results(out, results, evaluated)
+    print(f"本次 judge 判定 {len(results)} 条，累计 {len(merged)} 条 → {out}")
 
 
 def _pairs(external: dict[str, EvalCase], root: Path):
@@ -282,7 +291,9 @@ def cmd_cases(args: argparse.Namespace) -> None:
         if problems:
             bad += 1
             print(f"[INVALID] {case.case_id}: {'; '.join(problems)}")
-        print(f"{case.case_id}  [{case.track}/{case.group or '-'}]  criteria={len(case.criteria)}  repeat={case.repeat}")
+        print(
+            f"{case.case_id}  [{case.track}/{case.group or '-'}]  criteria={len(case.criteria)}  repeat={case.repeat}"
+        )
     print(f"共 {len(cases)} 题，无效 {bad}")
 
 
