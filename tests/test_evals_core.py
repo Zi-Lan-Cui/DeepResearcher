@@ -17,13 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # evals 非安装�
 
 from evals import aggregate, drb  # noqa: E402
 from evals.deterministic import Artifact, score_artifact  # noqa: E402
-from evals.judge import judge_case, parse_verdict  # noqa: E402
+from evals.judge import SYSTEM_PROMPT, judge_case, parse_verdict  # noqa: E402
 from evals.schemas import (  # noqa: E402
     Criterion,
     CriterionResult,
     EvalCase,
     cases_to_jsonl,
     load_cases,
+    load_results,
+    merge_results,
     validate_case,
 )
 
@@ -65,6 +67,24 @@ def test_cases_jsonl_roundtrip(tmp_path):
     path = tmp_path / "cases.jsonl"
     path.write_text(cases_to_jsonl([case]), "utf-8")
     assert load_cases(path) == [case]
+
+
+def test_partial_result_merge_replaces_only_evaluated_rounds(tmp_path):
+    path = tmp_path / "judge.jsonl"
+    original = [
+        CriterionResult("a", 1, "old-a", "insight", "yes", "judge"),
+        CriterionResult("b", 1, "keep-b", "insight", "yes", "judge"),
+    ]
+    path.write_text("".join(json.dumps(dataclasses.asdict(r)) + "\n" for r in original), "utf-8")
+    replacement = CriterionResult("a", 1, "new-a", "insight", "no", "judge")
+
+    merge_results(path, [replacement], {("a", 1)})
+
+    rows = load_results(path)
+    assert [(row.case_id, row.criterion_id) for row in rows] == [
+        ("a", "new-a"),
+        ("b", "keep-b"),
+    ]
 
 
 def test_validate_catches_broken_cases():
@@ -317,6 +337,7 @@ async def test_judge_one_call_per_criterion_with_unknown_exit():
     assert [r.verdict for r in results] == ["yes", "unknown"]
     assert len(invoker.calls) == 2  # 逐条独立调用
     assert "REF" in invoker.calls[0] and "【待评报告】" in invoker.calls[0]
+    assert "报告没写到”一律判 no" in SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
@@ -358,17 +379,16 @@ def test_external_weighted_score_and_threshold():
     ]
     score = aggregate.score_case(case, 1, results)
     assert score.quality_score == 50.0 and not score.passed
-    # unknown 出分母不算错：b 判 unknown → 仅 a 计分 → 100
+    # unknown 不是有效交付：保守按0分计，同时另报 unknown_rate。
     unknown_b = [
         dataclasses.replace(r, verdict="unknown") if r.criterion_id == "b" else r for r in results
     ]
     score = aggregate.score_case(case, 1, unknown_b)
-    assert score.quality_score == 100.0 and score.passed
+    assert score.quality_score == 50.0 and not score.passed
 
 
-def test_behavior_judge_only_positive_no_fails_not_unknown():
-    """条件化语义：unknown=判不准（非确定性/rubric 歧义），记入 unknown_rate 交人工，
-    不制造假失败；只有确凿的 no 才 fail。"""
+def test_behavior_judge_requires_an_explicit_yes():
+    """unknown 进健康度报表供人工复核，但不能把产品 case 判通过。"""
     case = _case(criteria=(Criterion(id="j", dimension="grounding", text="未编造", weight=1),))
     gates = [
         CriterionResult("x-1", 1, "gate:citation_integrity", "grounding", "yes", "deterministic"),
@@ -377,7 +397,7 @@ def test_behavior_judge_only_positive_no_fails_not_unknown():
     ]
     undecidable = [*gates, CriterionResult("x-1", 1, "j", "grounding", "unknown", "judge")]
     score = aggregate.score_case(case, 1, undecidable)
-    assert score.passed and score.unknown_count == 1 and not score.judge_failures
+    assert not score.passed and score.unknown_count == 1 and score.judge_failures == ["j"]
     violated = [*gates, CriterionResult("x-1", 1, "j", "grounding", "no", "judge")]
     score = aggregate.score_case(case, 1, violated)
     assert not score.passed and score.judge_failures == ["j"]

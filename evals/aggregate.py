@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 from evals.schemas import CriterionResult, EvalCase
 
-VERDICT_VALUE = {"yes": 1.0, "no": 0.0}  # unknown 不进分子分母
+VERDICT_VALUE = {"yes": 1.0, "no": 0.0, "unknown": 0.0}
 
 
 def criterion_weight(case: EvalCase, criterion_id: str) -> float:
@@ -37,15 +37,13 @@ class CaseScore:
     behavior_pass: bool = True
     behavior_failures: list[str] = field(default_factory=list)
     quality_score: float | None = None  # 外轨加权分（judge 维度）
-    judge_failures: list[str] = field(default_factory=list)  # 内轨 judge 断言的 no 项
+    judge_failures: list[str] = field(default_factory=list)  # 内轨 judge 断言的非 yes 项
     unknown_count: int = 0
     judge_count: int = 0
     passed: bool = False
 
 
-def score_case(
-    case: EvalCase, attempt: int, results: Iterable[CriterionResult]
-) -> CaseScore:
+def score_case(case: EvalCase, attempt: int, results: Iterable[CriterionResult]) -> CaseScore:
     rows = [r for r in results if r.case_id == case.case_id and r.attempt == attempt]
     gates = [r for r in rows if r.criterion_id.startswith("gate:")]
     deterministic = [
@@ -61,10 +59,9 @@ def score_case(
     )
     score.behavior_pass = all(r.verdict == "yes" for r in deterministic)
     score.behavior_failures = [r.criterion_id for r in deterministic if r.verdict != "yes"]
-    # judge 只在**确凿的 no** 上判失败；unknown = 判不准（模型非确定性或 rubric 歧义），
-    # 不制造假失败——它进 unknown_rate，交人工标注复核。外轨 unknown 同样只出分母。
-    # 与 deterministic 侧 clarify_flow 的"条件空真"同构：只罚阳性违规，不罚无法证伪。
-    score.judge_failures = [r.criterion_id for r in judged if r.verdict == "no"]
+    # unknown 是评审器未交付有效判定，不能当作产品通过。它同时进
+    # unknown_rate，用于区分“系统未达标”与“judge/rubric 需校准”。
+    score.judge_failures = [r.criterion_id for r in judged if r.verdict != "yes"]
     score.unknown_count = sum(1 for r in judged if r.verdict == "unknown")
     score.judge_count = len(judged)
 
@@ -73,7 +70,7 @@ def score_case(
         dim_hits: defaultdict[str, float] = defaultdict(float)
         for r in judged:
             weight = criterion_weight(case, r.criterion_id)
-            if weight <= 0 or r.verdict == "unknown":
+            if weight <= 0:
                 continue
             dim_totals[r.dimension] += weight
             dim_hits[r.dimension] += weight * VERDICT_VALUE[r.verdict]
@@ -90,9 +87,7 @@ def score_case(
             and score.quality_score >= EXTERNAL_PASS_THRESHOLD
         )
     else:  # 行为题：门 + 全部 deterministic 断言 + 全部 judge 断言，一票不过
-        score.passed = (
-            score.gates_green and score.behavior_pass and not score.judge_failures
-        )
+        score.passed = score.gates_green and score.behavior_pass and not score.judge_failures
     return score
 
 
@@ -143,9 +138,7 @@ ANNOTATION_COLUMNS = [
 ]
 
 
-def export_annotation_csv(
-    results: Iterable[CriterionResult], cases: dict[str, EvalCase]
-) -> str:
+def export_annotation_csv(results: Iterable[CriterionResult], cases: dict[str, EvalCase]) -> str:
     """judge 结果 → 待人工标注 CSV。人工只需填 human_verdict 一列。"""
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=ANNOTATION_COLUMNS)
@@ -256,8 +249,6 @@ def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "saved_tokens": sum(int(r.get("saved_tokens") or 0) for r in rows),
         "mean_total_tokens_per_run": round((total_in + total_out) / len(rows)),
         "mean_elapsed_ms": round(sum(int(r.get("elapsed_ms") or 0) for r in rows) / len(rows)),
-        "estimated_cost_usd": round(
-            sum(float(r.get("estimated_cost_usd") or 0) for r in rows), 6
-        ),
+        "estimated_cost_usd": round(sum(float(r.get("estimated_cost_usd") or 0) for r in rows), 6),
         "cost_note": "tokens 实采；$ 需配 LLM_*_USD_PER_MILLION 单价才计",
     }
