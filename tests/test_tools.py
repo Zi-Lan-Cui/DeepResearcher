@@ -48,7 +48,7 @@ def response(payload, *, url="https://example.com", content=b"", content_type="a
 
 
 def test_classify_source_flags_primary_domains_conservatively():
-    from deepsearch_agent.tools.search.models import classify_source
+    from deepsearch_agent.tools.search.models import classify_source, describe_source
 
     assert classify_source("https://arxiv.org/pdf/1706.03762") == "primary"
     assert classify_source("https://www.stats.gov.cn/x") == "primary"
@@ -58,6 +58,47 @@ def test_classify_source_flags_primary_domains_conservatively():
     assert classify_source("https://www.thecrimson.com/article") == "general"
     assert classify_source("https://uppersideconferences.com/2024") == "general"
     assert classify_source("https://m.36kr.com/p/1") == "general"
+    assert describe_source("https://arxiv.org/abs/1706.03762").model_dump() == {
+        "source_type": "academic",
+        "authority_tier": "primary",
+        "publication_status": "preprint",
+        "primary_source": True,
+    }
+    assert describe_source("https://www.stats.gov.cn/x").model_dump() == {
+        "source_type": "government",
+        "authority_tier": "primary",
+        "publication_status": "official",
+        "primary_source": True,
+    }
+    assert describe_source("https://m.36kr.com/p/1").authority_tier == "secondary"
+
+
+@pytest.mark.parametrize(
+    ("url", "source_type", "tier"),
+    [
+        ("https://space.bilibili.com/123/video", "media", "secondary"),
+        ("https://www.zhihu.com/question/1", "blog", "secondary"),
+        ("https://author.medium.com/post", "blog", "secondary"),
+        ("https://cs.stanford.edu/paper", "academic", "primary"),
+        ("https://news.tsinghua.edu.cn/info", "academic", "primary"),
+        ("https://datatracker.ietf.org/doc/rfc9000", "standard", "primary"),
+        ("https://platform.openai.com/docs", "company", "primary"),
+    ],
+)
+def test_source_profile_rules_cover_subdomains(url, source_type, tier):
+    from deepsearch_agent.tools.search.models import describe_source
+
+    profile = describe_source(url)
+    assert profile.source_type == source_type
+    assert profile.authority_tier == tier
+
+
+def test_source_profile_domain_rules_resist_suffix_spoofing():
+    from deepsearch_agent.tools.search.models import describe_source
+
+    profile = describe_source("https://bilibili.com.evil.example/video")
+    assert profile.source_type == "general"
+    assert profile.authority_tier == "secondary"
 
 
 def test_search_parses_tavily_response_without_network():

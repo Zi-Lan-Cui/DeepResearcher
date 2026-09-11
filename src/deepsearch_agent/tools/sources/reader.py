@@ -285,7 +285,9 @@ class SourceReaderTool:
                             "failed_chunk_count": extraction.failed_chunk_count,
                             "validation_rejected_count": extraction.validation_rejected_count,
                             "cache_hit": extraction.cache_hit,
-                            "evidences": [item.model_dump() for item in evidences],
+                            # 事件会进入持久化记录并可能被 SSE 消费；
+                            # audit_chunk 只留在 checkpoint/评测产物中。
+                            "evidences": [item.agent_payload() for item in evidences],
                         },
                     )
                 )

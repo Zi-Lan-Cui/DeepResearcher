@@ -140,4 +140,5 @@ def _citation(evidence: Evidence) -> Citation:
         title=evidence.source_title,
         quote=evidence.quote,
         claim=evidence.claim,
+        source_profile=evidence.source_profile,
     )

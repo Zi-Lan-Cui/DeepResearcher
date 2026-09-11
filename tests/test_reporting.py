@@ -182,6 +182,34 @@ def test_render_final_report_node_routes_failure_paths():
     assert result["answer_mode"] == "research_incomplete"
     assert "核心结论缺少来源" in result["report"]
 
+    # 审阅回流耗尽 → 保留最后一版及完整参考来源，以受限报告交付
+    result = asyncio.run(
+        render_final_report_node(
+            {
+                "clarified_query": "A 的性能",
+                "run": {"phase": "rendering", "terminal_reason": "review_recovery_exhausted"},
+                "review": {"status": "rejected", "attempts": 2, "feedback": "仍有缺口"},
+                "research": {"status": "incomplete", "current_round": 1},
+                "report_draft": "## 结论\n\nA 的平均延迟为 20ms。[[cite:e1]]",
+                "citations": [
+                    Citation(
+                        id="e1",
+                        url="https://example.com/a",
+                        title="来源",
+                        quote="A 的平均延迟为 20ms。",
+                        claim="A 的平均延迟为 20ms",
+                    )
+                ],
+            },
+        )
+    )
+    assert result["answer_mode"] == "review_limited"
+    assert result["run"].phase == "completed"
+    assert result["run"].terminal_reason == "review_recovery_exhausted"
+    assert "A 的平均延迟为 20ms" in result["report"]
+    assert "## 参考来源" in result["report"]
+    assert "已达到修订上限" in result["report"]
+
     # 快乐路径:草稿 + citations → 渲染
     result = asyncio.run(
         render_final_report_node(
