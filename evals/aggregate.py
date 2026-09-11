@@ -32,6 +32,7 @@ def criterion_weight(case: EvalCase, criterion_id: str) -> float:
 class CaseScore:
     case_id: str
     attempt: int
+    track: str
     gates_green: bool
     gate_failures: list[str] = field(default_factory=list)
     behavior_pass: bool = True
@@ -54,6 +55,7 @@ def score_case(case: EvalCase, attempt: int, results: Iterable[CriterionResult])
     score = CaseScore(
         case_id=case.case_id,
         attempt=attempt,
+        track=case.track,
         gates_green=all(r.verdict == "yes" for r in gates),
         gate_failures=[r.criterion_id for r in gates if r.verdict != "yes"],
     )
@@ -113,7 +115,8 @@ def k_metrics(scores: list[CaseScore]) -> dict[str, dict[str, Any]]:
                     / max(1, sum(1 for s in runs if s.quality_score is not None)),
                     1,
                 )
-                if any(s.quality_score is not None for s in runs)
+                if runs[0].track == "external"
+                and any(s.quality_score is not None for s in runs)
                 else None
             ),
             "unknown_rate": round(
@@ -121,6 +124,30 @@ def k_metrics(scores: list[CaseScore]) -> dict[str, dict[str, Any]]:
             ),
         }
     return out
+
+
+def track_summary(
+    scores: list[CaseScore], metrics: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """分轨汇总：外轨只算报告质量，内轨只算系统可靠性。"""
+    external = [score for score in scores if score.track == "external"]
+    behavior = [score for score in scores if score.track == "behavior"]
+    external_ids = {score.case_id for score in external}
+    behavior_ids = {score.case_id for score in behavior}
+    quality = [score.quality_score for score in external if score.quality_score is not None]
+    return {
+        "report_quality": {
+            "cases": len(external_ids),
+            "rounds": len(external),
+            "mean": round(sum(quality) / len(quality), 2) if quality else None,
+        },
+        "system_reliability": {
+            "cases": len(behavior_ids),
+            "rounds": len(behavior),
+            "pass_any": sum(1 for case_id in behavior_ids if metrics[case_id]["pass_any"]),
+            "pass_all": sum(1 for case_id in behavior_ids if metrics[case_id]["pass_all"]),
+        },
+    }
 
 
 # ---- 人工标注同步表 ----

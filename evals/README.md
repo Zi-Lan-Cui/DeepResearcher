@@ -37,6 +37,25 @@ export SERVICE_DATABASE_URL=postgresql+asyncpg://...   # 行为断言需要 DB �
 
 ## 流水线
 
+日常迭代优先跑固定的 `core30`：20 道 DeepResearchBench 中文 dev 题衡量报告结果，
+10 道内部题覆盖澄清、口径冲突、证据不足时的保守交付、恢复/缓存。首轮每题一次，
+先快速找到主要问题；定稿前再对关键题跑 3 次稳定性。
+
+```bash
+export EVAL_RESULTS_DIR=evals/results/core30-v1
+uv run python -m evals.cli cases --profile core30
+uv run python -m evals.cli run --profile core30 --attempts 1
+uv run python -m evals.cli score
+uv run python -m evals.cli judge
+uv run python -m evals.cli report
+```
+
+`EVAL_RESULTS_DIR` 用来隔离每轮实验；不要把新结果直接写入已有历史目录，
+否则旧 attempt 会混入新报表。
+
+Evidence 的 `audit_chunk` 随 LangGraph checkpoint 保存，eval runner 直读 checkpoint
+收入 artifact，用于核对 quote 与抽取上下文。该字段不进入 Agent 消息或 SSE 事件。
+
 ```bash
 uv run python -m evals.cli run   --track behavior          # 提交/澄清/产物
 uv run python -m evals.cli score                           # 确定性门+行为断言（零费用）

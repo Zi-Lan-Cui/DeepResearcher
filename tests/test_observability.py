@@ -46,6 +46,27 @@ def test_trace_records_cancellation_without_unbound_status(tmp_path):
 
     records = [json.loads(line) for line in path.read_text().splitlines()]
     assert records[-1]["event_type"] == "trace_cancelled"
+    assert records[-1]["error"] == "CancelledError"
+
+
+def test_failed_span_terminal_record_is_self_describing(tmp_path):
+    path = tmp_path / "traces.jsonl"
+    recorder = TraceRecorder(JsonlSink(path))
+
+    with pytest.raises(RuntimeError):
+        with recorder.trace("test"):
+            with recorder.span("source_fetch", kind="tool"):
+                raise RuntimeError()
+
+    record = next(
+        row
+        for row in (json.loads(line) for line in path.read_text().splitlines())
+        if row["event_type"] == "span_failed"
+    )
+    assert record["name"] == "source_fetch"
+    assert record["kind"] == "tool"
+    assert "parent_span_id" in record
+    assert record["error"] == "RuntimeError"
 
 
 def test_audit_events_are_identifiable_and_keep_domain_payload():

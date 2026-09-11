@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from deepsearch_agent.service.persistence.database import make_engine, make_session_factory
 from deepsearch_agent.service.persistence.models import Run, RunEvent
+from deepsearch_agent.service.settings import checkpoint_dsn
 from evals.deterministic import Artifact, process_metrics
 from evals.schemas import EvalCase
 
@@ -57,13 +58,40 @@ class RunHarness:
         if not dsn:
             raise RuntimeError("SERVICE_DATABASE_URL 未设置：行为断言需要 DB 特权读。")
         self._session_factory = make_session_factory(make_engine(dsn))
+        self._checkpoint_dsn = checkpoint_dsn(dsn)
+        self._checkpoint_cm: Any = None
+        self._checkpointer: Any = None
         self.out_dir = out_dir
         self.timeout_seconds = timeout_seconds
         self._token = ""
 
     async def close(self) -> None:
+        if self._checkpoint_cm is not None:
+            await self._checkpoint_cm.__aexit__(None, None, None)
         engine = self._session_factory.kw["bind"]
         await engine.dispose()
+
+    async def _checkpoint_evidences(self, run_id: str) -> list[dict[str, Any]]:
+        """直读持久 checkpoint 中的 Evidence；仅 eval harness 使用。"""
+        if self._checkpoint_dsn is None:
+            return []
+        if self._checkpointer is None:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            self._checkpoint_cm = AsyncPostgresSaver.from_conn_string(self._checkpoint_dsn)
+            self._checkpointer = await self._checkpoint_cm.__aenter__()
+        tuple_ = await self._checkpointer.aget_tuple(
+            {"configurable": {"thread_id": run_id, "checkpoint_ns": ""}}
+        )
+        if tuple_ is None:
+            return []
+        values = tuple_.checkpoint.get("channel_values", {})
+        raw = values.get("evidences", []) if isinstance(values, dict) else []
+        return [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+            for item in raw
+            if isinstance(item, dict) or hasattr(item, "model_dump")
+        ]
 
     # ---- 用户旅程（API） ----
 
@@ -135,6 +163,7 @@ class RunHarness:
             detail = await self._await_state(client, headers, run_id)
 
         events, run_row = await self._read_db(run_id)
+        evidences = await self._checkpoint_evidences(run_id)
         return Artifact(
             case_id=case.case_id,
             attempt=1,
@@ -143,6 +172,7 @@ class RunHarness:
             events=events,
             run_row=run_row,
             control=control,
+            evidences=evidences,
         )
 
     async def _read_db(self, run_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -197,6 +227,7 @@ class RunHarness:
                 await client.get(f"{self.base_url}/api/runs/{run_id}", headers=headers)
             ).json()
         events, run_row = await self._read_db(run_id)
+        evidences = await self._checkpoint_evidences(run_id)
         artifact = Artifact(
             case_id=case.case_id,
             attempt=attempt,
@@ -204,6 +235,7 @@ class RunHarness:
             detail=detail,
             events=events,
             run_row=run_row,
+            evidences=evidences,
         )
         if self.out_dir is not None:
             self._persist(case, attempt, [artifact])
@@ -220,6 +252,7 @@ class RunHarness:
                 "run_row": a.run_row,
                 "control": a.control,
                 "events": a.events,
+                "evidences": a.evidences,
                 "metrics": process_metrics(a),
             }
             for a in artifacts
