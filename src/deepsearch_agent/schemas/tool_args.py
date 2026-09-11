@@ -67,22 +67,22 @@ class RestoreEvidence(BaseModel):
 
 
 class ResearchDirectionComplete(BaseModel):
-    """ResearchAgent 宣布局部探索结束；不代表整项研究完成。"""
+    """ResearchAgent 提交方向结果并结束当前工具循环。"""
 
     allow_parallel: ClassVar[bool] = False
 
-    reason: str = Field(description="为什么当前方向可以停止继续探索。")
+    reason: str = Field(description="为什么当前方向可以停止探索。")
     selected_evidence_ids: list[str] = Field(
         default_factory=list,
         max_length=12,
-        description="本方向最终推荐给 Supervisor 的活跃 Evidence ID。",
+        description="最终推荐给 Supervisor 的当前活跃 Evidence ID。",
     )
     answered_points: list[str] = Field(default_factory=list, max_length=4)
     conclusion: str = ""
     remaining_gaps: list[str] = Field(
         default_factory=list,
         max_length=4,
-        description="仅作为 Supervisor 的局部线索，不是全局缺口结论。",
+        description="局部未解问题；不代表整项研究的全局缺口。",
     )
 
 
@@ -106,15 +106,6 @@ class ResearchComplete(BaseModel):
 
     synthesis_revision: int = Field(ge=1)
     reason: str = Field(description="为什么该综合版本已经足以形成完整报告。")
-
-
-class ResearchReady(BaseModel):
-    """把当前综合版本保存为可部分交付回退点；不会终止研究。"""
-
-    allow_parallel: ClassVar[bool] = False
-
-    synthesis_revision: int = Field(ge=1)
-    reason: str = Field(description="为什么该版本已建立可诚实交付的最小证据链。")
 
 
 class ReviseResearchSynthesis(BaseModel):

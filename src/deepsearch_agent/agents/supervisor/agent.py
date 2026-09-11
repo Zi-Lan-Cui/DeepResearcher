@@ -31,6 +31,7 @@ from deepsearch_agent.agents.supervisor.tools import (
 )
 from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.context.execution import AgentExecutionScope
+from deepsearch_agent.context.runtime import get_runtime_environment
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, emit_agent_event
@@ -41,6 +42,7 @@ from deepsearch_agent.schemas import (
     CoveredTopic,
     ReportBrief,
     ResearchAgentResult,
+    ResearchAspect,
     ResearchDirectionResult,
     ResearchProgress,
     ResearchSynthesis,
@@ -111,7 +113,6 @@ class ResearchSupervisor:
                             "RestoreEvidence",
                             "ReviseResearchSynthesis",
                             "ResearchComplete",
-                            "ResearchReady",
                         },
                         tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
                         emit=self._emit_audit_event,
@@ -132,7 +133,9 @@ class ResearchSupervisor:
         return [
             HumanMessage(
                 content=(
-                    "【研究委托】\n"
+                    "【运行时环境】\n"
+                    + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
+                    + "\n【研究委托】\n"
                     + json.dumps(
                         {
                             "research_question": state.get(
@@ -202,11 +205,6 @@ class ResearchSupervisor:
                 "research_synthesis": self._research_synthesis_observation(
                     working.research_synthesis
                 ),
-                "partial_ready_revision": (
-                    working.partial_ready_synthesis.revision
-                    if working.partial_ready_synthesis
-                    else None
-                ),
             },
         )
 
@@ -233,7 +231,7 @@ class ResearchSupervisor:
                     {
                         "status": "blocked",
                         "reason": "round_budget_exhausted",
-                        "instruction": "研究轮次预算已耗尽；请先修订最新研究综合稿，再调用 ResearchComplete 或 ResearchReady。",
+                        "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
                     }
                 )
             async with runtime.tool_lock:
@@ -502,7 +500,12 @@ class ResearchSupervisor:
         if not working.sufficient and working.stop_reason is None:
             working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
         full_synthesis = working.completed_synthesis
-        partial_synthesis = working.partial_ready_synthesis
+        latest_synthesis = working.research_synthesis
+        partial_synthesis = (
+            self._partial_synthesis(working, latest_synthesis)
+            if working.stop_reason is not None and working.stop_reason.allows_partial_report
+            else None
+        )
         meets_material_floor = self._meets_partial_report_threshold(working, partial_synthesis)
         can_generate_partial = partial_synthesis is not None and meets_material_floor
         if partial_synthesis is not None and not meets_material_floor:
@@ -532,7 +535,6 @@ class ResearchSupervisor:
             attempted_source_urls=url_reservations.newly_attempted,
             working_set_revision=working.working_set_revision,
             research_synthesis=working.research_synthesis,
-            partial_ready_synthesis=working.partial_ready_synthesis,
             report_brief=report_brief,
             writer_directive=writer_directive,
             active_evidence_ids=sorted(working.active_evidence_ids),
@@ -556,6 +558,47 @@ class ResearchSupervisor:
                 ),
             ),
             supervisor_next=NodeName.WRITER if can_write else NodeName.RENDER_FINAL_REPORT,
+        )
+
+    def _partial_synthesis(
+        self,
+        working: WorkingState,
+        latest: ResearchSynthesis | None,
+    ) -> ResearchSynthesis | None:
+        """选择可部分交付的最新综合稿；无综合稿时生成最小固定版。"""
+        active_ids = set(working.active_evidence_ids)
+        if latest is not None and latest.selected_evidence_ids:
+            if set(latest.selected_evidence_ids).issubset(active_ids):
+                return latest
+        evidences = working.active_evidences()
+        if not evidences:
+            return None
+        selected_ids = [item.evidence_id for item in evidences]
+        claims = list(dict.fromkeys(item.claim.strip() for item in evidences if item.claim.strip()))
+        summary = "；".join(claims[:6]) or "已收集可追溯 Evidence，但未形成模型综合结论。"
+        gap = "研究未达到完整标准；报告只能陈述已验证材料及其适用边界。"
+        return ResearchSynthesis(
+            revision=(latest.revision + 1 if latest is not None else 1),
+            based_on_working_set_revision=working.working_set_revision,
+            answer_goal=working.research_query or "回答用户的研究问题",
+            overall_summary=summary[:4_000],
+            aspects=[
+                ResearchAspect(
+                    aspect_id="fallback-evidence",
+                    topic="已验证材料",
+                    role="保守回应用户问题",
+                    status="partial",
+                    summary=summary[:2_000],
+                    evidence_ids=selected_ids[:30],
+                    remaining_gap=gap,
+                )
+            ],
+            selected_evidence_ids=selected_ids,
+            open_gaps=[gap],
+            conflicts=[],
+            next_actions=[],
+            readiness="partial_ready",
+            decision_rationale="系统在研究结束时基于当前活跃 Evidence 生成最小可交付综合稿。",
         )
 
     def _build_writer_directive(

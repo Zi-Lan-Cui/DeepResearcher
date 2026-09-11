@@ -177,6 +177,68 @@ def test_research_agent_converts_completion_without_evidence_to_blocked_result()
     assert task_result.remaining_gaps
 
 
+def test_researcher_builds_minimum_result_when_finalization_never_submits():
+    run_state = DirectionRunState(active_evidence_limit=2)
+    run_state.add_evidences(
+        [
+            Evidence(
+                evidence_id="e1",
+                subtask_id="t1",
+                research_direction="方向",
+                claim="已验证的有限事实",
+                quote="原文片段",
+                source_url="https://example.com/a",
+                support="direct",
+            )
+        ]
+    )
+
+    ResearchAgent._apply_minimum_result(run_state)
+
+    assert run_state.stop_reason == "fallback_complete"
+    assert run_state.answered_points == ["已验证的有限事实"]
+    assert run_state.conclusion
+    assert run_state.remaining_gaps
+
+
+def test_researcher_builds_blocked_minimum_result_without_evidence():
+    run_state = DirectionRunState()
+
+    ResearchAgent._apply_minimum_result(run_state)
+
+    assert run_state.stop_reason == "blocked_without_evidence"
+    assert run_state.answered_points == []
+    assert run_state.conclusion == ""
+    assert "未获得可用 Evidence。" in run_state.remaining_gaps
+
+
+def test_researcher_exhaustion_preserves_collected_evidence_as_minimum_result():
+    agent = researcher_agent(
+        AgentConfig(
+            research_agent_max_turns=1,
+            finalization_attempts=1,
+            research_agent_max_evidences_per_direction=2,
+        ),
+        [
+            ResearchDirectionDecision(action="search", reason="先找来源", queries=["方向"]),
+            ResearchDirectionDecision(
+                action="read",
+                reason="读取来源",
+                candidate_ids=[
+                    "c-" + hashlib.sha1("https://example.com/方向/a".encode()).hexdigest()[:10]
+                ],
+            ),
+        ],
+    )
+
+    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+
+    assert result.evidences
+    assert result.task_result.execution_status == "completed"
+    assert result.task_result.stop_reason == "fallback_complete"
+    assert result.task_result.answered_points
+
+
 def test_research_direction_decision_rejects_conclusions_during_search():
     with pytest.raises(ValueError, match="只有 action=complete"):
         ResearchDirectionDecision(

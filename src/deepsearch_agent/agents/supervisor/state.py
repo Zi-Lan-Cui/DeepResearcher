@@ -182,7 +182,6 @@ class WorkingState:
         self.sufficient = False
         self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
-        self.partial_ready_synthesis = self._restore_synthesis(state.get("partial_ready_synthesis"))
         self.completed_synthesis: ResearchSynthesis | None = None
         self.stop_reason: StopReason | None = None
 

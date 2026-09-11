@@ -13,6 +13,7 @@ from langgraph.errors import GraphRecursionError
 from deepsearch_agent.agents.middleware import (
     AGENT_RECURSION_LIMIT,
     MiddlewareProfile,
+    SubmissionGuard,
     build_agent_middleware,
 )
 from deepsearch_agent.agents.researcher.state import (
@@ -22,15 +23,13 @@ from deepsearch_agent.agents.researcher.state import (
 from deepsearch_agent.agents.researcher.tools import build_researcher_tools
 from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.context.execution import AgentExecutionScope
+from deepsearch_agent.context.runtime import get_runtime_environment
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
 from deepsearch_agent.observability.events import JsonlSink, emit_agent_event
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.prompts import load_prompt
-from deepsearch_agent.schemas import (
-    ResearchAgentResult,
-    ResearchDirectionResult,
-)
+from deepsearch_agent.schemas import ResearchAgentResult, ResearchDirectionResult
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools import SearchTool, SourceReaderTool
 from deepsearch_agent.tools.search.models import (
@@ -38,6 +37,7 @@ from deepsearch_agent.tools.search.models import (
     SearchResult,
     SearchToolResult,
     classify_source,
+    describe_source,
 )
 from deepsearch_agent.tools.sources.models import SourceReaderToolResult
 
@@ -94,6 +94,17 @@ class ResearchAgent:
                             "RestoreEvidence",
                             "ResearchDirectionComplete",
                         },
+                        submission_guard=SubmissionGuard(
+                            nudge_message=(
+                                "你还没有调用 ResearchDirectionComplete。"
+                                "普通文本不是有效收尾；请继续研究，或立即调用该工具提交。"
+                            ),
+                            submitted_probe=lambda ctx: getattr(
+                                getattr(ctx, "run_state", None), "stop_reason", None
+                            )
+                            in {"complete", "blocked_without_evidence"},
+                            max_nudges=self.config.finalization_attempts,
+                        ),
                         emit=self._emit,
                     )
                 ),
@@ -142,11 +153,43 @@ class ResearchAgent:
             run_state.failures.append(f"direction_agent_failed: {exc}")
             run_state.stop_reason = "direction_agent_failed"
             run_state.stop_detail = str(exc)
+        if status != "cancelled" and run_state.stop_reason not in {
+            "complete",
+            "blocked_without_evidence",
+        }:
+            status = "completed"
+            self._apply_minimum_result(run_state)
         return self._result(
             task,
             status=status,
             run_state=run_state,
         )
+
+    @staticmethod
+    def _apply_minimum_result(run_state: DirectionRunState) -> None:
+        """不调用模型的最终保险：保留现有证据，明确标注自动收束与缺口。"""
+        if not run_state.active_evidence_ids and run_state.evidences:
+            run_state.active_evidence_ids.update(
+                item.evidence_id for item in run_state.evidences[: run_state.active_evidence_limit]
+            )
+        evidences = run_state.active_evidences()
+        fallback_gap = "方向研究未在回合限制内提交结构化总结，当前仅保留已验证材料。"
+        if not evidences:
+            run_state.answered_points = []
+            run_state.conclusion = ""
+            run_state.remaining_gaps = list(
+                dict.fromkeys([*run_state.remaining_gaps, fallback_gap, "未获得可用 Evidence。"])
+            )
+            run_state.stop_reason = "blocked_without_evidence"
+        else:
+            claims = list(dict.fromkeys(item.claim.strip() for item in evidences if item.claim.strip()))
+            run_state.answered_points = claims[:4]
+            run_state.conclusion = "当前已验证材料支持上述有限结论；不应外推至未覆盖范围。"
+            run_state.remaining_gaps = list(
+                dict.fromkeys([*run_state.remaining_gaps, fallback_gap])
+            )[:4]
+            run_state.stop_reason = "fallback_complete"
+        run_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
 
     def _runtime_context(
         self,
@@ -278,9 +321,11 @@ class ResearchAgent:
             "unknown_candidate_ids": unknown_ids,
             "evidence": [
                 {
+                    "evidence_id": item.evidence_id,
                     "claim": item.claim,
                     "quote": item.quote[: self.config.research_observation_quote_chars],
                     "source": item.source_url,
+                    "source_profile": item.source_profile.model_dump(),
                     "support": item.support,
                 }
                 for item in accepted_evidence
@@ -352,6 +397,7 @@ class ResearchAgent:
                 content_provider=str(item.get("content_provider", "")),
                 published_at=str(item.get("published_at", "")),
                 source_tier=classify_source(url),
+                source_profile=describe_source(url),
             )
             run_state.candidates[candidate_id] = candidate
             candidates.append(candidate.model_dump())
@@ -381,7 +427,13 @@ class ResearchAgent:
             },
         }
         return [
-            HumanMessage(content=f"【委派研究方向】\n{task['question']}"),
+            HumanMessage(
+                content=(
+                    "【运行时环境】\n"
+                    + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
+                    + f"\n【委派研究方向】\n{task['question']}"
+                )
+            ),
             HumanMessage(
                 content="【系统研究观察；不是用户补充】\n"
                 + json.dumps(observation, ensure_ascii=False)

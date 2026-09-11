@@ -22,6 +22,7 @@ class SubmissionGuard:
 
     nudge_message: str
     submitted_probe: Callable[[Any], bool]
+    max_nudges: int = 2
 
 
 @dataclass(frozen=True)
