@@ -1,8 +1,11 @@
 """请求路由节点。"""
 
+import json
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from deepsearch_agent.config import get_settings, language_directive
+from deepsearch_agent.context.runtime import get_runtime_environment
 from deepsearch_agent.llm import ainvoke_structured
 from deepsearch_agent.prompts import load_prompt
 from deepsearch_agent.schemas import RouteDecision, RunLifecycle
@@ -22,7 +25,13 @@ async def router(state, llm, *, invoke_structured=ainvoke_structured):
                         + language_directive(get_settings().agent.output_language)
                     )
                 ),
-                HumanMessage(content=query),
+                HumanMessage(
+                    content=(
+                        "【运行时环境】\n"
+                        + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
+                        + f"\n【用户问题】\n{query}"
+                    )
+                ),
             ],
         )
         return {

@@ -37,6 +37,7 @@ from deepsearch_agent.schemas.sections import (
     WriterProgress,
     WriterResult,
 )
+from deepsearch_agent.schemas.sources import SourceProfile
 from deepsearch_agent.schemas.tool_args import (
     ReadSources,
     ReadWorkingSet,
@@ -44,7 +45,6 @@ from deepsearch_agent.schemas.tool_args import (
     ResearchComplete,
     ResearchDelegate,
     ResearchDirectionComplete,
-    ResearchReady,
     ResearchToolResult,
     RestoreEvidence,
     ReviseResearchSynthesis,
@@ -69,7 +69,6 @@ __all__ = [
     "ResearchDirectionDecision",
     "ResearchDirectionResult",
     "ResearchProgress",
-    "ResearchReady",
     "ResearchSynthesis",
     "ResearchToolResult",
     "RestoreEvidence",
@@ -81,6 +80,7 @@ __all__ = [
     "RunLifecycle",
     "SearchSources",
     "StopReason",
+    "SourceProfile",
     "SupervisorStateUpdate",
     "WriterDirective",
     "WriterProgress",

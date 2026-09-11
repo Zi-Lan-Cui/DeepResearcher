@@ -194,7 +194,6 @@ class DirectionLLM:
         if any(
             isinstance(message, ToolMessage)
             and message.name == "ResearchDirectionComplete"
-            and '"status": "accepted"' in str(message.content)
             for message in _messages
         ):
             return AIMessage(content="")
@@ -227,8 +226,17 @@ class DirectionLLM:
             ).model_dump()
             name = "RestoreEvidence"
         else:
+            evidence_ids = list(
+                dict.fromkeys(
+                    re.findall(
+                        r'"evidence_id"\s*:\s*"([^"]+)"',
+                        "\n".join(str(message.content) for message in _messages),
+                    )
+                )
+            )
             args = ResearchDirectionComplete(
                 reason=decision.reason,
+                selected_evidence_ids=evidence_ids,
                 answered_points=decision.answered_points,
                 conclusion=decision.conclusion,
                 remaining_gaps=decision.remaining_gaps,

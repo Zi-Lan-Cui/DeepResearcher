@@ -90,6 +90,8 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
+    # 结构化收尾未提交时允许的额外纠正次数；Researcher/Writer 共用。
+    finalization_attempts: int = 2
     # Supervisor 的研究轮次上限；一轮包含一次评估、派发和汇总。
     max_research_rounds: int = 3
     # Reflection 判定 fatal 后，Supervisor 允许组织的修复循环次数。
@@ -264,6 +266,7 @@ def _llm_config() -> LLMConfig:
 
 def _agent_config() -> AgentConfig:
     return AgentConfig(
+        finalization_attempts=max(0, _int_env("AGENT_FINALIZATION_ATTEMPTS", 2)),
         max_research_rounds=max(1, _int_env("AGENT_MAX_RESEARCH_ROUNDS", 3)),
         max_post_review_recovery_cycles=max(
             0, _int_env("AGENT_MAX_POST_REVIEW_RECOVERY_CYCLES", 1)

@@ -116,7 +116,7 @@ def build_researcher_tools() -> list[BaseTool]:
             }
         )
 
-    @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
+    @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete, return_direct=True)
     async def complete_direction(
         reason: str,
         selected_evidence_ids: list[str],
@@ -125,34 +125,40 @@ def build_researcher_tools() -> list[BaseTool]:
         remaining_gaps: list[str],
         runtime: ToolRuntime[ResearchRuntimeContext],
     ) -> str:
-        """宣布当前方向结束；不代表整项研究完成。"""
+        """提交当前方向的最终局部结果，并立即结束工具循环。"""
         run_state = runtime.context.run_state
+        requested = list(dict.fromkeys(selected_evidence_ids))
+        active = set(run_state.active_evidence_ids)
+        invalid = [item for item in requested if item not in active]
+        if invalid:
+            run_state.failures.append(
+                "completion_unknown_evidence_ids: " + ", ".join(invalid)
+            )
+            return _tool_result({"status": "rejected", "invalid_evidence_ids": invalid})
+        if requested:
+            run_state.active_evidence_ids = set(requested)
+        active_evidences = run_state.active_evidences()
         run_state.remaining_gaps = list(
             dict.fromkeys(gap.strip() for gap in remaining_gaps if gap.strip())
         )
-        requested = list(dict.fromkeys(selected_evidence_ids))
-        if requested:
-            active = set(run_state.active_evidence_ids)
-            selected = [item for item in requested if item in active]
-            run_state.active_evidence_ids = set(selected)
-        active_evidences = run_state.active_evidences()
         if active_evidences:
-            run_state.answered_points = list(dict.fromkeys(answered_points))
+            run_state.answered_points = list(
+                dict.fromkeys(point.strip() for point in answered_points if point.strip())
+            )
             run_state.conclusion = conclusion.strip()
             run_state.stop_reason = "complete"
-            run_state.stop_detail = reason
         else:
+            run_state.answered_points = []
+            run_state.conclusion = ""
             run_state.stop_reason = "blocked_without_evidence"
-            run_state.stop_detail = reason
             if not run_state.remaining_gaps:
                 run_state.remaining_gaps = [reason]
+        run_state.stop_detail = reason
         return _tool_result(
             {
                 "status": "accepted",
                 "stop_reason": run_state.stop_reason,
                 "selected_evidence_ids": [item.evidence_id for item in active_evidences],
-                "evidence_count": len(active_evidences),
-                "archive_evidence_count": len(run_state.evidences),
             }
         )
 

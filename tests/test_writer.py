@@ -29,6 +29,33 @@ def test_writer_requires_llm_at_construction():
         )
 
 
+def test_writer_never_receives_evidence_audit_chunk() -> None:
+    evidence = _ev(
+        "e1",
+        "可公开的结论",
+        quote="可公开的原文。",
+        url="https://example.com/source",
+    )
+    evidence.audit_chunk = "SECRET_AUDIT_CONTEXT"
+    observed_messages = []
+
+    async def draft_output(_llm, _schema, messages, **_kwargs):
+        observed_messages.extend(messages)
+        return MarkdownReportDraft(
+            selected_evidence_ids=["e1"],
+            markdown="## 结论\n\n可公开的结论。[[cite:e1]]",
+        )
+
+    write_with(
+        draft_output,
+        {"clarified_query": "测试", "evidences": [evidence]},
+    )
+
+    assert "SECRET_AUDIT_CONTEXT" not in "\n".join(
+        str(message.content) for message in observed_messages
+    )
+
+
 def test_writer_filters_evidence_by_configured_minimum_support():
     state = {
         "clarified_query": "测试问题",

@@ -16,7 +16,6 @@ from deepsearch_agent.schemas import (
     ResearchAspect,
     ResearchComplete,
     ResearchDelegate,
-    ResearchReady,
     ResearchSynthesis,
     RestoreEvidence,
     ReviseResearchSynthesis,
@@ -145,36 +144,6 @@ def build_supervisor_tools() -> list[BaseTool]:
             },
         )
 
-    @tool("ResearchReady", args_schema=ResearchReady)
-    async def research_ready(
-        synthesis_revision: int,
-        reason: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
-    ) -> str:
-        """保存一个可部分交付的综合版本；记录后继续争取完整研究。"""
-        working = runtime.context.working
-        synthesis = working.research_synthesis
-        accepted = bool(
-            synthesis is not None
-            and synthesis.revision == synthesis_revision
-            and working.synthesis_is_fresh(synthesis)
-            and synthesis.readiness in {"partial_ready", "complete_candidate"}
-            and synthesis.selected_evidence_ids
-        )
-        if accepted and synthesis is not None:
-            working.partial_ready_synthesis = synthesis.model_copy(deep=True)
-        else:
-            working.coverage_gaps.append(
-                "ResearchReady 拒绝了过期、缺失或尚未建立最小证据链的研究综合稿。"
-            )
-        return _result(
-            {
-                "status": "recorded" if accepted else "rejected",
-                "reason": reason,
-                **_synthesis_snapshot(synthesis),
-            }
-        )
-
     @tool("ReviseResearchSynthesis", args_schema=ReviseResearchSynthesis)
     async def revise_research_synthesis(
         expected_revision: int,
@@ -194,7 +163,7 @@ def build_supervisor_tools() -> list[BaseTool]:
 
         仅当新的研究结果实质改变结论、Evidence 选择、缺口、冲突、下一步或
         可交付状态时使用。它不是工具日志；所有事实总结必须绑定当前活跃
-        Evidence。调用 ResearchReady 或 ResearchComplete 前必须先让本综合稿
+        Evidence。调用 ResearchComplete 前必须先让本综合稿
         对齐最新 working_set_revision。
         """
         working = runtime.context.working
@@ -307,7 +276,6 @@ def build_supervisor_tools() -> list[BaseTool]:
         research_delegate,
         revise_research_synthesis,
         research_complete,
-        research_ready,
         read_working_set,
         release_evidence,
         restore_evidence,

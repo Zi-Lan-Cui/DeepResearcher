@@ -1,7 +1,10 @@
 """即时回答节点。"""
 
+import json
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from deepsearch_agent.context.runtime import get_runtime_environment
 from deepsearch_agent.orchestration.nodes.common import content_text
 from deepsearch_agent.prompts import load_prompt
 from deepsearch_agent.schemas import ResearchProgress, RunLifecycle
@@ -13,7 +16,13 @@ async def quick_answer(state, llm):
         await llm.ainvoke_text(
             [
                 SystemMessage(content=load_prompt("quick_answer")),
-                HumanMessage(content=query),
+                HumanMessage(
+                    content=(
+                        "【运行时环境】\n"
+                        + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
+                        + f"\n【用户问题】\n{query}"
+                    )
+                ),
             ]
         )
     ).strip()

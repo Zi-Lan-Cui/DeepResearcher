@@ -7,6 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from deepsearch_agent.agents.supervisor import ResearchSupervisor
+from deepsearch_agent.agents.supervisor.state import RunUrlReservations, WorkingState
 from deepsearch_agent.config import AgentConfig
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import (
@@ -14,6 +15,7 @@ from deepsearch_agent.schemas import (
     ResearchDirectionDecision,
     ResearchDirectionResult,
     ReviseResearchSynthesis,
+    StopReason,
 )
 from fakes import evidence, researcher_agent
 
@@ -72,27 +74,20 @@ class SupervisorLLM:
             ),
             None,
         )
-        if self.ready and any(
-            isinstance(message, ToolMessage)
-            and message.name == "ResearchReady"
-            and '"status": "recorded"' in str(message.content)
-            for message in messages
-        ):
-            return AIMessage(content="已保存部分报告回退版本。")
-        if (self.complete_args is not None or self.ready) and revised is not None:
+        if self.ready and revised is not None:
+            return AIMessage(content="已建立可部分交付的综合稿，但尚未达到完整标准。")
+        if self.complete_args is not None and revised is not None:
             payload = json.loads(str(revised.content).split("\n", 1)[-1])
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "ResearchReady" if self.ready else "ResearchComplete",
+                        "name": "ResearchComplete",
                         "args": {
                             "synthesis_revision": payload["synthesis_revision"],
-                            "reason": (
-                                "已建立最小证据链。" if self.ready else self.complete_args["reason"]
-                            ),
+                            "reason": self.complete_args["reason"],
                         },
-                        "id": "call_ready" if self.ready else "call_complete",
+                        "id": "call_complete",
                     }
                 ],
             )
@@ -421,7 +416,7 @@ def test_supervisor_rejects_completion_without_evidence():
     assert "ResearchComplete 拒绝" in result["writer"].feedback
 
 
-def test_supervisor_rejects_complete_when_new_evidence_makes_synthesis_stale():
+def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
     class StaleCompleteLLM:
         def bind_tools(self, _tools, tool_choice="any"):
             return self
@@ -491,7 +486,9 @@ def test_supervisor_rejects_complete_when_new_evidence_makes_synthesis_stale():
 
     assert result["working_set_revision"] == 1
     assert result["research"].is_sufficient is False
-    assert result["supervisor_next"] == "render_final_report"
+    assert result["research"].generation_mode == "partial"
+    assert result["supervisor_next"] == "writer"
+    assert result["report_brief"] is not None
     assert "ResearchComplete 拒绝" in result["writer"].feedback
 
 
@@ -532,6 +529,64 @@ def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
     assert result["supervisor_next"] == "writer"
     assert result["run"].phase == "writing"
     assert result["report_brief"] is not None
+
+
+def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached():
+    """轮次触顶时直接使用最新有效综合稿生成 partial 报告。"""
+    item = evidence("latest", task_id="r1-1")
+    supervisor = ResearchSupervisor(
+        object(),
+        AgentConfig(partial_report_min_evidences=1, partial_report_min_sources=1),
+        research_agent=object(),
+    )
+    state = {
+        "query": "研究问题",
+        "clarified_query": "研究问题",
+        "evidences": [item],
+        "active_evidence_ids": [item.evidence_id],
+        "working_set_revision": 1,
+        "research_synthesis": {
+            "revision": 1,
+            "based_on_working_set_revision": 1,
+            "answer_goal": "回答研究问题",
+            "overall_summary": "已有一项可交付结论。",
+            "aspects": [
+                {
+                    "aspect_id": "core",
+                    "topic": "核心结论",
+                    "role": "主线",
+                    "required": True,
+                    "status": "partial",
+                    "summary": "现有证据可部分回答。",
+                    "evidence_ids": [item.evidence_id],
+                    "remaining_gap": "尚有缺口。",
+                }
+            ],
+            "selected_evidence_ids": [item.evidence_id],
+            "open_gaps": ["尚有缺口"],
+            "conflicts": [],
+            "next_actions": [],
+            "readiness": "not_ready",
+            "decision_rationale": "轮次触顶前的最新状态。",
+        },
+    }
+    working = WorkingState(
+        state,
+        dedup_key=supervisor._task_deduplication_key,
+        active_evidence_limit=30,
+    )
+    working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
+
+    result = supervisor._final_update(
+        state,
+        working,
+        RunUrlReservations([], normalize_url=supervisor._normalize_source_url),
+    )
+
+    assert result.run.phase == "writing"
+    assert result.research.generation_mode == "partial"
+    assert result.research_synthesis is not None
+    assert result.research_synthesis.revision == 1
 
 
 def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
@@ -676,6 +731,34 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
     assert "审阅回流" in "\n".join(
         str(message.content) for message in result["supervisor_messages"]
     )
+
+
+def test_supervisor_review_recovery_limit_preserves_last_draft_for_final_render():
+    """超过审阅回流上限后不再调用 Agent，交给终检渲染最后一版。"""
+    supervisor = ResearchSupervisor(
+        object(),
+        AgentConfig(max_post_review_recovery_cycles=1),
+        research_agent=object(),
+    )
+
+    result = asyncio.run(
+        supervisor.run(
+            {
+                "query": "研究问题",
+                "clarified_query": "研究问题",
+                "report_draft": "最后一版草稿",
+                "review": {
+                    "status": "rejected",
+                    "attempts": 2,
+                    "feedback": "仍有非致命缺口",
+                },
+            }
+        )
+    )
+
+    assert result["run"].phase == "rendering"
+    assert result["run"].terminal_reason == "review_recovery_exhausted"
+    assert result["supervisor_next"] == "render_final_report"
 
 
 class _OneEvidenceAgent:

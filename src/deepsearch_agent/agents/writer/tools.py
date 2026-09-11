@@ -85,7 +85,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
         readable = [context.evidence_by_id[item] for item in ids]
         context.read_evidence_ids.update(ids)
         payload: dict[str, object] = {
-            "evidence": [item.model_dump() for item in readable],
+            "evidence": [item.agent_payload() for item in readable],
             "read_count": len(context.read_evidence_ids),
             "unknown_ids": unknown,
         }

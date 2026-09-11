@@ -4,6 +4,7 @@ Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引
 编号渲染与参考来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
 """
 
+import json
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -25,6 +26,7 @@ from deepsearch_agent.agents.writer.state import (
 from deepsearch_agent.agents.writer.tools import build_writer_tools
 from deepsearch_agent.config import AgentConfig, language_directive
 from deepsearch_agent.context.execution import AgentExecutionScope
+from deepsearch_agent.context.runtime import get_runtime_environment
 from deepsearch_agent.errors import WriterGenerationError
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError, LLMInvoker
@@ -106,6 +108,7 @@ class ReportWriter:
                             submitted_probe=lambda ctx: (
                                 getattr(ctx, "validated_draft", None) is not None
                             ),
+                            max_nudges=self.config.finalization_attempts,
                         ),
                         emit=self._emit,
                     )
@@ -339,7 +342,14 @@ class ReportWriter:
             f"可选 Evidence 目录：\n{evidence_catalogue}"
         )
         return [
-            HumanMessage(content="\n".join(part for part in [revision_note, user_prompt] if part))
+            HumanMessage(
+                content=(
+                    "【运行时环境】\n"
+                    + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
+                    + "\n"
+                    + "\n".join(part for part in [revision_note, user_prompt] if part)
+                )
+            )
         ]
 
     def _render_exhausted_result(
@@ -413,6 +423,7 @@ class ReportWriter:
             entry = (
                 f"- evidence_id={evidence_id} | "
                 f"来源={item.source_title or '未命名来源'} | support={item.support} | "
+                f"source_profile={item.source_profile.model_dump_json()} | "
                 f"retrieval={item.retrieval_method} | "
                 f"confidence={item.confidence}\n  claim：{item.claim}"
             )

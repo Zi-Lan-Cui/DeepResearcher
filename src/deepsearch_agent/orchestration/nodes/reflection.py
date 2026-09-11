@@ -1,6 +1,7 @@
 """报告语义审阅节点。"""
 
 import asyncio
+import json
 
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -8,6 +9,7 @@ from openai import ContentFilterFinishReasonError
 from pydantic import ValidationError
 
 from deepsearch_agent.config import get_settings, language_directive
+from deepsearch_agent.context.runtime import get_runtime_environment
 from deepsearch_agent.llm import ainvoke_structured
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.prompts import load_prompt
@@ -65,7 +67,9 @@ async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
         ),
         HumanMessage(
             content=(
-                f"研究问题：{state.get('clarified_query', state.get('query', ''))}\n"
+                "【运行时环境】\n"
+                + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
+                + f"\n研究问题：{state.get('clarified_query', state.get('query', ''))}\n"
                 f"Supervisor 报告任务书：{state.get('report_brief', {})}\n"
                 f"待审阅段落：{review_items}"
             )
