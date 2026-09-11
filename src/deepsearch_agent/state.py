@@ -106,7 +106,11 @@ class ResearchState(TypedDict, total=False):
     route: str
     route_reason: str
     answer_mode: Literal[
-        "quick_answer", "deep_research", "research_incomplete", "clarification_needed"
+        "quick_answer",
+        "deep_research",
+        "research_incomplete",
+        "review_limited",
+        "clarification_needed",
     ]
     research_brief: str
     clarification_question: str
@@ -123,7 +127,6 @@ class ResearchState(TypedDict, total=False):
     active_evidence_ids: list[str]
     working_set_revision: int
     research_synthesis: ResearchSynthesis | None
-    partial_ready_synthesis: ResearchSynthesis | None
     report_brief: ReportBrief | None
     writer_directive: WriterDirective | None
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
@@ -153,7 +156,6 @@ def restore_state_models(state: dict[str, object]) -> None:
         ("report_brief", ReportBrief),
         ("writer_directive", WriterDirective),
         ("research_synthesis", ResearchSynthesis),
-        ("partial_ready_synthesis", ResearchSynthesis),
     )
     for key, model_cls in scalar_models:
         value = state.get(key)
@@ -162,7 +164,6 @@ def restore_state_models(state: dict[str, object]) -> None:
                 "report_brief",
                 "writer_directive",
                 "research_synthesis",
-                "partial_ready_synthesis",
             }:
                 continue
             state[key] = model_cls()  # type: ignore[call-arg]

@@ -195,7 +195,6 @@ class SupervisorStateUpdate(BaseModel):
     active_evidence_ids: list[str] = Field(default_factory=list)
     working_set_revision: int = Field(default=0, ge=0)
     research_synthesis: ResearchSynthesis | None = None
-    partial_ready_synthesis: ResearchSynthesis | None = None
     report_brief: ReportBrief | None = None
     writer_directive: WriterDirective | None = None
     run: RunLifecycle
@@ -217,7 +216,6 @@ class SupervisorStateUpdate(BaseModel):
             "active_evidence_ids": self.active_evidence_ids,
             "working_set_revision": self.working_set_revision,
             "research_synthesis": self.research_synthesis,
-            "partial_ready_synthesis": self.partial_ready_synthesis,
             "report_brief": self.report_brief,
             "writer_directive": self.writer_directive,
         }
@@ -229,7 +227,9 @@ class WriterResult(BaseModel):
     report: str | None = None
     citations: list[Citation] | None = None
     paragraph_bindings: list[ParagraphBinding] | None = None
-    answer_mode: Literal["quick_answer", "deep_research", "research_incomplete"] | None = None
+    answer_mode: Literal[
+        "quick_answer", "deep_research", "research_incomplete", "review_limited"
+    ] | None = None
     current_round: int | None = Field(default=None, ge=0)
     evidence_count: int | None = Field(default=None, ge=0)
     source_count: int | None = Field(default=None, ge=0)
