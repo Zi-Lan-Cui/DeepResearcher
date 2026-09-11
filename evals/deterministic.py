@@ -35,6 +35,8 @@ class Artifact:
     events: list[dict[str, Any]] = field(default_factory=list)  # run_events.record
     run_row: dict[str, Any] = field(default_factory=dict)  # runs 表行（attempt 等）
     control: dict[str, Any] = field(default_factory=dict)  # runner 侧记录（如重复回答的 HTTP 码）
+    # 从 LangGraph checkpoint 直读的评测/审计材料，不来自产品 API。
+    evidences: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def report(self) -> str:
@@ -53,6 +55,29 @@ class Artifact:
 
     def events_of(self, event_type: str) -> list[dict[str, Any]]:
         return [e for e in self.events if e.get("event_type") == event_type]
+
+    def span_failures(self) -> list[dict[str, Any]]:
+        """返回可直接用于归因的标准化失败 Span，不依赖业务 payload。"""
+        failures: list[dict[str, Any]] = []
+        for event in self.events_of("span_failed"):
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+
+            def value(name: str, default: Any = "") -> Any:
+                return event.get(name, payload.get(name, default))
+
+            failures.append(
+                {
+                    "trace_id": str(value("trace_id")),
+                    "span_id": str(value("span_id")),
+                    "parent_span_id": str(value("parent_span_id")),
+                    "name": str(value("name", "unknown_span")),
+                    "kind": str(value("kind", "unknown")),
+                    "node_id": str(value("node_id")),
+                    "duration_ms": float(value("duration_ms", 0.0) or 0.0),
+                    "error": str(value("error", "UnknownError") or "UnknownError"),
+                }
+            )
+        return failures
 
 
 Check = Callable[[Artifact, Criterion], CriterionResult]
@@ -101,6 +126,27 @@ def check_citation_integrity(artifact: Artifact, criterion: Criterion) -> Criter
             f"悬空引用={dangling[:5]} 空字段来源={hollow[:5]}",
         )
     return _result(artifact, criterion, "yes", f"{len(refs)} 个引用位全部可溯")
+
+
+def check_evidence_audit_integrity(artifact: Artifact, criterion: Criterion) -> CriterionResult:
+    """独立复算抽取下限：每条 Evidence quote 必须存在于其审计 chunk。"""
+    if artifact.detail.get("status") != "completed":
+        return _result(artifact, criterion, "unknown", "run 未完成")
+    if not artifact.evidences:
+        return _result(artifact, criterion, "no", "checkpoint 中没有 Evidence 审计材料")
+
+    def normalized(value: object) -> str:
+        return "".join(str(value or "").split()).lower()
+
+    broken = [
+        str(item.get("evidence_id") or "")
+        for item in artifact.evidences
+        if not normalized(item.get("quote"))
+        or normalized(item.get("quote")) not in normalized(item.get("audit_chunk"))
+    ]
+    if broken:
+        return _result(artifact, criterion, "no", f"quote/chunk 不一致: {broken[:5]}")
+    return _result(artifact, criterion, "yes", f"复算 {len(artifact.evidences)} 条 Evidence")
 
 
 def check_done_exactly_once(artifact: Artifact, criterion: Criterion) -> CriterionResult:
@@ -188,6 +234,7 @@ def check_cache_reuse(artifact: Artifact, criterion: Criterion) -> CriterionResu
 
 CHECKS: dict[str, Check] = {
     "citation_integrity": check_citation_integrity,
+    "evidence_audit_integrity": check_evidence_audit_integrity,
     "done_exactly_once": check_done_exactly_once,
     "seq_continuous": check_seq_continuous,
     "clarify_flow": check_clarify_flow,
@@ -198,7 +245,12 @@ CHECKS: dict[str, Check] = {
 }
 
 # 每一轨每一份完成产物都自动附挂的门（不写进题集，避免 30 份重复）。
-UNIVERSAL_GATES = ("citation_integrity", "done_exactly_once", "seq_continuous")
+UNIVERSAL_GATES = (
+    "citation_integrity",
+    "evidence_audit_integrity",
+    "done_exactly_once",
+    "seq_continuous",
+)
 
 
 def score_artifact(

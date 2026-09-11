@@ -62,6 +62,17 @@ def test_behavior_seed_set_loads_and_validates():
     assert groups == {"B", "C", "D", "F"}
 
 
+def test_core30_profile_is_small_fixed_and_representative() -> None:
+    profile = json.loads((REPO_ROOT / "evals" / "profiles" / "core30.json").read_text("utf-8"))
+    external = profile["external_ids"]
+    behavior = profile["behavior_ids"]
+
+    assert len(external) == 20
+    assert len(behavior) == 10
+    assert len(set(external + behavior)) == 30
+    assert {case_id.split("-")[1][0] for case_id in behavior} == {"b", "c", "d", "f"}
+
+
 def test_cases_jsonl_roundtrip(tmp_path):
     case = _case(require_clarify=True, clarify_answer="a")
     path = tmp_path / "cases.jsonl"
@@ -181,13 +192,56 @@ def _artifact(**overrides) -> Artifact:
         {"event_type": "run_status", "payload": {"status": "running"}, "seq": 2},
         {"event_type": "run_done", "payload": {"status": "completed"}, "seq": 3},
     ]
-    base = dict(case_id="x-1", attempt=1, run_id="r", detail=detail, events=events)
+    evidences = [
+        {"evidence_id": "e1", "quote": "q1", "audit_chunk": "before q1 after"},
+        {"evidence_id": "e2", "quote": "q2", "audit_chunk": "before q2 after"},
+    ]
+    base = dict(
+        case_id="x-1",
+        attempt=1,
+        run_id="r",
+        detail=detail,
+        events=events,
+        evidences=evidences,
+    )
     base.update(overrides)
     return Artifact(**base)
 
 
 def _gate(results, name):
     return next(r for r in results if r.criterion_id == f"gate:{name}")
+
+
+def test_artifact_normalizes_span_failures_from_top_level_records():
+    artifact = _artifact(
+        events=[
+            {
+                "event_type": "span_failed",
+                "trace_id": "trace-1",
+                "span_id": "span-1",
+                "parent_span_id": "span-0",
+                "name": "evidence_extract",
+                "kind": "llm",
+                "node_id": "researcher",
+                "duration_ms": 12.5,
+                "error": "TimeoutError",
+                "payload": None,
+            }
+        ]
+    )
+
+    assert artifact.span_failures() == [
+        {
+            "trace_id": "trace-1",
+            "span_id": "span-1",
+            "parent_span_id": "span-0",
+            "name": "evidence_extract",
+            "kind": "llm",
+            "node_id": "researcher",
+            "duration_ms": 12.5,
+            "error": "TimeoutError",
+        }
+    ]
 
 
 def test_process_metrics_carries_cache_and_token_fields():
@@ -238,6 +292,17 @@ def test_citation_gate_pass_and_dangling():
         _gate(score_artifact(pending, _case(criteria=())), "citation_integrity").verdict
         == "unknown"
     )
+
+
+def test_evidence_audit_gate_recomputes_quote_presence() -> None:
+    good = _gate(score_artifact(_artifact(), _case(criteria=())), "evidence_audit_integrity")
+    assert good.verdict == "yes"
+
+    broken = _artifact(
+        evidences=[{"evidence_id": "e1", "quote": "missing", "audit_chunk": "other text"}]
+    )
+    result = _gate(score_artifact(broken, _case(criteria=())), "evidence_audit_integrity")
+    assert result.verdict == "no"
 
 
 def test_seq_and_done_gates():
@@ -379,6 +444,7 @@ def test_external_weighted_score_and_threshold():
     ]
     score = aggregate.score_case(case, 1, results)
     assert score.quality_score == 50.0 and not score.passed
+    assert score.track == "external"
     # unknown 不是有效交付：保守按0分计，同时另报 unknown_rate。
     unknown_b = [
         dataclasses.replace(r, verdict="unknown") if r.criterion_id == "b" else r for r in results
@@ -401,6 +467,22 @@ def test_behavior_judge_requires_an_explicit_yes():
     violated = [*gates, CriterionResult("x-1", 1, "j", "grounding", "no", "judge")]
     score = aggregate.score_case(case, 1, violated)
     assert not score.passed and score.judge_failures == ["j"]
+
+
+def test_track_summary_never_mixes_behavior_judge_score_into_report_quality():
+    external = aggregate.CaseScore("external", 1, "external", True, quality_score=20.0)
+    behavior = aggregate.CaseScore("behavior", 1, "behavior", True, quality_score=100.0)
+    metrics = {
+        "external": {"pass_any": False, "pass_all": False},
+        "behavior": {"pass_any": True, "pass_all": True},
+    }
+
+    summary = aggregate.track_summary([external, behavior], metrics)
+
+    assert summary["report_quality"]["mean"] == 20.0
+    assert summary["system_reliability"]["pass_all"] == 1
+    per_case = aggregate.k_metrics([external, behavior])
+    assert per_case["behavior"]["mean_quality"] is None
 
 
 def test_clarify_flow_is_vacuously_true_when_no_clarification():

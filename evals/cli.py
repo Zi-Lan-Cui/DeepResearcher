@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -25,25 +26,41 @@ from evals.runner import RunHarness
 from evals.schemas import CriterionResult, EvalCase, load_cases, load_results, merge_results
 
 EVALS_DIR = Path(__file__).resolve().parent
-RESULTS_DIR = EVALS_DIR / "results"
+# 每轮评测应使用独立目录，避免旧 round2/round3 混入新基线。
+RESULTS_DIR = Path(os.environ.get("EVAL_RESULTS_DIR", EVALS_DIR / "results"))
 BEHAVIOR_FILE = EVALS_DIR / "cases" / "behavior.jsonl"
 SPLIT_FILE = EVALS_DIR / "split_drb_zh.json"
+PROFILES_DIR = EVALS_DIR / "profiles"
 
 
 def collect_cases(args: argparse.Namespace) -> list[EvalCase]:
-    cases: list[EvalCase] = []
-    want_behavior = args.track in {"all", "behavior"}
-    want_external = args.track in {"all", "external"}
-    if want_behavior:
-        cases.extend(load_cases(BEHAVIOR_FILE))
-    if want_external:
-        cases.extend(
-            drb.build_cases(
-                drb.drb_root(args.drb_root),
-                split_file=SPLIT_FILE,
-                split_name=args.split,
+    profile = getattr(args, "profile", "")
+    if profile:
+        spec = json.loads((PROFILES_DIR / f"{profile}.json").read_text("utf-8"))
+        behavior = {case.case_id: case for case in load_cases(BEHAVIOR_FILE)}
+        external = {
+            case.case_id: case for case in drb.build_cases(drb.drb_root(args.drb_root))
+        }
+        requested = [*spec["external_ids"], *spec["behavior_ids"]]
+        available = {**external, **behavior}
+        missing = [case_id for case_id in requested if case_id not in available]
+        if missing:
+            raise KeyError(f"评测 profile={profile} 缺题: {missing}")
+        cases = [available[case_id] for case_id in requested]
+    else:
+        cases = []
+        want_behavior = args.track in {"all", "behavior"}
+        want_external = args.track in {"all", "external"}
+        if want_behavior:
+            cases.extend(load_cases(BEHAVIOR_FILE))
+        if want_external:
+            cases.extend(
+                drb.build_cases(
+                    drb.drb_root(args.drb_root),
+                    split_file=SPLIT_FILE,
+                    split_name=args.split,
+                )
             )
-        )
     if args.group:
         cases = [c for c in cases if c.group == args.group]
     if args.ids:
@@ -68,6 +85,7 @@ def _artifacts_from_round(case_id: str, round_path: Path) -> list[Artifact]:
             events=row["events"],
             run_row=row.get("run_row") or {},
             control=row.get("control") or {},
+            evidences=row.get("evidences") or [],
         )
         for row in rows
     ]
@@ -248,12 +266,11 @@ def cmd_report(args: argparse.Namespace) -> None:
             case = EvalCase(case_id=cid, track="external", prompt="", criteria=())
         scores.append(aggregate.score_case(case, attempt, results))
     metrics = aggregate.k_metrics(scores)
+    tracks = aggregate.track_summary(scores, metrics)
     summary = {
         "cases": len(metrics),
         "rounds": len(scores),
-        "pass_any": sum(1 for m in metrics.values() if m["pass_any"]),
-        "pass_all": sum(1 for m in metrics.values() if m["pass_all"]),
-        "mean_quality": _mean_quality(scores),
+        **tracks,
         "unknown_rate": round(
             sum(s.unknown_count for s in scores) / max(1, sum(s.judge_count for s in scores)), 4
         ),
@@ -276,11 +293,6 @@ def _all_round_metrics() -> list[dict]:
             if metrics:
                 rows.append(metrics)
     return rows
-
-
-def _mean_quality(scores: list[aggregate.CaseScore]) -> float | None:
-    vals = [s.quality_score for s in scores if s.quality_score is not None]
-    return round(sum(vals) / len(vals), 2) if vals else None
 
 
 def cmd_cases(args: argparse.Namespace) -> None:
@@ -314,6 +326,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_filters(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--profile", default="", choices=["", "core30"])
         p.add_argument("--track", default="all", choices=["all", "external", "behavior"])
         p.add_argument("--group", default="")
         p.add_argument("--ids", default="")

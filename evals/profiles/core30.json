@@ -1,0 +1,13 @@
+{
+  "description": "快速迭代基线：20 道 DRB 中文 dev + 10 道内部关键行为题",
+  "external_ids": [
+    "drb-zh-001", "drb-zh-003", "drb-zh-012", "drb-zh-015", "drb-zh-016",
+    "drb-zh-017", "drb-zh-019", "drb-zh-020", "drb-zh-024", "drb-zh-025",
+    "drb-zh-028", "drb-zh-031", "drb-zh-034", "drb-zh-041", "drb-zh-042",
+    "drb-zh-043", "drb-zh-044", "drb-zh-047", "drb-zh-048", "drb-zh-049"
+  ],
+  "behavior_ids": [
+    "beh-b1", "beh-b2", "beh-b4", "beh-c1", "beh-c2",
+    "beh-d1", "beh-d3", "beh-d4", "beh-f3", "beh-f4"
+  ]
+}

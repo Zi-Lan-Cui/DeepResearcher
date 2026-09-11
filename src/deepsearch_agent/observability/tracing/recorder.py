@@ -67,7 +67,7 @@ class TraceRecorder:
                 if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
                 else "failed"
             )
-            error = str(exc)[:500]
+            error = (str(exc).strip() or type(exc).__name__)[:500]
             raise
         finally:
             record = {
@@ -134,7 +134,7 @@ class TraceRecorder:
                 if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
                 else "failed"
             )
-            error = str(exc)[:500]
+            error = (str(exc).strip() or type(exc).__name__)[:500]
             raise
         finally:
             record = {
@@ -142,9 +142,12 @@ class TraceRecorder:
                 "event_type": f"span_{status}",
                 "trace_id": trace_id,
                 "span_id": span_id,
+                "parent_span_id": parent_span_id,
                 "run_id": parent.run_id if parent else None,
                 "session_id": parent.session_id if parent else None,
                 "node_id": parent.node_id if parent else None,
+                "name": name,
+                "kind": kind,
                 "duration_ms": round((perf_counter() - started) * 1000, 2),
             }
             if error:
