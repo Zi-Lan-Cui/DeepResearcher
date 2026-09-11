@@ -57,6 +57,26 @@ async def render_final_report_node(state: ResearchState):
             "report": report + f"\n\n[研究未完成：{message}]",
             "run": RunLifecycle(phase="completed", terminal_reason="research_incomplete"),
         }
+    if run.terminal_reason == "review_recovery_exhausted":
+        citations = list(state.get("citations", []))
+        draft = state.get("report_draft", "")
+        if citations and draft:
+            report = render_final_report(
+                clarified_query=str(state.get("clarified_query", state.get("query", ""))),
+                current_round=research.current_round,
+                evidence_count=int(
+                    state.get("evidence_count", len(state.get("evidences", [])))
+                ),
+                body=draft,
+                citations=citations,
+            )
+            return {
+                "report": report + "\n\n[审阅状态：已达到修订上限，按最后一版交付]",
+                "answer_mode": "review_limited",
+                "run": RunLifecycle(
+                    phase="completed", terminal_reason="review_recovery_exhausted"
+                ),
+            }
     if review.status == "rejected":
         feedback = review.feedback or "整体审阅未通过。"
         return {

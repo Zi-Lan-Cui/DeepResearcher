@@ -424,6 +424,9 @@ const STATUS_LABEL = {
 };
 
 function badgeFor(status, info) {
+  if (status === "completed" && info && info.answer_mode === "review_limited") {
+    return { cls: "degraded", text: "受限报告" };
+  }
   const degraded = status === "completed" && info &&
     (info.answer_mode === "research_incomplete" || info.terminal_reason === "writer_exhausted");
   if (degraded) return { cls: "degraded", text: "部分报告" };
@@ -483,7 +486,13 @@ function renderReportMeta(detail) {
     if (detail.evidence_count) parts.push("Evidence " + detail.evidence_count);
     if (detail.source_count) parts.push("来源 " + detail.source_count);
   }
-  if (degraded) { el.classList.add("warn"); parts.unshift("部分报告"); }
+  if (detail.answer_mode === "review_limited") {
+    el.classList.add("warn");
+    parts.unshift("受限报告 · 已达到审阅修订上限");
+  } else if (degraded) {
+    el.classList.add("warn");
+    parts.unshift("部分报告");
+  }
   for (const text of parts) {
     const span = document.createElement("span");
     span.textContent = text;
