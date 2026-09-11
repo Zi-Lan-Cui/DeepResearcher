@@ -4,10 +4,43 @@ import pytest
 
 from deepsearch_agent.config import LLMRetryConfig
 from deepsearch_agent.evidence import EvidenceExtractor
-from deepsearch_agent.evidence.models import EvidenceExtraction, ExtractedEvidence
+from deepsearch_agent.evidence.models import Evidence, EvidenceExtraction, ExtractedEvidence
 from deepsearch_agent.evidence.retrieval import select_blocks
 from deepsearch_agent.llm import LLMConfigurationError, structured
 from deepsearch_agent.observability.events import JsonlSink
+
+
+def test_evidence_audit_chunk_is_persisted_but_hidden_from_agent() -> None:
+    evidence = Evidence(
+        evidence_id="ev-1",
+        subtask_id="task-1",
+        research_direction="测试",
+        claim="结论",
+        quote="可核对原文",
+        source_url="https://example.com",
+        audit_chunk="前文 可核对原文 后文",
+    )
+
+    assert evidence.model_dump()["audit_chunk"] == "前文 可核对原文 后文"
+    assert "audit_chunk" not in evidence.agent_payload()
+
+
+def test_audit_chunk_keeps_quote_and_is_bounded() -> None:
+    quote = "需要保留的原文"
+    source_blocks = [
+        {
+            "block_id": "b1",
+            "block_type": "paragraph",
+            "text": "甲" * 20_000 + quote + "乙" * 20_000,
+            "heading_path": ["标题"],
+            "order": 0,
+        }
+    ]
+
+    chunk = EvidenceExtractor._audit_chunk(source_blocks, quote)
+
+    assert quote in chunk
+    assert len(chunk) <= 16_004
 
 
 def blocks():
@@ -158,6 +191,7 @@ def test_long_document_is_extracted_from_structured_chunks_not_bm25_selection(mo
     assert outcome.strategy == "structured_chunks"
     assert outcome.chunk_count == 3
     assert {item.claim for item in outcome.evidences} == {"事实甲", "事实乙"}
+    assert all(item.quote in item.audit_chunk for item in outcome.evidences)
     assert len(seen_contexts) == 3
 
 

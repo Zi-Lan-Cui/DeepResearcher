@@ -17,6 +17,7 @@ from deepsearch_agent.observability.events import JsonlSink, make_audit_event, m
 from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.parsers.models import DocumentBlock
 from deepsearch_agent.prompts import load_prompt
+from deepsearch_agent.schemas.sources import SourceProfile
 from deepsearch_agent.state import SubTask
 from deepsearch_agent.tools.cache import CacheResult, CacheValue, NoOpToolCache, ToolCache
 from deepsearch_agent.tools.cache_keys import normalize_text, semantic_cache_key
@@ -29,6 +30,10 @@ _EXTRACTION_SYSTEM_PROMPT = load_prompt("evidence_extraction")
 # “什么样的句子值得提取”（单句即可成证、不要求信息完备），
 # quote 逐字性由确定性 validator 独立保证，此处不承诺也不放松。
 _SUMMARY_EXTRACTION_SYSTEM_PROMPT = load_prompt("evidence_extraction_summary")
+
+# 评测只需要证明 quote 在当时上下文中的位置，无需将最大 24k token
+# 的整块重复写入每条 Evidence。保留 quote 周边的有界原文，控制 checkpoint 体积。
+AUDIT_CHUNK_MAX_CHARS = 16_000
 
 
 class EvidenceExtractor:
@@ -133,6 +138,7 @@ class EvidenceExtractor:
                     quote=item.quote,
                     source_url=source_url,
                     source_title=document.get("title", result.get("title", "")),
+                    source_profile=SourceProfile.model_validate(result.get("source_profile", {})),
                     retrieval_method=cast(
                         Literal["origin_fetch", "tavily_raw_content", "search_summary"],
                         document.get("retrieval_method", "origin_fetch"),
@@ -145,6 +151,7 @@ class EvidenceExtractor:
                         ),
                     ),
                     confidence=item.confidence,
+                    audit_chunk=self._audit_chunk(chunk, item.quote),
                 )
                 try:
                     evidences.append(validate_evidence(evidence, chunk))
@@ -173,6 +180,25 @@ class EvidenceExtractor:
             validation_rejected_count=validation_rejected_count,
             cache_hit=cached.hit,
         )
+
+    @staticmethod
+    def _audit_chunk(blocks: list[DocumentBlock], quote: str) -> str:
+        """保留抽取时的有界原文窗口，优先使 quote 位于窗口中。"""
+        rendered = "\n\n".join(
+            f"[{block.get('block_id', '')}] "
+            f"{' > '.join(block.get('heading_path', []))}\n{block.get('text', '')}"
+            for block in blocks
+        )
+        if len(rendered) <= AUDIT_CHUNK_MAX_CHARS:
+            return rendered
+        position = rendered.find(quote)
+        if position < 0:
+            position = len(rendered) // 2
+        start = max(0, position - AUDIT_CHUNK_MAX_CHARS // 2)
+        end = min(len(rendered), start + AUDIT_CHUNK_MAX_CHARS)
+        start = max(0, end - AUDIT_CHUNK_MAX_CHARS)
+        window = rendered[start:end]
+        return ("…\n" if start else "") + window + ("\n…" if end < len(rendered) else "")
 
     async def _extract_chunks_cached(
         self,

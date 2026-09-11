@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from deepsearch_agent.schemas.sources import SourceProfile
+
 
 class CoveredTopic(BaseModel):
     """报告中必须处理的研究主题及其论证角色。"""
@@ -99,6 +101,7 @@ class Citation(BaseModel):
     title: str = ""
     quote: str = ""
     claim: str = ""
+    source_profile: SourceProfile = Field(default_factory=SourceProfile)
 
 
 class ParagraphBinding(BaseModel):
