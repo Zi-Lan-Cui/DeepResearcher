@@ -19,6 +19,39 @@ from deepsearch_agent.schemas import (
 from deepsearch_agent.state import ResearchState, SubTask, section
 
 
+def evidence_card(evidence: Evidence) -> dict[str, object]:
+    """Supervisor 的唯一 Evidence 观察视图；不暴露 quote 与审计正文。"""
+    return {
+        "evidence_id": evidence.evidence_id,
+        "claim": evidence.claim,
+        "support": evidence.support,
+        "confidence": evidence.confidence,
+        "source_title": evidence.source_title,
+        "source_profile": evidence.source_profile.model_dump(mode="json"),
+        "research_direction": evidence.research_direction,
+        **({"published_at": evidence.published_at} if evidence.published_at else {}),
+    }
+
+
+def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]:
+    """Supervisor 工具回执与轮次观察共用的完整综合稿视图。"""
+    if synthesis is None:
+        return {"synthesis_revision": 0, "research_synthesis": None}
+    return {
+        "synthesis_revision": synthesis.revision,
+        "based_on_working_set_revision": synthesis.based_on_working_set_revision,
+        "answer_goal": synthesis.answer_goal,
+        "overall_summary": synthesis.overall_summary,
+        "aspects": [aspect.model_dump(mode="json") for aspect in synthesis.aspects],
+        "selected_evidence_ids": synthesis.selected_evidence_ids,
+        "open_gaps": synthesis.open_gaps,
+        "conflicts": synthesis.conflicts,
+        "next_actions": synthesis.next_actions,
+        "readiness": synthesis.readiness,
+        "decision_rationale": synthesis.decision_rationale,
+    }
+
+
 @dataclass
 class SupervisorRuntimeContext:
     """本次 Supervisor Agent 运行的依赖和可变工作状态。"""
@@ -127,14 +160,7 @@ class TaskExecution:
             "conclusion": tool_result.conclusion,
             "remaining_gaps": tool_result.remaining_gaps,
             "failures": tool_result.failures,
-            "evidence": [
-                {
-                    "claim": item.claim,
-                    "support": item.support,
-                    "confidence": item.confidence,
-                }
-                for item in evidences
-            ],
+            "evidence": [evidence_card(item) for item in evidences],
         }
         return ToolMessage(
             content=json.dumps(payload, ensure_ascii=False),

@@ -7,42 +7,143 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from deepsearch_agent.agents.supervisor import ResearchSupervisor
-from deepsearch_agent.agents.supervisor.state import RunUrlReservations, WorkingState
+from deepsearch_agent.agents.supervisor.state import (
+    RunUrlReservations,
+    WorkingState,
+    evidence_card,
+    synthesis_snapshot,
+)
 from deepsearch_agent.config import AgentConfig
 from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.schemas import (
     ResearchAgentResult,
     ResearchDirectionDecision,
     ResearchDirectionResult,
+    ResearchSynthesis,
     ReviseResearchSynthesis,
     StopReason,
 )
 from fakes import evidence, researcher_agent
 
 
-def test_synthesis_arguments_require_complete_selected_evidence_union():
-    with pytest.raises(ValueError, match="当前缺少：e1"):
-        ReviseResearchSynthesis.model_validate(
+def test_synthesis_arguments_leave_selected_evidence_union_to_handler():
+    arguments = ReviseResearchSynthesis.model_validate(
+        {
+            "expected_revision": 0,
+            "expected_working_set_revision": 1,
+            "answer_goal": "回答问题",
+            "overall_summary": "已有一项事实。",
+            "aspects": [
+                {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "已有依据",
+                    "evidence_ids": ["e1"],
+                }
+            ],
+            "readiness": "partial_ready",
+            "decision_rationale": "足以部分交付",
+        }
+    )
+
+    assert "selected_evidence_ids" not in arguments.model_dump()
+
+
+def test_synthesis_derives_stable_evidence_union_from_aspects() -> None:
+    synthesis = ResearchSynthesis.model_validate(
+        {
+            "revision": 1,
+            "based_on_working_set_revision": 2,
+            "answer_goal": "回答问题",
+            "overall_summary": "综合结论",
+            "aspects": [
+                {
+                    "aspect_id": "a",
+                    "topic": "方面 A",
+                    "role": "定义",
+                    "status": "covered",
+                    "evidence_ids": ["e2", "e1"],
+                },
+                {
+                    "aspect_id": "b",
+                    "topic": "方面 B",
+                    "role": "对比",
+                    "status": "covered",
+                    "evidence_ids": ["e1", "e3"],
+                },
+            ],
+            "selected_evidence_ids": ["legacy-extra"],
+            "readiness": "complete_candidate",
+            "decision_rationale": "已形成证据链",
+        }
+    )
+
+    assert synthesis.selected_evidence_ids == ["e2", "e1", "e3"]
+
+
+def test_synthesis_rejects_duplicate_aspect_ids() -> None:
+    payload = {
+        "revision": 1,
+        "based_on_working_set_revision": 1,
+        "answer_goal": "回答问题",
+        "overall_summary": "综合结论",
+        "aspects": [
             {
-                "expected_revision": 0,
-                "expected_working_set_revision": 1,
-                "answer_goal": "回答问题",
-                "overall_summary": "已有一项事实。",
-                "aspects": [
-                    {
-                        "aspect_id": "core",
-                        "topic": "核心",
-                        "role": "主线",
-                        "status": "covered",
-                        "summary": "已有依据",
-                        "evidence_ids": ["e1"],
-                    }
-                ],
-                "selected_evidence_ids": [],
-                "readiness": "partial_ready",
-                "decision_rationale": "足以部分交付",
+                "aspect_id": "same",
+                "topic": f"方面 {index}",
+                "role": "主线",
+                "status": "covered",
+                "evidence_ids": [f"e{index}"],
             }
-        )
+            for index in (1, 2)
+        ],
+        "readiness": "complete_candidate",
+        "decision_rationale": "已形成证据链",
+    }
+
+    with pytest.raises(ValueError, match="重复 aspect_id"):
+        ResearchSynthesis.model_validate(payload)
+
+
+def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
+    item = evidence("metadata", task_id="r1-1")
+    item.source_title = "来源标题"
+    item.published_at = "2026-09-01"
+    item.audit_chunk = "SECRET_AUDIT_CHUNK"
+    card = evidence_card(item)
+
+    assert card["source_title"] == "来源标题"
+    assert card["published_at"] == "2026-09-01"
+    assert "quote" not in card
+    assert "audit_chunk" not in card
+
+    synthesis = ResearchSynthesis.model_validate(
+        {
+            "revision": 1,
+            "based_on_working_set_revision": 1,
+            "answer_goal": "回答问题",
+            "overall_summary": "综合结论",
+            "aspects": [
+                {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "结论主线",
+                    "required": False,
+                    "status": "covered",
+                    "evidence_ids": [item.evidence_id],
+                }
+            ],
+            "readiness": "complete_candidate",
+            "decision_rationale": "决策理由",
+        }
+    )
+    snapshot = synthesis_snapshot(synthesis)
+
+    assert snapshot["aspects"][0]["role"] == "结论主线"
+    assert snapshot["aspects"][0]["required"] is False
+    assert snapshot["decision_rationale"] == "决策理由"
 
 
 class SupervisorLLM:
@@ -121,7 +222,6 @@ class SupervisorLLM:
                                         "remaining_gap": "",
                                     }
                                 ],
-                                "selected_evidence_ids": evidence_ids,
                                 "open_gaps": [],
                                 "conflicts": [],
                                 "next_actions": [],
@@ -854,7 +954,6 @@ class _DelegateUntilBlockedLLM:
                                     "evidence_ids": evidence_ids,
                                 }
                             ],
-                            "selected_evidence_ids": evidence_ids,
                             "open_gaps": [],
                             "conflicts": [],
                             "next_actions": [],

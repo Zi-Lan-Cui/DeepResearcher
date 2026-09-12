@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from deepsearch_agent.schemas.reporting import ResearchAspect
 from deepsearch_agent.schemas.sections import ResearchDirectionResult
@@ -129,15 +129,9 @@ class ReviseResearchSynthesis(BaseModel):
         min_length=1,
         max_length=6,
         description=(
-            "完整研究方面列表。covered 必须绑定 Evidence；partial、uncovered、"
-            "conflicted 必须说明 remaining_gap。"
-        ),
-    )
-    selected_evidence_ids: list[str] = Field(
-        max_length=50,
-        description=(
-            "本版采用的 Evidence 完整并集，必须包含 aspects[*].evidence_ids 中每个 ID；"
-            "readiness 为 partial_ready 或 complete_candidate 时不得为空。"
+            "Supervisor 跨研究方向建立的完整证据支撑认知单元列表；"
+            "不是 Researcher 方向或固定报告章节。covered 必须绑定 Evidence；"
+            "partial、uncovered、conflicted 必须说明 remaining_gap。"
         ),
     )
     open_gaps: list[str] = Field(default_factory=list, max_length=12)
@@ -145,23 +139,6 @@ class ReviseResearchSynthesis(BaseModel):
     next_actions: list[str] = Field(default_factory=list, max_length=8)
     readiness: Literal["not_ready", "partial_ready", "complete_candidate"]
     decision_rationale: str = Field(min_length=1, max_length=2_000)
-
-    @model_validator(mode="after")
-    def validate_evidence_contract(self) -> "ReviseResearchSynthesis":
-        if len(set(self.selected_evidence_ids)) != len(self.selected_evidence_ids):
-            raise ValueError("selected_evidence_ids 不能包含重复 Evidence ID。")
-        selected = set(self.selected_evidence_ids)
-        referenced = {item for aspect in self.aspects for item in aspect.evidence_ids}
-        missing = sorted(referenced - selected)
-        if missing:
-            raise ValueError(
-                "selected_evidence_ids 必须包含 aspects 引用的全部 Evidence；"
-                f"当前缺少：{', '.join(missing)}。"
-            )
-        if self.readiness != "not_ready" and not selected:
-            raise ValueError("partial_ready/complete_candidate 必须选择至少一条 Evidence。")
-        return self
-
 
 class ResearchToolResult(BaseModel):
     """ResearchAgent 完成方向后的结果，作为 ToolMessage 注入 Supervisor 上下文。"""

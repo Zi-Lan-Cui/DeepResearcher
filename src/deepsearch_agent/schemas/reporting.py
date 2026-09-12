@@ -28,7 +28,11 @@ class ReportBrief(BaseModel):
 
 
 class ResearchAspect(BaseModel):
-    """版本化研究综合稿中的一个稳定论证方面。"""
+    """Supervisor 跨研究方向建立的证据支撑认知单元。
+
+    它用于覆盖、冲突和缺口管理；不是 Researcher 任务方向，
+    也不在概念上等于最终报告章节。
+    """
 
     aspect_id: str = Field(min_length=1, max_length=80)
     topic: str = Field(min_length=1, max_length=500)
@@ -69,13 +73,20 @@ class ResearchSynthesis(BaseModel):
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchSynthesis":
-        if len(set(self.selected_evidence_ids)) != len(self.selected_evidence_ids):
-            raise ValueError("研究综合稿不能重复选择同一 Evidence。")
-        selected = set(self.selected_evidence_ids)
-        referenced = {item for aspect in self.aspects for item in aspect.evidence_ids}
-        if not referenced.issubset(selected):
-            raise ValueError("研究方面引用的 Evidence 必须包含在 selected_evidence_ids 中。")
-        if self.readiness != "not_ready" and not selected:
+        aspect_ids = [item.aspect_id for item in self.aspects]
+        if len(set(aspect_ids)) != len(aspect_ids):
+            raise ValueError("研究综合稿不能包含重复 aspect_id。")
+        selected = list(
+            dict.fromkeys(
+                evidence_id
+                for aspect in self.aspects
+                for evidence_id in aspect.evidence_ids
+            )
+        )
+        if len(selected) > 50:
+            raise ValueError("研究综合稿最多选择 50 条 Evidence。")
+        self.selected_evidence_ids = selected
+        if self.readiness != "not_ready" and not self.selected_evidence_ids:
             raise ValueError("可交付研究综合稿必须选择至少一条 Evidence。")
         return self
 

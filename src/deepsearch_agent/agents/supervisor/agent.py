@@ -25,6 +25,8 @@ from deepsearch_agent.agents.supervisor.state import (
     SupervisorRuntimeContext,
     TaskExecution,
     WorkingState,
+    evidence_card,
+    synthesis_snapshot,
 )
 from deepsearch_agent.agents.supervisor.tools import (
     build_supervisor_tools,
@@ -277,11 +279,7 @@ class ResearchSupervisor:
                     "failures": execution.task_result.failures,
                     "working_set_revision": working.working_set_revision,
                     "evidence": [
-                        {
-                            "evidence_id": item.evidence_id,
-                            "claim": item.claim,
-                            "support": item.support,
-                        }
+                        evidence_card(item)
                         for item in execution.evidences
                         if item.evidence_id in working.active_evidence_ids
                     ],
@@ -651,15 +649,7 @@ class ResearchSupervisor:
         """构造 Supervisor 工作集摘要，不把完整 quote 重复注入上下文。"""
         active = working.active_evidences()
         return {
-            "active_evidence": [
-                {
-                    "evidence_id": item.evidence_id,
-                    "claim": item.claim,
-                    "support": item.support,
-                    "confidence": item.confidence,
-                }
-                for item in active
-            ],
+            "active_evidence": [evidence_card(item) for item in active],
             "active_evidence_count": len(active),
         }
 
@@ -670,28 +660,7 @@ class ResearchSupervisor:
         """每轮固定注入当前综合稿，避免上下文压缩后丢失研究认知。"""
         if synthesis is None:
             return None
-        return {
-            "revision": synthesis.revision,
-            "based_on_working_set_revision": synthesis.based_on_working_set_revision,
-            "answer_goal": synthesis.answer_goal,
-            "overall_summary": synthesis.overall_summary,
-            "aspects": [
-                {
-                    "aspect_id": item.aspect_id,
-                    "topic": item.topic,
-                    "status": item.status,
-                    "summary": item.summary,
-                    "evidence_ids": item.evidence_ids,
-                    "remaining_gap": item.remaining_gap,
-                }
-                for item in synthesis.aspects
-            ],
-            "selected_evidence_ids": synthesis.selected_evidence_ids,
-            "open_gaps": synthesis.open_gaps,
-            "conflicts": synthesis.conflicts,
-            "next_actions": synthesis.next_actions,
-            "readiness": synthesis.readiness,
-        }
+        return synthesis_snapshot(synthesis)
 
     def _report_brief_from_synthesis(self, synthesis: ResearchSynthesis) -> ReportBrief:
         """从冻结综合版本派生报告任务书，避免 Complete 再提交第二事实源。"""
