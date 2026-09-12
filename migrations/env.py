@@ -11,7 +11,9 @@ from deepsearch_agent.service.persistence.models import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic runs inside the API/Worker process during application startup.
+    # Keep the host process loggers alive so lifespan failures remain visible.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
