@@ -420,12 +420,15 @@ class ReportWriter:
         groups: dict[str, list[str]] = {}
         for evidence_id, item in evidence_by_id.items():
             direction = item.research_direction or "未分类研究方向"
+            published_metadata = (
+                f" | published_at={item.published_at}(搜索元信息)" if item.published_at else ""
+            )
             entry = (
                 f"- evidence_id={evidence_id} | "
                 f"来源={item.source_title or '未命名来源'} | support={item.support} | "
                 f"source_profile={item.source_profile.model_dump_json()} | "
                 f"retrieval={item.retrieval_method} | "
-                f"confidence={item.confidence}\n  claim：{item.claim}"
+                f"confidence={item.confidence}{published_metadata}\n  claim：{item.claim}"
             )
             groups.setdefault(direction, []).append(entry)
         return "\n\n".join(

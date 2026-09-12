@@ -25,6 +25,24 @@ def test_evidence_audit_chunk_is_persisted_but_hidden_from_agent() -> None:
     assert "audit_chunk" not in evidence.agent_payload()
 
 
+def test_validator_persists_quote_locator() -> None:
+    from deepsearch_agent.evidence.validator import validate_evidence
+
+    evidence = Evidence(
+        evidence_id="ev-locator",
+        subtask_id="task-1",
+        research_direction="测试",
+        claim="A 的延迟为 20ms",
+        quote="A 的平均延迟为 20ms。",
+        source_url="https://example.com",
+    )
+
+    validated = validate_evidence(evidence, blocks())
+
+    assert validated.locator.block_ids == ["b-1"]
+    assert validated.locator.heading_path == ["性能测试"]
+
+
 def test_audit_chunk_keeps_quote_and_is_bounded() -> None:
     quote = "需要保留的原文"
     source_blocks = [
@@ -337,6 +355,7 @@ def test_evidence_prompt_contains_json_example(monkeypatch):
     document = {
         "title": "测试来源",
         "final_url": "https://example.com",
+        "published_at": "2026-07-04",
         "text": "\n".join(block["text"] for block in blocks()),
         "blocks": blocks(),
     }
@@ -356,6 +375,9 @@ def test_evidence_prompt_contains_json_example(monkeypatch):
     )
 
     assert evidences
+    assert evidences[0].published_at == "2026-07-04"
+    assert evidences[0].locator.block_ids == ["b-1"]
+    assert evidences[0].locator.heading_path == ["性能测试"]
     prompt = captured["messages"][0].content
     assert "JSON 示例" in prompt
     assert '{"evidences"' in prompt

@@ -138,6 +138,9 @@ class EvidenceExtractor:
                     quote=item.quote,
                     source_url=source_url,
                     source_title=document.get("title", result.get("title", "")),
+                    published_at=str(
+                        document.get("published_at") or result.get("published_at", "")
+                    ).strip(),
                     source_profile=SourceProfile.model_validate(result.get("source_profile", {})),
                     retrieval_method=cast(
                         Literal["origin_fetch", "tavily_raw_content", "search_summary"],

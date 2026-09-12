@@ -20,6 +20,8 @@ class Evidence(BaseModel):
     quote: str
     source_url: str
     source_title: str = ""
+    # 搜索提供方给出的发布时间，用于时效性判断；不属于 quote 原文。
+    published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
     retrieval_method: Literal["origin_fetch", "tavily_raw_content", "search_summary"] = (
         "origin_fetch"

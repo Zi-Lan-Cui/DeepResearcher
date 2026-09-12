@@ -327,6 +327,11 @@ class ResearchAgent:
                     "source": item.source_url,
                     "source_profile": item.source_profile.model_dump(),
                     "support": item.support,
+                    **(
+                        {"published_at": item.published_at}
+                        if item.published_at
+                        else {}
+                    ),
                 }
                 for item in accepted_evidence
             ],
