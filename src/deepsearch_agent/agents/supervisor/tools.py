@@ -9,7 +9,12 @@ from langgraph.graph import END
 from langgraph.types import Command
 from pydantic import ValidationError
 
-from deepsearch_agent.agents.supervisor.state import SupervisorRuntimeContext, WorkingState
+from deepsearch_agent.agents.supervisor.state import (
+    SupervisorRuntimeContext,
+    WorkingState,
+    evidence_card,
+    synthesis_snapshot,
+)
 from deepsearch_agent.schemas import (
     ReadWorkingSet,
     ReleaseEvidence,
@@ -36,54 +41,12 @@ def _working_set_snapshot(working: WorkingState) -> dict[str, object]:
     reserve = [item for item in working.evidences if item.evidence_id not in active_ids]
     return {
         "working_set_revision": working.working_set_revision,
-        "active_evidence": [
-            {
-                "evidence_id": item.evidence_id,
-                "claim": item.claim,
-                "support": item.support,
-                "confidence": item.confidence,
-            }
-            for item in active
-        ],
+        "active_evidence": [evidence_card(item) for item in active],
         "active_evidence_count": len(active),
         "active_evidence_limit": working.active_evidence_limit,
-        "reserve_evidence": [
-            {
-                "evidence_id": item.evidence_id,
-                "claim": item.claim,
-                "support": item.support,
-            }
-            for item in reserve
-        ],
+        "reserve_evidence": [evidence_card(item) for item in reserve],
         "reserve_evidence_count": len(reserve),
     }
-
-
-def _synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]:
-    if synthesis is None:
-        return {"synthesis_revision": 0, "research_synthesis": None}
-    return {
-        "synthesis_revision": synthesis.revision,
-        "based_on_working_set_revision": synthesis.based_on_working_set_revision,
-        "readiness": synthesis.readiness,
-        "overall_summary": synthesis.overall_summary,
-        "aspects": [
-            {
-                "aspect_id": item.aspect_id,
-                "topic": item.topic,
-                "status": item.status,
-                "summary": item.summary,
-                "evidence_ids": item.evidence_ids,
-                "remaining_gap": item.remaining_gap,
-            }
-            for item in synthesis.aspects
-        ],
-        "selected_evidence_ids": synthesis.selected_evidence_ids,
-        "open_gaps": synthesis.open_gaps,
-        "conflicts": synthesis.conflicts,
-        "next_actions": synthesis.next_actions,
-    }
-
 
 def build_supervisor_tools() -> list[BaseTool]:
     """创建绑定到 SupervisorRuntimeContext 的工具集合。"""
@@ -134,7 +97,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                                 "reason": reason,
                                 "requested_revision": synthesis_revision,
                                 "current_working_set_revision": working.working_set_revision,
-                                **_synthesis_snapshot(synthesis),
+                                **synthesis_snapshot(synthesis),
                             }
                         ),
                         "name": "ResearchComplete",
@@ -151,7 +114,6 @@ def build_supervisor_tools() -> list[BaseTool]:
         answer_goal: str,
         overall_summary: str,
         aspects: list[ResearchAspect],
-        selected_evidence_ids: list[str],
         open_gaps: list[str],
         conflicts: list[str],
         next_actions: list[str],
@@ -163,7 +125,8 @@ def build_supervisor_tools() -> list[BaseTool]:
 
         仅当新的研究结果实质改变结论、Evidence 选择、缺口、冲突、下一步或
         可交付状态时使用。它不是工具日志；所有事实总结必须绑定当前活跃
-        Evidence。调用 ResearchComplete 前必须先让本综合稿
+        Evidence。aspects 是跨 Researcher 方向的认知组织单元，系统会从其
+        evidence_ids 稳定推导总选择集。调用 ResearchComplete 前必须先让本综合稿
         对齐最新 working_set_revision。
         """
         working = runtime.context.working
@@ -181,8 +144,7 @@ def build_supervisor_tools() -> list[BaseTool]:
             )
         active_ids = set(working.active_evidence_ids)
         referenced_ids = {evidence_id for aspect in aspects for evidence_id in aspect.evidence_ids}
-        requested_ids = set(selected_evidence_ids) | referenced_ids
-        unknown_ids = sorted(requested_ids - active_ids)
+        unknown_ids = sorted(referenced_ids - active_ids)
         if unknown_ids:
             return _result(
                 {
@@ -199,7 +161,6 @@ def build_supervisor_tools() -> list[BaseTool]:
                 answer_goal=answer_goal,
                 overall_summary=overall_summary,
                 aspects=aspects,
-                selected_evidence_ids=selected_evidence_ids,
                 open_gaps=open_gaps,
                 conflicts=conflicts,
                 next_actions=next_actions,
@@ -223,7 +184,17 @@ def build_supervisor_tools() -> list[BaseTool]:
                 }
             )
         working.research_synthesis = synthesis
-        return _result({"status": "accepted", **_synthesis_snapshot(synthesis)})
+        assigned_ids = set(synthesis.selected_evidence_ids)
+        return _result(
+            {
+                "status": "accepted",
+                **synthesis_snapshot(synthesis),
+                "unassigned_active_evidence_ids": [
+                    item.evidence_id for item in working.active_evidences()
+                    if item.evidence_id not in assigned_ids
+                ],
+            }
+        )
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
     async def read_working_set(

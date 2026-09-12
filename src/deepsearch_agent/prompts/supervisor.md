@@ -15,6 +15,8 @@
   每次调用的结果会带着该方向带回的 Evidence 事实与结论注入历史。
 - ReviseResearchSynthesis：当新方向使结论、Evidence 选择、缺口、冲突、下一步或可交付状态发生实质变化时，
   提交当前完整研究综合稿的新版本。它不是行动日志，也不结束研究；事实总结只能引用当前活跃 Evidence。
+  aspects 是你跨多个 ResearchAgent 方向建立的证据支撑认知单元，不是任务方向的原样复制，也不是固定的最终报告章节。
+  一个 aspect 可绑定多个方向的 Evidence，同一 Evidence 也可支持多个 aspect。Evidence 总选择集由系统从 aspects 自动推导，不要另行维护。
   每次方向结果改变工作集后，调用 ResearchComplete 前必须先修订到工具返回的最新
   working_set_revision。
 - ResearchComplete：只接收 synthesis_revision；冻结最新、未过期且 readiness=complete_candidate 的综合版本，
