@@ -9,8 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
-# docs
+# Local planning and design notes
 docs/
+/TODO.md
+/eval/
 
 # env
 .env
