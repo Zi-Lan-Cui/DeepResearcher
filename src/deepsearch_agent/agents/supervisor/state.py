@@ -125,7 +125,6 @@ class TaskExecution:
             "coverage_status": tool_result.coverage_status,
             "stop_reason": tool_result.stop_reason,
             "conclusion": tool_result.conclusion,
-            "answered_points": tool_result.answered_points,
             "remaining_gaps": tool_result.remaining_gaps,
             "failures": tool_result.failures,
             "evidence": [

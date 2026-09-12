@@ -22,7 +22,6 @@ class ResearchDirectionDecision(BaseModel):
     queries: list[str] = Field(default_factory=list, max_length=2)
     candidate_ids: list[str] = Field(default_factory=list, max_length=8)
     evidence_ids: list[str] = Field(default_factory=list, max_length=8)
-    answered_points: list[str] = Field(default_factory=list, max_length=4)
     conclusion: str = ""
     remaining_gaps: list[str] = Field(default_factory=list, max_length=4)
 
@@ -42,8 +41,8 @@ class ResearchDirectionDecision(BaseModel):
             )
         if self.action == "complete" and (self.queries or self.candidate_ids or self.evidence_ids):
             raise ValueError("action=complete 时不得继续提供查询、候选 ID 或 Evidence ID。")
-        if self.action != "complete" and (self.answered_points or self.conclusion.strip()):
-            raise ValueError("只有 action=complete 时才能输出 answered_points 或 conclusion。")
+        if self.action != "complete" and self.conclusion.strip():
+            raise ValueError("只有 action=complete 时才能输出 conclusion。")
         return self
 
 

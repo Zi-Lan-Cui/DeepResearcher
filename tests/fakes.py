@@ -237,7 +237,6 @@ class DirectionLLM:
             args = ResearchDirectionComplete(
                 reason=decision.reason,
                 selected_evidence_ids=evidence_ids,
-                answered_points=decision.answered_points,
                 conclusion=decision.conclusion,
                 remaining_gaps=decision.remaining_gaps,
             ).model_dump()
