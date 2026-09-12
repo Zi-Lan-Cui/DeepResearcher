@@ -56,6 +56,24 @@ def test_writer_never_receives_evidence_audit_chunk() -> None:
     )
 
 
+def test_writer_exposes_published_at_as_metadata_but_not_locator() -> None:
+    evidence = _ev(
+        "e1",
+        "可公开的结论",
+        quote="可公开的原文。",
+        url="https://example.com/source",
+    )
+    evidence.published_at = "2026-07-04"
+    evidence.locator.block_ids = ["private-block-id"]
+    evidence.locator.heading_path = ["内部章节"]
+
+    catalogue = ReportWriter._evidence_catalogue({"e1": evidence})
+
+    assert "published_at=2026-07-04(搜索元信息)" in catalogue
+    assert "private-block-id" not in catalogue
+    assert "内部章节" not in catalogue
+
+
 def test_writer_filters_evidence_by_configured_minimum_support():
     state = {
         "clarified_query": "测试问题",
