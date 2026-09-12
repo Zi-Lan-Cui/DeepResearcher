@@ -16,6 +16,7 @@ class CoveredTopic(BaseModel):
     role: str
     reason: str
     required: bool = True
+    evidence_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
 class ReportBrief(BaseModel):

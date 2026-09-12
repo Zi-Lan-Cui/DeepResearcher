@@ -687,6 +687,10 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     assert result.research.generation_mode == "partial"
     assert result.research_synthesis is not None
     assert result.research_synthesis.revision == 1
+    assert result.report_brief is not None
+    assert result.report_brief.covered_topics[0].evidence_ids == [item.evidence_id]
+    assert result.writer_directive is not None
+    assert result.writer_directive.evidence_ids == [item.evidence_id]
 
 
 def test_supervisor_review_rejection_can_continue_research_via_tool_loop():

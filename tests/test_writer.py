@@ -74,6 +74,38 @@ def test_writer_exposes_published_at_as_metadata_but_not_locator() -> None:
     assert "内部章节" not in catalogue
 
 
+def test_writer_catalogue_preserves_topic_assignments_and_deduplicates_cards() -> None:
+    first = _ev("e1", "共用事实", url="https://example.com/1")
+    second = _ev("e2", "补充事实", url="https://example.com/2")
+    brief = ReportBrief.model_validate(
+        {
+            "answer_goal": "回答问题",
+            "covered_topics": [
+                {
+                    "topic": "主题 A",
+                    "role": "定义",
+                    "reason": "解释概念",
+                    "evidence_ids": ["e1"],
+                },
+                {
+                    "topic": "主题 B",
+                    "role": "对比",
+                    "reason": "说明差异",
+                    "evidence_ids": ["e1", "e2"],
+                },
+            ],
+        }
+    )
+
+    catalogue = ReportWriter._evidence_catalogue({"e1": first, "e2": second}, brief)
+
+    assert "[写作主题] 主题 A" in catalogue
+    assert "[写作主题] 主题 B" in catalogue
+    assert "建议 Evidence：e1, e2" in catalogue
+    assert catalogue.count("- evidence_id=e1 |") == 1
+    assert catalogue.count("- evidence_id=e2 |") == 1
+
+
 def test_writer_filters_evidence_by_configured_minimum_support():
     state = {
         "clarified_query": "测试问题",
@@ -238,7 +270,7 @@ def test_writer_audit_events_keep_generated_draft(tmp_path):
     assert '"event_type": "writer_draft_ready"' in events
 
 
-def test_writer_uses_direction_grouped_evidence_index_without_raw_quote():
+def test_writer_uses_deduplicated_evidence_index_without_raw_quote():
     captured = {}
 
     async def draft_output(llm, schema, messages, **kwargs):
@@ -270,7 +302,8 @@ def test_writer_uses_direction_grouped_evidence_index_without_raw_quote():
         },
     )
 
-    assert "[研究方向] A 的性能与测试条件" in captured["prompt"]
+    assert "[Evidence 去重索引]" in captured["prompt"]
+    assert "[研究方向]" not in captured["prompt"]
     assert "Supervisor 的报告任务书" in captured["prompt"]
     assert "回答测试问题" in captured["prompt"]
     assert "claim：A 的平均延迟为 20ms" in captured["prompt"]
