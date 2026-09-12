@@ -36,6 +36,7 @@ from deepsearch_agent.observability.logger import get_logger
 from deepsearch_agent.prompts import load_prompt
 from deepsearch_agent.reporting.validation import extract_cite_ids, validate_and_bind
 from deepsearch_agent.schemas import (
+    ReportBrief,
     ResearchProgress,
     ReviewProgress,
     RunLifecycle,
@@ -131,7 +132,7 @@ class ReportWriter:
         if directive.evidence_ids is not None:
             allowed_ids = set(directive.evidence_ids)
             evidences = [item for item in evidences if item.evidence_id in allowed_ids]
-        prepared = self._prepare_evidence(evidences)
+        prepared = self._prepare_evidence(evidences, directive.report_brief)
         if not prepared.by_id:
             return self._render_insufficient_evidence(state, evidences)
 
@@ -267,13 +268,20 @@ class ReportWriter:
             writer=WriterProgress(status="completed", attempts=1),
         ).state_update()
 
-    def _prepare_evidence(self, evidences: list[Evidence]) -> PreparedEvidence:
+    def _prepare_evidence(
+        self,
+        evidences: list[Evidence],
+        report_brief: ReportBrief,
+    ) -> PreparedEvidence:
         """过滤不满足可信等级的材料，并建立稳定的 Evidence ID 索引。"""
         usable = [item for item in evidences if self._meets_minimum_support(item.support)]
         by_id = {
             str(item.evidence_id or f"来源{index}"): item for index, item in enumerate(usable, 1)
         }
-        return PreparedEvidence(by_id=by_id, catalogue=self._evidence_catalogue(by_id))
+        return PreparedEvidence(
+            by_id=by_id,
+            catalogue=self._evidence_catalogue(by_id, report_brief),
+        )
 
     def _render_insufficient_evidence(
         self,
@@ -415,26 +423,58 @@ class ReportWriter:
         ).state_update()
 
     @staticmethod
-    def _evidence_catalogue(evidence_by_id: dict[str, Evidence]) -> str:
-        """按研究方向暴露紧凑索引；完整 quote 仅留给本地引用审计。"""
-        groups: dict[str, list[str]] = {}
-        for evidence_id, item in evidence_by_id.items():
-            direction = item.research_direction or "未分类研究方向"
+    def _evidence_catalogue(
+        evidence_by_id: dict[str, Evidence],
+        report_brief: ReportBrief | None = None,
+    ) -> str:
+        """暴露主题到 Evidence 的归属与去重索引；完整 quote 按需读取。"""
+        topics = list(report_brief.covered_topics) if report_brief is not None else []
+        has_assignments = any(topic.evidence_ids for topic in topics)
+        if has_assignments:
+            topic_plan = "\n\n".join(
+                "\n".join(
+                    [
+                        f"[写作主题] {topic.topic}",
+                        f"作用：{topic.role}",
+                        f"Supervisor 综合：{topic.reason}",
+                        "建议 Evidence："
+                        + ", ".join(
+                            evidence_id
+                            for evidence_id in topic.evidence_ids
+                            if evidence_id in evidence_by_id
+                        ),
+                    ]
+                )
+                for topic in topics
+            )
+            ordered_ids = list(
+                dict.fromkeys(
+                    evidence_id
+                    for topic in topics
+                    for evidence_id in topic.evidence_ids
+                    if evidence_id in evidence_by_id
+                )
+            )
+        else:
+            # 旧 checkpoint 没有 CoveredTopic.evidence_ids，退化为全局索引。
+            topic_plan = ""
+            ordered_ids = list(evidence_by_id)
+
+        entries: list[str] = []
+        for evidence_id in ordered_ids:
+            item = evidence_by_id[evidence_id]
             published_metadata = (
                 f" | published_at={item.published_at}(搜索元信息)" if item.published_at else ""
             )
-            entry = (
+            entries.append(
                 f"- evidence_id={evidence_id} | "
                 f"来源={item.source_title or '未命名来源'} | support={item.support} | "
                 f"source_profile={item.source_profile.model_dump_json()} | "
                 f"retrieval={item.retrieval_method} | "
                 f"confidence={item.confidence}{published_metadata}\n  claim：{item.claim}"
             )
-            groups.setdefault(direction, []).append(entry)
-        return "\n\n".join(
-            f"[研究方向] {direction}\n" + "\n".join(entries)
-            for direction, entries in groups.items()
-        )
+        evidence_index = "[Evidence 去重索引]\n" + "\n".join(entries)
+        return "\n\n".join(part for part in (topic_plan, evidence_index) if part)
 
     def _meets_minimum_support(self, support: str) -> bool:
         minimum_rank = _SUPPORT_RANK.get(self.config.writer_minimum_support)

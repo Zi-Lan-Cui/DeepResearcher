@@ -616,12 +616,22 @@ class ResearchSupervisor:
             if review.status == "rejected"
             else []
         )
+        evidence_ids = list(
+            dict.fromkeys(
+                evidence_id
+                for topic in report_brief.covered_topics
+                for evidence_id in topic.evidence_ids
+            )
+        )
+        if not evidence_ids:
+            # 旧 checkpoint 的 CoveredTopic 没有 evidence_ids，保留冻结综合稿的选择集。
+            evidence_ids = list(synthesis.selected_evidence_ids)
         return WriterDirective(
             query=str(state.get("clarified_query") or state.get("query") or ""),
             report_brief=report_brief,
             research_status="completed" if working.sufficient else "incomplete",
             generation_mode="full" if working.sufficient else "partial",
-            evidence_ids=list(synthesis.selected_evidence_ids),
+            evidence_ids=evidence_ids,
             known_gaps=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
                 : self.config.report_max_caveats
             ],
@@ -670,6 +680,7 @@ class ResearchSupervisor:
                 role=aspect.role,
                 reason=aspect.summary or aspect.remaining_gap,
                 required=aspect.required,
+                evidence_ids=list(aspect.evidence_ids),
             )
             for aspect in synthesis.aspects
         ]
