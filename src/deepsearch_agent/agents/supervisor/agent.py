@@ -272,7 +272,6 @@ class ResearchSupervisor:
                     "coverage_status": execution.task_result.coverage_status,
                     "evidence_count": execution.task_result.evidence_count,
                     "source_count": execution.task_result.source_count,
-                    "answered_points": execution.task_result.answered_points,
                     "remaining_gaps": execution.task_result.remaining_gaps,
                     "conclusion": execution.task_result.conclusion,
                     "failures": execution.task_result.failures,

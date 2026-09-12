@@ -25,7 +25,6 @@ class ResearchAgentState(TypedDict, total=False):
     read_urls: list[str]
     skipped: list[str]
     failures: list[str]
-    answered_points: list[str]
     remaining_gaps: list[str]
     conclusion: str
     status: str
@@ -60,7 +59,6 @@ class DirectionRunState:
     selected_candidate_ids: set[str] = field(default_factory=set)
     skipped: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
-    answered_points: list[str] = field(default_factory=list)
     remaining_gaps: list[str] = field(default_factory=list)
     conclusion: str = ""
     stop_reason: str = "step_budget_exhausted"

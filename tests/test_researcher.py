@@ -12,6 +12,7 @@ from deepsearch_agent.evidence.models import Evidence
 from deepsearch_agent.llm import LLMConfigurationError
 from deepsearch_agent.schemas import (
     ResearchDirectionDecision,
+    ResearchDirectionResult,
 )
 from deepsearch_agent.tools import SearchTool, SourceReaderTool
 from deepsearch_agent.tools.errors import SourceUnavailableError
@@ -22,6 +23,27 @@ from fakes import (
     FakeSearchClient,
     researcher_agent,
 )
+
+
+def test_direction_result_ignores_legacy_answered_points_on_checkpoint_restore() -> None:
+    restored = ResearchDirectionResult.model_validate(
+        {
+            "task_id": "legacy-task",
+            "round": 1,
+            "question": "历史问题",
+            "research_direction": "历史方向",
+            "execution_status": "completed",
+            "coverage_status": "partial",
+            "evidence_count": 1,
+            "source_count": 1,
+            "answered_points": ["旧版字段"],
+            "conclusion": "历史结论",
+            "stop_reason": "complete",
+        }
+    )
+
+    assert restored.conclusion == "历史结论"
+    assert "answered_points" not in restored.model_dump()
 
 
 def test_research_agent_autonomously_decides_queries_then_collects_direction_evidence():
@@ -52,7 +74,6 @@ def test_research_agent_autonomously_decides_queries_then_collects_direction_evi
             ResearchDirectionDecision(
                 action="complete",
                 reason="已获得直接来源。",
-                answered_points=["获得方向所需的直接事实"],
                 conclusion="当前方向可由已获取 Evidence 谨慎回答。",
             ),
         ],
@@ -160,7 +181,6 @@ def test_research_agent_converts_completion_without_evidence_to_blocked_result()
             ResearchDirectionDecision(
                 action="complete",
                 reason="我认为可以结束。",
-                answered_points=["不应被接收的回答点"],
                 conclusion="不应被接收的结论。",
             )
         ],
@@ -172,7 +192,6 @@ def test_research_agent_converts_completion_without_evidence_to_blocked_result()
     assert task_result.execution_status == "completed"
     assert task_result.stop_reason == "blocked_without_evidence"
     assert task_result.stop_detail == "我认为可以结束。"
-    assert task_result.answered_points == []
     assert task_result.conclusion == ""
     assert task_result.remaining_gaps
 
@@ -196,8 +215,7 @@ def test_researcher_builds_minimum_result_when_finalization_never_submits():
     ResearchAgent._apply_minimum_result(run_state)
 
     assert run_state.stop_reason == "fallback_complete"
-    assert run_state.answered_points == ["已验证的有限事实"]
-    assert run_state.conclusion
+    assert run_state.conclusion.startswith("本方向未完成模型综合")
     assert run_state.remaining_gaps
 
 
@@ -207,7 +225,6 @@ def test_researcher_builds_blocked_minimum_result_without_evidence():
     ResearchAgent._apply_minimum_result(run_state)
 
     assert run_state.stop_reason == "blocked_without_evidence"
-    assert run_state.answered_points == []
     assert run_state.conclusion == ""
     assert "未获得可用 Evidence。" in run_state.remaining_gaps
 
@@ -236,7 +253,7 @@ def test_researcher_exhaustion_preserves_collected_evidence_as_minimum_result():
     assert result.evidences
     assert result.task_result.execution_status == "completed"
     assert result.task_result.stop_reason == "fallback_complete"
-    assert result.task_result.answered_points
+    assert result.task_result.conclusion.startswith("本方向未完成模型综合")
 
 
 def test_research_direction_decision_rejects_conclusions_during_search():

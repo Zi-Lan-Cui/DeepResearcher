@@ -77,8 +77,10 @@ class ResearchDirectionComplete(BaseModel):
         max_length=12,
         description="最终推荐给 Supervisor 的当前活跃 Evidence ID。",
     )
-    answered_points: list[str] = Field(default_factory=list, max_length=4)
-    conclusion: str = ""
+    conclusion: str = Field(
+        default="",
+        description="基于最终选中 Evidence 的方向级简短综合；不得引入未取证事实。",
+    )
     remaining_gaps: list[str] = Field(
         default_factory=list,
         max_length=4,
@@ -171,7 +173,6 @@ class ResearchToolResult(BaseModel):
     task_index: int = Field(default=0, ge=0)
     evidence_count: int = Field(ge=0)
     source_count: int = Field(ge=0)
-    answered_points: list[str] = Field(default_factory=list)
     conclusion: str = ""
     remaining_gaps: list[str] = Field(default_factory=list)
     queries: list[str] = Field(default_factory=list)

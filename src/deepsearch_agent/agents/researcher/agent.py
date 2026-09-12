@@ -175,16 +175,16 @@ class ResearchAgent:
         evidences = run_state.active_evidences()
         fallback_gap = "方向研究未在回合限制内提交结构化总结，当前仅保留已验证材料。"
         if not evidences:
-            run_state.answered_points = []
             run_state.conclusion = ""
             run_state.remaining_gaps = list(
                 dict.fromkeys([*run_state.remaining_gaps, fallback_gap, "未获得可用 Evidence。"])
             )
             run_state.stop_reason = "blocked_without_evidence"
         else:
-            claims = list(dict.fromkeys(item.claim.strip() for item in evidences if item.claim.strip()))
-            run_state.answered_points = claims[:4]
-            run_state.conclusion = "当前已验证材料支持上述有限结论；不应外推至未覆盖范围。"
+            run_state.conclusion = (
+                "本方向未完成模型综合；仅交付已选中的可验证 Evidence，"
+                "具体事实以 Evidence claim 为准，不应外推。"
+            )
             run_state.remaining_gaps = list(
                 dict.fromkeys([*run_state.remaining_gaps, fallback_gap])
             )[:4]
@@ -508,7 +508,6 @@ class ResearchAgent:
             ),
             evidence_count=len(active_evidences),
             source_count=len(active_sources),
-            answered_points=run_state.answered_points,
             conclusion=run_state.conclusion,
             remaining_gaps=run_state.remaining_gaps,
             queries=run_state.queries,

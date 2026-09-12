@@ -120,7 +120,6 @@ def build_researcher_tools() -> list[BaseTool]:
     async def complete_direction(
         reason: str,
         selected_evidence_ids: list[str],
-        answered_points: list[str],
         conclusion: str,
         remaining_gaps: list[str],
         runtime: ToolRuntime[ResearchRuntimeContext],
@@ -142,13 +141,9 @@ def build_researcher_tools() -> list[BaseTool]:
             dict.fromkeys(gap.strip() for gap in remaining_gaps if gap.strip())
         )
         if active_evidences:
-            run_state.answered_points = list(
-                dict.fromkeys(point.strip() for point in answered_points if point.strip())
-            )
             run_state.conclusion = conclusion.strip()
             run_state.stop_reason = "complete"
         else:
-            run_state.answered_points = []
             run_state.conclusion = ""
             run_state.stop_reason = "blocked_without_evidence"
             if not run_state.remaining_gaps:

@@ -153,7 +153,6 @@ class ResearchDirectionResult(BaseModel):
     coverage_status: Literal["sufficient", "partial", "insufficient"]
     evidence_count: int = Field(ge=0)
     source_count: int = Field(ge=0)
-    answered_points: list[str] = Field(default_factory=list)
     conclusion: str = ""
     remaining_gaps: list[str] = Field(default_factory=list)
     queries: list[str] = Field(default_factory=list)
