@@ -8,13 +8,13 @@ import sys
 from pathlib import Path
 
 ENGINE_ROOTS = (
-    Path("src/deepsearch_agent/agents"),
-    Path("src/deepsearch_agent/llm"),
-    Path("src/deepsearch_agent/orchestration"),
-    Path("src/deepsearch_agent/tools"),
+    Path("src/deepresearcher/agents"),
+    Path("src/deepresearcher/llm"),
+    Path("src/deepresearcher/orchestration"),
+    Path("src/deepresearcher/tools"),
 )
-SERVICE_PREFIX = "deepsearch_agent.service"
-EXECUTION_PREFIX = "deepsearch_agent.service.execution"
+SERVICE_PREFIX = "deepresearcher.service"
+EXECUTION_PREFIX = "deepresearcher.service.execution"
 
 
 def test_agent_engine_does_not_import_service_delivery_layer():
@@ -41,7 +41,7 @@ def test_agent_engine_does_not_import_service_delivery_layer():
 
 def test_run_control_plane_does_not_import_execution_plane():
     violations: list[str] = []
-    for path in Path("src/deepsearch_agent/service/runs").rglob("*.py"):
+    for path in Path("src/deepresearcher/service/runs").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -64,8 +64,8 @@ def test_execution_runtime_can_be_imported_before_run_manager():
     """Canonical package modules must remain safe in either import order."""
 
     code = (
-        "from deepsearch_agent.service.execution.runtime import worker_lifespan; "
-        "from deepsearch_agent.service.runs.manager import RunManager; "
+        "from deepresearcher.service.execution.runtime import worker_lifespan; "
+        "from deepresearcher.service.runs.manager import RunManager; "
         "assert worker_lifespan and RunManager"
     )
     subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603

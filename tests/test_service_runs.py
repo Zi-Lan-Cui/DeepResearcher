@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from deepsearch_agent.config import (
+from deepresearcher.config import (
     AgentConfig,
     AppConfig,
     LLMConfig,
@@ -17,18 +17,18 @@ from deepsearch_agent.config import (
     SearchConfig,
     Settings,
 )
-from deepsearch_agent.service.events.publisher import RunEventPublisher
-from deepsearch_agent.service.events.store import RunEventStore
-from deepsearch_agent.service.events.stream import CLOSE_STREAM as CLOSE_STREAM_FLAG
-from deepsearch_agent.service.events.stream import FanoutSink
-from deepsearch_agent.service.execution.coordinator import WorkerCoordinator
-from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.persistence.models import Run, RunEvent, User
-from deepsearch_agent.service.runs.manager import RunManager
-from deepsearch_agent.service.runs.queue import PostgresRunQueue
-from deepsearch_agent.service.runs.service import QuotaExceededError, RunService
-from deepsearch_agent.service.settings import ServiceConfig
-from deepsearch_agent.service.signals import PostgresSignalBus
+from deepresearcher.service.events.publisher import RunEventPublisher
+from deepresearcher.service.events.store import RunEventStore
+from deepresearcher.service.events.stream import CLOSE_STREAM as CLOSE_STREAM_FLAG
+from deepresearcher.service.events.stream import FanoutSink
+from deepresearcher.service.execution.coordinator import WorkerCoordinator
+from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.runs.manager import RunManager
+from deepresearcher.service.runs.queue import PostgresRunQueue
+from deepresearcher.service.runs.service import QuotaExceededError, RunService
+from deepresearcher.service.settings import ServiceConfig
+from deepresearcher.service.signals import PostgresSignalBus
 
 pytestmark = pytest.mark.asyncio
 
@@ -173,7 +173,7 @@ async def manager(tmp_path):
     await init_db(engine)
     session_factory = make_session_factory(engine)
     async with session_factory() as session:
-        from deepsearch_agent.service.persistence.models import User
+        from deepresearcher.service.persistence.models import User
 
         session.add(User(id=USER_ID, email="u@test", password_hash="h"))
         await session.commit()

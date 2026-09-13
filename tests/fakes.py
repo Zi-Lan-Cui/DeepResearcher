@@ -13,12 +13,12 @@ from typing import Any, cast
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepsearch_agent.agents.researcher import ResearchAgent
-from deepsearch_agent.agents.writer import CompleteReport, ReadEvidence, ReportWriter
-from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.evidence.models import Evidence
-from deepsearch_agent.llm import LLMInvoker
-from deepsearch_agent.schemas import (
+from deepresearcher.agents.researcher import ResearchAgent
+from deepresearcher.agents.writer import CompleteReport, ReadEvidence, ReportWriter
+from deepresearcher.config import AgentConfig
+from deepresearcher.evidence.models import Evidence
+from deepresearcher.llm import LLMInvoker
+from deepresearcher.schemas import (
     Citation,
     MarkdownReportDraft,
     ParagraphBinding,
@@ -31,8 +31,8 @@ from deepsearch_agent.schemas import (
     SearchSources,
     WriterDirective,
 )
-from deepsearch_agent.state import ResearchState, SubTask
-from deepsearch_agent.tools import SearchTool
+from deepresearcher.state import ResearchState, SubTask
+from deepresearcher.tools import SearchTool
 
 
 def as_llm(fake: Any) -> LLMInvoker:
@@ -192,8 +192,7 @@ class DirectionLLM:
     async def ainvoke(self, _messages):
         self.seen_messages.append(list(_messages))
         if any(
-            isinstance(message, ToolMessage)
-            and message.name == "ResearchDirectionComplete"
+            isinstance(message, ToolMessage) and message.name == "ResearchDirectionComplete"
             for message in _messages
         ):
             return AIMessage(content="")

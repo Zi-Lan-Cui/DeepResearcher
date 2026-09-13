@@ -1,6 +1,6 @@
 import pytest
 
-from deepsearch_agent.service.auth import (
+from deepresearcher.service.auth import (
     TokenCodec,
     TokenError,
     hash_password,

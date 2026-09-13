@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from deepsearch_agent.schemas import StopReason
-from deepsearch_agent.service.events.projector import project
+from deepresearcher.schemas import StopReason
+from deepresearcher.service.events.projector import project
 
 # 每个用例都会把 SECRET 塞进这些被禁字段，任何一帧的输出 JSON 里都不许出现。
 DENIED_FIELDS = {

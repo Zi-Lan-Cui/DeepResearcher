@@ -4,18 +4,18 @@ import hashlib
 import pytest
 from langchain_core.messages import AIMessage
 
-from deepsearch_agent.agents.researcher import ResearchAgent
-from deepsearch_agent.agents.researcher.state import DirectionRunState
-from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.evidence.extractor import ExtractionResult
-from deepsearch_agent.evidence.models import Evidence
-from deepsearch_agent.llm import LLMConfigurationError
-from deepsearch_agent.schemas import (
+from deepresearcher.agents.researcher import ResearchAgent
+from deepresearcher.agents.researcher.state import DirectionRunState
+from deepresearcher.config import AgentConfig
+from deepresearcher.evidence.extractor import ExtractionResult
+from deepresearcher.evidence.models import Evidence
+from deepresearcher.llm import LLMConfigurationError
+from deepresearcher.schemas import (
     ResearchDirectionDecision,
     ResearchDirectionResult,
 )
-from deepsearch_agent.tools import SearchTool, SourceReaderTool
-from deepsearch_agent.tools.errors import SourceUnavailableError
+from deepresearcher.tools import SearchTool, SourceReaderTool
+from deepresearcher.tools.errors import SourceUnavailableError
 from fakes import (
     TASK,
     DirectionLLM,

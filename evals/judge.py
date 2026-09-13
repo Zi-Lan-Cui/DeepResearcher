@@ -93,7 +93,7 @@ class OpenAICompatJudge:
 
         from openai import AsyncOpenAI
 
-        from deepsearch_agent.config import get_settings
+        from deepresearcher.config import get_settings
 
         llm = get_settings().llm
         if not llm.configured:

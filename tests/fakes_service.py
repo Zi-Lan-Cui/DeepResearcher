@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from deepsearch_agent.config import (
+from deepresearcher.config import (
     AgentConfig,
     AppConfig,
     LLMConfig,
@@ -13,7 +13,7 @@ from deepsearch_agent.config import (
     SearchConfig,
     Settings,
 )
-from deepsearch_agent.service.settings import ServiceConfig
+from deepresearcher.service.settings import ServiceConfig
 
 
 def service_settings(tmp_path) -> Settings:

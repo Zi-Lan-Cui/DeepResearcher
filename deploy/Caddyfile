@@ -1,7 +1,7 @@
 # Public TLS terminates here; Uvicorn remains bound to loopback by default.
-# Set DEEPSEARCH_SITE_ADDRESS to a DNS name that resolves to this host.
-{$DEEPSEARCH_SITE_ADDRESS:localhost} {
-	reverse_proxy {$DEEPSEARCH_UPSTREAM:127.0.0.1:8080} {
+# Set DEEPRESEARCHER_SITE_ADDRESS to a DNS name that resolves to this host.
+{$DEEPRESEARCHER_SITE_ADDRESS:localhost} {
+	reverse_proxy {$DEEPRESEARCHER_UPSTREAM:127.0.0.1:8080} {
 		# Keep SSE/token previews interactive instead of batching proxy output.
 		flush_interval -1
 	}

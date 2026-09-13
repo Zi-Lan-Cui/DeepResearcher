@@ -8,20 +8,20 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import delete, update
 
-from deepsearch_agent.observability.tracing.context import new_id
-from deepsearch_agent.service.events.store import RunEventStore
-from deepsearch_agent.service.persistence.database import (
+from deepresearcher.observability.tracing.context import new_id
+from deepresearcher.service.events.store import RunEventStore
+from deepresearcher.service.persistence.database import (
     make_engine,
     make_session_factory,
     migrate_database,
 )
-from deepsearch_agent.service.persistence.models import Run, ToolCacheEntry, User
-from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
-from deepsearch_agent.service.runs.queue import PostgresRunQueue, RunWork
-from deepsearch_agent.service.runs.service import QuotaExceededError, RunService
-from deepsearch_agent.service.settings import get_service_config
-from deepsearch_agent.service.signals import PostgresSignalBus
-from deepsearch_agent.tools.cache import CacheValue
+from deepresearcher.service.persistence.models import Run, ToolCacheEntry, User
+from deepresearcher.service.persistence.tool_cache import PostgresToolCache
+from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
+from deepresearcher.service.runs.service import QuotaExceededError, RunService
+from deepresearcher.service.settings import get_service_config
+from deepresearcher.service.signals import PostgresSignalBus
+from deepresearcher.tools.cache import CacheValue
 
 pytestmark = [
     pytest.mark.asyncio,

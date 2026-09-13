@@ -4,8 +4,8 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from deepsearch_agent.service.api import create_app
-from deepsearch_agent.service.events.ephemeral import EphemeralSubscription
+from deepresearcher.service.api import create_app
+from deepresearcher.service.events.ephemeral import EphemeralSubscription
 from fakes_service import (
     FakeGraph,
     parse_sse,
@@ -387,7 +387,7 @@ async def test_sse_merges_cross_process_preview_with_durable_events(client):
 async def test_static_frontend_served(client):
     response = await client.get("/")
     assert response.status_code == 200
-    assert "DeepSearch" in response.text
+    assert "DeepResearcher" in response.text
     assert 'id="report-copy"' in response.text
     assert 'id="report-download"' in response.text
     assert "html2pdf.bundle.min.js" in response.text

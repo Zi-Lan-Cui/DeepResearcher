@@ -1,7 +1,7 @@
 [project]
-name = "deepsearch-agent"
+name = "deepresearcher"
 version = "0.1.0"
-description = "Add your description here"
+description = "Recoverable, evidence-grounded multi-agent deep research service"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -27,6 +27,8 @@ dependencies = [
     "langgraph-checkpoint-postgres>=3.1.2",
     "alembic>=1.19.1",
     "redis>=6.0.0",
+    "alibabacloud-dtsai20260401==1.1.2",
+    "alibabacloud-credentials>=1.0.0",
 ]
 
 [dependency-groups]
@@ -51,7 +53,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["deepsearch_agent"]
+known-first-party = ["deepresearcher"]
 
 [tool.pyright]
 include = ["src"]
@@ -81,7 +83,7 @@ reportTypedDictNotRequiredAccess = "none"
 
 [tool.coverage.run]
 branch = true
-source = ["src/deepsearch_agent"]
+source = ["src/deepresearcher"]
 omit = ["*/__init__.py"]
 
 [tool.coverage.report]
@@ -101,6 +103,6 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/deepsearch_agent"]
+packages = ["src/deepresearcher"]
 # 提示词外置层是随包分发的数据文件（importlib.resources 读取），强制打入 wheel。
-artifacts = ["src/deepsearch_agent/prompts/*.md"]
+artifacts = ["src/deepresearcher/prompts/*.md"]

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from deepsearch_agent.context.runtime import get_runtime_environment
+from deepresearcher.context.runtime import get_runtime_environment
 
 
 def test_runtime_environment_exposes_dynamic_facts_without_message_policy():

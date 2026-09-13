@@ -1,9 +1,9 @@
 import inspect
 
-from deepsearch_agent.agents.clarifier.tools import build_clarifier_tools
-from deepsearch_agent.agents.researcher.tools import build_researcher_tools
-from deepsearch_agent.agents.supervisor.tools import build_supervisor_tools
-from deepsearch_agent.agents.writer.tools import build_writer_tools
+from deepresearcher.agents.clarifier.tools import build_clarifier_tools
+from deepresearcher.agents.researcher.tools import build_researcher_tools
+from deepresearcher.agents.supervisor.tools import build_supervisor_tools
+from deepresearcher.agents.writer.tools import build_writer_tools
 
 
 def test_all_agent_tools_use_native_async_entrypoints():

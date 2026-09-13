@@ -2,11 +2,11 @@ import asyncio
 
 import pytest
 
-from deepsearch_agent.agents.writer import ReportWriter
-from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.llm import LLMConfigurationError
-from deepsearch_agent.observability.events import JsonlSink
-from deepsearch_agent.schemas import (
+from deepresearcher.agents.writer import ReportWriter
+from deepresearcher.config import AgentConfig
+from deepresearcher.llm import LLMConfigurationError
+from deepresearcher.observability.events import JsonlSink
+from deepresearcher.schemas import (
     Citation,
     MarkdownReportDraft,
     ParagraphBinding,
@@ -540,9 +540,9 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
 
     from langchain_core.messages import AIMessage
 
-    from deepsearch_agent.evidence.models import Evidence
-    from deepsearch_agent.observability.events import JsonlSink
-    from deepsearch_agent.schemas import CoveredTopic, ReportBrief, WriterDirective
+    from deepresearcher.evidence.models import Evidence
+    from deepresearcher.observability.events import JsonlSink
+    from deepresearcher.schemas import CoveredTopic, ReportBrief, WriterDirective
 
     class LoopingLLM:
         """只调用 ReadEvidence、永不提交 CompleteReport 的假模型。"""
@@ -607,9 +607,9 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
 
 def _writer_inline_test_setup(tmp_path, llm):
     """构造 Writer 内联草稿测试共用的 Evidence、指令与事件 sink。"""
-    from deepsearch_agent.evidence.models import Evidence
-    from deepsearch_agent.observability.events import JsonlSink
-    from deepsearch_agent.schemas import CoveredTopic, ReportBrief, WriterDirective
+    from deepresearcher.evidence.models import Evidence
+    from deepresearcher.observability.events import JsonlSink
+    from deepresearcher.schemas import CoveredTopic, ReportBrief, WriterDirective
 
     sink = JsonlSink(tmp_path / "events.jsonl")
     ev = Evidence(
@@ -834,7 +834,7 @@ def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
     """批量截断必须显式回传；编造 id 一次性报全且不吞配额（run-e10d1229 回归锁）。"""
     import json
 
-    from deepsearch_agent.schemas import WriterDirective
+    from deepresearcher.schemas import WriterDirective
     from fakes import make_evidence
 
     sink = JsonlSink(tmp_path / "events.jsonl")

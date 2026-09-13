@@ -8,12 +8,12 @@ import pytest_asyncio
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import select
 
-from deepsearch_agent.config import LLMConfig
-from deepsearch_agent.observability.tracing import TraceRecorder
-from deepsearch_agent.observability.tracing.context import bind_context
-from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.persistence.models import Run, RunUsage, User
-from deepsearch_agent.service.usage import (
+from deepresearcher.config import LLMConfig
+from deepresearcher.observability.tracing import TraceRecorder
+from deepresearcher.observability.tracing.context import bind_context
+from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, RunUsage, User
+from deepresearcher.service.usage import (
     CapacityGate,
     ProviderRateLimiter,
     RunUsageCallback,

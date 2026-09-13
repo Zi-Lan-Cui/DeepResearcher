@@ -17,7 +17,7 @@ coverage:
 	uv run coverage report
 
 check:
-	uv run python -m compileall -q src/deepsearch_agent
+	uv run python -m compileall -q src/deepresearcher
 	uv run ruff check src tests
 	uv run pyright
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q -p pytest_asyncio.plugin

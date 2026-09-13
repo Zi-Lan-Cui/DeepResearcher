@@ -5,18 +5,18 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from deepsearch_agent.agents.clarifier import Clarifier
-from deepsearch_agent.agents.clarifier.graph import build_clarifier_graph
-from deepsearch_agent.agents.clarifier.state import (
+from deepresearcher.agents.clarifier import Clarifier
+from deepresearcher.agents.clarifier.graph import build_clarifier_graph
+from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
     ClarifierRuntimeContext,
 )
-from deepsearch_agent.agents.clarifier.tools import (
+from deepresearcher.agents.clarifier.tools import (
     AskClarificationArgs,
     ClarificationCompleteArgs,
     build_clarifier_tools,
 )
-from deepsearch_agent.state import ResearchState
+from deepresearcher.state import ResearchState
 
 
 def _tool(name):

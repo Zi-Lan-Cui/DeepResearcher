@@ -1,6 +1,6 @@
-# DeepSearch Agent
+# DeepResearcher
 
-DeepSearch Agent 是一个可本地部署的深度研究服务。它会围绕用户的复杂问题自动检索、阅读和组织公开资料，生成附带可追溯引用的研究报告。
+DeepResearcher 是一个可本地部署的深度研究服务。它会围绕用户的复杂问题自动检索、阅读和组织公开资料，生成附带可追溯引用的研究报告。
 
 ## 主要功能
 
@@ -26,7 +26,7 @@ cp env/.env.example env/.env
 - LLM_API_KEY
 - LLM_BASE_URL
 - LLM_MODEL_ID
-- 一个搜索服务密钥：BAIDU_API_KEY、TAVILY_API_KEY 或 SERPAPI_API_KEY
+- 一个搜索服务：百度、Tavily、SerpAPI，或使用默认凭据链的阿里云 DTS AI
 
 ### 2. 启动依赖服务
 
@@ -34,7 +34,7 @@ cp env/.env.example env/.env
 docker compose up -d postgres redis
 ~~~
 
-### 3. 启动 DeepSearch
+### 3. 启动 DeepResearcher
 
 打开两个终端，分别运行：
 
@@ -43,7 +43,7 @@ SERVICE_REDIS_PREVIEW_ENABLED=true uv run python server.py
 ~~~
 
 ~~~bash
-SERVICE_REDIS_PREVIEW_ENABLED=true uv run python -m deepsearch_agent.worker
+SERVICE_REDIS_PREVIEW_ENABLED=true uv run python -m deepresearcher.worker
 ~~~
 
 默认访问地址：<http://127.0.0.1:8080>

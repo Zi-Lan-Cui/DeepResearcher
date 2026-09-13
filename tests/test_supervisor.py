@@ -6,16 +6,16 @@ import re
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepsearch_agent.agents.supervisor import ResearchSupervisor
-from deepsearch_agent.agents.supervisor.state import (
+from deepresearcher.agents.supervisor import ResearchSupervisor
+from deepresearcher.agents.supervisor.state import (
     RunUrlReservations,
     WorkingState,
     evidence_card,
     synthesis_snapshot,
 )
-from deepsearch_agent.config import AgentConfig
-from deepsearch_agent.evidence.models import Evidence
-from deepsearch_agent.schemas import (
+from deepresearcher.config import AgentConfig
+from deepresearcher.evidence.models import Evidence
+from deepresearcher.schemas import (
     ResearchAgentResult,
     ResearchDirectionDecision,
     ResearchDirectionResult,
@@ -356,7 +356,7 @@ def test_concurrent_delegates_allocate_unique_task_ids_before_absorb():
 
 def test_delegate_emits_completed_event(tmp_path):
     """delegate 的去/留决策必须可观测（否则规划器连续 turn 无法解释）。"""
-    from deepsearch_agent.observability.events import JsonlSink
+    from deepresearcher.observability.events import JsonlSink
     from fakes import event_types
 
     sink = JsonlSink(tmp_path / "events.jsonl")
@@ -1062,7 +1062,7 @@ def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
 
 def test_stop_reason_vocabulary_single_source():
     """StopReason 是停止原因的唯一来源：词汇可回环、描述与兜底判定挂成员。"""
-    from deepsearch_agent.schemas import StopReason
+    from deepresearcher.schemas import StopReason
 
     for reason in StopReason:
         assert StopReason(reason.value) is reason  # 每个成员可由字符串值回环

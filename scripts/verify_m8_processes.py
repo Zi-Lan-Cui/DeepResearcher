@@ -26,9 +26,9 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import delete, func, select, text
 
-from deepsearch_agent.service.persistence.database import make_engine, make_session_factory
-from deepsearch_agent.service.persistence.models import Run, RunEvent, User
-from deepsearch_agent.service.settings import get_service_config
+from deepresearcher.service.persistence.database import make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.settings import get_service_config
 
 ROOT = Path(__file__).resolve().parents[1]
 PASSWORD = "m8-automation-password"
@@ -193,12 +193,12 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
     base_url = f"http://127.0.0.1:{port}"
     email = f"m8-{uuid4().hex}@test.invalid"
     run_ids: list[str] = []
-    work_dir = Path(tempfile.mkdtemp(prefix="deepsearch-m8-"))
+    work_dir = Path(tempfile.mkdtemp(prefix="deepresearcher-m8-"))
     marker_dir = work_dir / "markers"
     marker_dir.mkdir()
     env = {
         **os.environ,
-        "DEEPSEARCH_ENV_FILE": str(work_dir / "no-env-file"),
+        "DEEPRESEARCHER_ENV_FILE": str(work_dir / "no-env-file"),
         "SERVICE_DATABASE_URL": database_url,
         "SERVICE_JWT_SECRET": "m8-automation-secret-must-be-at-least-32-chars",
         "SERVICE_HOST": "127.0.0.1",

@@ -1,6 +1,6 @@
-from deepsearch_agent.agents.researcher.tools import build_researcher_tools
-from deepsearch_agent.evidence.models import Evidence
-from deepsearch_agent.state import StateInvariantError, merge_evidences
+from deepresearcher.agents.researcher.tools import build_researcher_tools
+from deepresearcher.evidence.models import Evidence
+from deepresearcher.state import StateInvariantError, merge_evidences
 
 
 def _evidence(evidence_id: str, claim: str) -> Evidence:

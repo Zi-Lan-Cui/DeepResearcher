@@ -5,10 +5,10 @@
 
 import uvicorn
 
-from deepsearch_agent.config import get_settings
-from deepsearch_agent.observability import configure_logging
-from deepsearch_agent.service.api import create_app
-from deepsearch_agent.service.settings import get_service_config
+from deepresearcher.config import get_settings
+from deepresearcher.observability import configure_logging
+from deepresearcher.service.api import create_app
+from deepresearcher.service.settings import get_service_config
 
 
 def main() -> None:

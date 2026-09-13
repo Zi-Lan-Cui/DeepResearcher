@@ -1,9 +1,10 @@
 # API 与独立 Worker 共享 Postgres；Redis 只承载可丢弃的 token 预览。
-# 本机分别运行 server.py 和 python -m deepsearch_agent.worker。
+# 本机分别运行 server.py 和 python -m deepresearcher.worker。
 services:
   postgres:
     image: postgres:16
     environment:
+      # 保留既有数据库资源标识；品牌重命名不应隐式迁移数据卷。
       POSTGRES_DB: ${POSTGRES_DB:-deepsearch}
       POSTGRES_USER: ${POSTGRES_USER:-deepsearch}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepsearch}

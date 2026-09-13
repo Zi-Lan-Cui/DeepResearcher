@@ -10,9 +10,9 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from deepsearch_agent.config import get_settings
-from deepsearch_agent.observability import configure_logging
-from deepsearch_agent.service.execution.runtime import worker_lifespan
+from deepresearcher.config import get_settings
+from deepresearcher.observability import configure_logging
+from deepresearcher.service.execution.runtime import worker_lifespan
 
 
 class HarnessState(TypedDict, total=False):

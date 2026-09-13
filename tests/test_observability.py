@@ -3,15 +3,15 @@ import json
 
 import pytest
 
-from deepsearch_agent.observability.events import (
+from deepresearcher.observability.events import (
     JsonlSink,
     make_artifact_event,
     make_audit_event,
     make_node_event,
 )
-from deepsearch_agent.observability.instrumentation import _node_result_summary
-from deepsearch_agent.observability.tracing import TraceRecorder
-from deepsearch_agent.service.events.projector import project
+from deepresearcher.observability.instrumentation import _node_result_summary
+from deepresearcher.observability.tracing import TraceRecorder
+from deepresearcher.service.events.projector import project
 
 
 def test_trace_records_nested_spans(tmp_path):
