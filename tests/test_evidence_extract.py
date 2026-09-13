@@ -2,12 +2,12 @@ import asyncio
 
 import pytest
 
-from deepsearch_agent.config import LLMRetryConfig
-from deepsearch_agent.evidence import EvidenceExtractor
-from deepsearch_agent.evidence.models import Evidence, EvidenceExtraction, ExtractedEvidence
-from deepsearch_agent.evidence.retrieval import select_blocks
-from deepsearch_agent.llm import LLMConfigurationError, structured
-from deepsearch_agent.observability.events import JsonlSink
+from deepresearcher.config import LLMRetryConfig
+from deepresearcher.evidence import EvidenceExtractor
+from deepresearcher.evidence.models import Evidence, EvidenceExtraction, ExtractedEvidence
+from deepresearcher.evidence.retrieval import select_blocks
+from deepresearcher.llm import LLMConfigurationError, structured
+from deepresearcher.observability.events import JsonlSink
 
 
 def test_evidence_audit_chunk_is_persisted_but_hidden_from_agent() -> None:
@@ -26,7 +26,7 @@ def test_evidence_audit_chunk_is_persisted_but_hidden_from_agent() -> None:
 
 
 def test_validator_persists_quote_locator() -> None:
-    from deepsearch_agent.evidence.validator import validate_evidence
+    from deepresearcher.evidence.validator import validate_evidence
 
     evidence = Evidence(
         evidence_id="ev-locator",
@@ -108,7 +108,7 @@ def test_llm_empty_evidence_does_not_fall_back_to_source_title(monkeypatch):
     async def empty_extraction(llm, schema, messages, **kwargs):
         return EvidenceExtraction(evidences=[])
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", empty_extraction)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", empty_extraction)
     document = {
         "title": "只有标题的来源",
         "final_url": "https://example.com",
@@ -158,9 +158,7 @@ def test_long_document_is_extracted_from_structured_chunks_not_bm25_selection(mo
             )
         return EvidenceExtraction(evidences=[])
 
-    monkeypatch.setattr(
-        "deepsearch_agent.evidence.extractor.ainvoke_structured", extract_each_chunk
-    )
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", extract_each_chunk)
     document = {
         "title": "长文",
         "final_url": "https://example.com/long",
@@ -231,7 +229,7 @@ def test_evidence_extractor_keeps_successful_chunks_when_one_chunk_fails(monkeyp
             evidences=[ExtractedEvidence(claim="保留下来的事实", quote=quote)]
         )
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", extract_one_chunk)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", extract_one_chunk)
     document = {
         "title": "部分失败来源",
         "final_url": "https://example.com/partial",
@@ -351,7 +349,7 @@ def test_evidence_prompt_contains_json_example(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", fake_invoke)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
     document = {
         "title": "测试来源",
         "final_url": "https://example.com",
@@ -396,7 +394,7 @@ def test_evidence_extraction_records_raw_result_and_rejected_candidate(tmp_path,
             ]
         )
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", fake_invoke)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
     sink_path = tmp_path / "events.jsonl"
     outcome = asyncio.run(
         EvidenceExtractor(llm=object(), event_sink=JsonlSink(sink_path)).aextract_result(
@@ -454,7 +452,7 @@ def test_evidence_extractor_limits_model_output_to_configured_budget(monkeypatch
             ]
         )
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", fake_invoke)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
     document = {
         "title": "测试来源",
         "final_url": "https://example.com",
@@ -489,7 +487,7 @@ def _run_with_captured_prompt(monkeypatch, *, retrieval_method, extracted):
         captured["system"] = messages[0].content
         return extracted
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", fake)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake)
     document = {
         "title": "来源",
         "final_url": "https://example.com/x",
@@ -540,7 +538,7 @@ def test_published_at_shown_as_metadata_not_prose(monkeypatch):
         captured.append(messages[1].content)
         return EvidenceExtraction(evidences=[])
 
-    monkeypatch.setattr("deepsearch_agent.evidence.extractor.ainvoke_structured", fake)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake)
     task = {
         "id": "r1-1",
         "question": "A 的延迟",

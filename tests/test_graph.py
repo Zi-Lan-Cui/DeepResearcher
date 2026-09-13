@@ -5,9 +5,9 @@ import pytest
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 
-from deepsearch_agent.agents.clarifier.state import ClarifierAgentState
-from deepsearch_agent.agents.writer import ReportWriter
-from deepsearch_agent.config import (
+from deepresearcher.agents.clarifier.state import ClarifierAgentState
+from deepresearcher.agents.writer import ReportWriter
+from deepresearcher.config import (
     AgentConfig,
     AppConfig,
     LLMConfig,
@@ -15,18 +15,18 @@ from deepsearch_agent.config import (
     SearchConfig,
     Settings,
 )
-from deepsearch_agent.llm import LLMConfigurationError
-from deepsearch_agent.observability.events.models import NodeEvent
-from deepsearch_agent.orchestration import graph, nodes
-from deepsearch_agent.orchestration.execution_boundary import execute_node
-from deepsearch_agent.orchestration.graph import build_graph
-from deepsearch_agent.routing import (
+from deepresearcher.llm import LLMConfigurationError
+from deepresearcher.observability.events.models import NodeEvent
+from deepresearcher.orchestration import graph, nodes
+from deepresearcher.orchestration.execution_boundary import execute_node
+from deepresearcher.orchestration.graph import build_graph
+from deepresearcher.routing import (
     NodeName,
     route_after_reflection,
     route_after_supervisor,
     route_after_writer,
 )
-from deepsearch_agent.schemas import (
+from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,
     ResearchProgress,
@@ -36,9 +36,9 @@ from deepsearch_agent.schemas import (
     RunLifecycle,
     WriterProgress,
 )
-from deepsearch_agent.service.usage import UsageBudgetExceeded
-from deepsearch_agent.state import validate_state_invariants
-from deepsearch_agent.tools.errors import ToolRequestError
+from deepresearcher.service.usage import UsageBudgetExceeded
+from deepresearcher.state import validate_state_invariants
+from deepresearcher.tools.errors import ToolRequestError
 
 
 class TextLLM:

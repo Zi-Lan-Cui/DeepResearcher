@@ -97,7 +97,7 @@ criterion 是题目的二元判据，用于定位失败，**不是对外指标**
 4. **Efficiency**：每个成功 run 的 token / 耗时 / 费用，只做成本趋势，不决定质量通过。
 
 Unknown Rate 和人机一致率属于 **Judge 健康度**，是评测系统的监控信号，
-不当作 DeepSearch 的产品 KPI。
+不当作 DeepResearcher 的产品 KPI。
 
 > 当前 Evidence Trustworthiness 只有“引用协议完整性”这一层已自动化；
 > claim–quote 语义支持度和来源质量仍是缺口，未补齐前不对外宣称已完成
@@ -114,7 +114,7 @@ flowchart TB
 
     subgraph X[执行与观测层]
         X1["RunHarness<br/>真实 HTTP 用户路径"]
-        X2["DeepSearch API + Worker"]
+        X2["DeepResearcher API + Worker"]
         X3["PostgreSQL<br/>Run / RunEvent / Usage / Checkpoint"]
         X4["Artifact<br/>报告 + 引用 + Trace + 用量"]
     end

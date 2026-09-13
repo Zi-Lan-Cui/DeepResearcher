@@ -1,10 +1,10 @@
 import asyncio
 
-from deepsearch_agent.orchestration.nodes import (
+from deepresearcher.orchestration.nodes import (
     reflection,
 )
-from deepsearch_agent.orchestration.nodes.reflection import reflection as reflection_core
-from deepsearch_agent.schemas import (
+from deepresearcher.orchestration.nodes.reflection import reflection as reflection_core
+from deepresearcher.schemas import (
     ReflectionDecision,
     ReviewIssue,
 )
@@ -25,7 +25,7 @@ def test_reflection_rejects_with_structured_evidence_feedback(monkeypatch):
             issues=[ReviewIssue(severity="fatal", reason="核心文学性结论缺少直接来源。")],
         )
 
-    monkeypatch.setattr("deepsearch_agent.orchestration.nodes.ainvoke_structured", review_output)
+    monkeypatch.setattr("deepresearcher.orchestration.nodes.ainvoke_structured", review_output)
     result = asyncio.run(
         reflection(
             {
@@ -53,7 +53,7 @@ def test_reflection_requests_rewrite_when_evidence_is_sufficient(monkeypatch):
             issues=[ReviewIssue(severity="fatal", reason="核心结论把提名误写为文学性证明。")],
         )
 
-    monkeypatch.setattr("deepsearch_agent.orchestration.nodes.ainvoke_structured", review_output)
+    monkeypatch.setattr("deepresearcher.orchestration.nodes.ainvoke_structured", review_output)
     result = asyncio.run(
         reflection(
             {
@@ -84,7 +84,7 @@ def test_reflection_allows_warnings_without_rejecting_report(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr("deepsearch_agent.orchestration.nodes.ainvoke_structured", review_output)
+    monkeypatch.setattr("deepresearcher.orchestration.nodes.ainvoke_structured", review_output)
     result = asyncio.run(
         reflection(
             {
@@ -147,7 +147,7 @@ def test_reflection_exhausts_retries_and_reraises(monkeypatch):
     except ContentFilterFinishReasonError:
         pass
     # attempts=1 → 共 2 次尝试后放弃
-    from deepsearch_agent.config import get_settings
+    from deepresearcher.config import get_settings
 
     assert calls["n"] == get_settings().agent.reflection_retry_attempts + 1
 

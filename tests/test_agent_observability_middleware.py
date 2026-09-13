@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import ToolMessage
 
-from deepsearch_agent.agents.middleware import AgentObservabilityMiddleware
-from deepsearch_agent.context.execution import AgentExecutionScope
+from deepresearcher.agents.middleware import AgentObservabilityMiddleware
+from deepresearcher.context.execution import AgentExecutionScope
 
 
 def _request() -> SimpleNamespace:

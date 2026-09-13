@@ -5,8 +5,8 @@
 test_evidence_extract 双重覆盖，这里补 router/reflection/language。
 """
 
-from deepsearch_agent.config import language_directive
-from deepsearch_agent.prompts import load_prompt
+from deepresearcher.config import language_directive
+from deepresearcher.prompts import load_prompt
 
 ALL_PROMPTS = (
     "researcher",

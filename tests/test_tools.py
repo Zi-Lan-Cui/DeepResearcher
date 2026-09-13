@@ -1,20 +1,26 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from curl_cffi.requests.exceptions import Timeout
 
-from deepsearch_agent.config import SearchConfig
-from deepsearch_agent.tools.errors import (
+from deepresearcher.config import SearchConfig
+from deepresearcher.tools.errors import (
     SourceUnavailableError,
     ToolConfigurationError,
     ToolParseError,
     ToolRequestError,
 )
-from deepsearch_agent.tools.search import SearchClient
-from deepsearch_agent.tools.sources import WebFetcher
-from deepsearch_agent.tools.transport import HttpClient
+from deepresearcher.tools.transport import HttpClient
+from deepresearcher.tools.web import (
+    AliyunFetchProvider,
+    DirectHttpFetchProvider,
+    FetchService,
+    SearchClient,
+)
+from deepresearcher.tools.web.aliyun import AliyunDtsClient
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +30,9 @@ def _run_parser_inline(monkeypatch):
     async def run_inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    monkeypatch.setattr("deepsearch_agent.tools.sources.fetcher.asyncio.to_thread", run_inline)
+    monkeypatch.setattr(
+        "deepresearcher.tools.web.fetch.providers.direct.asyncio.to_thread", run_inline
+    )
 
 
 class FakeHttpClient:
@@ -48,7 +56,7 @@ def response(payload, *, url="https://example.com", content=b"", content_type="a
 
 
 def test_classify_source_flags_primary_domains_conservatively():
-    from deepsearch_agent.tools.search.models import classify_source, describe_source
+    from deepresearcher.tools.web.search.models import classify_source, describe_source
 
     assert classify_source("https://arxiv.org/pdf/1706.03762") == "primary"
     assert classify_source("https://www.stats.gov.cn/x") == "primary"
@@ -86,7 +94,7 @@ def test_classify_source_flags_primary_domains_conservatively():
     ],
 )
 def test_source_profile_rules_cover_subdomains(url, source_type, tier):
-    from deepsearch_agent.tools.search.models import describe_source
+    from deepresearcher.tools.web.search.models import describe_source
 
     profile = describe_source(url)
     assert profile.source_type == source_type
@@ -94,7 +102,7 @@ def test_source_profile_rules_cover_subdomains(url, source_type, tier):
 
 
 def test_source_profile_domain_rules_resist_suffix_spoofing():
-    from deepsearch_agent.tools.search.models import describe_source
+    from deepresearcher.tools.web.search.models import describe_source
 
     profile = describe_source("https://bilibili.com.evil.example/video")
     assert profile.source_type == "general"
@@ -139,7 +147,7 @@ def test_tavily_null_raw_content_still_validates_as_result():
     `.get(k,"")` 只在缺键时兜底，null 会漏成 None，进而令 SearchToolResult 的
     Pydantic 校验整批失败 → researcher 反复重试空转（真实评测被卡 684 事件零产出）。
     必须：null 归一为 ""，且能过 model_validate。"""
-    from deepsearch_agent.tools.search.models import SearchToolResult
+    from deepresearcher.tools.web.search.models import SearchToolResult
 
     config = SearchConfig(tavily_api_key="test", max_results=5)
     client = SearchClient(
@@ -212,6 +220,76 @@ def test_search_parses_baidu_references_through_common_result_contract():
     ]
 
 
+def test_search_parses_aliyun_results_through_common_contract():
+    class FakeAliyunClient:
+        async def web_search(self, query, limit):
+            assert (query, limit) == ("Spring Boot", 2)
+            return SimpleNamespace(
+                success=True,
+                search_result=[
+                    SimpleNamespace(
+                        title="Spring Boot",
+                        url="https://spring.io/projects/spring-boot",
+                        snippet="Production-grade Spring applications.",
+                    )
+                ],
+            )
+
+    client = SearchClient(
+        SearchConfig(provider="aliyun", max_results=2),
+        aliyun_client=FakeAliyunClient(),
+    )
+
+    assert asyncio.run(client.asearch("Spring Boot")) == [
+        {
+            "title": "Spring Boot",
+            "url": "https://spring.io/projects/spring-boot",
+            "snippet": "Production-grade Spring applications.",
+            "content_provider": "aliyun",
+            "score": 1.0,
+            "published_at": "",
+        }
+    ]
+
+
+def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
+    class FakeSdkClient:
+        def __init__(self):
+            self.requests = []
+
+        async def web_search_async(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(body="search-body")
+
+        async def web_fetch_async(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(body="fetch-body")
+
+    sdk = FakeSdkClient()
+    client = AliyunDtsClient(
+        SearchConfig(
+            aliyun_region_id="cn-beijing",
+            aliyun_agent_name="deepresearcher-test",
+        ),
+        sdk,
+    )
+
+    async def invoke():
+        return (
+            await client.web_search("Spring Boot", 60),
+            await client.web_fetch("https://spring.io", "markdown"),
+        )
+
+    assert asyncio.run(invoke()) == ("search-body", "fetch-body")
+    search_request, fetch_request = sdk.requests
+    assert search_request.region_id == "cn-beijing"
+    assert search_request.agent_name == "deepresearcher-test"
+    assert search_request.query == "Spring Boot"
+    assert search_request.max_results == 50
+    assert fetch_request.url == "https://spring.io"
+    assert fetch_request.output_format == "markdown"
+
+
 def test_search_reports_baidu_api_error_instead_of_empty_results():
     client = SearchClient(
         SearchConfig(provider="baidu", baidu_api_key="test"),
@@ -250,7 +328,9 @@ def test_fetch_parses_html_without_network():
     fake = FakeHttpClient(
         response({}, url="https://example.com/page", content=html, content_type="text/html")
     )
-    document = asyncio.run(WebFetcher(SearchConfig(), fake).afetch("https://example.com/page"))
+    document = asyncio.run(
+        DirectHttpFetchProvider(SearchConfig(), fake).afetch("https://example.com/page")
+    )
     assert document["title"] == "Example"
     assert "Hello world" in document["text"]
     assert document["content_hash"]
@@ -263,8 +343,72 @@ def test_fetch_rejects_captcha_page_before_evidence_extraction():
         response({}, url="https://www.bilibili.com/opus/1", content=html, content_type="text/html")
     )
     with pytest.raises(SourceUnavailableError) as exc_info:
-        asyncio.run(WebFetcher(SearchConfig(), fake).afetch("https://www.bilibili.com/opus/1"))
+        asyncio.run(
+            DirectHttpFetchProvider(SearchConfig(), fake).afetch("https://www.bilibili.com/opus/1")
+        )
     assert exc_info.value.reason_code == "access_challenge"
+
+
+def test_fetch_service_falls_back_without_exposing_provider_choice():
+    class BlockedProvider:
+        name = "blocked"
+
+        async def afetch(self, url, **_kwargs):
+            raise SourceUnavailableError("access_challenge", f"无法直连 {url}")
+
+    class ManagedProvider:
+        name = "managed"
+
+        async def afetch(self, url, **_kwargs):
+            return {
+                "status": "completed",
+                "source_url": url,
+                "final_url": url,
+                "title": "Managed",
+                "text": "可验证正文",
+                "blocks": [],
+                "content_hash": "a" * 64,
+            }
+
+    document = asyncio.run(
+        FetchService([BlockedProvider(), ManagedProvider()]).afetch("https://example.com/page")
+    )
+
+    assert document["status"] == "completed"
+    assert document["retrieval_method"] == "managed_fetch"
+
+
+def test_aliyun_fetch_normalizes_markdown_into_source_document():
+    class FakeAliyunClient:
+        async def web_fetch(self, url, output_format):
+            assert url == "https://example.com/page"
+            assert output_format == "markdown"
+            return SimpleNamespace(
+                success=True,
+                http_status_code=200,
+                request_id="request-1",
+                url=url,
+                url_type="static_html",
+                content_format="markdown",
+                title="Example",
+                content="# Example\n\nA paragraph.\n\n- One\n- Two",
+            )
+
+    document = asyncio.run(
+        AliyunFetchProvider(SearchConfig(), FakeAliyunClient()).afetch("https://example.com/page")
+    )
+
+    assert document["status"] == "completed"
+    assert document["retrieval_method"] == "aliyun_web_fetch"
+    assert document["provider_request_id"] == "request-1"
+    assert document["url_type"] == "static_html"
+    assert document["title"] == "Example"
+    assert [block["block_type"] for block in document["blocks"]] == [
+        "heading",
+        "paragraph",
+        "list_item",
+        "list_item",
+    ]
 
 
 def test_http_client_retries_transient_timeout():
@@ -311,7 +455,7 @@ class _StatusClient:
 
 
 def _collect_sleeps(monkeypatch):
-    import deepsearch_agent.tools.transport.http_client as http_client_module
+    import deepresearcher.tools.transport.http_client as http_client_module
 
     sleeps: list[float] = []
 
@@ -393,7 +537,7 @@ def test_http_client_keeps_exponential_backoff_without_retry_after(monkeypatch):
 
 
 def test_parse_retry_after_rejects_garbage():
-    from deepsearch_agent.tools.transport import parse_retry_after
+    from deepresearcher.tools.transport import parse_retry_after
 
     assert parse_retry_after(None) is None
     assert parse_retry_after("") is None

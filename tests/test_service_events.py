@@ -3,7 +3,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from deepsearch_agent.service.events.stream import CLOSE_STREAM, CompositeSink, FanoutSink
+from deepresearcher.service.events.stream import CLOSE_STREAM, CompositeSink, FanoutSink
 
 pytestmark = pytest.mark.asyncio
 

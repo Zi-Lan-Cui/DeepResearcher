@@ -1,0 +1,291 @@
+"""LangGraph 拓扑和节点装配。"""
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+
+from deepresearcher.agents import Clarifier, ReportWriter, ResearchAgent
+from deepresearcher.agents.clarifier.graph import build_clarifier_graph
+from deepresearcher.agents.supervisor import ResearchSupervisor
+from deepresearcher.agents.writer.graph import build_writer_graph
+from deepresearcher.config import Settings, get_settings
+from deepresearcher.llm import LLMInvoker, build_llm
+from deepresearcher.observability.instrumentation import instrument_node
+from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.orchestration import nodes
+from deepresearcher.orchestration.execution_boundary import execute_node
+from deepresearcher.reporting import no_evidence_blockers, render_incomplete_report
+from deepresearcher.routing import (
+    NodeName,
+    route_after_clarify,
+    route_after_quick_answer,
+    route_after_reflection,
+    route_after_router,
+    route_after_supervisor,
+    route_after_writer,
+)
+from deepresearcher.state import ResearchState
+from deepresearcher.tools import (
+    AliyunFetchProvider,
+    DirectHttpFetchProvider,
+    FetchService,
+    HttpClient,
+    NoOpToolCache,
+    SearchClient,
+    SearchTool,
+    SourceReaderTool,
+    ToolConfigurationError,
+)
+from deepresearcher.tools.web.aliyun import create_aliyun_dts_client
+
+
+def _guarded_node(name, node, *, event_sink=None, trace_recorder=None, max_text_chars=1_000):
+    """组合观测层与执行边界，保持两者职责独立。"""
+    observed = instrument_node(
+        name,
+        node,
+        event_sink=event_sink,
+        trace_recorder=trace_recorder,
+        max_text_chars=max_text_chars,
+    )
+
+    async def guarded(state):
+        return await execute_node(state, stage=name, node=observed)
+
+    return guarded
+
+
+def _routed_node(
+    name,
+    node,
+    route,
+    *,
+    event_sink=None,
+    trace_recorder=None,
+    max_text_chars=1_000,
+):
+    """执行节点后用 Command 动态跳转，避免条件边的隐式 fan-in 等待。"""
+    guarded = _guarded_node(
+        name,
+        node,
+        event_sink=event_sink,
+        trace_recorder=trace_recorder,
+        max_text_chars=max_text_chars,
+    )
+
+    async def routed(state):
+        update = await guarded(state)
+        target = route({**state, **update})
+        return Command(update=update, goto=target)
+
+    return routed
+
+
+def build_graph(
+    settings: Settings | None = None,
+    *,
+    llm: LLMInvoker | None = None,
+    event_sink=None,
+    trace_recorder: TraceRecorder | None = None,
+    http_client: HttpClient | None = None,
+    checkpointer=None,
+    tool_cache=None,
+):
+    """装配完整研究应用；必需模型和联网工具缺失时立即失败。
+
+    checkpointer 为 LangGraph BaseCheckpointSaver（如 AsyncPostgresSaver）：
+    每个 superstep 结束持久化 state 通道，调用方以
+    config={"configurable": {"thread_id": run_id}} 获得断点重放/续跑能力；
+    None（测试/直接库调用默认）行为与既往完全一致。
+    """
+    settings = settings or get_settings()
+    llm = llm or build_llm(settings)
+
+    if not settings.search.configured:
+        raise ToolConfigurationError(
+            "深度研究需要 BAIDU_API_KEY、TAVILY_API_KEY 或 SERPAPI_API_KEY。"
+        )
+
+    shared_http = http_client or HttpClient(settings.search)
+    shared_cache = tool_cache or NoOpToolCache()
+    owns_http_client = http_client is None
+    uses_aliyun = settings.search.provider == "aliyun" or (
+        "aliyun" in settings.search.fetch_provider_order
+    )
+    aliyun_client = create_aliyun_dts_client(settings.search) if uses_aliyun else None
+    search_tool = SearchTool(
+        SearchClient(settings.search, shared_http, aliyun_client=aliyun_client),
+        trace_recorder=trace_recorder,
+        event_sink=event_sink,
+        tool_cache=shared_cache,
+        cache_ttl_seconds=settings.tool_cache.search_ttl_seconds,
+        cache_version=settings.tool_cache.search_version,
+    )
+    fetch_providers = []
+    for provider_name in settings.search.fetch_provider_order:
+        if provider_name == "aliyun":
+            if aliyun_client is None:  # pragma: no cover - guarded by uses_aliyun
+                raise ToolConfigurationError("未初始化阿里云 DTS AI 客户端")
+            fetch_providers.append(AliyunFetchProvider(settings.search, aliyun_client))
+        else:
+            fetch_providers.append(DirectHttpFetchProvider(settings.search, shared_http))
+    reader_tool = SourceReaderTool(
+        FetchService(
+            fetch_providers,
+            tool_cache=shared_cache,
+            cache_ttl_seconds=settings.tool_cache.fetch_ttl_seconds,
+            fetch_policy_version=settings.tool_cache.fetch_policy_version,
+            parser_version=settings.tool_cache.parser_version,
+        ),
+        llm=llm,
+        trace_recorder=trace_recorder,
+        event_sink=event_sink,
+        context_window_tokens=settings.llm.context_window_tokens,
+        evidence_input_budget_tokens=settings.agent.evidence_input_budget_tokens,
+        evidence_output_budget_tokens=settings.agent.evidence_output_budget_tokens,
+        evidence_safety_margin_tokens=settings.agent.evidence_safety_margin_tokens,
+        evidence_chunk_concurrency=settings.agent.evidence_chunk_concurrency,
+        evidence_max_per_source=settings.agent.evidence_max_per_source,
+        fetch_timeout=settings.agent.source_fetch_timeout,
+        parse_timeout=settings.agent.source_parse_timeout,
+        evidence_extract_timeout=settings.agent.evidence_extract_timeout,
+        tool_cache=shared_cache,
+        evidence_cache_ttl_seconds=settings.tool_cache.evidence_ttl_seconds,
+        extractor_prompt_version=settings.tool_cache.extractor_prompt_version,
+        evidence_schema_version=settings.tool_cache.evidence_schema_version,
+        chunking_version=settings.tool_cache.chunking_version,
+        model_id=settings.llm.model,
+        input_usd_per_million=settings.llm.input_usd_per_million,
+        output_usd_per_million=settings.llm.output_usd_per_million,
+    )
+    clarifier = Clarifier(
+        llm,
+        settings.agent,
+        context_window_tokens=settings.llm.context_window_tokens,
+    )
+    clarifier_graph = build_clarifier_graph(clarifier.run)
+    writer_agent = ReportWriter(
+        llm,
+        settings.agent,
+        render_incomplete=lambda state: render_incomplete_report(
+            state,
+            no_evidence_blockers(state),
+        ),
+        event_sink=event_sink,
+        artifact_max_text_chars=settings.observability.max_text_chars,
+        context_window_tokens=settings.llm.context_window_tokens,
+    )
+    writer_graph = build_writer_graph(writer_agent.run)
+    research_agent = ResearchAgent(
+        llm,
+        settings.agent,
+        search_tool=search_tool,
+        reader_tool=reader_tool,
+        event_sink=event_sink,
+        context_window_tokens=settings.llm.context_window_tokens,
+    )
+    supervisor = ResearchSupervisor(
+        llm,
+        settings.agent,
+        research_agent=research_agent,
+        event_sink=event_sink,
+        context_window_tokens=settings.llm.context_window_tokens,
+    )
+    graph = StateGraph(ResearchState)
+    graph.add_node(
+        NodeName.ROUTER,
+        _routed_node(
+            NodeName.ROUTER,
+            lambda state: nodes.router(state, llm),
+            route_after_router,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+        destinations=(
+            NodeName.QUICK_ANSWER,
+            NodeName.CLARIFY,
+            NodeName.RENDER_FINAL_REPORT,
+        ),
+    )
+    graph.add_node(
+        NodeName.CLARIFY,
+        _routed_node(
+            NodeName.CLARIFY,
+            clarifier_graph.ainvoke,
+            route_after_clarify,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+        destinations=(NodeName.SUPERVISOR,),
+    )
+    graph.add_node(
+        NodeName.QUICK_ANSWER,
+        _routed_node(
+            NodeName.QUICK_ANSWER,
+            lambda state: nodes.quick_answer(state, llm),
+            route_after_quick_answer,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+        destinations=(NodeName.WRITER, NodeName.RENDER_FINAL_REPORT),
+    )
+
+    async def render_node(state):
+        """渲染终点并释放由 Graph 自己创建的共享 HTTP client。"""
+        try:
+            return await nodes.render_final_report_node(state)
+        finally:
+            if owns_http_client:
+                await shared_http.aclose()
+
+    graph.add_node(
+        NodeName.RENDER_FINAL_REPORT,
+        _guarded_node(
+            NodeName.RENDER_FINAL_REPORT,
+            render_node,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+    )
+    graph.add_node(
+        NodeName.SUPERVISOR,
+        _routed_node(
+            NodeName.SUPERVISOR,
+            supervisor.run,
+            route_after_supervisor,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+        destinations=(NodeName.WRITER, NodeName.RENDER_FINAL_REPORT),
+    )
+    graph.add_node(
+        NodeName.WRITER,
+        _routed_node(
+            NodeName.WRITER,
+            writer_graph.ainvoke,
+            route_after_writer,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+        destinations=(NodeName.REFLECTION, NodeName.RENDER_FINAL_REPORT),
+    )
+    graph.add_node(
+        NodeName.REFLECTION,
+        _routed_node(
+            NodeName.REFLECTION,
+            lambda state: nodes.reflection(state, llm),
+            route_after_reflection,
+            event_sink=event_sink,
+            trace_recorder=trace_recorder,
+            max_text_chars=settings.observability.max_text_chars,
+        ),
+        destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
+    )
+    graph.add_edge(START, NodeName.ROUTER)
+    graph.add_edge(NodeName.RENDER_FINAL_REPORT, END)
+    return graph.compile(checkpointer=checkpointer)

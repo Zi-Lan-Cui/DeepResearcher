@@ -2,16 +2,16 @@ import asyncio
 
 import pytest
 
-from deepsearch_agent.orchestration.nodes import (
+from deepresearcher.orchestration.nodes import (
     render_final_report_node,
 )
-from deepsearch_agent.reporting import (
+from deepresearcher.reporting import (
     no_evidence_blockers,
     render_final_report,
     validate_and_bind,
 )
-from deepsearch_agent.reporting.validation import DraftProtocolError
-from deepsearch_agent.schemas import (
+from deepresearcher.reporting.validation import DraftProtocolError
+from deepresearcher.schemas import (
     Citation,
 )
 from fakes import make_evidence as _ev

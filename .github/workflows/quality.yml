@@ -19,5 +19,6 @@ jobs:
       - run: uv run ruff check src tests
       - run: uv run ruff format --check src tests
       - run: uv run pyright
-      - run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run coverage run -m pytest -q
+      # 禁用环境中的偶然插件，同时显式加载项目异步测试所需插件。
+      - run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run coverage run -m pytest -q -p pytest_asyncio.plugin
       - run: uv run coverage report

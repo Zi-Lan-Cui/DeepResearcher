@@ -1,6 +1,6 @@
 import pytest
 
-from deepsearch_agent.service.settings import (
+from deepresearcher.service.settings import (
     ServiceConfig,
     clear_service_config_cache,
     get_service_config,
@@ -10,7 +10,7 @@ from deepsearch_agent.service.settings import (
 @pytest.fixture
 def _clean_env(monkeypatch, tmp_path):
     """隔离真实 env/.env：指向不存在的 env 文件并清掉相关环境变量。"""
-    monkeypatch.setenv("DEEPSEARCH_ENV_FILE", str(tmp_path / "absent.env"))
+    monkeypatch.setenv("DEEPRESEARCHER_ENV_FILE", str(tmp_path / "absent.env"))
     for name in (
         "SERVICE_DATABASE_URL",
         "SERVICE_JWT_SECRET",
@@ -106,7 +106,7 @@ def test_explicit_config_usable_without_env(_clean_env):
 
 
 def test_checkpoint_dsn_derivation():
-    from deepsearch_agent.service.settings import checkpoint_dsn
+    from deepresearcher.service.settings import checkpoint_dsn
 
     assert (
         checkpoint_dsn("postgresql+asyncpg://u:p@localhost:5432/db")

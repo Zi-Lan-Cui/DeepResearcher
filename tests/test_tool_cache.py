@@ -6,21 +6,21 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, update
 
-from deepsearch_agent.config import LLMConfig, SearchConfig
-from deepsearch_agent.evidence.extractor import EvidenceExtractor
-from deepsearch_agent.evidence.models import EvidenceExtraction, ExtractedEvidence
-from deepsearch_agent.service.persistence.database import init_db, make_engine, make_session_factory
-from deepsearch_agent.service.persistence.models import Run, RunUsage, ToolCacheEntry, User
-from deepsearch_agent.service.persistence.tool_cache import PostgresToolCache
-from deepsearch_agent.service.usage import (
+from deepresearcher.config import LLMConfig, SearchConfig
+from deepresearcher.evidence.extractor import EvidenceExtractor
+from deepresearcher.evidence.models import EvidenceExtraction, ExtractedEvidence
+from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, RunUsage, ToolCacheEntry, User
+from deepresearcher.service.persistence.tool_cache import PostgresToolCache
+from deepresearcher.service.usage import (
     UsageRuntime,
     UsageStore,
     bind_usage_runtime,
     reset_usage_runtime,
 )
-from deepsearch_agent.tools.cache import CacheValue
-from deepsearch_agent.tools.search.service import SearchTool
-from deepsearch_agent.tools.sources.fetcher import WebFetcher
+from deepresearcher.tools.cache import CacheValue
+from deepresearcher.tools.web import DirectHttpFetchProvider, FetchService
+from deepresearcher.tools.web.search.service import SearchTool
 
 pytestmark = pytest.mark.asyncio
 
@@ -188,7 +188,7 @@ async def test_l2_fetch_parse_cache_survives_fetcher_recreation(cache_db, monkey
     async def inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    monkeypatch.setattr("deepsearch_agent.tools.sources.fetcher.asyncio.to_thread", inline)
+    monkeypatch.setattr("deepresearcher.tools.web.fetch.providers.direct.asyncio.to_thread", inline)
     cache = PostgresToolCache(cache_db)
     client = _HttpClient()
     kwargs = {
@@ -197,10 +197,12 @@ async def test_l2_fetch_parse_cache_survives_fetcher_recreation(cache_db, monkey
         "fetch_policy_version": "fetch-v1",
         "parser_version": "parser-v1",
     }
-    first = await WebFetcher(SearchConfig(), client, **kwargs).afetch(
+    first = await FetchService([DirectHttpFetchProvider(SearchConfig(), client)], **kwargs).afetch(
         "https://EXAMPLE.com/page#part"
     )
-    second = await WebFetcher(SearchConfig(), client, **kwargs).afetch("https://example.com/page")
+    second = await FetchService([DirectHttpFetchProvider(SearchConfig(), client)], **kwargs).afetch(
+        "https://example.com/page"
+    )
     assert client.calls == 1
     assert first.get("cache_hit") is False
     assert second.get("cache_hit") is True
@@ -212,10 +214,14 @@ async def test_l2_failed_parse_is_not_cached(cache_db, monkeypatch):
     async def inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    monkeypatch.setattr("deepsearch_agent.tools.sources.fetcher.asyncio.to_thread", inline)
+    monkeypatch.setattr("deepresearcher.tools.web.fetch.providers.direct.asyncio.to_thread", inline)
     cache = PostgresToolCache(cache_db)
     client = _HttpClient(content_type="application/octet-stream")
-    fetcher = WebFetcher(SearchConfig(), client, tool_cache=cache, cache_ttl_seconds=60)
+    fetcher = FetchService(
+        [DirectHttpFetchProvider(SearchConfig(), client)],
+        tool_cache=cache,
+        cache_ttl_seconds=60,
+    )
     assert (await fetcher.afetch("https://example.com/binary"))["status"] == "failed"
     assert (await fetcher.afetch("https://example.com/binary"))["status"] == "failed"
     assert client.calls == 2

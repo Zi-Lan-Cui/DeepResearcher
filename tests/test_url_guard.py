@@ -3,9 +3,9 @@ import asyncio
 import httpx
 import pytest
 
-from deepsearch_agent.config import SearchConfig
-from deepsearch_agent.tools.errors import UnsafeUrlError
-from deepsearch_agent.tools.transport import HttpClient, PublicUrlGuard, ResolvedPublicUrl
+from deepresearcher.config import SearchConfig
+from deepresearcher.tools.errors import UnsafeUrlError
+from deepresearcher.tools.transport import HttpClient, PublicUrlGuard, ResolvedPublicUrl
 
 
 def test_public_url_guard_accepts_public_dns_and_builds_curl_pin(monkeypatch):

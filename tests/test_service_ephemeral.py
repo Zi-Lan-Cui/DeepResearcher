@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from deepsearch_agent.service.events.ephemeral import preview_event
-from deepsearch_agent.service.events.redis_ephemeral import (
+from deepresearcher.service.events.ephemeral import preview_event
+from deepresearcher.service.events.redis_ephemeral import (
     RedisEphemeralEventBus,
     create_redis_ephemeral_bus,
 )
@@ -156,12 +156,12 @@ async def test_real_redis_cross_client_preview_roundtrip():
     run_id = f"test-{uuid4().hex}"
     publisher = await create_redis_ephemeral_bus(
         redis_url,
-        channel_prefix="deepsearch-tests",
+        channel_prefix="deepresearcher-tests",
         queue_size=4,
     )
     subscriber = await create_redis_ephemeral_bus(
         redis_url,
-        channel_prefix="deepsearch-tests",
+        channel_prefix="deepresearcher-tests",
         queue_size=4,
     )
     assert publisher is not None and subscriber is not None

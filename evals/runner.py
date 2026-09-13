@@ -23,9 +23,9 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
-from deepsearch_agent.service.persistence.database import make_engine, make_session_factory
-from deepsearch_agent.service.persistence.models import Run, RunEvent
-from deepsearch_agent.service.settings import checkpoint_dsn
+from deepresearcher.service.persistence.database import make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, RunEvent
+from deepresearcher.service.settings import checkpoint_dsn
 from evals.deterministic import Artifact, process_metrics
 from evals.schemas import EvalCase
 

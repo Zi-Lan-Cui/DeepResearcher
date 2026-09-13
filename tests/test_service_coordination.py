@@ -1,4 +1,4 @@
-from deepsearch_agent.service.coordination import (
+from deepresearcher.service.coordination import (
     DATABASE_MIGRATION_LOCK_ID,
     POSTGRES_ADVISORY_LOCK_IDS,
     RUN_ADMISSION_LOCK_ID,
