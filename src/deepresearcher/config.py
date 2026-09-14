@@ -39,6 +39,16 @@ def _choice_env(name: str, default: str, choices: set[str]) -> str:
     return value if value in choices else default
 
 
+def _ordered_choices_env(name: str, default: str, choices: set[str]) -> tuple[str, ...]:
+    """读取有序、逗号分隔的选项列表；显式拒绝未知值。"""
+    values = tuple(item.strip().lower() for item in _env(name, default).split(","))
+    invalid = [item or "<empty>" for item in values if item not in choices]
+    if invalid:
+        allowed = ", ".join(sorted(choices))
+        raise ValueError(f"{name} 包含无效值: {', '.join(invalid)}；可选值: {allowed}")
+    return values
+
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = _env(name, "true" if default else "false").lower()
     if raw in {"1", "true", "yes"}:
@@ -125,6 +135,11 @@ class AgentConfig:
     evidence_output_budget_tokens: int = 4_000
     evidence_safety_margin_tokens: int = 2_000
     evidence_chunk_concurrency: int = 2
+    # 短文直接全文抽取；长文先按研究子问题做块级召回，再进入同一抽取/校验链路。
+    evidence_full_context_max_tokens: int = 8_192
+    evidence_bm25_top_k: int = 10
+    evidence_bm25_window: int = 1
+    evidence_retriever_backend: Literal["bm25"] = "bm25"
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     research_agent_max_turns: int = 3
     research_agent_max_queries: int = 6
@@ -180,9 +195,16 @@ class SearchConfig:
 
     @property
     def configured(self) -> bool:
-        return self.provider == "aliyun" or bool(
-            self.baidu_api_key or self.tavily_api_key or self.serpapi_api_key
-        )
+        if self.provider == "aliyun":
+            # 阿里云 SDK 通过默认凭据链读取身份，不强制使用固定环境变量。
+            return True
+        if self.provider == "baidu":
+            return bool(self.baidu_api_key)
+        if self.provider == "tavily":
+            return bool(self.tavily_api_key)
+        if self.provider == "serpapi":
+            return bool(self.serpapi_api_key)
+        return bool(self.baidu_api_key or self.tavily_api_key or self.serpapi_api_key)
 
 
 @dataclass(frozen=True)
@@ -209,9 +231,9 @@ class ToolCacheConfig:
     search_version: str = "search-v1"
     fetch_policy_version: str = "public-fetch-v1"
     parser_version: str = "parser-v1"
-    extractor_prompt_version: str = "evidence-prompt-v1"
+    extractor_prompt_version: str = "evidence-prompt-v2"
     evidence_schema_version: str = "evidence-schema-v1"
-    chunking_version: str = "chunks-v1"
+    chunking_version: str = "chunks-v2"
 
 
 @dataclass(frozen=True)
@@ -315,6 +337,15 @@ def _agent_config() -> AgentConfig:
             0, _int_env("AGENT_EVIDENCE_SAFETY_MARGIN_TOKENS", 2_000)
         ),
         evidence_chunk_concurrency=max(1, _int_env("AGENT_EVIDENCE_CHUNK_CONCURRENCY", 2)),
+        evidence_full_context_max_tokens=max(
+            1_000, _int_env("EVIDENCE_FULL_CONTEXT_MAX_TOKENS", 8_192)
+        ),
+        evidence_bm25_top_k=max(1, _int_env("EVIDENCE_BM25_TOP_K", 10)),
+        evidence_bm25_window=max(0, _int_env("EVIDENCE_BM25_WINDOW", 1)),
+        evidence_retriever_backend=cast(
+            Literal["bm25"],
+            _choice_env("EVIDENCE_RETRIEVER_BACKEND", "bm25", {"bm25"}),
+        ),
         research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 3)),
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),
         research_agent_max_evidences_per_direction=max(
@@ -338,11 +369,9 @@ def _agent_config() -> AgentConfig:
 
 
 def _search_config() -> SearchConfig:
-    fetch_provider_order = tuple(
-        provider
-        for provider in _env("FETCH_PROVIDER_ORDER", "direct").lower().split(",")
-        if provider in {"aliyun", "direct"}
-    ) or ("direct",)
+    fetch_provider_order = _ordered_choices_env(
+        "FETCH_PROVIDER_ORDER", "direct", {"aliyun", "direct"}
+    )
     return SearchConfig(
         provider=cast(
             Literal["auto", "aliyun", "baidu", "tavily", "serpapi"],
@@ -402,13 +431,13 @@ def _tool_cache_config() -> ToolCacheConfig:
         ),
         parser_version=_env("TOOL_CACHE_PARSER_VERSION", "parser-v1") or "parser-v1",
         extractor_prompt_version=(
-            _env("TOOL_CACHE_EXTRACTOR_PROMPT_VERSION", "evidence-prompt-v1")
-            or "evidence-prompt-v1"
+            _env("TOOL_CACHE_EXTRACTOR_PROMPT_VERSION", "evidence-prompt-v2")
+            or "evidence-prompt-v2"
         ),
         evidence_schema_version=(
             _env("TOOL_CACHE_EVIDENCE_SCHEMA_VERSION", "evidence-schema-v1") or "evidence-schema-v1"
         ),
-        chunking_version=(_env("TOOL_CACHE_CHUNKING_VERSION", "chunks-v1") or "chunks-v1"),
+        chunking_version=(_env("TOOL_CACHE_CHUNKING_VERSION", "chunks-v2") or "chunks-v2"),
     )
 
 

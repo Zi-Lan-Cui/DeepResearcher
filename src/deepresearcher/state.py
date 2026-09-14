@@ -41,6 +41,9 @@ class SubTask(TypedDict):
     id: str
     run_id: NotRequired[str]
     question: str
+    # Evidence 召回可选的内部细分；缺失时以 question 作为唯一检索查询。
+    research_direction: NotRequired[str]
+    subquestions: NotRequired[list[str]]
     round: NotRequired[int]
     sequence: NotRequired[int]
     type: Literal["search", "rag", "read", "memory"]

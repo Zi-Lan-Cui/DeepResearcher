@@ -5,10 +5,27 @@ import hashlib
 from pathlib import PurePosixPath
 
 from deepresearcher.config import SearchConfig
-from deepresearcher.tools.errors import ToolParseError, ToolRequestError
+from deepresearcher.tools.errors import SourceUnavailableError, ToolParseError, ToolRequestError
 from deepresearcher.tools.web.aliyun import AliyunDtsApi
 from deepresearcher.tools.web.fetch.models import SourceDocument
 from deepresearcher.tools.web.parsing import DocumentModality, parse_html_blocks, parse_markdown
+
+_CHALLENGE_TITLE_MARKERS = (
+    "请求已被拦截",
+    "安全验证",
+    "访问验证",
+    "验证码",
+    "just a moment",
+    "security check",
+    "access denied",
+)
+_CHALLENGE_BODY_MARKERS = (
+    "请求已被站点的安全策略拦截",
+    "本次访问已被限制",
+    "由 tencent cloud edgeone 提供防护",
+    "verify you are human",
+    "checking your browser before accessing",
+)
 
 
 class AliyunFetchProvider:
@@ -41,6 +58,8 @@ class AliyunFetchProvider:
         content = str(getattr(body, "content", "") or "")
         if not content.strip():
             raise ToolRequestError("阿里云 WebFetch 未返回可读取正文。", retryable=False)
+        title = str(getattr(body, "title", "") or "")
+        self._ensure_readable(title, content)
         content_format = str(getattr(body, "content_format", "") or "").lower()
         data = content.encode("utf-8")
         parse_started = asyncio.get_running_loop().time()
@@ -56,7 +75,7 @@ class AliyunFetchProvider:
             raise ToolParseError("阿里云 WebFetch 正文解析超时。") from exc
         parse_duration_ms = (asyncio.get_running_loop().time() - parse_started) * 1000
         final_url = str(getattr(body, "url", "") or url)
-        title = str(getattr(body, "title", "") or parsed_title)
+        title = title or parsed_title
         return {
             "source_url": url,
             "final_url": final_url,
@@ -77,3 +96,15 @@ class AliyunFetchProvider:
             "fetch_duration_ms": fetch_duration_ms,
             "parse_duration_ms": parse_duration_ms,
         }
+
+    @staticmethod
+    def _ensure_readable(title: str, content: str) -> None:
+        """拦截云端抓取成功但正文实为安全挑战页的假阳性。"""
+        normalized_title = title.casefold().strip()
+        normalized_content = content.casefold()
+        if any(marker in normalized_title for marker in _CHALLENGE_TITLE_MARKERS) or any(
+            marker in normalized_content for marker in _CHALLENGE_BODY_MARKERS
+        ):
+            raise SourceUnavailableError(
+                "access_challenge", "阿里云 WebFetch 返回了站点安全验证页，未取得可验证正文。"
+            )

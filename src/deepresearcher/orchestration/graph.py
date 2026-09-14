@@ -101,9 +101,15 @@ def build_graph(
     llm = llm or build_llm(settings)
 
     if not settings.search.configured:
-        raise ToolConfigurationError(
-            "深度研究需要 BAIDU_API_KEY、TAVILY_API_KEY 或 SERPAPI_API_KEY。"
-        )
+        provider = settings.search.provider
+        if provider == "auto":
+            detail = (
+                "需要 BAIDU/TAVILY/SERPAPI API Key；如使用阿里云，请显式设置 "
+                "SEARCH_PROVIDER=aliyun 并配置默认凭据链"
+            )
+        else:
+            detail = f"已选择 {provider}，但未配置该搜索 Provider 所需的凭据"
+        raise ToolConfigurationError(f"深度研究搜索不可用：{detail}。")
 
     shared_http = http_client or HttpClient(settings.search)
     shared_cache = tool_cache or NoOpToolCache()
@@ -145,6 +151,10 @@ def build_graph(
         evidence_safety_margin_tokens=settings.agent.evidence_safety_margin_tokens,
         evidence_chunk_concurrency=settings.agent.evidence_chunk_concurrency,
         evidence_max_per_source=settings.agent.evidence_max_per_source,
+        evidence_full_context_max_tokens=settings.agent.evidence_full_context_max_tokens,
+        evidence_bm25_top_k=settings.agent.evidence_bm25_top_k,
+        evidence_bm25_window=settings.agent.evidence_bm25_window,
+        evidence_retriever_backend=settings.agent.evidence_retriever_backend,
         fetch_timeout=settings.agent.source_fetch_timeout,
         parse_timeout=settings.agent.source_parse_timeout,
         evidence_extract_timeout=settings.agent.evidence_extract_timeout,

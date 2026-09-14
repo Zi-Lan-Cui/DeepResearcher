@@ -23,6 +23,34 @@ from deepresearcher.tools.web import (
 from deepresearcher.tools.web.aliyun import AliyunDtsClient
 
 
+def test_html_parser_prefers_main_content_and_tracks_h1_through_h6():
+    from deepresearcher.tools.web.parsing import parse_html_blocks
+
+    title, text, blocks = parse_html_blocks(
+        b"""
+        <html><head><title>Example</title></head><body>
+          <aside><p>sidebar noise</p></aside>
+          <main>
+            <h1>Main title</h1><p>Main body</p>
+            <h5>Deep section</h5><h6>Leaf section</h6><p>Leaf body</p>
+          </main>
+          <p>outside noise</p>
+        </body></html>
+        """
+    )
+
+    assert title == "Example"
+    assert "sidebar noise" not in text and "outside noise" not in text
+    assert [block["text"] for block in blocks] == [
+        "Main title",
+        "Main body",
+        "Deep section",
+        "Leaf section",
+        "Leaf body",
+    ]
+    assert blocks[-1]["heading_path"][-2:] == ["Deep section", "Leaf section"]
+
+
 @pytest.fixture(autouse=True)
 def _run_parser_inline(monkeypatch):
     """当前受限测试容器中 BeautifulSoup 在线程池会阻塞；不改变生产线程隔离。"""
@@ -409,6 +437,30 @@ def test_aliyun_fetch_normalizes_markdown_into_source_document():
         "list_item",
         "list_item",
     ]
+
+
+def test_aliyun_fetch_rejects_access_challenge_page():
+    class FakeAliyunClient:
+        async def web_fetch(self, url, output_format):
+            return SimpleNamespace(
+                success=True,
+                http_status_code=200,
+                request_id="request-blocked",
+                url=url,
+                url_type="static_html",
+                content_format=output_format,
+                title="请求已被拦截",
+                content="请求已被站点的安全策略拦截。由 Tencent Cloud EdgeOne 提供防护。",
+            )
+
+    with pytest.raises(SourceUnavailableError) as exc_info:
+        asyncio.run(
+            AliyunFetchProvider(SearchConfig(), FakeAliyunClient()).afetch(
+                "https://example.com/page"
+            )
+        )
+
+    assert exc_info.value.reason_code == "access_challenge"
 
 
 def test_http_client_retries_transient_timeout():

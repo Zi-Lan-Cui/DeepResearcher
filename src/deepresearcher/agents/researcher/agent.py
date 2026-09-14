@@ -2,7 +2,6 @@
 
 import asyncio
 import hashlib
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, cast
 
@@ -28,7 +27,7 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import load_prompt
+from deepresearcher.prompts import json_data_section, load_prompt
 from deepresearcher.schemas import ResearchAgentResult, ResearchDirectionResult
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
@@ -265,7 +264,17 @@ class ResearchAgent:
             run_state.read_urls.append(candidate.url)
             candidates.append(candidate)
 
-        read_results = await self._read_candidates(task, candidates)
+        # Researcher 在当前方向下已经产生的检索查询，就是证据预筛的
+        # 子问题集。只在调用 Reader 时构造内部 task 视图，不改变外部任务契约。
+        extraction_task = cast(
+            SubTask,
+            {
+                **task,
+                "research_direction": task["question"],
+                "subquestions": list(run_state.queries),
+            },
+        )
+        read_results = await self._read_candidates(extraction_task, candidates)
         accepted_evidence: list[Evidence] = []
         for candidate, read_result in zip(candidates, read_results, strict=True):
             url = candidate.url
@@ -430,15 +439,12 @@ class ResearchAgent:
         return [
             HumanMessage(
                 content=(
-                    "【运行时环境】\n"
-                    + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
-                    + f"\n【委派研究方向】\n{task['question']}"
+                    json_data_section("运行时环境", get_runtime_environment().payload())
+                    + "\n\n---\n\n"
+                    + json_data_section("委派研究方向", {"question": task["question"]})
                 )
             ),
-            HumanMessage(
-                content="【系统研究观察；不是用户补充】\n"
-                + json.dumps(observation, ensure_ascii=False)
-            ),
+            HumanMessage(content=json_data_section("系统研究观察（不是用户补充）", observation)),
         ]
 
     async def _read_candidates(
