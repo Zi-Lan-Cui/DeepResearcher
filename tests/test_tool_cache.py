@@ -252,7 +252,7 @@ def _extractor(cache):
         cache_ttl_seconds=60,
         extractor_prompt_version="prompt-v1",
         evidence_schema_version="schema-v1",
-        chunking_version="chunks-v1",
+        chunking_version="chunks-v2",
         model_id="model-v1",
         input_usd_per_million=1,
         output_usd_per_million=2,

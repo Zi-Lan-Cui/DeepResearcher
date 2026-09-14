@@ -47,13 +47,22 @@ def test_direction_result_ignores_legacy_answered_points_on_checkpoint_restore()
 
 
 def test_research_agent_autonomously_decides_queries_then_collects_direction_evidence():
+    class CapturingReader(FakeReader):
+        def __init__(self):
+            super().__init__()
+            self.tasks = []
+
+        async def arun(self, task, candidate):
+            self.tasks.append(task)
+            return await super().arun(task, candidate)
+
     config = AgentConfig(
         research_agent_max_evidences_per_direction=2,
         research_agent_max_turns=4,
         research_agent_max_queries=4,
         research_agent_read_concurrency=2,
     )
-    reader = FakeReader()
+    reader = CapturingReader()
     agent = researcher_agent(
         config,
         [
@@ -89,6 +98,8 @@ def test_research_agent_autonomously_decides_queries_then_collects_direction_evi
     assert task_result.research_direction == TASK["question"]
     assert len(result.evidences) == 1
     assert reader.max_active == 1
+    assert reader.tasks[0]["research_direction"] == TASK["question"]
+    assert reader.tasks[0]["subquestions"] == ["稳定术语 定义", "稳定术语 直接证据"]
 
 
 def test_research_agent_records_context_observations_and_tool_results():

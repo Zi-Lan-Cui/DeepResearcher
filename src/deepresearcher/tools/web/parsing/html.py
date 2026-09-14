@@ -12,12 +12,27 @@ def parse_html(data: bytes) -> tuple[str, str]:
 
 def parse_html_blocks(data: bytes) -> tuple[str, str, list[DocumentBlock]]:
     soup = BeautifulSoup(data, "html.parser")
-    for element in soup(["script", "style", "noscript", "nav", "footer", "header"]):
-        element.decompose()
     title = soup.title.get_text(strip=True) if soup.title else ""
+    for element in soup(
+        ["script", "style", "noscript", "nav", "footer", "header", "aside", "form"]
+    ):
+        element.decompose()
+    for element in soup.select('[role="complementary"], [role="navigation"]'):
+        element.decompose()
+
+    # 优先解析语义化主体。页面同时存在多个候选时取正文文本最长者；
+    # 找不到 article/main 才回退整个文档，兼容旧页面与简单 HTML。
+    candidates = soup.find_all(["article", "main"])
+    root = (
+        max(candidates, key=lambda item: len(item.get_text(" ", strip=True)))
+        if candidates
+        else soup
+    )
     blocks: list[DocumentBlock] = []
     heading_path: list[str] = []
-    for element in soup.find_all(["h1", "h2", "h3", "h4", "p", "li", "blockquote", "pre", "table"]):
+    for element in root.find_all(
+        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "table"]
+    ):
         raw = element.get_text(" ", strip=True)
         text = re.sub(r"\s+", " ", raw).strip()
         if not text:

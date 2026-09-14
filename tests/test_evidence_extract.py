@@ -5,7 +5,7 @@ import pytest
 from deepresearcher.config import LLMRetryConfig
 from deepresearcher.evidence import EvidenceExtractor
 from deepresearcher.evidence.models import Evidence, EvidenceExtraction, ExtractedEvidence
-from deepresearcher.evidence.retrieval import select_blocks
+from deepresearcher.evidence.retrieval import BM25Retriever, select_blocks
 from deepresearcher.llm import LLMConfigurationError, structured
 from deepresearcher.observability.events import JsonlSink
 
@@ -94,6 +94,13 @@ def blocks():
     ]
 
 
+class CharEstimator:
+    """测试专用确定性估算器，避免断言依赖 tokenizer 词表。"""
+
+    def count(self, text: str) -> int:
+        return len(text)
+
+
 def test_lexical_retrieval_keeps_adjacent_qualification():
     selected = select_blocks("A 平均延迟", blocks(), top_k=1, window=1)
     assert [block["block_id"] for block in selected] == ["b-0", "b-1", "b-2"]
@@ -134,28 +141,12 @@ def test_llm_empty_evidence_does_not_fall_back_to_source_title(monkeypatch):
     assert evidences == []
 
 
-def test_long_document_is_extracted_from_structured_chunks_not_bm25_selection(monkeypatch):
+def test_short_document_sends_every_block_to_extraction_prompt(monkeypatch):
     seen_contexts = []
 
     async def extract_each_chunk(llm, schema, messages, **kwargs):
         context = messages[-1].content
         seen_contexts.append(context)
-        if "证据甲" in context:
-            return EvidenceExtraction(
-                evidences=[
-                    ExtractedEvidence(
-                        claim="事实甲", quote="证据甲", support="direct", confidence=0.9
-                    )
-                ]
-            )
-        if "证据乙" in context:
-            return EvidenceExtraction(
-                evidences=[
-                    ExtractedEvidence(
-                        claim="事实乙", quote="证据乙", support="direct", confidence=0.9
-                    )
-                ]
-            )
         return EvidenceExtraction(evidences=[])
 
     monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", extract_each_chunk)
@@ -188,7 +179,12 @@ def test_long_document_is_extracted_from_structured_chunks_not_bm25_selection(mo
         ],
     }
     result = {"title": "长文", "url": "https://example.com/long", "snippet": "", "score": 0.8}
-    extractor = EvidenceExtractor(llm=object(), input_budget_tokens=5, chunk_concurrency=2)
+    extractor = EvidenceExtractor(
+        llm=object(),
+        input_budget_tokens=1_000,
+        full_context_max_tokens=1_000,
+        estimator=CharEstimator(),
+    )
 
     outcome = asyncio.run(
         extractor.aextract_result(
@@ -204,11 +200,239 @@ def test_long_document_is_extracted_from_structured_chunks_not_bm25_selection(mo
         )
     )
 
-    assert outcome.strategy == "structured_chunks"
-    assert outcome.chunk_count == 3
-    assert {item.claim for item in outcome.evidences} == {"事实甲", "事实乙"}
-    assert all(item.quote in item.audit_chunk for item in outcome.evidences)
-    assert len(seen_contexts) == 3
+    assert outcome.strategy == "full"
+    assert outcome.chunk_count == 1
+    assert len(seen_contexts) == 1
+    assert all(text in seen_contexts[0] for text in ("证据甲", "无关段落", "证据乙"))
+
+
+def test_long_document_sends_only_recalled_blocks_and_validator_sees_same_blocks(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class OneBlockRetriever:
+        def select(self, blocks, query, top_k, window):
+            assert query == "目标问题"
+            return [blocks[1]]
+
+    async def fake_invoke(llm, schema, messages, **kwargs):
+        captured["prompt"] = messages[-1].content
+        return EvidenceExtraction(evidences=[ExtractedEvidence(claim="目标事实", quote="目标证据")])
+
+    def fake_validate(evidence, selected):
+        captured["validator_blocks"] = selected
+        return evidence
+
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
+    monkeypatch.setattr("deepresearcher.evidence.extractor.validate_evidence", fake_validate)
+    document_blocks = [
+        {
+            "block_id": "b-1",
+            "block_type": "paragraph",
+            "text": "无关内容" * 20,
+            "heading_path": [],
+            "order": 0,
+        },
+        {
+            "block_id": "b-2",
+            "block_type": "paragraph",
+            "text": "目标证据",
+            "heading_path": ["目标章节"],
+            "order": 1,
+        },
+    ]
+    outcome = asyncio.run(
+        EvidenceExtractor(
+            llm=object(),
+            estimator=CharEstimator(),
+            full_context_max_tokens=80,
+            retriever=OneBlockRetriever(),
+        ).aextract_result(
+            {
+                "id": "r1-1",
+                "question": "目标问题",
+                "type": "search",
+                "status": "pending",
+                "assigned_agent": "search",
+            },
+            {
+                "title": "长文",
+                "final_url": "https://example.com/long",
+                "text": "\n".join(block["text"] for block in document_blocks),
+                "blocks": document_blocks,
+            },
+            {"title": "长文", "url": "https://example.com/long", "snippet": "", "score": 0.8},
+        )
+    )
+
+    assert outcome.strategy == "bm25_recall"
+    assert "目标证据" in str(captured["prompt"])
+    assert "无关内容" not in str(captured["prompt"])
+    assert [block["block_id"] for block in captured["validator_blocks"]] == ["b-2"]
+
+
+def test_multi_subquestion_recall_unions_and_deduplicates_blocks(monkeypatch):
+    seen_queries: list[str] = []
+    captured = {}
+
+    class MultiRetriever:
+        def select(self, blocks, query, top_k, window):
+            seen_queries.append(query)
+            return [blocks[0], blocks[1]] if "子问题甲" in query else [blocks[1], blocks[2]]
+
+    async def fake_invoke(llm, schema, messages, **kwargs):
+        captured["prompt"] = messages[-1].content
+        return EvidenceExtraction(evidences=[])
+
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
+    document_blocks = [
+        {
+            "block_id": f"b-{index}",
+            "block_type": "paragraph",
+            "text": character * 30,
+            "heading_path": [],
+            "order": index,
+        }
+        for index, character in enumerate("甲乙丙丁", 1)
+    ]
+    outcome = asyncio.run(
+        EvidenceExtractor(
+            llm=object(),
+            estimator=CharEstimator(),
+            full_context_max_tokens=110,
+            retriever=MultiRetriever(),
+        ).aextract_result(
+            {
+                "id": "r1-1",
+                "question": "研究方向",
+                "research_direction": "研究方向",
+                "subquestions": ["子问题甲", "子问题乙"],
+                "type": "search",
+                "status": "pending",
+                "assigned_agent": "search",
+            },
+            {
+                "title": "长文",
+                "final_url": "https://example.com/multi",
+                "text": "\n".join(block["text"] for block in document_blocks),
+                "blocks": document_blocks,
+            },
+            {"title": "长文", "url": "https://example.com/multi"},
+        )
+    )
+
+    assert seen_queries == ["研究方向\n子问题甲", "研究方向\n子问题乙"]
+    assert outcome.strategy == "bm25_recall"
+    assert str(captured["prompt"]).count("[b-2]") == 1
+
+
+def test_bm25_zero_score_falls_back_to_first_blocks():
+    source = [
+        {
+            "block_id": f"b-{index}",
+            "block_type": "paragraph",
+            "text": text,
+            "heading_path": [],
+            "order": index,
+        }
+        for index, text in enumerate(["苹果", "香蕉", "梨子"], 1)
+    ]
+
+    selected = BM25Retriever().select(source, "完全不匹配XYZ", top_k=2, window=1)
+
+    assert [block["block_id"] for block in selected] == ["b-1", "b-2"]
+
+
+def test_chunk_builder_prefers_heading_boundary_after_sixty_percent():
+    extractor = EvidenceExtractor(
+        llm=object(),
+        estimator=CharEstimator(),
+        input_budget_tokens=100,
+        full_context_max_tokens=1_000,
+    )
+    source = [
+        {
+            "block_id": "h-1",
+            "block_type": "heading",
+            "text": "第一节",
+            "heading_path": ["第一节"],
+            "order": 0,
+        },
+        {
+            "block_id": "p-1",
+            "block_type": "paragraph",
+            "text": "甲" * 55,
+            "heading_path": ["第一节"],
+            "order": 1,
+        },
+        {
+            "block_id": "h-2",
+            "block_type": "heading",
+            "text": "第二节",
+            "heading_path": ["第二节"],
+            "order": 2,
+        },
+        {
+            "block_id": "p-2",
+            "block_type": "paragraph",
+            "text": "乙" * 10,
+            "heading_path": ["第二节"],
+            "order": 3,
+        },
+    ]
+
+    chunks, strategy = extractor._build_chunks(source)
+
+    assert strategy == "structured_chunks"
+    assert [[block["block_id"] for block in chunk] for chunk in chunks] == [
+        ["h-1", "p-1"],
+        ["h-2", "p-2"],
+    ]
+
+
+def test_chunk_builder_without_headings_keeps_budget_only_behavior():
+    extractor = EvidenceExtractor(
+        llm=object(),
+        estimator=CharEstimator(),
+        input_budget_tokens=100,
+        full_context_max_tokens=1_000,
+    )
+    source = [
+        {
+            "block_id": f"p-{index}",
+            "block_type": "paragraph",
+            "text": character * size,
+            "heading_path": [],
+            "order": index,
+        }
+        for index, (character, size) in enumerate((("甲", 50), ("乙", 20), ("丙", 50)), 1)
+    ]
+
+    chunks, strategy = extractor._build_chunks(source)
+
+    assert strategy == "structured_chunks"
+    assert [[block["block_id"] for block in chunk] for chunk in chunks] == [
+        ["p-1", "p-2"],
+        ["p-3"],
+    ]
+
+
+def test_oversized_recalled_block_includes_metadata_in_token_cap():
+    extractor = EvidenceExtractor(
+        llm=object(),
+        estimator=CharEstimator(),
+        full_context_max_tokens=40,
+    )
+    block = {
+        "block_id": "very-long-block-id",
+        "block_type": "paragraph",
+        "text": "正文" * 100,
+        "heading_path": ["很长的标题"],
+        "order": 1,
+    }
+
+    part = extractor._split_large_block(block, budget_tokens=40)[0]
+
+    assert extractor._block_tokens(part) <= 40
 
 
 def test_evidence_extractor_keeps_successful_chunks_when_one_chunk_fails(monkeypatch):
