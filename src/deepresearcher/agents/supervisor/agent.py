@@ -6,7 +6,6 @@
 """
 
 import asyncio
-import json
 from typing import Any, cast
 from urllib.parse import parse_qsl, urldefrag, urlencode, urlsplit, urlunsplit
 
@@ -38,7 +37,7 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import load_prompt
+from deepresearcher.prompts import json_data_section, load_prompt
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
@@ -135,17 +134,16 @@ class ResearchSupervisor:
         return [
             HumanMessage(
                 content=(
-                    "【运行时环境】\n"
-                    + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
-                    + "\n【研究委托】\n"
-                    + json.dumps(
+                    json_data_section("运行时环境", get_runtime_environment().payload())
+                    + "\n\n---\n\n"
+                    + json_data_section(
+                        "研究委托",
                         {
                             "research_question": state.get(
                                 "clarified_query", state.get("query", "")
                             ),
                             "research_brief": state.get("research_brief", ""),
                         },
-                        ensure_ascii=False,
                     )
                 )
             )
@@ -332,8 +330,8 @@ class ResearchSupervisor:
         history.append(
             HumanMessage(
                 content=(
-                    "【审阅回流】\n"
-                    + json.dumps(
+                    json_data_section(
+                        "审阅回流",
                         {
                             "review_feedback": review.feedback,
                             "fatal_gaps": list(review.gaps),
@@ -344,7 +342,6 @@ class ResearchSupervisor:
                                 "调用 ResearchDelegate 补充方向。",
                             },
                         },
-                        ensure_ascii=False,
                     )
                 )
             )
@@ -356,9 +353,7 @@ class ResearchSupervisor:
         payload: dict[str, object],
     ) -> None:
         """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
-        history.append(
-            HumanMessage(content="【研究管理观察】\n" + json.dumps(payload, ensure_ascii=False))
-        )
+        history.append(HumanMessage(content=json_data_section("研究管理观察", payload)))
 
     async def _execute_research_task(
         self,

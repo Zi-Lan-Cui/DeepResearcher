@@ -142,7 +142,7 @@ def test_clarifier_graph_preserves_parent_state_contract():
 def test_clarifier_subgraph_interrupt_resumes_through_parent_checkpoint():
     async def scripted_agent(state):
         answered = any(
-            isinstance(message, HumanMessage) and "【用户澄清回答】" in str(message.content)
+            isinstance(message, HumanMessage) and "## 用户澄清回答" in str(message.content)
             for message in state.get("messages", [])
         )
         if answered:

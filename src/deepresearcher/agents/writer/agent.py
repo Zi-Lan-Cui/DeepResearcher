@@ -4,7 +4,6 @@ Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引
 编号渲染与参考来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
 """
 
-import json
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -33,7 +32,7 @@ from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import load_prompt
+from deepresearcher.prompts import json_data_section, load_prompt
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import (
     ReportBrief,
@@ -332,30 +331,34 @@ class ReportWriter:
         directive: WriterDirective,
         evidence_catalogue: str,
     ) -> list[BaseMessage]:
-        revision_note = ""
+        revision_feedback = ""
         if directive.revision_instructions:
             feedback = "；".join(directive.revision_instructions)[
                 : self.config.writer_feedback_chars
             ]
-            revision_note = (
-                "【上一稿审阅意见】以下意见已经由 Supervisor 判定为应通过改写处理；"
+            revision_feedback = (
+                "以下意见已由 Supervisor 判定为应通过改写处理；"
                 f"必须修正其中的 fatal 问题：{feedback}"
             )
-        user_prompt = (
-            f"原问题（必须直接回答，不能改成另一道题）：{directive.query}\n"
-            f"Supervisor 的报告任务书：{directive.report_brief}\n"
-            f"研究状态：{directive.research_status}；报告生成模式：{directive.generation_mode}\n"
-            f"已知研究缺口（必须诚实保留，不得自行补全）：{directive.known_gaps}\n"
-            f"上一稿（如有，必须在其基础上修订）：\n{directive.previous_draft}\n"
-            f"可选 Evidence 目录：\n{evidence_catalogue}"
-        )
+        report_context = {
+            "原问题（必须直接回答）": directive.query,
+            "Supervisor 的报告任务书": directive.report_brief,
+            "研究状态": directive.research_status,
+            "报告生成模式": directive.generation_mode,
+            "已知研究缺口（不得自行补全）": directive.known_gaps,
+            "上一稿（如有，必须在其基础上修订）": directive.previous_draft,
+            "上一稿审阅意见": revision_feedback,
+        }
         return [
             HumanMessage(
                 content=(
-                    "【运行时环境】\n"
-                    + json.dumps(get_runtime_environment().payload(), ensure_ascii=False)
-                    + "\n"
-                    + "\n".join(part for part in [revision_note, user_prompt] if part)
+                    json_data_section("运行时环境", get_runtime_environment().payload())
+                    + "\n\n---\n\n"
+                    + json_data_section("报告任务与约束", report_context)
+                    + "\n\n---\n\n## 可选 Evidence 目录\n\n"
+                    + "<evidence_catalogue>\n"
+                    + evidence_catalogue
+                    + "\n</evidence_catalogue>"
                 )
             )
         ]

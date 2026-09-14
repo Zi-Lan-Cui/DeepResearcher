@@ -703,7 +703,7 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
 
         async def ainvoke(self, messages):
             history = "\n".join(str(message.content) for message in messages)
-            if "【审阅回流】" in history and not self._extra_delegated:
+            if "## 审阅回流" in history and not self._extra_delegated:
                 self._extra_delegated = True
                 return AIMessage(
                     content="",
@@ -765,7 +765,7 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
 
         async def ainvoke(self, messages):
             history = "\n".join(str(message.content) for message in messages)
-            if "【审阅回流】" in history:
+            if "## 审阅回流" in history:
                 return AIMessage(
                     content="",
                     tool_calls=[
