@@ -48,6 +48,51 @@ class ReadSources(BaseModel):
     reason: str = Field(description="说明这些来源与当前方向缺口的关系。")
 
 
+class GrepDocument(BaseModel):
+    """在已读取长文中按普通文本查询定位相关行。"""
+
+    allow_parallel: ClassVar[bool] = False
+
+    document_id: str = Field(min_length=1)
+    queries: list[str] = Field(min_length=1, max_length=8)
+    context_lines: int = Field(default=2, ge=0, le=10)
+    reason: str = Field(description="这些关键词与当前证据缺口的关系。")
+
+
+class DocumentLineRange(BaseModel):
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
+class ReadDocument(BaseModel):
+    """按行号批量读取已登记文档的有限窗口。"""
+
+    allow_parallel: ClassVar[bool] = False
+
+    document_id: str = Field(min_length=1)
+    ranges: list[DocumentLineRange] = Field(min_length=1, max_length=32)
+    reason: str = Field(description="为什么需要读取这些行段。")
+
+
+class EvidenceSubmission(BaseModel):
+    """Researcher 从已经看到的文档原文中提出一条原子 Evidence。"""
+
+    document_id: str = Field(min_length=1)
+    claim: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    quote: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    support: Literal["direct", "partial", "insufficient"] = "direct"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class AddEvidence(BaseModel):
+    """批量提交 Evidence 候选；系统逐字验证后才会入池。"""
+
+    allow_parallel: ClassVar[bool] = False
+
+    evidences: list[EvidenceSubmission] = Field(min_length=1, max_length=32)
+    reason: str = Field(description="这些 Evidence 如何回答当前方向。")
+
+
 class ReadWorkingSet(BaseModel):
     """查看当前 Agent 工作集的轻量摘要。"""
 

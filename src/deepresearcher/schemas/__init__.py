@@ -39,6 +39,11 @@ from deepresearcher.schemas.sections import (
 )
 from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.schemas.tool_args import (
+    AddEvidence,
+    DocumentLineRange,
+    EvidenceSubmission,
+    GrepDocument,
+    ReadDocument,
     ReadSources,
     ReadWorkingSet,
     ReleaseEvidence,
@@ -52,12 +57,17 @@ from deepresearcher.schemas.tool_args import (
 )
 
 __all__ = [
+    "AddEvidence",
     "Citation",
     "CoveredTopic",
+    "DocumentLineRange",
+    "EvidenceSubmission",
+    "GrepDocument",
     "ReleaseEvidence",
     "MarkdownReportDraft",
     "ParagraphBinding",
     "ReadSources",
+    "ReadDocument",
     "ReadWorkingSet",
     "ReflectionDecision",
     "ReportBrief",

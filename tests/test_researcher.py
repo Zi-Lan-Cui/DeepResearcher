@@ -14,7 +14,7 @@ from deepresearcher.schemas import (
     ResearchDirectionDecision,
     ResearchDirectionResult,
 )
-from deepresearcher.tools import SearchTool, SourceReaderTool
+from deepresearcher.tools import LocalDocumentStore, SearchTool, SourceReaderTool
 from deepresearcher.tools.errors import SourceUnavailableError
 from fakes import (
     TASK,
@@ -320,6 +320,182 @@ def test_source_reader_requires_llm_at_construction():
 
     with pytest.raises(LLMConfigurationError):
         SourceReaderTool(Fetcher(), llm=None)
+
+
+def test_source_reader_inlines_short_document_and_registers_it(tmp_path):
+    class Fetcher:
+        async def afetch(self, _url, **_kwargs):
+            return {
+                "title": "短文",
+                "text": "第一行\n第二行",
+                "final_url": "https://example.com/final",
+                "retrieval_method": "origin_fetch",
+            }
+
+    store = LocalDocumentStore(tmp_path)
+    tool = SourceReaderTool(
+        Fetcher(),
+        llm=object(),
+        document_store=store,
+        document_inline_max_tokens=1_000,
+    )
+    result = asyncio.run(
+        tool.arun(TASK, {"title": "x", "url": "https://example.com", "score": 0.9})
+    )
+
+    assert result.status == "completed"
+    assert result.evidences == []
+    assert result.documents[0].inline is True
+    assert result.documents[0].content == "L1: 第一行\nL2: 第二行"
+    assert asyncio.run(store.get(result.documents[0].document_id)).source_url.endswith("/final")
+
+
+def test_source_reader_keeps_long_document_out_of_tool_result(tmp_path):
+    class Fetcher:
+        async def afetch(self, _url, **_kwargs):
+            return {"title": "长文", "text": "很长的正文" * 100, "final_url": _url}
+
+    tool = SourceReaderTool(
+        Fetcher(),
+        llm=object(),
+        document_store=LocalDocumentStore(tmp_path),
+        document_inline_max_tokens=1,
+    )
+    result = asyncio.run(
+        tool.arun(TASK, {"title": "x", "url": "https://example.com", "score": 0.9})
+    )
+
+    assert result.status == "completed"
+    assert result.documents[0].inline is False
+    assert result.documents[0].content == ""
+    assert result.documents[0].line_count == 1
+
+
+def test_researcher_reads_registered_document_and_adds_verified_evidence(tmp_path):
+    store = LocalDocumentStore(tmp_path)
+    document = asyncio.run(
+        store.put(
+            text="引言\n实验表明端到端延迟为 20ms。\n结论",
+            title="实验报告",
+            source_url="https://example.com/report",
+            support_ceiling="partial",
+            token_count=20,
+        )
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(evidence_max_per_source=4),
+        search_tool=SearchTool(FakeSearchClient()),
+        reader_tool=FakeReader(),
+        document_store=store,
+    )
+    run_state = DirectionRunState(active_evidence_limit=4, evidence_archive_limit=8)
+    run_state.documents[document.document_id] = document
+
+    grep = asyncio.run(
+        agent._grep_document(
+            document.document_id,
+            ["延迟"],
+            1,
+            "定位数据",
+            run_state=run_state,
+        )
+    )
+    read = asyncio.run(
+        agent._read_document(
+            document.document_id,
+            [(2, 3)],
+            "读取数据",
+            run_state=run_state,
+        )
+    )
+    added = asyncio.run(
+        agent._add_evidence(
+            TASK,
+            [
+                {
+                    "document_id": document.document_id,
+                    "claim": "实验端到端延迟为 20ms。",
+                    "quote": "实验表明端到端延迟为 20ms。",
+                    "support": "direct",
+                    "confidence": 0.9,
+                },
+                {
+                    "document_id": document.document_id,
+                    "claim": "不存在的事实",
+                    "quote": "正文里没有这句话",
+                    "support": "direct",
+                    "confidence": 0.9,
+                },
+            ],
+            "批量提交",
+            run_state=run_state,
+            event_context={},
+        )
+    )
+
+    assert grep["match_count"] == 1
+    assert "L2:" in read["ranges"][0]["content"]
+    assert len(added["accepted"]) == 1
+    assert len(added["rejected"]) == 1
+    assert run_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
+    assert run_state.evidences[0].locator.start_line == 2
+    assert run_state.evidences[0].locator.end_line == 2
+
+
+def test_add_evidence_validates_before_ranking_by_confidence(tmp_path):
+    store = LocalDocumentStore(tmp_path)
+    document = asyncio.run(
+        store.put(
+            text="低优先级事实\n高优先级事实",
+            title="排序测试",
+            source_url="https://example.com/ranking",
+        )
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(evidence_add_batch_size=1, evidence_max_per_source=2),
+        search_tool=SearchTool(FakeSearchClient()),
+        reader_tool=FakeReader(),
+        document_store=store,
+    )
+    run_state = DirectionRunState(active_evidence_limit=2, evidence_archive_limit=2)
+    run_state.documents[document.document_id] = document
+    run_state.observed_document_ranges[document.document_id] = [(1, 2)]
+
+    result = asyncio.run(
+        agent._add_evidence(
+            TASK,
+            [
+                {
+                    "document_id": document.document_id,
+                    "claim": "无效但最高分",
+                    "quote": "并不存在",
+                    "confidence": 1.0,
+                },
+                {
+                    "document_id": document.document_id,
+                    "claim": "较低优先级",
+                    "quote": "低优先级事实",
+                    "confidence": 0.2,
+                },
+                {
+                    "document_id": document.document_id,
+                    "claim": "较高优先级",
+                    "quote": "高优先级事实",
+                    "confidence": 0.9,
+                },
+            ],
+            "验证后排序",
+            run_state=run_state,
+            event_context={},
+        )
+    )
+
+    assert len(result["accepted"]) == 1
+    assert run_state.evidences[0].claim == "较高优先级"
+    assert result["truncated_submission_count"] == 1
+    assert any(item["reason"].endswith("不存在于候选原文") for item in result["rejected"])
 
 
 def test_source_reader_keeps_access_challenge_as_nonfatal_source_outcome():

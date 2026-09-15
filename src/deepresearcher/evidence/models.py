@@ -10,6 +10,8 @@ from deepresearcher.schemas.sources import SourceProfile
 class EvidenceLocator(BaseModel):
     block_ids: list[str] = Field(default_factory=list)
     heading_path: list[str] = Field(default_factory=list)
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
 
 
 class Evidence(BaseModel):
