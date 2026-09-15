@@ -1,5 +1,14 @@
 """研究引擎的网页发现、读取和内容标准化能力。"""
 
+from deepresearcher.tools.web.documents import (
+    DocumentGrepMatch,
+    DocumentOutlineItem,
+    DocumentReadRange,
+    DocumentRef,
+    DocumentStore,
+    DocumentView,
+    LocalDocumentStore,
+)
 from deepresearcher.tools.web.fetch import (
     AliyunFetchProvider,
     DirectHttpFetchProvider,
@@ -21,6 +30,12 @@ from deepresearcher.tools.web.search import (
 __all__ = [
     "AliyunFetchProvider",
     "DirectHttpFetchProvider",
+    "DocumentGrepMatch",
+    "DocumentOutlineItem",
+    "DocumentReadRange",
+    "DocumentRef",
+    "DocumentStore",
+    "DocumentView",
     "FetchProvider",
     "FetchService",
     "SearchCandidate",
@@ -29,6 +44,7 @@ __all__ = [
     "SearchResult",
     "SearchTool",
     "SearchToolResult",
+    "LocalDocumentStore",
     "SourceDocument",
     "SourceReaderTool",
     "SourceReaderToolResult",

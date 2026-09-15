@@ -6,6 +6,7 @@ from typing import cast
 
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence import EvidenceExtractor
+from deepresearcher.evidence.tokens import get_token_estimator
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.logger import get_logger
@@ -18,6 +19,11 @@ from deepresearcher.tools.errors import (
     ToolConfigurationError,
     ToolParseError,
 )
+from deepresearcher.tools.web.documents import (
+    DocumentOutlineItem,
+    DocumentStore,
+    DocumentView,
+)
 from deepresearcher.tools.web.fetch.models import (
     SourceDocument,
     SourceReaderToolResult,
@@ -25,11 +31,12 @@ from deepresearcher.tools.web.fetch.models import (
     skipped_read,
 )
 from deepresearcher.tools.web.fetch.protocol import FetchProvider
+from deepresearcher.tools.web.parsing.models import DocumentBlock
 from deepresearcher.tools.web.search.models import SearchResult
 
 
 class SourceReaderTool:
-    """读取单个来源并产出 Evidence，不决定研究是否充分。"""
+    """读取单个来源；新链路登记正文，兼容链路仍可直接抽取 Evidence。"""
 
     def __init__(
         self,
@@ -59,6 +66,8 @@ class SourceReaderTool:
         model_id: str = "",
         input_usd_per_million: float = 0.0,
         output_usd_per_million: float = 0.0,
+        document_store: DocumentStore | None = None,
+        document_inline_max_tokens: int = 6_000,
     ):
         if fetcher is None:
             raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchProvider。")
@@ -70,6 +79,9 @@ class SourceReaderTool:
         self.fetch_timeout = fetch_timeout
         self.parse_timeout = parse_timeout
         self.evidence_extract_timeout = evidence_extract_timeout
+        self.document_store = document_store
+        self.document_inline_max_tokens = document_inline_max_tokens
+        self.token_estimator = get_token_estimator()
         self.extractor = EvidenceExtractor(
             llm,
             context_window_tokens=context_window_tokens,
@@ -102,6 +114,13 @@ class SourceReaderTool:
             "worker_id": task.get("worker_id", task["id"]),
             "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
         }
+        if self.document_store is not None:
+            return await self._read_into_document_store(
+                task,
+                result,
+                started=started,
+                task_context=task_context,
+            )
         if self.event_sink is not None:
             self.event_sink.write(
                 make_tool_event(
@@ -396,6 +415,179 @@ class SourceReaderTool:
                     )
                 )
             return failed_read(task, exc)
+
+    async def _read_into_document_store(
+        self,
+        task: SubTask,
+        result: SearchResult,
+        *,
+        started: float,
+        task_context: dict[str, object],
+    ) -> SourceReaderToolResult:
+        """抓取并登记规范化正文；Evidence 由 Researcher 后续显式提交。"""
+        assert self.document_store is not None
+        requested_url = str(result.get("url", ""))
+        link = current_span_context()
+        if self.event_sink is not None:
+            self.event_sink.write(
+                make_tool_event(
+                    "fetch",
+                    "started",
+                    event_name="source_fetch_started",
+                    payload={**task_context, "requested_url": requested_url},
+                )
+            )
+        try:
+            if self.trace_recorder is not None:
+                with self.trace_recorder.span("fetch", kind="tool"):
+                    link = current_span_context()
+                    document = await self.fetcher.afetch(
+                        requested_url,
+                        fetch_timeout=self.fetch_timeout,
+                        parse_timeout=self.parse_timeout,
+                    )
+            else:
+                document = await self.fetcher.afetch(
+                    requested_url,
+                    fetch_timeout=self.fetch_timeout,
+                    parse_timeout=self.parse_timeout,
+                )
+            if document.get("error"):
+                raise ToolParseError(str(document.get("error", "来源解析失败")))
+            if not str(document.get("text", "")).strip():
+                raise SourceUnavailableError("empty_content", "来源没有可读取正文。")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            document = self._search_content_document(result)
+            if document is None:
+                reason_code = (
+                    exc.reason_code if isinstance(exc, SourceUnavailableError) else "fetch_failed"
+                )
+                if self.event_sink is not None:
+                    self.event_sink.write(
+                        make_tool_event(
+                            "fetch",
+                            "skipped" if isinstance(exc, SourceUnavailableError) else "failed",
+                            link=link,
+                            error=str(exc),
+                            duration_ms=(time.perf_counter() - started) * 1_000,
+                            payload={
+                                **task_context,
+                                "requested_url": requested_url,
+                                "reason_code": reason_code,
+                            },
+                        )
+                    )
+                if isinstance(exc, SourceUnavailableError):
+                    return skipped_read(
+                        task,
+                        source_url=requested_url,
+                        reason_code=reason_code,
+                        reason=str(exc),
+                    )
+                return failed_read(task, exc)
+
+        published_at = str(result.get("published_at", "")).strip()
+        if published_at:
+            document = cast(SourceDocument, {**document, "published_at": published_at})
+        text = str(document.get("text", "")).strip()
+        token_count = self.token_estimator.count(text)
+        ref = await self.document_store.put(
+            text=text,
+            title=str(document.get("title") or result.get("title", "")),
+            source_url=str(document.get("final_url") or requested_url),
+            published_at=published_at,
+            retrieval_method=str(document.get("retrieval_method", "origin_fetch")),
+            support_ceiling=str(document.get("support_ceiling", "direct")),
+            token_count=token_count,
+            outline=self._document_outline(
+                text,
+                cast(list[DocumentBlock], document.get("blocks", [])),
+            ),
+        )
+        inline = token_count <= self.document_inline_max_tokens
+        view = DocumentView(
+            **ref.model_dump(),
+            inline=inline,
+            content=self._numbered_text(text) if inline else "",
+        )
+        if self.event_sink is not None:
+            self.event_sink.write(
+                make_tool_event(
+                    "fetch",
+                    "completed",
+                    event_name="source_document_registered",
+                    link=link,
+                    duration_ms=(time.perf_counter() - started) * 1_000,
+                    payload={
+                        **task_context,
+                        "requested_url": requested_url,
+                        "final_url": ref.source_url,
+                        "document_id": ref.document_id,
+                        "line_count": ref.line_count,
+                        "token_count": ref.token_count,
+                        "inline": inline,
+                    },
+                )
+            )
+        return SourceReaderToolResult(
+            task_id=task["id"],
+            status="completed",
+            source_url=ref.source_url,
+            documents=[view],
+        )
+
+    @staticmethod
+    def _search_content_document(result: SearchResult) -> SourceDocument | None:
+        raw_content = str(result.get("raw_content", "")).strip()
+        snippet = str(result.get("snippet", "")).strip()
+        if raw_content:
+            text, method, ceiling = raw_content, "tavily_raw_content", "direct"
+        elif snippet:
+            text, method, ceiling = snippet, "search_summary", "partial"
+        else:
+            return None
+        return {
+            "title": str(result.get("title", "")),
+            "final_url": str(result.get("url", "")),
+            "text": text,
+            "blocks": [],
+            "retrieval_method": method,
+            "support_ceiling": ceiling,
+        }
+
+    @staticmethod
+    def _numbered_text(text: str) -> str:
+        return "\n".join(f"L{index}: {line}" for index, line in enumerate(text.splitlines(), 1))
+
+    @staticmethod
+    def _document_outline(
+        text: str,
+        blocks: list[DocumentBlock],
+        *,
+        limit: int = 64,
+    ) -> list[DocumentOutlineItem]:
+        """由解析器已有 heading 块生成紧凑行号目录，不额外调用模型。"""
+        lines = text.splitlines()
+        outline: list[DocumentOutlineItem] = []
+        search_from = 0
+        for block in blocks:
+            if block.get("block_type") != "heading":
+                continue
+            heading = str(block.get("text", "")).strip()
+            if not heading:
+                continue
+            matched = next(
+                (index for index in range(search_from, len(lines)) if heading in lines[index]),
+                None,
+            )
+            line = (matched + 1) if matched is not None else 1
+            search_from = matched + 1 if matched is not None else search_from
+            outline.append(DocumentOutlineItem(heading=heading, line=line))
+            if len(outline) >= limit:
+                break
+        return outline
 
     async def _extract_search_content_fallback(
         self,

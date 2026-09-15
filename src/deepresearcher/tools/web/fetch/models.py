@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.state import SubTask
+from deepresearcher.tools.web.documents import DocumentView
 from deepresearcher.tools.web.parsing.models import ParsedContent
 
 
@@ -35,11 +36,12 @@ class SourceDocument(ParsedContent, total=False):
 
 
 class SourceReaderToolResult(BaseModel):
-    """单来源读取与 Evidence 抽取工具的稳定返回契约。"""
+    """单来源读取结果；新路径返回文档，旧抽取基线仍可返回 Evidence。"""
 
     task_id: str
     status: Literal["completed", "failed", "skipped"]
     evidences: list[Evidence] = Field(default_factory=list)
+    documents: list[DocumentView] = Field(default_factory=list)
     source_url: str = ""
     error: str = ""
     reason_code: str = ""

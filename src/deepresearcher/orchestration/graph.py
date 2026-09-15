@@ -29,6 +29,7 @@ from deepresearcher.tools import (
     DirectHttpFetchProvider,
     FetchService,
     HttpClient,
+    LocalDocumentStore,
     NoOpToolCache,
     SearchClient,
     SearchTool,
@@ -166,6 +167,8 @@ def build_graph(
         model_id=settings.llm.model,
         input_usd_per_million=settings.llm.input_usd_per_million,
         output_usd_per_million=settings.llm.output_usd_per_million,
+        document_store=LocalDocumentStore(settings.agent.document_store_root),
+        document_inline_max_tokens=settings.agent.document_inline_max_tokens,
     )
     clarifier = Clarifier(
         llm,
