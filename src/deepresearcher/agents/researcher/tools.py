@@ -7,6 +7,11 @@ from langchain_core.tools import BaseTool, tool
 
 from deepresearcher.agents.researcher.state import DirectionRunState, ResearchRuntimeContext
 from deepresearcher.schemas import (
+    AddEvidence,
+    DocumentLineRange,
+    EvidenceSubmission,
+    GrepDocument,
+    ReadDocument,
     ReadSources,
     ReadWorkingSet,
     ReleaseEvidence,
@@ -62,8 +67,51 @@ def build_researcher_tools() -> list[BaseTool]:
         reason: str,
         runtime: ToolRuntime[ResearchRuntimeContext],
     ) -> str:
-        """读取模型选中的候选来源并抽取 Evidence。"""
+        """抓取模型选中的来源；短文内联，长文返回可按行读取的句柄。"""
         result = await runtime.context.read_sources(candidate_ids, reason)
+        return _tool_result(result)
+
+    @tool("GrepDocument", args_schema=GrepDocument)
+    async def grep_document(
+        document_id: str,
+        queries: list[str],
+        context_lines: int,
+        reason: str,
+        runtime: ToolRuntime[ResearchRuntimeContext],
+    ) -> str:
+        """在当前方向已经登记的长文中批量定位普通文本。"""
+        result = await runtime.context.grep_document(document_id, queries, context_lines, reason)
+        return _tool_result(result)
+
+    @tool("ReadDocument", args_schema=ReadDocument)
+    async def read_document(
+        document_id: str,
+        ranges: list[DocumentLineRange],
+        reason: str,
+        runtime: ToolRuntime[ResearchRuntimeContext],
+    ) -> str:
+        """按行号批量读取当前方向已经登记的文档窗口。"""
+        result = await runtime.context.read_document(
+            document_id,
+            [(item.start_line, item.end_line) for item in ranges],
+            reason,
+        )
+        return _tool_result(result)
+
+    @tool("AddEvidence", args_schema=AddEvidence)
+    async def add_evidence(
+        evidences: list[EvidenceSubmission],
+        reason: str,
+        runtime: ToolRuntime[ResearchRuntimeContext],
+    ) -> str:
+        """批量提交 Evidence；只有能在已登记原文中复算的引用才会入池。"""
+        result = await runtime.context.add_evidence(
+            [
+                item.model_dump(mode="json") if isinstance(item, EvidenceSubmission) else dict(item)
+                for item in evidences
+            ],
+            reason,
+        )
         return _tool_result(result)
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
@@ -158,6 +206,9 @@ def build_researcher_tools() -> list[BaseTool]:
     return [
         search_sources,
         read_sources,
+        grep_document,
+        read_document,
+        add_evidence,
         read_working_set,
         release_evidence,
         restore_evidence,

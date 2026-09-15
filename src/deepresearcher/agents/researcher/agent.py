@@ -24,7 +24,8 @@ from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig, language_directive
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.context.runtime import get_runtime_environment
-from deepresearcher.evidence.models import Evidence
+from deepresearcher.evidence.models import Evidence, EvidenceLocator
+from deepresearcher.evidence.validator import locate_quote_lines, normalize_text
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
@@ -32,6 +33,7 @@ from deepresearcher.prompts import json_data_section, load_prompt
 from deepresearcher.schemas import ResearchAgentResult, ResearchDirectionResult
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
+from deepresearcher.tools.web.documents import DocumentStore, DocumentView
 from deepresearcher.tools.web.fetch.models import SourceReaderToolResult
 from deepresearcher.tools.web.search.models import (
     SearchCandidate,
@@ -56,6 +58,7 @@ class ResearchAgent:
         reader_tool: SourceReaderTool,
         event_sink: JsonlSink | None = None,
         context_window_tokens: int = 32_768,
+        document_store: DocumentStore | None = None,
     ):
         if llm is None:
             raise LLMConfigurationError("ResearchAgent 需要已装配的 LLMInvoker。")
@@ -65,6 +68,7 @@ class ResearchAgent:
         self.config = config
         self.search_tool = search_tool
         self.reader_tool = reader_tool
+        self.document_store = document_store or getattr(reader_tool, "document_store", None)
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.agents.researcher")
         self._agent_loop = create_agent(
@@ -89,6 +93,9 @@ class ResearchAgent:
                         serial_tools={
                             "SearchSources",
                             "ReadSources",
+                            "GrepDocument",
+                            "ReadDocument",
+                            "AddEvidence",
                             "ReadWorkingSet",
                             "ReleaseEvidence",
                             "RestoreEvidence",
@@ -222,12 +229,52 @@ class ResearchAgent:
                 on_url_already_attempted=on_url_already_attempted,
             )
 
+        async def grep_document(
+            document_id: str,
+            queries: list[str],
+            context_lines: int,
+            reason: str,
+        ) -> dict[str, object]:
+            return await self._grep_document(
+                document_id,
+                queries,
+                context_lines,
+                reason,
+                run_state=run_state,
+            )
+
+        async def read_document(
+            document_id: str,
+            ranges: list[tuple[int, int]],
+            reason: str,
+        ) -> dict[str, object]:
+            return await self._read_document(
+                document_id,
+                ranges,
+                reason,
+                run_state=run_state,
+            )
+
+        async def add_evidence(
+            submissions: list[dict[str, object]], reason: str
+        ) -> dict[str, object]:
+            return await self._add_evidence(
+                task,
+                submissions,
+                reason,
+                run_state=run_state,
+                event_context=event_context,
+            )
+
         return ResearchRuntimeContext(
             task=task,
             scope=scope,
             run_state=run_state,
             search_sources=search_sources,
             read_sources=read_sources,
+            grep_document=grep_document,
+            read_document=read_document,
+            add_evidence=add_evidence,
             on_url_already_attempted=on_url_already_attempted,
             event_context=event_context,
         )
@@ -277,6 +324,8 @@ class ResearchAgent:
         )
         read_results = await self._read_candidates(extraction_task, candidates)
         accepted_evidence: list[Evidence] = []
+        documents: list[DocumentView] = []
+        inline_tokens = 0
         for candidate, read_result in zip(candidates, read_results, strict=True):
             url = candidate.url
             if isinstance(read_result, asyncio.CancelledError):
@@ -295,6 +344,24 @@ class ResearchAgent:
                 continue
             result = SourceReaderToolResult.model_validate(read_result)
             if result.status == "completed":
+                for document in result.documents:
+                    view = document
+                    if view.inline:
+                        if (
+                            inline_tokens + view.token_count
+                            > self.config.document_inline_total_max_tokens
+                        ):
+                            view = view.model_copy(update={"inline": False, "content": ""})
+                        else:
+                            inline_tokens += view.token_count
+                    run_state.documents[view.document_id] = view
+                    if view.inline and view.line_count:
+                        run_state.observed_document_ranges.setdefault(view.document_id, []).append(
+                            (1, view.line_count)
+                        )
+                    documents.append(view)
+                    if view.source_url:
+                        run_state.source_refs.append(view.source_url)
                 remaining = run_state.evidence_archive_limit - len(run_state.evidences)
                 accepted = list(result.evidences)[: max(0, remaining)]
                 accepted = run_state.add_evidences(accepted)
@@ -336,6 +403,7 @@ class ResearchAgent:
                 )
                 for item in accepted_evidence
             ],
+            "documents": [item.model_dump(mode="json") for item in documents],
             "archive_evidence_count": len(run_state.evidences),
             "active_evidence_count": len(run_state.active_evidence_ids),
             "active_evidence_limit": run_state.active_evidence_limit,
@@ -343,6 +411,203 @@ class ResearchAgent:
             "skip_reasons": sorted(set(run_state.skipped)),
             "recent_failures": run_state.failures[-4:],
         }
+
+    async def _grep_document(
+        self,
+        document_id: str,
+        queries: list[str],
+        context_lines: int,
+        reason: str,
+        *,
+        run_state: DirectionRunState,
+    ) -> dict[str, object]:
+        del reason
+        if document_id not in run_state.documents:
+            return {"status": "rejected", "reason": "unknown_document_id"}
+        if self.document_store is None:
+            return {"status": "failed", "reason": "document_store_unavailable"}
+        clean_queries = list(dict.fromkeys(item.strip() for item in queries if item.strip()))[:8]
+        matches = await self.document_store.grep(
+            document_id,
+            clean_queries,
+            context_lines=min(context_lines, self.config.document_grep_context_lines),
+            max_matches=self.config.document_grep_max_matches,
+            max_chars=self.config.document_grep_max_chars,
+        )
+        run_state.observed_document_ranges.setdefault(document_id, []).extend(
+            (item.start_line, item.end_line) for item in matches
+        )
+        return {
+            "status": "completed",
+            "document_id": document_id,
+            "matches": [item.model_dump(mode="json") for item in matches],
+            "match_count": len(matches),
+        }
+
+    async def _read_document(
+        self,
+        document_id: str,
+        ranges: list[tuple[int, int]],
+        reason: str,
+        *,
+        run_state: DirectionRunState,
+    ) -> dict[str, object]:
+        del reason
+        if document_id not in run_state.documents:
+            return {"status": "rejected", "reason": "unknown_document_id"}
+        if self.document_store is None:
+            return {"status": "failed", "reason": "document_store_unavailable"}
+        requested = ranges[: self.config.document_read_max_ranges]
+        try:
+            windows = await self.document_store.read(
+                document_id,
+                requested,
+                max_lines=self.config.document_read_max_lines,
+                max_chars=self.config.document_read_max_chars,
+            )
+        except ValueError as exc:
+            return {"status": "rejected", "reason": str(exc)}
+        run_state.observed_document_ranges.setdefault(document_id, []).extend(
+            (item.start_line, item.end_line) for item in windows
+        )
+        return {
+            "status": "completed",
+            "document_id": document_id,
+            "ranges": [item.model_dump(mode="json") for item in windows],
+            "truncated_range_count": max(0, len(ranges) - len(requested)),
+        }
+
+    async def _add_evidence(
+        self,
+        task: SubTask,
+        submissions: list[dict[str, object]],
+        reason: str,
+        *,
+        run_state: DirectionRunState,
+        event_context: dict[str, object],
+    ) -> dict[str, object]:
+        del reason
+        if self.document_store is None:
+            return {"status": "failed", "reason": "document_store_unavailable"}
+        accepted: list[Evidence] = []
+        rejected: list[dict[str, object]] = []
+        duplicates: list[str] = []
+        existing_ids = {item.evidence_id for item in run_state.evidences}
+        pending_ids: set[str] = set()
+        candidates: list[tuple[int, str, Evidence]] = []
+        per_source = {
+            document_id: sum(
+                1 for item in run_state.evidences if item.source_url == document.source_url
+            )
+            for document_id, document in run_state.documents.items()
+        }
+        for index, raw in enumerate(submissions):
+            document_id = str(raw.get("document_id", ""))
+            document = run_state.documents.get(document_id)
+            if document is None:
+                rejected.append({"index": index, "reason": "unknown_document_id"})
+                continue
+            claim = str(raw.get("claim", "")).strip()
+            quote = str(raw.get("quote", "")).strip()
+            try:
+                source_text = await self.document_store.text(document_id)
+                start_line, end_line = locate_quote_lines(source_text, quote)
+            except (FileNotFoundError, ValueError, KeyError) as exc:
+                rejected.append({"index": index, "reason": str(exc)})
+                continue
+            observed = run_state.observed_document_ranges.get(document_id, [])
+            if not any(start_line >= start and end_line <= end for start, end in observed):
+                rejected.append({"index": index, "reason": "quote_not_observed"})
+                continue
+            digest = hashlib.sha1(
+                f"{document_id}\0{normalize_text(quote)}".encode("utf-8")
+            ).hexdigest()[:16]
+            evidence_id = f"{task['id']}-ev-{digest}"
+            if evidence_id in existing_ids or evidence_id in pending_ids:
+                duplicates.append(evidence_id)
+                continue
+            requested_support = str(raw.get("support", "direct"))
+            support = self._bounded_support(requested_support, document.support_ceiling)
+            confidence_value = raw.get("confidence", 0.0)
+            if not isinstance(confidence_value, (int, float, str)):
+                rejected.append({"index": index, "reason": "invalid_confidence"})
+                continue
+            try:
+                confidence = float(confidence_value)
+            except (TypeError, ValueError):
+                rejected.append({"index": index, "reason": "invalid_confidence"})
+                continue
+            if not 0.0 <= confidence <= 1.0:
+                rejected.append({"index": index, "reason": "invalid_confidence"})
+                continue
+            audit = await self.document_store.read(
+                document_id,
+                [(max(1, start_line - 2), min(document.line_count, end_line + 2))],
+                max_lines=max(1, end_line - start_line + 5),
+                max_chars=16_000,
+            )
+            evidence = Evidence(
+                evidence_id=evidence_id,
+                subtask_id=task["id"],
+                research_direction=task["question"],
+                claim=claim,
+                quote=quote,
+                source_url=document.source_url,
+                source_title=document.title,
+                published_at=document.published_at,
+                source_profile=describe_source(document.source_url),
+                retrieval_method=cast(Any, document.retrieval_method),
+                locator=EvidenceLocator(start_line=start_line, end_line=end_line),
+                support=cast(Any, support),
+                confidence=confidence,
+                audit_chunk="\n".join(item.content for item in audit),
+            )
+            candidates.append((index, document_id, evidence))
+            pending_ids.add(evidence_id)
+
+        ranked = sorted(candidates, key=lambda item: item[2].confidence, reverse=True)
+        selected = ranked[: self.config.evidence_add_batch_size]
+        for index, document_id, evidence in selected:
+            if per_source.get(document_id, 0) >= self.config.evidence_max_per_source:
+                rejected.append({"index": index, "reason": "source_evidence_limit_reached"})
+                continue
+            added = run_state.add_evidences([evidence])
+            if not added:
+                rejected.append({"index": index, "reason": "evidence_archive_full"})
+                continue
+            accepted.extend(added)
+            existing_ids.add(evidence_id)
+            per_source[document_id] = per_source.get(document_id, 0) + 1
+        self._emit(
+            "direction_evidence_added",
+            {
+                **event_context,
+                "accepted_count": len(accepted),
+                "rejected_count": len(rejected),
+                "duplicate_count": len(duplicates),
+            },
+        )
+        return {
+            "status": "completed" if accepted else "rejected",
+            "accepted": [
+                evidence_observation_card(
+                    item, quote_chars=self.config.research_observation_quote_chars
+                )
+                for item in accepted
+            ],
+            "rejected": rejected,
+            "duplicate_evidence_ids": duplicates,
+            "truncated_submission_count": max(0, len(ranked) - len(selected)),
+            "archive_evidence_count": len(run_state.evidences),
+            "active_evidence_count": len(run_state.active_evidence_ids),
+        }
+
+    @staticmethod
+    def _bounded_support(requested: str, ceiling: str) -> str:
+        levels = ("insufficient", "partial", "direct")
+        requested_index = levels.index(requested) if requested in levels else 0
+        ceiling_index = levels.index(ceiling) if ceiling in levels else 0
+        return levels[min(requested_index, ceiling_index)]
 
     async def _search_sources(
         self,

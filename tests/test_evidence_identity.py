@@ -40,3 +40,4 @@ def test_researcher_registers_completion_as_a_standard_tool():
 
     assert "ResearchDirectionComplete" in tools
     assert "ReadSources" in tools
+    assert {"GrepDocument", "ReadDocument", "AddEvidence"}.issubset(tools)
