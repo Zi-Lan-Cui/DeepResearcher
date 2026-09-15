@@ -64,6 +64,12 @@ def _bool_env(name: str, default: bool) -> bool:
     return default
 
 
+def _project_path_env(name: str, default: Path) -> Path:
+    """读取路径配置；相对路径统一以项目根目录为基准。"""
+    path = Path(_env(name, str(default))).expanduser()
+    return path if path.is_absolute() else _PROJECT_ROOT / path
+
+
 @dataclass(frozen=True)
 class LLMRetryConfig:
     """LLM 调用策略；传输重试和结构化修复是两种不同的预算。"""
@@ -142,6 +148,17 @@ class AgentConfig:
     evidence_bm25_top_k: int = 10
     evidence_bm25_window: int = 1
     evidence_retriever_backend: Literal["bm25", "head_truncate"] = "bm25"
+    # 抓取正文统一写入 DocumentStore；短文额外内联给 Researcher，长文按行读取。
+    document_store_root: Path = _PROJECT_ROOT / "var" / "documents"
+    document_inline_max_tokens: int = 6_000
+    document_inline_total_max_tokens: int = 12_000
+    document_read_max_ranges: int = 6
+    document_read_max_lines: int = 240
+    document_read_max_chars: int = 24_000
+    document_grep_context_lines: int = 2
+    document_grep_max_matches: int = 12
+    document_grep_max_chars: int = 12_000
+    evidence_add_batch_size: int = 8
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     research_agent_max_turns: int = 3
     research_agent_max_queries: int = 6
@@ -387,6 +404,20 @@ def _agent_config() -> AgentConfig:
                 {"bm25", "head_truncate"},
             ),
         ),
+        document_store_root=_project_path_env(
+            "AGENT_DOCUMENT_STORE_ROOT", _PROJECT_ROOT / "var" / "documents"
+        ),
+        document_inline_max_tokens=max(500, _int_env("AGENT_DOCUMENT_INLINE_MAX_TOKENS", 6_000)),
+        document_inline_total_max_tokens=max(
+            500, _int_env("AGENT_DOCUMENT_INLINE_TOTAL_MAX_TOKENS", 12_000)
+        ),
+        document_read_max_ranges=max(1, _int_env("AGENT_DOCUMENT_READ_MAX_RANGES", 6)),
+        document_read_max_lines=max(1, _int_env("AGENT_DOCUMENT_READ_MAX_LINES", 240)),
+        document_read_max_chars=max(1_000, _int_env("AGENT_DOCUMENT_READ_MAX_CHARS", 24_000)),
+        document_grep_context_lines=max(0, _int_env("AGENT_DOCUMENT_GREP_CONTEXT_LINES", 2)),
+        document_grep_max_matches=max(1, _int_env("AGENT_DOCUMENT_GREP_MAX_MATCHES", 12)),
+        document_grep_max_chars=max(1_000, _int_env("AGENT_DOCUMENT_GREP_MAX_CHARS", 12_000)),
+        evidence_add_batch_size=max(1, _int_env("AGENT_EVIDENCE_ADD_BATCH_SIZE", 8)),
         research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 3)),
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),
         research_agent_max_evidences_per_direction=max(
