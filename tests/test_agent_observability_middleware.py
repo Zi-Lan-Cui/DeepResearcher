@@ -90,6 +90,34 @@ async def test_tool_failure_is_recorded_and_reraised():
 
 
 @pytest.mark.asyncio
+async def test_document_tool_content_is_redacted_from_lifecycle_events():
+    events: list[tuple[str, dict[str, object]]] = []
+    middleware = AgentObservabilityMiddleware(
+        "ResearchAgent",
+        run_limit=5,
+        emit=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    request = _request()
+    request.tool_call = {
+        "name": "AddEvidence",
+        "id": "call-sensitive",
+        "args": {"evidences": [{"quote": "不应进入事件的原文"}]},
+    }
+
+    async def handler(_request):
+        return ToolMessage(content="包含原文的工具回执", tool_call_id="call-sensitive")
+
+    await middleware.awrap_tool_call(request, handler)
+
+    started = events[0][1]
+    completed = events[1][1]
+    assert started["arguments_redacted"] is True
+    assert started["arguments_preview"] == ""
+    assert completed["content_redacted"] is True
+    assert "content_preview" not in completed
+
+
+@pytest.mark.asyncio
 async def test_observability_sink_failure_does_not_block_tool():
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
