@@ -164,6 +164,22 @@ def test_drb_adapter_builds_official_criteria_without_copying(fake_drb):
     assert drb.load_references(fake_drb) == {1: "专家文章"}
 
 
+def test_drb_root_prefers_explicit_path(fake_drb, monkeypatch):
+    monkeypatch.setenv("DRB_ROOT", "/path/that/must/not/be/used")
+    assert drb.drb_root(fake_drb) == fake_drb
+
+
+def test_drb_root_reads_environment(fake_drb, monkeypatch):
+    monkeypatch.setenv("DRB_ROOT", str(fake_drb))
+    assert drb.drb_root() == fake_drb
+
+
+def test_drb_root_requires_configuration(monkeypatch):
+    monkeypatch.delenv("DRB_ROOT", raising=False)
+    with pytest.raises(FileNotFoundError, match="--drb-root.*DRB_ROOT"):
+        drb.drb_root()
+
+
 def test_drb_split_is_seeded_stable_and_partitions(fake_drb, tmp_path):
     # 只有 1 个中文题，用 100 题语义验证：两次生成结果一致、dev+holdout 全划分
     out1 = tmp_path / "s1.json"

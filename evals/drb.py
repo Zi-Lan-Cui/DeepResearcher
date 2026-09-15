@@ -13,27 +13,34 @@ split_drb_zh.json 冻结，全组人共用同一份，杜绝"悄悄把某题挪�
 from __future__ import annotations
 
 import json
+import os
 import random
 from pathlib import Path
 from typing import Any
 
 from evals.schemas import Criterion, EvalCase
 
-DEFAULT_DRB_ROOT = Path("/home/zilan/Desktop/deep_research_bench")
+DRB_ROOT_ENV = "DRB_ROOT"
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text("utf-8").splitlines() if line.strip()]
 
 
-def drb_root(override: str | None = None) -> Path:
-    import os
+def drb_root(override: str | Path | None = None) -> Path:
+    """解析外部 DRB 数据集目录，不推测使用者的本地文件布局。
 
-    root = Path(override or os.environ.get("DRB_ROOT", str(DEFAULT_DRB_ROOT)))
-    if not (root / "data" / "prompt_data" / "query.jsonl").is_file():
+    命令行传入的 ``override`` 优先于 ``DRB_ROOT`` 环境变量。数据集不属于
+    本仓库，因此二者均未配置时直接给出可操作的错误，而不是绑定开发者目录。
+    """
+    configured = override or os.environ.get(DRB_ROOT_ENV)
+    if not configured:
         raise FileNotFoundError(
-            f"DRB 根目录无效: {root}。请 clone deep_research_bench 后 export DRB_ROOT。"
+            "未配置 DRB 数据集目录。请传入 --drb-root，或设置 DRB_ROOT 环境变量。"
         )
+    root = Path(configured).expanduser()
+    if not (root / "data" / "prompt_data" / "query.jsonl").is_file():
+        raise FileNotFoundError(f"DRB 根目录无效: {root}。请检查 --drb-root 或 DRB_ROOT 配置。")
     return root
 
 

@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import Protocol
 
 from evals.schemas import Criterion, CriterionResult, EvalCase
@@ -63,34 +65,37 @@ async def judge_case(
     reference: str | None = None,
 ) -> list[CriterionResult]:
     """逐条独立判定；调用方负责把结果与 human/deterministic 记录合并。"""
-    results: list[CriterionResult] = []
-    for criterion in case.judge_criteria():
+    concurrency = max(1, int(os.environ.get("EVAL_JUDGE_CONCURRENCY", "5")))
+    total_timeout = float(os.environ.get("EVAL_JUDGE_TOTAL_TIMEOUT_SECONDS", "120"))
+    gate = asyncio.Semaphore(concurrency)
+
+    async def judge_criterion(criterion: Criterion) -> CriterionResult:
         user = build_user_prompt(criterion, report, reference)
         try:
-            raw = await invoker.complete(SYSTEM_PROMPT, user)
+            async with gate:
+                raw = await asyncio.wait_for(
+                    invoker.complete(SYSTEM_PROMPT, user), timeout=total_timeout
+                )
             verdict, reason = parse_verdict(raw), ""
         except Exception as exc:  # noqa: BLE001 - 单条 judge 失败降级 unknown，不废整题
             verdict, reason = "unknown", f"judge 调用失败: {type(exc).__name__}: {str(exc)[:120]}"
-        results.append(
-            CriterionResult(
-                case_id=case.case_id,
-                attempt=attempt,
-                criterion_id=criterion.id,
-                dimension=criterion.dimension,
-                verdict=verdict,  # type: ignore[arg-type]
-                source="judge",
-                reason=reason,
-            )
+        return CriterionResult(
+            case_id=case.case_id,
+            attempt=attempt,
+            criterion_id=criterion.id,
+            dimension=criterion.dimension,
+            verdict=verdict,  # type: ignore[arg-type]
+            source="judge",
+            reason=reason,
         )
-    return results
+
+    return list(await asyncio.gather(*(judge_criterion(item) for item in case.judge_criteria())))
 
 
 class OpenAICompatJudge:
     """生产用 invoker：复用引擎同一 LLM 网关配置，可用 EVAL_JUDGE_* 覆盖。"""
 
     def __init__(self) -> None:
-        import os
-
         from openai import AsyncOpenAI
 
         from deepresearcher.config import get_settings
@@ -98,7 +103,13 @@ class OpenAICompatJudge:
         llm = get_settings().llm
         if not llm.configured:
             raise RuntimeError("LLM_API_KEY/LLM_BASE_URL/LLM_MODEL_ID 未配置，无法构造 judge")
-        self._client = AsyncOpenAI(api_key=llm.api_key, base_url=llm.base_url)
+        timeout_seconds = float(os.environ.get("EVAL_JUDGE_TIMEOUT_SECONDS", "120"))
+        self._client = AsyncOpenAI(
+            api_key=llm.api_key,
+            base_url=llm.base_url,
+            timeout=timeout_seconds,
+            max_retries=1,
+        )
         self._model = os.environ.get("EVAL_JUDGE_MODEL", "").strip() or llm.model
         self._max_tokens = int(os.environ.get("EVAL_JUDGE_MAX_TOKENS", "16"))
 
