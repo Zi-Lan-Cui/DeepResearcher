@@ -9,6 +9,7 @@ from langchain_core.messages import BaseMessage
 
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
+from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
 from deepresearcher.tools.web.search.models import SearchCandidate
 
@@ -29,6 +30,21 @@ class ResearchAgentState(TypedDict, total=False):
     conclusion: str
     status: str
     stop_reason: str
+
+
+def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[str, object]:
+    """Researcher 读源后的观察视图；保留短原文，不暴露定位与审计正文。"""
+    return {
+        "evidence_id": evidence.evidence_id,
+        "claim": evidence.claim,
+        "quote": evidence.quote[:quote_chars],
+        "support": evidence.support,
+        "confidence": evidence.confidence,
+        "source_title": evidence.source_title,
+        "source_domain": source_domain(evidence.source_url),
+        "source_profile": evidence.source_profile.model_dump(mode="json"),
+        **({"published_at": evidence.published_at} if evidence.published_at else {}),
+    }
 
 
 @dataclass

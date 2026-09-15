@@ -6,6 +6,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from deepresearcher.agents.clarifier.constants import CLARIFICATION_OPTION_COUNT
 from deepresearcher.agents.clarifier.state import ClarifierGraphState
 from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.prompts import json_data_section
@@ -37,7 +38,9 @@ def build_clarifier_graph(agent: ClarifierAgentNode):
 
     async def ask(state: ClarifierGraphState):
         question = str(state.get("pending_question") or "").strip()
-        options = [str(item) for item in state.get("pending_options", [])][:3]
+        options = [str(item) for item in state.get("pending_options", [])][
+            :CLARIFICATION_OPTION_COUNT
+        ]
         answer = interrupt(
             {
                 "kind": "clarification",

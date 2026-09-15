@@ -24,7 +24,7 @@ def test_verify_password_tolerates_garbage_hash():
 
 
 def test_email_normalization():
-    assert normalize_email("  Zilan@Test.COM ") == "zilan@test.com"
+    assert normalize_email("  User@Test.COM ") == "user@test.com"
 
 
 def test_password_policy_bounds():

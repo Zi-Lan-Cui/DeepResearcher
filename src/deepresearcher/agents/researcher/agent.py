@@ -18,6 +18,7 @@ from deepresearcher.agents.middleware import (
 from deepresearcher.agents.researcher.state import (
     DirectionRunState,
     ResearchRuntimeContext,
+    evidence_observation_card,
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig, language_directive
@@ -186,7 +187,7 @@ class ResearchAgent:
             )
             run_state.remaining_gaps = list(
                 dict.fromkeys([*run_state.remaining_gaps, fallback_gap])
-            )[:4]
+            )
             run_state.stop_reason = "fallback_complete"
         run_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
 
@@ -329,15 +330,10 @@ class ResearchAgent:
             "read_candidate_count": len(candidates),
             "unknown_candidate_ids": unknown_ids,
             "evidence": [
-                {
-                    "evidence_id": item.evidence_id,
-                    "claim": item.claim,
-                    "quote": item.quote[: self.config.research_observation_quote_chars],
-                    "source": item.source_url,
-                    "source_profile": item.source_profile.model_dump(),
-                    "support": item.support,
-                    **({"published_at": item.published_at} if item.published_at else {}),
-                }
+                evidence_observation_card(
+                    item,
+                    quote_chars=self.config.research_observation_quote_chars,
+                )
                 for item in accepted_evidence
             ],
             "archive_evidence_count": len(run_state.evidences),

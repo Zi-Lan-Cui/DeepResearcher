@@ -161,22 +161,21 @@ class EvidenceExtractor:
         failed_chunk_count = int(cast(dict, cached.value).get("failed_chunk_count", 0))
         if len(extracted_by_chunk) != len(chunks):
             raise ValueError("evidence_cache_chunk_mismatch")
-        evidences: list[Evidence] = []
-        seen_quotes: set[str] = set()
+        validated_candidates: list[Evidence] = []
         validation_rejected_count = 0
+        candidate_serial = 0
         source_url = document.get("final_url", result.get("url", ""))
         source_fingerprint = hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:10]
         for chunk, extracted in zip(chunks, extracted_by_chunk, strict=True):
             for item in extracted.evidences:
-                if self.max_evidences is not None and len(evidences) >= self.max_evidences:
-                    break
+                candidate_serial += 1
                 quote_key = " ".join(item.quote.lower().split())
-                if not quote_key or quote_key in seen_quotes:
+                if not quote_key:
                     continue
                 evidence = Evidence(
                     # 同一 task 会读取多个来源；来源指纹避免每个来源都从 ev-1
                     # 开始而在 State reducer 中发生 ID 碰撞。
-                    evidence_id=f"{task['id']}-src-{source_fingerprint}-ev-{len(evidences) + 1}",
+                    evidence_id=f"{task['id']}-src-{source_fingerprint}-candidate-{candidate_serial}",
                     subtask_id=task["id"],
                     research_direction=task["question"],
                     claim=item.claim,
@@ -207,8 +206,7 @@ class EvidenceExtractor:
                     audit_chunk=self._audit_chunk(chunk, item.quote),
                 )
                 try:
-                    evidences.append(validate_evidence(evidence, chunk))
-                    seen_quotes.add(quote_key)
+                    validated_candidates.append(validate_evidence(evidence, chunk))
                 except ValueError as exc:
                     validation_rejected_count += 1
                     # 只记数量与头部预览；整段 block_id 列表会淹没日志。
@@ -222,6 +220,22 @@ class EvidenceExtractor:
                         len(item.quote),
                     )
                     continue
+
+        # 数量限制只作用于通过逐字校验的候选；按 confidence 稳定降序，
+        # 再做 quote 去重，保证错误引用和低置信重复项不会挤占来源配额。
+        evidences: list[Evidence] = []
+        seen_quotes: set[str] = set()
+        for evidence in sorted(
+            validated_candidates,
+            key=lambda candidate: candidate.confidence,
+            reverse=True,
+        ):
+            quote_key = " ".join(evidence.quote.lower().split())
+            if quote_key in seen_quotes:
+                continue
+            evidence.evidence_id = f"{task['id']}-src-{source_fingerprint}-ev-{len(evidences) + 1}"
+            evidences.append(evidence)
+            seen_quotes.add(quote_key)
             if self.max_evidences is not None and len(evidences) >= self.max_evidences:
                 break
         return ExtractionResult(
@@ -519,10 +533,13 @@ class EvidenceExtractor:
         task: SubTask,
         blocks: list[DocumentBlock],
         total_tokens: int,
-    ) -> tuple[list[DocumentBlock], Literal["full", "bm25_recall"]]:
+    ) -> tuple[list[DocumentBlock], Literal["full", "bm25_recall", "head_truncate"]]:
         """短文走全文；长文按子问题召回、去重并裁剪到统一输入预算。"""
         if total_tokens <= self.full_context_max_tokens:
             return blocks, "full"
+
+        if self.retriever_backend == "head_truncate":
+            return self._select_head_prefix(blocks), "head_truncate"
 
         priorities: dict[str, float] = defaultdict(float)
         recalled_by_id: dict[str, DocumentBlock] = {}
@@ -569,6 +586,18 @@ class EvidenceExtractor:
             key=lambda item: document_order.get(self._block_key(item, len(blocks)), len(blocks))
         )
         return selected, "bm25_recall"
+
+    def _select_head_prefix(self, blocks: list[DocumentBlock]) -> list[DocumentBlock]:
+        """按原文顺序保留预算内前缀，首次超限后立即停止。"""
+        selected: list[DocumentBlock] = []
+        for block in blocks:
+            candidate = [*selected, block]
+            if self._prompt_blocks_tokens(candidate) > self.full_context_max_tokens:
+                break
+            selected.append(block)
+        if selected or not blocks:
+            return selected
+        return self._split_large_block(blocks[0], budget_tokens=self.full_context_max_tokens)[:1]
 
     @staticmethod
     def _block_key(block: DocumentBlock, fallback: int) -> str:

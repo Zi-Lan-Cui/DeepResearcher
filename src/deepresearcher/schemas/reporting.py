@@ -6,6 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from deepresearcher.schemas.limits import (
+    EVIDENCE_REFERENCES_HARD_LIMIT,
+    REPORT_CAVEATS_HARD_LIMIT,
+    REPORT_MARKDOWN_HARD_LIMIT_CHARS,
+    STRUCTURED_COLLECTION_HARD_LIMIT,
+    STRUCTURED_IDENTIFIER_HARD_LIMIT_CHARS,
+    STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
+    STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+)
 from deepresearcher.schemas.sources import SourceProfile
 
 
@@ -16,16 +25,21 @@ class CoveredTopic(BaseModel):
     role: str
     reason: str
     required: bool = True
-    evidence_ids: list[str] = Field(default_factory=list, max_length=30)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT)
 
 
 class ReportBrief(BaseModel):
     """Supervisor 交给 Writer 的任务书；不携带 Evidence 正文。"""
 
     answer_goal: str
-    covered_topics: list[CoveredTopic] = Field(min_length=1, max_length=6)
-    required_points: list[str] = Field(default_factory=list, max_length=8)
-    caveats: list[str] = Field(default_factory=list, max_length=6)
+    covered_topics: list[CoveredTopic] = Field(
+        min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+    )
+    required_points: list[str] = Field(
+        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+    )
+    # 日常裁剪由 AGENT_REPORT_MAX_CAVEATS 控制；这里仅防御异常膨胀。
+    caveats: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
 
 
 class ResearchAspect(BaseModel):
@@ -35,14 +49,14 @@ class ResearchAspect(BaseModel):
     也不在概念上等于最终报告章节。
     """
 
-    aspect_id: str = Field(min_length=1, max_length=80)
-    topic: str = Field(min_length=1, max_length=500)
-    role: str = Field(min_length=1, max_length=500)
+    aspect_id: str = Field(min_length=1, max_length=STRUCTURED_IDENTIFIER_HARD_LIMIT_CHARS)
+    topic: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    role: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     required: bool = True
     status: Literal["covered", "partial", "uncovered", "conflicted"]
-    summary: str = Field(default="", max_length=2_000)
-    evidence_ids: list[str] = Field(default_factory=list, max_length=30)
-    remaining_gap: str = Field(default="", max_length=1_000)
+    summary: str = Field(default="", max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT)
+    remaining_gap: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
 
     @model_validator(mode="after")
     def validate_grounding(self) -> "ResearchAspect":
@@ -62,15 +76,18 @@ class ResearchSynthesis(BaseModel):
 
     revision: int = Field(ge=1)
     based_on_working_set_revision: int = Field(ge=0)
-    answer_goal: str = Field(min_length=1, max_length=2_000)
-    overall_summary: str = Field(min_length=1, max_length=4_000)
-    aspects: list[ResearchAspect] = Field(min_length=1, max_length=6)
-    selected_evidence_ids: list[str] = Field(default_factory=list, max_length=50)
-    open_gaps: list[str] = Field(default_factory=list, max_length=12)
-    conflicts: list[str] = Field(default_factory=list, max_length=8)
-    next_actions: list[str] = Field(default_factory=list, max_length=8)
-    readiness: Literal["not_ready", "partial_ready", "complete_candidate"]
-    decision_rationale: str = Field(min_length=1, max_length=2_000)
+    answer_goal: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    overall_summary: str = Field(min_length=1, max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
+    aspects: list[ResearchAspect] = Field(min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    selected_evidence_ids: list[str] = Field(
+        default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT
+    )
+    open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    next_actions: list[str] = Field(
+        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+    )
+    decision_rationale: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchSynthesis":
@@ -82,11 +99,11 @@ class ResearchSynthesis(BaseModel):
                 evidence_id for aspect in self.aspects for evidence_id in aspect.evidence_ids
             )
         )
-        if len(selected) > 50:
-            raise ValueError("研究综合稿最多选择 50 条 Evidence。")
+        if len(selected) > EVIDENCE_REFERENCES_HARD_LIMIT:
+            raise ValueError(
+                f"研究综合稿异常膨胀：Evidence 引用超过 {EVIDENCE_REFERENCES_HARD_LIMIT} 条。"
+            )
         self.selected_evidence_ids = selected
-        if self.readiness != "not_ready" and not self.selected_evidence_ids:
-            raise ValueError("可交付研究综合稿必须选择至少一条 Evidence。")
         return self
 
 
@@ -98,8 +115,11 @@ class WriterDirective(BaseModel):
     research_status: Literal["not_started", "running", "completed", "incomplete", "failed"]
     generation_mode: Literal["not_ready", "partial", "full"]
     evidence_ids: list[str] | None = None
-    known_gaps: list[str] = Field(default_factory=list, max_length=8)
-    revision_instructions: list[str] = Field(default_factory=list, max_length=8)
+    # 日常裁剪与 ReportBrief caveats 共用配置；这里仅防御异常膨胀。
+    known_gaps: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
+    revision_instructions: list[str] = Field(
+        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+    )
     previous_draft: str = ""
 
 
@@ -111,6 +131,8 @@ class Citation(BaseModel):
     title: str = ""
     quote: str = ""
     claim: str = ""
+    support: Literal["direct", "partial", "insufficient"] = "direct"
+    published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
 
 
@@ -133,5 +155,7 @@ class ParagraphBinding(BaseModel):
 class MarkdownReportDraft(BaseModel):
     """Writer 的 Markdown 草稿；引用以内部 cite 标签标记。"""
 
-    markdown: str = Field(default="", max_length=24_000)
-    selected_evidence_ids: list[str] = Field(default_factory=list, max_length=24)
+    markdown: str = Field(default="", max_length=REPORT_MARKDOWN_HARD_LIMIT_CHARS)
+    selected_evidence_ids: list[str] = Field(
+        default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT
+    )

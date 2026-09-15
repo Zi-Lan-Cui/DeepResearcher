@@ -29,6 +29,18 @@ def test_writer_requires_llm_at_construction():
         )
 
 
+def test_writer_directive_accepts_configured_ten_known_gaps() -> None:
+    directive = WriterDirective(
+        query="研究问题",
+        report_brief=ReportBrief.model_validate(REPORT_BRIEF),
+        research_status="incomplete",
+        generation_mode="partial",
+        known_gaps=[f"缺口 {index}" for index in range(10)],
+    )
+
+    assert len(directive.known_gaps) == 10
+
+
 def test_writer_never_receives_evidence_audit_chunk() -> None:
     evidence = _ev(
         "e1",
@@ -72,6 +84,9 @@ def test_writer_exposes_published_at_as_metadata_but_not_locator() -> None:
     assert "published_at=2026-07-04(搜索元信息)" in catalogue
     assert "private-block-id" not in catalogue
     assert "内部章节" not in catalogue
+    assert "confidence=" not in catalogue
+    assert "retrieval=" not in catalogue
+    assert "source_profile=" not in catalogue
 
 
 def test_writer_catalogue_preserves_topic_assignments_and_deduplicates_cards() -> None:

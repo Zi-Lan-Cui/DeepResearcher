@@ -9,9 +9,15 @@ from langgraph.graph import END
 from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 
+from deepresearcher.agents.clarifier.constants import (
+    CLARIFICATION_ASSUMPTION_LIMIT,
+    CLARIFICATION_FOCUS_LIMIT,
+    CLARIFICATION_INTENT_MAX_CHARS,
+    CLARIFICATION_OPTION_COUNT,
+    CLARIFICATION_QUESTION_MAX_CHARS,
+    MAX_CLARIFICATION_ROUNDS,
+)
 from deepresearcher.agents.clarifier.state import ClarifierAgentState
-
-MAX_CLARIFICATION_ROUNDS = 2
 
 
 def _normalize_string_list(value: object) -> object:
@@ -37,15 +43,15 @@ def _normalize_string_list(value: object) -> object:
 class AskClarificationArgs(BaseModel):
     question: str = Field(
         min_length=1,
-        max_length=500,
+        max_length=CLARIFICATION_QUESTION_MAX_CHARS,
         description=(
             "向用户提出的一个简短、具体问题，只解决一个会改变研究方向或研究边界的关键决策。"
             "不得询问能够通过检索自行回答的问题。"
         ),
     )
     options: list[str] = Field(
-        min_length=3,
-        max_length=3,
+        min_length=CLARIFICATION_OPTION_COUNT,
+        max_length=CLARIFICATION_OPTION_COUNT,
         description=(
             "恰好三个互斥、具体、可直接选择的默认答案；覆盖最可能的三种意图。"
             "不要加入‘其他/Other’，界面会自动提供自由输入。"
@@ -61,17 +67,17 @@ class AskClarificationArgs(BaseModel):
 class ClarificationCompleteArgs(BaseModel):
     intent_summary: str = Field(
         min_length=1,
-        max_length=1_000,
+        max_length=CLARIFICATION_INTENT_MAX_CHARS,
         description="对已确认用户意图和研究边界的准确摘要；不得改变或缩窄用户已经明确的要求。",
     )
     research_focus: list[str] = Field(
         default_factory=list,
-        max_length=4,
+        max_length=CLARIFICATION_FOCUS_LIMIT,
         description="交给 Supervisor 的核心研究重点，最多四项；只写用户已明确或回答确认的重点。",
     )
     assumptions: list[str] = Field(
         default_factory=list,
-        max_length=3,
+        max_length=CLARIFICATION_ASSUMPTION_LIMIT,
         description="仍需由系统采用的显式假设，最多三项；没有假设时传空列表。",
     )
 
@@ -144,8 +150,12 @@ def build_clarifier_tools():
             goto=END,
             update={
                 "intent_summary": intent_summary.strip(),
-                "research_focus": [item.strip() for item in research_focus if item.strip()][:4],
-                "assumptions": [item.strip() for item in assumptions if item.strip()][:3],
+                "research_focus": [item.strip() for item in research_focus if item.strip()][
+                    :CLARIFICATION_FOCUS_LIMIT
+                ],
+                "assumptions": [item.strip() for item in assumptions if item.strip()][
+                    :CLARIFICATION_ASSUMPTION_LIMIT
+                ],
                 "clarification_completed": True,
                 "messages": [
                     _tool_message(runtime, {"status": "accepted"}, "ClarificationComplete")

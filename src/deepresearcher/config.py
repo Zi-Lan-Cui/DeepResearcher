@@ -12,6 +12,12 @@ from typing import Literal, cast
 
 from dotenv import load_dotenv
 
+from deepresearcher.schemas.limits import (
+    EVIDENCE_REFERENCES_HARD_LIMIT,
+    REPORT_CAVEATS_HARD_LIMIT,
+    REPORT_MARKDOWN_HARD_LIMIT_CHARS,
+)
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WriterSupportLevel = Literal["insufficient", "partial", "direct"]
 
@@ -111,9 +117,6 @@ class AgentConfig:
     writer_feedback_chars: int = 800
     writer_minimum_support: WriterSupportLevel = "direct"
     writer_max_markdown_chars: int = 24_000
-    # 研究未完全覆盖时，达到该最低材料门槛仍允许 Writer 产出部分报告。
-    partial_report_min_evidences: int = 1
-    partial_report_min_sources: int = 1
     # 单次 ReadEvidence 每轮交付量（可一次请求至多 50 条，差额 not_read_ids 排队）。
     # 引用总条数不设上限——writer_max_selected_evidence 已移除：它制造过两次
     # 提交死循环，而聚焦度实际由"只能引用已读"+审阅把关，与条数无关。
@@ -127,7 +130,6 @@ class AgentConfig:
     supervisor_max_active_evidences: int = 30
     supervisor_preview_chars: int = 300
     # Supervisor 交给 Writer 的报告任务书输出限制。
-    report_max_topics: int = 6
     report_max_caveats: int = 6
     # 单一网页可贡献的 Evidence 上限，避免某篇来源主导整个研究方向。
     evidence_max_per_source: int = 2
@@ -139,7 +141,7 @@ class AgentConfig:
     evidence_full_context_max_tokens: int = 8_192
     evidence_bm25_top_k: int = 10
     evidence_bm25_window: int = 1
-    evidence_retriever_backend: Literal["bm25"] = "bm25"
+    evidence_retriever_backend: Literal["bm25", "head_truncate"] = "bm25"
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     research_agent_max_turns: int = 3
     research_agent_max_queries: int = 6
@@ -160,6 +162,44 @@ class AgentConfig:
     # 所有面向用户的自然语言输出（理由/旁白/任务描述/正文）的统一语言。
     # 注入各 system prompt 的 language_directive() 使用；quote 永远保持原文。
     output_language: str = "中文"
+
+    def __post_init__(self) -> None:
+        """校验跨层容量契约，避免配置突破下游 schema 边界。"""
+        if (
+            self.research_agent_max_evidences_per_direction
+            > self.research_agent_max_evidence_candidates_per_direction
+        ):
+            raise ValueError(
+                "AGENT_RESEARCH_MAX_EVIDENCES_PER_DIRECTION 不能大于 "
+                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION"
+            )
+        if self.evidence_max_per_source > self.research_agent_max_evidence_candidates_per_direction:
+            raise ValueError(
+                "AGENT_EVIDENCE_MAX_PER_SOURCE 不能大于 "
+                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION"
+            )
+        if self.report_max_caveats > REPORT_CAVEATS_HARD_LIMIT:
+            raise ValueError(
+                "AGENT_REPORT_MAX_CAVEATS 不能大于 ReportBrief 的安全上限 "
+                f"{REPORT_CAVEATS_HARD_LIMIT}"
+            )
+        if self.supervisor_max_active_evidences > EVIDENCE_REFERENCES_HARD_LIMIT:
+            raise ValueError(
+                "AGENT_SUPERVISOR_MAX_ACTIVE_EVIDENCES 不能大于 Evidence 引用的"
+                f"安全上限 {EVIDENCE_REFERENCES_HARD_LIMIT}"
+            )
+        if self.research_agent_max_evidence_candidates_per_direction > (
+            EVIDENCE_REFERENCES_HARD_LIMIT
+        ):
+            raise ValueError(
+                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION 不能大于 "
+                f"Evidence 引用的安全上限 {EVIDENCE_REFERENCES_HARD_LIMIT}"
+            )
+        if self.writer_max_markdown_chars > REPORT_MARKDOWN_HARD_LIMIT_CHARS:
+            raise ValueError(
+                "AGENT_WRITER_MAX_MARKDOWN_CHARS 不能大于报告 Schema 的安全上限 "
+                f"{REPORT_MARKDOWN_HARD_LIMIT_CHARS}"
+            )
 
 
 def language_directive(language: str) -> str:
@@ -311,8 +351,6 @@ def _agent_config() -> AgentConfig:
             ),
         ),
         writer_max_markdown_chars=max(1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)),
-        partial_report_min_evidences=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_EVIDENCES", 1)),
-        partial_report_min_sources=max(1, _int_env("AGENT_PARTIAL_REPORT_MIN_SOURCES", 1)),
         writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
         reflection_retry_attempts=max(0, _int_env("AGENT_REFLECTION_RETRY_ATTEMPTS", 1)),
         reflection_retry_initial_seconds=max(
@@ -324,7 +362,6 @@ def _agent_config() -> AgentConfig:
             1, _int_env("AGENT_SUPERVISOR_MAX_ACTIVE_EVIDENCES", 30)
         ),
         supervisor_preview_chars=max(100, _int_env("AGENT_SUPERVISOR_PREVIEW_CHARS", 300)),
-        report_max_topics=max(1, _int_env("AGENT_REPORT_MAX_TOPICS", 6)),
         report_max_caveats=max(1, _int_env("AGENT_REPORT_MAX_CAVEATS", 6)),
         evidence_max_per_source=max(1, _int_env("AGENT_EVIDENCE_MAX_PER_SOURCE", 2)),
         evidence_input_budget_tokens=max(
@@ -343,8 +380,12 @@ def _agent_config() -> AgentConfig:
         evidence_bm25_top_k=max(1, _int_env("EVIDENCE_BM25_TOP_K", 10)),
         evidence_bm25_window=max(0, _int_env("EVIDENCE_BM25_WINDOW", 1)),
         evidence_retriever_backend=cast(
-            Literal["bm25"],
-            _choice_env("EVIDENCE_RETRIEVER_BACKEND", "bm25", {"bm25"}),
+            Literal["bm25", "head_truncate"],
+            _choice_env(
+                "EVIDENCE_RETRIEVER_BACKEND",
+                "bm25",
+                {"bm25", "head_truncate"},
+            ),
         ),
         research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 3)),
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),

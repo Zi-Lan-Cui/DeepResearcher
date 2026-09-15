@@ -1,7 +1,6 @@
 """Supervisor 的标准工具注册表。"""
 
 import json
-from typing import Literal
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
@@ -68,23 +67,32 @@ def build_supervisor_tools() -> list[BaseTool]:
         reason: str,
         runtime: ToolRuntime[SupervisorRuntimeContext],
     ) -> Command:
-        """冻结最新且未过期的完整研究综合稿，并终止研究阶段。"""
+        """冻结最新且未过期的研究综合稿，并终止研究阶段。"""
         working = runtime.context.working
         synthesis = working.research_synthesis
         accepted = bool(
             synthesis is not None
             and synthesis.revision == synthesis_revision
             and working.synthesis_is_fresh(synthesis)
-            and synthesis.readiness == "complete_candidate"
             and synthesis.selected_evidence_ids
         )
         if accepted:
-            working.sufficient = True
+            assert synthesis is not None  # accepted 已包含该条件，供静态类型收窄。
+            working.sufficient = (
+                all(
+                    not aspect.required or aspect.status == "covered"
+                    for aspect in synthesis.aspects
+                )
+                and not synthesis.open_gaps
+                and not synthesis.conflicts
+            )
             working.completed_synthesis = synthesis
-            working.stop_reason = StopReason.SUFFICIENT
+            working.stop_reason = (
+                StopReason.SUFFICIENT if working.sufficient else StopReason.SUBMITTED_WITH_GAPS
+            )
         else:
             working.coverage_gaps.append(
-                "ResearchComplete 拒绝了过期、缺失或尚未达到 complete_candidate 的研究综合稿。"
+                "ResearchComplete 拒绝了过期、缺失或未绑定 Evidence 的研究综合稿。"
             )
         return Command(
             goto=END,
@@ -118,14 +126,13 @@ def build_supervisor_tools() -> list[BaseTool]:
         open_gaps: list[str],
         conflicts: list[str],
         next_actions: list[str],
-        readiness: Literal["not_ready", "partial_ready", "complete_candidate"],
         decision_rationale: str,
         runtime: ToolRuntime[SupervisorRuntimeContext],
     ) -> str:
         """用最新方向结果修订当前唯一的研究综合稿；不会结束研究。
 
         仅当新的研究结果实质改变结论、Evidence 选择、缺口、冲突、下一步或
-        可交付状态时使用。它不是工具日志；所有事实总结必须绑定当前活跃
+        结论状态时使用。它不是工具日志；所有事实总结必须绑定当前活跃
         Evidence。aspects 是跨 Researcher 方向的认知组织单元，系统会从其
         evidence_ids 稳定推导总选择集。调用 ResearchComplete 前必须先让本综合稿
         对齐最新 working_set_revision。
@@ -165,7 +172,6 @@ def build_supervisor_tools() -> list[BaseTool]:
                 open_gaps=open_gaps,
                 conflicts=conflicts,
                 next_actions=next_actions,
-                readiness=readiness,
                 decision_rationale=decision_rationale,
             )
         except ValidationError as exc:

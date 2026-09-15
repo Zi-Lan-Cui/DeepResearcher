@@ -10,6 +10,14 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from deepresearcher.schemas.limits import (
+    EVIDENCE_REFERENCES_HARD_LIMIT,
+    SEARCH_QUERIES_PER_CALL,
+    SOURCE_CANDIDATES_PER_READ,
+    STRUCTURED_COLLECTION_HARD_LIMIT,
+    STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
+    STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+)
 from deepresearcher.schemas.reporting import ResearchAspect
 from deepresearcher.schemas.sections import ResearchDirectionResult
 
@@ -22,7 +30,7 @@ class SearchSources(BaseModel):
     reason: str = Field(description="为什么这些检索式能补足当前方向的证据。")
     queries: list[str] = Field(
         min_length=1,
-        max_length=2,
+        max_length=SEARCH_QUERIES_PER_CALL,
         description="一到两条针对当前方向缺口的短检索式。",
     )
 
@@ -34,7 +42,7 @@ class ReadSources(BaseModel):
 
     candidate_ids: list[str] = Field(
         min_length=1,
-        max_length=8,
+        max_length=SOURCE_CANDIDATES_PER_READ,
         description="要读取的候选来源 ID；只能使用 SearchSources 返回的 ID。",
     )
     reason: str = Field(description="说明这些来源与当前方向缺口的关系。")
@@ -53,7 +61,7 @@ class ReleaseEvidence(BaseModel):
 
     allow_parallel: ClassVar[bool] = False
 
-    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+    evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(description="说明这些 Evidence 为什么应从当前工作集中释放。")
 
 
@@ -62,7 +70,7 @@ class RestoreEvidence(BaseModel):
 
     allow_parallel: ClassVar[bool] = False
 
-    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+    evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(description="说明为什么需要重新启用这些 Evidence。")
 
 
@@ -74,7 +82,7 @@ class ResearchDirectionComplete(BaseModel):
     reason: str = Field(description="为什么当前方向可以停止探索。")
     selected_evidence_ids: list[str] = Field(
         default_factory=list,
-        max_length=12,
+        max_length=EVIDENCE_REFERENCES_HARD_LIMIT,
         description="最终推荐给 Supervisor 的当前活跃 Evidence ID。",
     )
     conclusion: str = Field(
@@ -83,7 +91,7 @@ class ResearchDirectionComplete(BaseModel):
     )
     remaining_gaps: list[str] = Field(
         default_factory=list,
-        max_length=4,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
         description="局部未解问题；不代表整项研究的全局缺口。",
     )
 
@@ -123,22 +131,23 @@ class ReviseResearchSynthesis(BaseModel):
         ge=0,
         description="当前工具观察到的 Evidence/任务工作集版本。",
     )
-    answer_goal: str = Field(min_length=1, max_length=2_000)
-    overall_summary: str = Field(min_length=1, max_length=4_000)
+    answer_goal: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    overall_summary: str = Field(min_length=1, max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
     aspects: list[ResearchAspect] = Field(
         min_length=1,
-        max_length=6,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
         description=(
             "Supervisor 跨研究方向建立的完整证据支撑认知单元列表；"
             "不是 Researcher 方向或固定报告章节。covered 必须绑定 Evidence；"
             "partial、uncovered、conflicted 必须说明 remaining_gap。"
         ),
     )
-    open_gaps: list[str] = Field(default_factory=list, max_length=12)
-    conflicts: list[str] = Field(default_factory=list, max_length=8)
-    next_actions: list[str] = Field(default_factory=list, max_length=8)
-    readiness: Literal["not_ready", "partial_ready", "complete_candidate"]
-    decision_rationale: str = Field(min_length=1, max_length=2_000)
+    open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    next_actions: list[str] = Field(
+        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+    )
+    decision_rationale: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
 
 
 class ResearchToolResult(BaseModel):

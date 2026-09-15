@@ -6,7 +6,11 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from deepresearcher.agents.writer.state import ValidatedDraft, WriterRuntimeContext
+from deepresearcher.agents.writer.state import (
+    ValidatedDraft,
+    WriterRuntimeContext,
+    evidence_detail_card,
+)
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 
 # 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
@@ -17,7 +21,7 @@ REQUEST_WINDOW_IDS = 50
 
 
 class ReadEvidence(BaseModel):
-    """读取目录中 Evidence 的完整内容，以便引用其可验证细节。"""
+    """读取目录中 Evidence 的原文与紧凑来源信息，以便引用可验证细节。"""
 
     evidence_ids: list[str] = Field(
         min_length=1,
@@ -46,7 +50,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
         "ReadEvidence",
         args_schema=ReadEvidence,
         description=(
-            "获取目录中 Evidence 的完整内容并加入已读集。"
+            "获取目录中 Evidence 的原文与引用所需来源信息，并加入已读集。"
             f"用法：先从目录选定要引用的条目，用一次调用批量读取全部"
             f"（一次可请求至多 {REQUEST_WINDOW_IDS} 条，每轮交付 {read_batch} 条，"
             "未交付的会列在 not_read_ids 中，下一轮补齐；不要按个位数小口读取）；"
@@ -60,7 +64,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
         reason: str,
         runtime: ToolRuntime[WriterRuntimeContext],
     ) -> str:
-        """返回指定 Evidence 的完整内容，并将其加入本次 Writer 的已读工作集。"""
+        """返回指定 Evidence 的引用视图，并将其加入本次 Writer 的已读工作集。"""
         del reason
         context = runtime.context
         requested = list(dict.fromkeys(evidence_ids))
@@ -85,7 +89,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
         readable = [context.evidence_by_id[item] for item in ids]
         context.read_evidence_ids.update(ids)
         payload: dict[str, object] = {
-            "evidence": [item.agent_payload() for item in readable],
+            "evidence": [evidence_detail_card(item) for item in readable],
             "read_count": len(context.read_evidence_ids),
             "unknown_ids": unknown,
         }

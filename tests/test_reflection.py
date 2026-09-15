@@ -42,6 +42,8 @@ def test_reflection_rejects_with_structured_evidence_feedback(monkeypatch):
     assert result["review"].status == "rejected"
     assert result["review"].gaps == ["缺少具体作品的文学性评价依据"]
     assert "Supervisor 报告任务书" in captured["context"]
+    assert '"support": "direct"' in captured["context"]
+    assert '"source_domain": ""' in captured["context"]
 
 
 def test_reflection_requests_rewrite_when_evidence_is_sufficient(monkeypatch):

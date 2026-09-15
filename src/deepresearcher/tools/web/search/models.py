@@ -2,11 +2,10 @@
 
 import re
 from typing import Literal, NotRequired, TypedDict
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
-from deepresearcher.schemas.sources import SourceProfile
+from deepresearcher.schemas.sources import SourceProfile, source_domain
 from deepresearcher.state import SubTask
 
 
@@ -156,8 +155,7 @@ _SOURCE_RULES: tuple[tuple[re.Pattern[str], SourceProfile], ...] = (
 
 
 def _hostname(url: str) -> str:
-    parsed = urlsplit(url if "://" in url else f"//{url}")
-    return (parsed.hostname or "").lower().rstrip(".")
+    return source_domain(url)
 
 
 def describe_source(url: str) -> SourceProfile:
