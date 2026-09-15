@@ -20,6 +20,8 @@ LIMIT_MESSAGE_MARKER = _LIMIT_MESSAGE_MARKER
 _PREVIEW_CHARS = 800
 _ERROR_PREVIEW_CHARS = 400
 _TOOL_ARGUMENT_PREVIEW_CHARS = 2_000
+_SENSITIVE_TOOL_ARGUMENTS = {"AddEvidence"}
+_SENSITIVE_TOOL_RESULTS = {"ReadSources", "GrepDocument", "ReadDocument", "AddEvidence"}
 
 
 class AgentObservabilityMiddleware(AgentMiddleware):
@@ -78,15 +80,21 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         """记录工具调用边界，不改变返回值、异常或取消语义。"""
         tool_call = request.tool_call
+        tool_name = str(tool_call.get("name", ""))
         base = {
             **self._event_context(request.runtime),
-            "tool_name": str(tool_call.get("name", "")),
+            "tool_name": tool_name,
             "tool_call_id": str(tool_call.get("id", "")),
             "turn": self._call_count(request.state),
             "argument_keys": sorted(str(key) for key in (tool_call.get("args") or {}))
             if isinstance(tool_call.get("args"), dict)
             else [],
-            "arguments_preview": self._preview(tool_call.get("args")),
+            "arguments_preview": (
+                ""
+                if tool_name in _SENSITIVE_TOOL_ARGUMENTS
+                else self._preview(tool_call.get("args"))
+            ),
+            "arguments_redacted": tool_name in _SENSITIVE_TOOL_ARGUMENTS,
         }
         started_at = monotonic()
         self._log_event(f"{self.agent_name.lower()}_tool_started", base)
@@ -120,7 +128,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             {
                 **base,
                 "duration_ms": self._duration_ms(started_at),
-                **self._result_summary(result),
+                **self._result_summary(result, redact=tool_name in _SENSITIVE_TOOL_RESULTS),
             },
         )
         return result
@@ -150,12 +158,14 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return max(0, round((monotonic() - started_at) * 1_000))
 
     @classmethod
-    def _result_summary(cls, result: Any) -> dict[str, object]:
+    def _result_summary(cls, result: Any, *, redact: bool = False) -> dict[str, object]:
         summary: dict[str, object] = {"result_type": type(result).__name__}
         if isinstance(result, ToolMessage):
             content = result.content
             summary["content_chars"] = len(content) if isinstance(content, str) else 0
-            summary["content_preview"] = cls._preview(content)
+            summary["content_redacted"] = redact
+            if not redact:
+                summary["content_preview"] = cls._preview(content)
         return summary
 
     @staticmethod
