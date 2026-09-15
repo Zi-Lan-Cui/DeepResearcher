@@ -23,8 +23,11 @@ DRB 代码 MIT、**数据集另有许可**。本仓库不落任何一行 DRB 题
 ## 准备
 
 ```bash
-git clone https://github.com/Ayanami0730/deep_research_bench ~/Desktop/deep_research_bench
-export DRB_ROOT=~/Desktop/deep_research_bench
+git clone https://github.com/Ayanami0730/deep_research_bench ../deep_research_bench
+export DRB_ROOT=../deep_research_bench
+
+# 也可以不设置环境变量，在各命令中显式传入：
+# uv run python -m evals.cli cases --drb-root /path/to/deep_research_bench
 
 # 生成 dev/holdout 切分（固定种子，全组同一份，勿手改）
 uv run python -m evals.cli split --dev 20
