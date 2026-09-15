@@ -8,7 +8,13 @@ from deepresearcher.config import SearchConfig
 from deepresearcher.tools.errors import SourceUnavailableError, ToolParseError, ToolRequestError
 from deepresearcher.tools.web.aliyun import AliyunDtsApi
 from deepresearcher.tools.web.fetch.models import SourceDocument
-from deepresearcher.tools.web.parsing import DocumentModality, parse_html_blocks, parse_markdown
+from deepresearcher.tools.web.parsing import (
+    DocumentBlock,
+    DocumentModality,
+    parse_html_blocks,
+    parse_markdown,
+    parse_text_blocks,
+)
 
 _CHALLENGE_TITLE_MARKERS = (
     "请求已被拦截",
@@ -64,9 +70,8 @@ class AliyunFetchProvider:
         data = content.encode("utf-8")
         parse_started = asyncio.get_running_loop().time()
         try:
-            parser = parse_html_blocks if content_format == "html" else parse_markdown
             parsed_title, text, blocks = await asyncio.wait_for(
-                asyncio.to_thread(parser, data),
+                asyncio.to_thread(self._parse_content, data, content_format),
                 timeout=parse_timeout or self._config.timeout,
             )
         except (TypeError, ValueError) as exc:
@@ -96,6 +101,21 @@ class AliyunFetchProvider:
             "fetch_duration_ms": fetch_duration_ms,
             "parse_duration_ms": parse_duration_ms,
         }
+
+    @staticmethod
+    def _parse_content(data: bytes, content_format: str) -> tuple[str, str, list[DocumentBlock]]:
+        """HTML 声明与实际内容不符时，自然降级为普通文本块。"""
+        if content_format != "html":
+            return parse_markdown(data)
+        try:
+            title, text, blocks = parse_html_blocks(data)
+        except (TypeError, ValueError):
+            if data.strip():
+                return parse_text_blocks(data)
+            raise
+        if data.strip() and not blocks:
+            return parse_text_blocks(data)
+        return title, text, blocks
 
     @staticmethod
     def _ensure_readable(title: str, content: str) -> None:

@@ -16,7 +16,7 @@ from deepresearcher.tools.web.parsing import (
     parse_docx,
     parse_html_blocks,
     parse_pdf,
-    parse_text,
+    parse_text_blocks,
 )
 
 _CHALLENGE_TITLE_MARKERS = ("验证码", "安全验证", "访问验证", "just a moment", "security check")
@@ -162,8 +162,7 @@ class DirectHttpFetchProvider:
             title, text = parse_docx(data)
             return title, text, self._text_blocks(text)
         if content_type.startswith("text/") or ext in {"txt", "md", "csv", "json", "xml"}:
-            title, text = parse_text(data)
-            return title, text, self._text_blocks(text)
+            return parse_text_blocks(data)
         raise ValueError(f"暂不支持解析的文档类型：{content_type or ext}")
 
     @staticmethod

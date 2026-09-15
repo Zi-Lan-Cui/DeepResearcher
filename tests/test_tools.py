@@ -1,5 +1,7 @@
 import asyncio
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -21,6 +23,16 @@ from deepresearcher.tools.web import (
     SearchClient,
 )
 from deepresearcher.tools.web.aliyun import AliyunDtsClient
+
+
+def test_aliyun_wrapper_does_not_import_credentials_before_settings_load():
+    code = (
+        "import sys; "
+        "import deepresearcher.tools.web.aliyun.client; "
+        "assert 'alibabacloud_credentials.utils.auth_util' not in sys.modules"
+    )
+
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_html_parser_prefers_main_content_and_tracks_h1_through_h6():
@@ -437,6 +449,64 @@ def test_aliyun_fetch_normalizes_markdown_into_source_document():
         "list_item",
         "list_item",
     ]
+
+
+def test_aliyun_fetch_falls_back_to_text_when_html_response_has_no_elements():
+    class FakeAliyunClient:
+        async def web_fetch(self, url, output_format):
+            assert output_format == "html"
+            return SimpleNamespace(
+                success=True,
+                http_status_code=200,
+                request_id="request-plain-html",
+                url=url,
+                url_type="static_html",
+                content_format="html",
+                title="Example",
+                content="First paragraph.\nSecond paragraph.",
+            )
+
+    document = asyncio.run(
+        AliyunFetchProvider(
+            SearchConfig(aliyun_fetch_output_format="html"), FakeAliyunClient()
+        ).afetch("https://example.com/page")
+    )
+
+    assert document["text"] == "First paragraph.\nSecond paragraph."
+    assert [block["text"] for block in document["blocks"]] == [
+        "First paragraph.",
+        "Second paragraph.",
+    ]
+
+
+def test_aliyun_fetch_falls_back_to_text_when_html_parser_rejects_content(monkeypatch):
+    class FakeAliyunClient:
+        async def web_fetch(self, url, output_format):
+            return SimpleNamespace(
+                success=True,
+                http_status_code=200,
+                request_id="request-invalid-html",
+                url=url,
+                url_type="static_html",
+                content_format="html",
+                title="Example",
+                content="Still readable text.",
+            )
+
+    def reject_html(_data):
+        raise ValueError("invalid html")
+
+    monkeypatch.setattr(
+        "deepresearcher.tools.web.fetch.providers.aliyun.parse_html_blocks", reject_html
+    )
+    document = asyncio.run(
+        AliyunFetchProvider(
+            SearchConfig(aliyun_fetch_output_format="html"), FakeAliyunClient()
+        ).afetch("https://example.com/page")
+    )
+
+    assert document["text"] == "Still readable text."
+    assert [block["text"] for block in document["blocks"]] == ["Still readable text."]
 
 
 def test_aliyun_fetch_rejects_access_challenge_page():
