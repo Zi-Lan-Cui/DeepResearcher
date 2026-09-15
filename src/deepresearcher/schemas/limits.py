@@ -1,0 +1,19 @@
+"""Schema 容量边界。
+
+业务裁剪由 ``AgentConfig`` 和工具处理器负责；本模块中的 hard limit
+只用于拦截异常膨胀的模型输出，必须明显高于正常运行配置。
+少数 per-call 常量是明确的工具协议限制，用于控制单次外部请求成本。
+"""
+
+# 异常保护上限：不应被当作日常业务配置。
+STRUCTURED_IDENTIFIER_HARD_LIMIT_CHARS = 512
+STRUCTURED_TEXT_HARD_LIMIT_CHARS = 16_000
+STRUCTURED_SUMMARY_HARD_LIMIT_CHARS = 64_000
+STRUCTURED_COLLECTION_HARD_LIMIT = 128
+EVIDENCE_REFERENCES_HARD_LIMIT = 256
+REPORT_MARKDOWN_HARD_LIMIT_CHARS = 256_000
+REPORT_CAVEATS_HARD_LIMIT = 50
+
+# Researcher 单次工具调用协议：限制一次外部操作的扇出，不限制整个方向。
+SEARCH_QUERIES_PER_CALL = 2
+SOURCE_CANDIDATES_PER_READ = 8

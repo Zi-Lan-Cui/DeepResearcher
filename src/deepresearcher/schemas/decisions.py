@@ -6,6 +6,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from deepresearcher.schemas.limits import (
+    EVIDENCE_REFERENCES_HARD_LIMIT,
+    SEARCH_QUERIES_PER_CALL,
+    SOURCE_CANDIDATES_PER_READ,
+    STRUCTURED_COLLECTION_HARD_LIMIT,
+)
 from deepresearcher.schemas.sections import ReviewIssue
 
 
@@ -19,11 +25,13 @@ class ResearchDirectionDecision(BaseModel):
 
     action: Literal["search", "read", "inspect", "release", "restore", "complete"]
     reason: str
-    queries: list[str] = Field(default_factory=list, max_length=2)
-    candidate_ids: list[str] = Field(default_factory=list, max_length=8)
-    evidence_ids: list[str] = Field(default_factory=list, max_length=8)
+    queries: list[str] = Field(default_factory=list, max_length=SEARCH_QUERIES_PER_CALL)
+    candidate_ids: list[str] = Field(default_factory=list, max_length=SOURCE_CANDIDATES_PER_READ)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT)
     conclusion: str = ""
-    remaining_gaps: list[str] = Field(default_factory=list, max_length=4)
+    remaining_gaps: list[str] = Field(
+        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+    )
 
     @model_validator(mode="after")
     def validate_action(self) -> "ResearchDirectionDecision":
@@ -50,5 +58,5 @@ class ReflectionDecision(BaseModel):
     """整体审阅只报告问题；流程根据 fatal 问题决定是否退回。"""
 
     feedback: str
-    gaps: list[str] = Field(default_factory=list, max_length=6)
+    gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     issues: list[ReviewIssue] = Field(default_factory=list)

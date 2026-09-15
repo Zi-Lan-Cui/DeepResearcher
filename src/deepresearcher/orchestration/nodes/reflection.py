@@ -13,6 +13,7 @@ from deepresearcher.llm import ainvoke_structured
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import json_data_section, load_prompt
 from deepresearcher.schemas import Citation, ParagraphBinding, ReflectionDecision, ReviewProgress
+from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import section
 
 _logger = get_logger("deepresearcher.orchestration.reflection")
@@ -25,6 +26,21 @@ _RETRYABLE_REVIEW_ERRORS = (
     OutputParserException,
     ValidationError,
 )
+
+
+def reflection_evidence_card(citation: Citation) -> dict[str, object]:
+    """Reflection 视图：保留核验原文，并补充紧凑的支撑强度与来源背景。"""
+    return {
+        "id": citation.id,
+        "fact": citation.claim,
+        "quote": citation.quote,
+        "support": citation.support,
+        "source_title": citation.title,
+        "source_domain": source_domain(citation.url),
+        "source_type": citation.source_profile.source_type,
+        "authority_tier": citation.source_profile.authority_tier,
+        **({"published_at": citation.published_at} if citation.published_at else {}),
+    }
 
 
 async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
@@ -45,11 +61,7 @@ async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
             "paragraph": item.text,
             "kind": item.kind,
             "evidence": [
-                {
-                    "id": source_id,
-                    "fact": citations[source_id].claim,
-                    "quote": citations[source_id].quote,
-                }
+                reflection_evidence_card(citations[source_id])
                 for source_id in item.evidence_ids
                 if source_id in citations
             ],

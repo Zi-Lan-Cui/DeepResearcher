@@ -325,6 +325,101 @@ def test_multi_subquestion_recall_unions_and_deduplicates_blocks(monkeypatch):
     assert str(captured["prompt"]).count("[b-2]") == 1
 
 
+def test_head_truncate_backend_keeps_document_prefix_within_budget(monkeypatch):
+    captured: dict[str, str] = {}
+
+    async def fake_invoke(llm, schema, messages, **kwargs):
+        captured["prompt"] = messages[-1].content
+        return EvidenceExtraction(evidences=[])
+
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
+    document_blocks = [
+        {
+            "block_id": f"b-{index}",
+            "block_type": "paragraph",
+            "text": text * 30,
+            "heading_path": [],
+            "order": index,
+        }
+        for index, text in enumerate(("文首", "中段", "文尾目标"), 1)
+    ]
+
+    outcome = asyncio.run(
+        EvidenceExtractor(
+            llm=object(),
+            estimator=CharEstimator(),
+            full_context_max_tokens=100,
+            retriever_backend="head_truncate",
+        ).aextract_result(
+            {
+                "id": "r1-1",
+                "question": "文尾目标",
+                "type": "search",
+                "status": "pending",
+                "assigned_agent": "search",
+            },
+            {
+                "title": "长文",
+                "final_url": "https://example.com/long",
+                "text": "\n".join(block["text"] for block in document_blocks),
+                "blocks": document_blocks,
+            },
+            {"title": "长文", "url": "https://example.com/long"},
+        )
+    )
+
+    assert outcome.strategy == "head_truncate"
+    assert "文首" in captured["prompt"]
+    assert "文尾目标" not in captured["prompt"].split("来源原文", 1)[-1]
+
+
+def test_head_truncate_stops_at_first_over_budget_block():
+    extractor = EvidenceExtractor(
+        llm=object(),
+        estimator=CharEstimator(),
+        full_context_max_tokens=100,
+        retriever_backend="head_truncate",
+    )
+    blocks = [
+        {
+            "block_id": "b-1",
+            "block_type": "paragraph",
+            "text": "甲" * 20,
+            "heading_path": [],
+            "order": 1,
+        },
+        {
+            "block_id": "b-2",
+            "block_type": "paragraph",
+            "text": "乙" * 200,
+            "heading_path": [],
+            "order": 2,
+        },
+        {
+            "block_id": "b-3",
+            "block_type": "paragraph",
+            "text": "不应越过超限块继续选择",
+            "heading_path": [],
+            "order": 3,
+        },
+    ]
+
+    selected, strategy = extractor._select_extraction_blocks(
+        {
+            "id": "r1-1",
+            "question": "测试",
+            "type": "search",
+            "status": "pending",
+            "assigned_agent": "search",
+        },
+        blocks,
+        total_tokens=1_000,
+    )
+
+    assert strategy == "head_truncate"
+    assert [block["block_id"] for block in selected] == ["b-1"]
+
+
 def test_bm25_zero_score_falls_back_to_first_blocks():
     source = [
         {
@@ -701,6 +796,53 @@ def test_evidence_extractor_limits_model_output_to_configured_budget(monkeypatch
 
     assert len(evidences) == 1
     assert "最多返回 1 条 Evidence" in captured["prompt"]
+
+
+def test_evidence_limit_rejects_invalid_quotes_then_ranks_by_confidence(monkeypatch):
+    async def fake_invoke(llm, schema, messages, **kwargs):
+        return EvidenceExtraction(
+            evidences=[
+                ExtractedEvidence(
+                    claim="看似最高但引用错误",
+                    quote="正文中不存在的句子。",
+                    confidence=0.99,
+                ),
+                ExtractedEvidence(
+                    claim="低置信有效事实",
+                    quote="该结果仅适用于英文数据集。",
+                    confidence=0.2,
+                ),
+                ExtractedEvidence(
+                    claim="高置信有效事实",
+                    quote="在相同硬件环境下，A 的平均延迟为 20ms。",
+                    confidence=0.9,
+                ),
+            ]
+        )
+
+    monkeypatch.setattr("deepresearcher.evidence.extractor.ainvoke_structured", fake_invoke)
+    outcome = asyncio.run(
+        EvidenceExtractor(llm=object(), max_evidences=1).aextract_result(
+            {
+                "id": "r1-1",
+                "question": "A 平均延迟",
+                "type": "search",
+                "status": "pending",
+                "assigned_agent": "search",
+            },
+            {
+                "title": "测试来源",
+                "final_url": "https://example.com",
+                "text": "\n".join(block["text"] for block in blocks()),
+                "blocks": blocks(),
+            },
+            {"title": "延迟测试", "url": "https://example.com", "snippet": ""},
+        )
+    )
+
+    assert outcome.validation_rejected_count == 1
+    assert [item.claim for item in outcome.evidences] == ["高置信有效事实"]
+    assert outcome.evidences[0].evidence_id.endswith("-ev-1")
 
 
 def _run_with_captured_prompt(monkeypatch, *, retrieval_method, extracted):

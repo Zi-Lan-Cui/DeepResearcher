@@ -43,7 +43,6 @@ def test_synthesis_arguments_leave_selected_evidence_union_to_handler():
                     "evidence_ids": ["e1"],
                 }
             ],
-            "readiness": "partial_ready",
             "decision_rationale": "足以部分交付",
         }
     )
@@ -75,7 +74,6 @@ def test_synthesis_derives_stable_evidence_union_from_aspects() -> None:
                 },
             ],
             "selected_evidence_ids": ["legacy-extra"],
-            "readiness": "complete_candidate",
             "decision_rationale": "已形成证据链",
         }
     )
@@ -99,7 +97,6 @@ def test_synthesis_rejects_duplicate_aspect_ids() -> None:
             }
             for index in (1, 2)
         ],
-        "readiness": "complete_candidate",
         "decision_rationale": "已形成证据链",
     }
 
@@ -109,12 +106,14 @@ def test_synthesis_rejects_duplicate_aspect_ids() -> None:
 
 def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
     item = evidence("metadata", task_id="r1-1")
+    item.source_url = "https://docs.example.com/report"
     item.source_title = "来源标题"
     item.published_at = "2026-09-01"
     item.audit_chunk = "SECRET_AUDIT_CHUNK"
     card = evidence_card(item)
 
     assert card["source_title"] == "来源标题"
+    assert card["source_domain"] == "docs.example.com"
     assert card["published_at"] == "2026-09-01"
     assert "quote" not in card
     assert "audit_chunk" not in card
@@ -135,7 +134,6 @@ def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
                     "evidence_ids": [item.evidence_id],
                 }
             ],
-            "readiness": "complete_candidate",
             "decision_rationale": "决策理由",
         }
     )
@@ -225,9 +223,6 @@ class SupervisorLLM:
                                 "open_gaps": [],
                                 "conflicts": [],
                                 "next_actions": [],
-                                "readiness": (
-                                    "partial_ready" if self.ready else "complete_candidate"
-                                ),
                                 "decision_rationale": (
                                     "已建立最小证据链。"
                                     if self.ready
@@ -577,7 +572,6 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
                     "open_gaps": ["尚未研究"],
                     "conflicts": [],
                     "next_actions": ["新增证据方向"],
-                    "readiness": "not_ready",
                     "decision_rationale": "等待方向结果。",
                 },
             }
@@ -595,11 +589,7 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
 def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["一个局部方向"], ready=True),
-        AgentConfig(
-            max_research_rounds=1,
-            partial_report_min_evidences=1,
-            partial_report_min_sources=1,
-        ),
+        AgentConfig(max_research_rounds=1),
         research_agent=researcher_agent(
             AgentConfig(research_agent_max_evidences_per_direction=1, research_agent_max_turns=3),
             [
@@ -636,7 +626,7 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     item = evidence("latest", task_id="r1-1")
     supervisor = ResearchSupervisor(
         object(),
-        AgentConfig(partial_report_min_evidences=1, partial_report_min_sources=1),
+        AgentConfig(),
         research_agent=object(),
     )
     state = {
@@ -666,7 +656,6 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
             "open_gaps": ["尚有缺口"],
             "conflicts": [],
             "next_actions": [],
-            "readiness": "not_ready",
             "decision_rationale": "轮次触顶前的最新状态。",
         },
     }
@@ -816,7 +805,6 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
                     "open_gaps": [],
                     "conflicts": [],
                     "next_actions": [],
-                    "readiness": "complete_candidate",
                     "decision_rationale": "只需根据审阅意见改写。",
                 },
                 "review": {
@@ -961,7 +949,6 @@ class _DelegateUntilBlockedLLM:
                             "open_gaps": [],
                             "conflicts": [],
                             "next_actions": [],
-                            "readiness": "complete_candidate",
                             "decision_rationale": "轮次耗尽且现有材料足以成文。",
                         },
                         "id": "call_revise",
@@ -1019,8 +1006,6 @@ def test_supervisor_per_round_delegate_quota_blocks_excess_dispatches():
             max_research_rounds=3,
             max_subtasks_per_round=2,
             max_parallel_workers=1,
-            partial_report_min_evidences=1,
-            partial_report_min_sources=1,
         ),
         research_agent=agent,
     )
@@ -1075,6 +1060,7 @@ def test_stop_reason_vocabulary_single_source():
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
         StopReason.MODEL_CALL_LIMIT_EXCEEDED,
         StopReason.NO_NEW_TASKS,
+        StopReason.SUBMITTED_WITH_GAPS,
     }
     # 描述文案保留原逐字内容（回归锁）：
     assert StopReason.ROUND_BUDGET_EXHAUSTED.description == "研究轮次预算已耗尽。"

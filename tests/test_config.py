@@ -1,6 +1,7 @@
 import pytest
 
-from deepresearcher.config import SearchConfig, _search_config, get_settings
+from deepresearcher.config import AgentConfig, SearchConfig, _search_config, get_settings
+from deepresearcher.schemas.tool_args import ReleaseEvidence, RestoreEvidence
 
 
 def test_settings_are_cached_and_grouped():
@@ -18,11 +19,47 @@ def test_settings_are_cached_and_grouped():
 
 
 def test_output_language_default_and_directive():
-    from deepresearcher.config import AgentConfig, language_directive
+    from deepresearcher.config import language_directive
 
     assert AgentConfig().output_language == "中文"
     directive = language_directive("English")
     assert "English" in directive and "quote" in directive
+
+
+def test_agent_config_rejects_active_evidence_limit_above_archive_limit():
+    with pytest.raises(ValueError, match="MAX_EVIDENCES_PER_DIRECTION"):
+        AgentConfig(
+            research_agent_max_evidences_per_direction=13,
+            research_agent_max_evidence_candidates_per_direction=12,
+        )
+
+
+def test_agent_config_rejects_per_source_limit_above_archive_limit():
+    with pytest.raises(ValueError, match="EVIDENCE_MAX_PER_SOURCE"):
+        AgentConfig(
+            evidence_max_per_source=13,
+            research_agent_max_evidence_candidates_per_direction=12,
+        )
+
+
+def test_agent_config_rejects_report_caveats_above_schema_limit():
+    with pytest.raises(ValueError, match="AGENT_REPORT_MAX_CAVEATS"):
+        AgentConfig(report_max_caveats=51)
+
+
+def test_agent_config_allows_business_caveat_limit_above_six():
+    assert AgentConfig(report_max_caveats=10).report_max_caveats == 10
+
+
+def test_release_and_restore_accept_model_selected_batch_size():
+    evidence_ids = [f"e-{index}" for index in range(32)]
+
+    assert (
+        ReleaseEvidence(evidence_ids=evidence_ids, reason="批量释放").evidence_ids == evidence_ids
+    )
+    assert (
+        RestoreEvidence(evidence_ids=evidence_ids, reason="批量恢复").evidence_ids == evidence_ids
+    )
 
 
 def test_fetch_provider_order_preserves_configured_order(monkeypatch):

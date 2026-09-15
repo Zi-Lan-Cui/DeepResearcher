@@ -54,9 +54,14 @@ from deepresearcher.schemas import (
     WriterDirective,
     WriterProgress,
 )
+from deepresearcher.schemas.limits import (
+    EVIDENCE_REFERENCES_HARD_LIMIT,
+    STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
+)
 from deepresearcher.state import ResearchState, SubTask, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
+_FALLBACK_SUMMARY_CLAIM_LIMIT = 6
 
 
 def _model_call_limit_hit(messages: list[BaseMessage]) -> bool:
@@ -498,11 +503,7 @@ class ResearchSupervisor:
             if working.stop_reason is not None and working.stop_reason.allows_partial_report
             else None
         )
-        meets_material_floor = self._meets_partial_report_threshold(working, partial_synthesis)
-        can_generate_partial = partial_synthesis is not None and meets_material_floor
-        if partial_synthesis is not None and not meets_material_floor:
-            working.coverage_gaps.append("已保存的部分报告综合版本未达到本地最低材料门槛。")
-        selected_synthesis = full_synthesis or (partial_synthesis if can_generate_partial else None)
+        selected_synthesis = full_synthesis or partial_synthesis
         can_write = selected_synthesis is not None
         report_brief = (
             self._report_brief_from_synthesis(selected_synthesis)
@@ -516,9 +517,7 @@ class ResearchSupervisor:
         )
         deltas = working.deltas()
         research_status = "completed" if working.sufficient else "incomplete"
-        generation_mode = (
-            "full" if working.sufficient else "partial" if can_generate_partial else "not_ready"
-        )
+        generation_mode = "full" if working.sufficient else "partial" if can_write else "not_ready"
         can_continue_to_writer = can_write
         return SupervisorStateUpdate(
             evidences=cast(list[Evidence], deltas["evidences"]),
@@ -567,21 +566,24 @@ class ResearchSupervisor:
             return None
         selected_ids = [item.evidence_id for item in evidences]
         claims = list(dict.fromkeys(item.claim.strip() for item in evidences if item.claim.strip()))
-        summary = "；".join(claims[:6]) or "已收集可追溯 Evidence，但未形成模型综合结论。"
+        summary = (
+            "；".join(claims[:_FALLBACK_SUMMARY_CLAIM_LIMIT])
+            or "已收集可追溯 Evidence，但未形成模型综合结论。"
+        )
         gap = "研究未达到完整标准；报告只能陈述已验证材料及其适用边界。"
         return ResearchSynthesis(
             revision=(latest.revision + 1 if latest is not None else 1),
             based_on_working_set_revision=working.working_set_revision,
             answer_goal=working.research_query or "回答用户的研究问题",
-            overall_summary=summary[:4_000],
+            overall_summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
             aspects=[
                 ResearchAspect(
                     aspect_id="fallback-evidence",
                     topic="已验证材料",
                     role="保守回应用户问题",
                     status="partial",
-                    summary=summary[:2_000],
-                    evidence_ids=selected_ids[:30],
+                    summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
+                    evidence_ids=selected_ids[:EVIDENCE_REFERENCES_HARD_LIMIT],
                     remaining_gap=gap,
                 )
             ],
@@ -589,7 +591,6 @@ class ResearchSupervisor:
             open_gaps=[gap],
             conflicts=[],
             next_actions=[],
-            readiness="partial_ready",
             decision_rationale="系统在研究结束时基于当前活跃 Evidence 生成最小可交付综合稿。",
         )
 
@@ -633,21 +634,6 @@ class ResearchSupervisor:
             revision_instructions=revision_instructions,
             previous_draft=previous_draft,
         )
-
-    def _meets_partial_report_threshold(
-        self,
-        working: WorkingState,
-        synthesis: ResearchSynthesis | None,
-    ) -> bool:
-        """判断材料是否足以写一份明确标注缺口的部分报告。"""
-        if synthesis is None:
-            return False
-        selected = set(synthesis.selected_evidence_ids)
-        evidences = [item for item in working.evidences if item.evidence_id in selected]
-        if len(evidences) < self.config.partial_report_min_evidences:
-            return False
-        source_count = len({item.source_url for item in evidences if item.source_url})
-        return source_count >= self.config.partial_report_min_sources
 
     @staticmethod
     def _working_set_snapshot(working: WorkingState) -> dict[str, object]:

@@ -16,6 +16,7 @@ from deepresearcher.schemas import (
     ResearchToolResult,
     StopReason,
 )
+from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import ResearchState, SubTask, section
 
 
@@ -27,6 +28,7 @@ def evidence_card(evidence: Evidence) -> dict[str, object]:
         "support": evidence.support,
         "confidence": evidence.confidence,
         "source_title": evidence.source_title,
+        "source_domain": source_domain(evidence.source_url),
         "source_profile": evidence.source_profile.model_dump(mode="json"),
         "research_direction": evidence.research_direction,
         **({"published_at": evidence.published_at} if evidence.published_at else {}),
@@ -47,7 +49,6 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
         "open_gaps": synthesis.open_gaps,
         "conflicts": synthesis.conflicts,
         "next_actions": synthesis.next_actions,
-        "readiness": synthesis.readiness,
         "decision_rationale": synthesis.decision_rationale,
     }
 

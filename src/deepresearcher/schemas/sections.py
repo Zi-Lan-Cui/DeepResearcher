@@ -28,6 +28,7 @@ class StopReason(StrEnum):
     """Supervisor 研究停止原因的唯一词汇来源。"""
 
     SUFFICIENT = "supervisor_sufficient"
+    SUBMITTED_WITH_GAPS = "supervisor_submitted_with_gaps"
     SUFFICIENT_WITHOUT_EVIDENCE = "sufficient_without_evidence"
     NO_NEW_TASKS = "no_new_tasks"
     NO_TOOL_CALLS = "no_tool_calls"
@@ -44,6 +45,7 @@ class StopReason(StrEnum):
             StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
             StopReason.MODEL_CALL_LIMIT_EXCEEDED,
             StopReason.NO_NEW_TASKS,
+            StopReason.SUBMITTED_WITH_GAPS,
         }
 
     @property
@@ -54,6 +56,7 @@ class StopReason(StrEnum):
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
+    StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
     StopReason.SUFFICIENT_WITHOUT_EVIDENCE: "充分性决策与 Evidence 状态矛盾。",
     StopReason.NO_NEW_TASKS: "没有可去重的新研究任务。",
     StopReason.NO_TOOL_CALLS: "Supervisor 模型既未派发研究任务，也未给出充分性决策。",

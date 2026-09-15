@@ -21,6 +21,7 @@ from deepresearcher.agents.writer.state import (
     PreparedEvidence,
     ValidatedDraft,
     WriterRuntimeContext,
+    evidence_index_card,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import AgentConfig, language_directive
@@ -465,16 +466,18 @@ class ReportWriter:
 
         entries: list[str] = []
         for evidence_id in ordered_ids:
-            item = evidence_by_id[evidence_id]
+            card = evidence_index_card(evidence_by_id[evidence_id])
             published_metadata = (
-                f" | published_at={item.published_at}(搜索元信息)" if item.published_at else ""
+                f" | published_at={card['published_at']}(搜索元信息)"
+                if "published_at" in card
+                else ""
             )
             entries.append(
                 f"- evidence_id={evidence_id} | "
-                f"来源={item.source_title or '未命名来源'} | support={item.support} | "
-                f"source_profile={item.source_profile.model_dump_json()} | "
-                f"retrieval={item.retrieval_method} | "
-                f"confidence={item.confidence}{published_metadata}\n  claim：{item.claim}"
+                f"来源={card['source_title'] or '未命名来源'} | "
+                f"domain={card['source_domain'] or 'unknown'} | "
+                f"source_type={card['source_type']} | support={card['support']}"
+                f"{published_metadata}\n  claim：{card['claim']}"
             )
         evidence_index = "[Evidence 去重索引]\n" + "\n".join(entries)
         return "\n\n".join(part for part in (topic_plan, evidence_index) if part)

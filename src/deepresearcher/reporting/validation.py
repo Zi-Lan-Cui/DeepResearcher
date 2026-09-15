@@ -13,6 +13,7 @@ _FENCED_CODE = re.compile(
 _INLINE_CODE = re.compile(r"(?P<tick>`+).*?(?P=tick)", re.DOTALL)
 _CITE_MARKER = re.compile(r"\[\[cite:(?P<sources>[^\]\r\n]+)\]\]", re.IGNORECASE)
 _CITATION_MARKER = re.compile(r"\[来源(?P<index>\d+)\]")
+_MAX_EVIDENCE_IDS_PER_CITATION = 3
 
 
 class DraftProtocolError(AgentError, ValueError):
@@ -92,7 +93,7 @@ def _extract_bindings(markdown: str) -> list[ParagraphBinding]:
                 for source_id in re.split(r"[,，、]", match.group("sources"))
                 if source_id.strip()
             ]
-            if len(raw_ids) > 3:
+            if len(raw_ids) > _MAX_EVIDENCE_IDS_PER_CITATION:
                 raise DraftProtocolError("单个 cite 标记最多绑定三个 Evidence。")
             source_ids.extend(raw_ids)
         source_ids = list(dict.fromkeys(source_ids))
@@ -140,5 +141,7 @@ def _citation(evidence: Evidence) -> Citation:
         title=evidence.source_title,
         quote=evidence.quote,
         claim=evidence.claim,
+        support=evidence.support,
+        published_at=evidence.published_at,
         source_profile=evidence.source_profile,
     )
