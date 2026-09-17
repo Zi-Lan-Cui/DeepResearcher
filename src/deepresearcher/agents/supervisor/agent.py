@@ -231,7 +231,7 @@ class ResearchSupervisor:
 
             self._emit_audit_event("delegate_started", {"topic_chars": len(topic)})
             if round_no > self.config.max_research_rounds:
-                working.stop_reason = StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED
+                working.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
                 return _reported(
                     {
                         "status": "blocked",
@@ -259,7 +259,7 @@ class ResearchSupervisor:
                     [task], max_tasks=self.config.max_subtasks_per_round
                 )
             if not new_tasks:
-                working.stop_reason = StopReason.NO_NEW_TASKS
+                working.set_stop_reason(StopReason.NO_NEW_TASKS)
                 return _reported(
                     {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
                 )
@@ -316,18 +316,16 @@ class ResearchSupervisor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            working.stop_reason = StopReason.AGENT_FAILED
+            working.set_stop_reason(StopReason.AGENT_FAILED)
             working.coverage_gaps.append(str(exc)[: self.config.supervisor_preview_chars])
         else:
             generated = result.get("messages", []) if isinstance(result, dict) else []
             history.extend(generated[len(prepared) :])
-            if (
-                not working.sufficient
-                and working.stop_reason is None
-                and _model_call_limit_hit(generated)
-            ):
-                # 真实终止原因是模型调用天花板，不得再兜底标成轮次耗尽。
-                working.stop_reason = StopReason.MODEL_CALL_LIMIT_EXCEEDED
+            if not working.sufficient and _model_call_limit_hit(generated):
+                # 真实终止原因是模型调用天花板；set_stop_reason 的声明式 rank 保证它压过
+                # 更弱的瞬时信号（如某条 delegate 撞去重留下的 NO_NEW_TASKS），
+                # 又不会盖过模型的显式收尾决定。
+                working.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
         self._emit_round_completed(
             round_no,
             len([item for item in working.task_results if item.round == round_no]),
@@ -501,6 +499,9 @@ class ResearchSupervisor:
         url_reservations: RunUrlReservations,
     ) -> SupervisorStateUpdate:
         """把工作状态转为 State 增量与路由决策。"""
+        # 地板兜底,不是优先级判断:整轮没产生任何信号时才补一个默认终态。
+        # 故意保持 `is None` + 直接赋值,不走 set_stop_reason——ROUND_BUDGET 的
+        # rank 高于 NO_NEW_TASKS,若走 setter 会误盖掉"这轮全是重复 topic"的真信号。
         if not working.sufficient and working.stop_reason is None:
             working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
         full_synthesis = working.completed_synthesis

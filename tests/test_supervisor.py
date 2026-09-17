@@ -425,7 +425,7 @@ def test_supervisor_url_deduplication_is_scoped_to_each_research_state():
     assert second["attempted_source_urls"] == ["https://example.com/shared"]
 
 
-def test_supervisor_stops_with_no_new_tasks_when_all_directions_are_deduplicated():
+def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceiling():
     class EmptyAgent:
         async def run(self, task, *, claim_url, on_url_already_attempted=None):
             return {
@@ -445,8 +445,9 @@ def test_supervisor_stops_with_no_new_tasks_when_all_directions_are_deduplicated
                 },
             }
 
-    # complete_args=None 使 fake 在每次调用都派发同一批方向;
-    # 第二轮全部被问题级去重拦下 → no_new_tasks 停止,而不是空转烧轮次。
+    # complete_args=None 使 fake 每轮都重发同一批方向：首次执行、其余全部被问题级去重
+    # 拦下(留下 NO_NEW_TASKS)。fake 不会主动收尾，最终是模型调用天花板掐断循环——
+    # 声明式 rank 让更强的 MODEL_CALL_LIMIT_EXCEEDED 覆盖瞬时 NO_NEW_TASKS(rank 回归)。
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["重复方向"], complete_args=None),
         AgentConfig(max_research_rounds=3),
@@ -462,9 +463,11 @@ def test_supervisor_stops_with_no_new_tasks_when_all_directions_are_deduplicated
         )
     )
 
+    # 去重确实发生：只执行了一个方向，且未判充分、走部分报告。
     assert len(result["task_results"]) == 1
     assert result["research"].is_sufficient is False
-    assert "没有可去重的新研究任务" in result["writer"].feedback
+    # 终态归属真正的终止者：模型调用天花板压过去重瞬时信号。
+    assert "模型调用预算已耗尽" in result["writer"].feedback
 
 
 def test_supervisor_rejects_completion_without_evidence():
@@ -1031,3 +1034,43 @@ def test_stop_reason_vocabulary_single_source():
     # 描述文案保留原逐字内容（回归锁）：
     assert StopReason.ROUND_BUDGET_EXHAUSTED.description == "研究轮次预算已耗尽。"
     assert StopReason.SUFFICIENT.description == "Supervisor 未确认现有材料足以形成完整研究报告。"
+
+
+def test_stop_reason_rank_is_a_declared_total_order():
+    """优先级是声明式的：每个成员有确定权威度，关键相邻关系被钉死。"""
+    from deepresearcher.schemas import StopReason
+
+    ranks = {reason: reason.rank for reason in StopReason}
+    assert len(set(ranks.values())) == len(ranks)  # 无并列，全序确定
+    # 修 bug 的那条：模型调用天花板必须压过瞬时去重信号。
+    assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.NO_NEW_TASKS.rank
+    # 模型的显式收尾决定是最高终态，压过基础设施失败。
+    assert StopReason.SUFFICIENT.rank > StopReason.AGENT_FAILED.rank
+    assert StopReason.SUBMITTED_WITH_GAPS.rank > StopReason.AGENT_FAILED.rank
+    # 全局轮次预算强于单轮，且都低于天花板命中。
+    assert StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank > StopReason.ROUND_BUDGET_EXHAUSTED.rank
+    assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank
+
+
+def test_working_state_set_stop_reason_adopts_by_rank():
+    """低权威度不覆盖高权威度；None 直接采纳；天花板覆盖瞬时去重信号（回归）。"""
+    from deepresearcher.state import ResearchState
+
+    state: ResearchState = {}
+    working = WorkingState(state, dedup_key=lambda q: q, active_evidence_limit=30)
+
+    assert working.stop_reason is None
+    working.set_stop_reason(StopReason.NO_NEW_TASKS)
+    assert working.stop_reason == StopReason.NO_NEW_TASKS
+
+    # bug 场景：撞去重留下 NO_NEW_TASKS 后命中天花板 → 应升级为 MODEL_CALL_LIMIT。
+    working.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
+    assert working.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
+
+    # 更弱的瞬时信号不得回退覆盖已采纳的更强终止原因。
+    working.set_stop_reason(StopReason.NO_NEW_TASKS)
+    assert working.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
+
+    # 模型的显式收尾决定压过一切基础设施信号。
+    working.set_stop_reason(StopReason.SUFFICIENT)
+    assert working.stop_reason == StopReason.SUFFICIENT
