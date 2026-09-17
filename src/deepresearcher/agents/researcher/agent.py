@@ -258,14 +258,16 @@ class ResearchAgent:
 
         async def grep_document(
             document_id: str,
-            queries: list[str],
+            query: str,
             context_lines: int,
+            offset: int,
             reason: str,
         ) -> dict[str, object]:
             return await self._grep_document(
                 document_id,
-                queries,
+                query,
                 context_lines,
+                offset,
                 reason,
                 run_state=run_state,
             )
@@ -417,8 +419,9 @@ class ResearchAgent:
     async def _grep_document(
         self,
         document_id: str,
-        queries: list[str],
+        query: str,
         context_lines: int,
+        offset: int,
         reason: str,
         *,
         run_state: DirectionRunState,
@@ -428,19 +431,23 @@ class ResearchAgent:
             return {"status": "rejected", "reason": "unknown_document_id"}
         if self.material_store is None:
             return {"status": "failed", "reason": "material_store_unavailable"}
-        clean_queries = list(dict.fromkeys(item.strip() for item in queries if item.strip()))[:8]
-        matches = await self.material_store.grep(
+        result = await self.material_store.grep(
             document_id,
-            clean_queries,
+            query.strip(),
             context_lines=min(context_lines, self.config.document_grep_context_lines),
             max_matches=self.config.document_grep_max_matches,
             max_chars=self.config.document_grep_max_chars,
+            offset=max(0, offset),
         )
         return {
             "status": "completed",
             "document_id": document_id,
-            "matches": [item.model_dump(mode="json") for item in matches],
-            "match_count": len(matches),
+            "query": result.query,
+            "matches": [item.model_dump(mode="json") for item in result.matches],
+            "match_count": len(result.matches),
+            "total_matches": result.total_matches,
+            "has_more": result.has_more,
+            "next_offset": result.next_offset,
         }
 
     async def _read_document(

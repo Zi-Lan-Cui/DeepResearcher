@@ -6,6 +6,7 @@ from deepresearcher.tools.web.documents.models import (
     DocumentReadRange,
     DocumentRef,
     DocumentView,
+    GrepResult,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "DocumentReadRange",
     "DocumentRef",
     "DocumentView",
+    "GrepResult",
 ]

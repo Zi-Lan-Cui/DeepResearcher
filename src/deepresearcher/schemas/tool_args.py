@@ -56,12 +56,18 @@ class ListSearchResults(BaseModel):
 
 
 class GrepDocument(BaseModel):
-    """在已读取长文中按普通文本查询定位相关行。"""
+    """在已读取长文中按**单个**普通文本查询定位相关行。
+
+    需要检索多个关键词时,在同一回合**并行发起多个 GrepDocument 调用**(该工具可
+    并行)。不提供 queries 批量接口——单查询让每个词各自分页、互不抢占,也无需
+    跨词配额簿记。返回带 total_matches/has_more/next_offset,用 offset 翻页取后续。
+    """
 
     document_id: str = Field(min_length=1)
-    queries: list[str] = Field(min_length=1, max_length=8)
+    query: str = Field(min_length=1, max_length=200)
     context_lines: int = Field(default=2, ge=0, le=10)
-    reason: str = Field(description="这些关键词与当前证据缺口的关系。")
+    offset: int = Field(default=0, ge=0, description="跳过该词前 N 个命中窗口以翻页。")
+    reason: str = Field(description="该关键词与当前证据缺口的关系。")
 
 
 class DocumentLineRange(BaseModel):

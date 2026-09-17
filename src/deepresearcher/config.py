@@ -146,7 +146,7 @@ class AgentConfig:
     document_read_max_lines: int = 240
     document_read_max_chars: int = 24_000
     document_grep_context_lines: int = 2
-    document_grep_max_matches: int = 12
+    document_grep_max_matches: int = 12  # 单个查询词一次调用的窗口上限;批量=并行多调用,非跨词总数
     document_grep_max_chars: int = 12_000
     evidence_add_batch_size: int = 8
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。

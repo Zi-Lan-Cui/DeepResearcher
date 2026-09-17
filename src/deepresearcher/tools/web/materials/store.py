@@ -7,6 +7,7 @@ from deepresearcher.tools.web.documents import (
     DocumentOutlineItem,
     DocumentReadRange,
     DocumentRef,
+    GrepResult,
 )
 from deepresearcher.tools.web.materials.models import SearchResultSet
 
@@ -50,12 +51,13 @@ class ResearchMaterialStore(Protocol):
     async def grep(
         self,
         document_id: str,
-        queries: list[str],
+        query: str,
         *,
         context_lines: int,
         max_matches: int,
         max_chars: int,
-    ) -> list[DocumentGrepMatch]: ...
+        offset: int = 0,
+    ) -> GrepResult: ...
 
     async def close(self) -> None: ...
 
@@ -113,44 +115,58 @@ def read_lines(
 
 def grep_lines(
     lines: list[str],
-    queries: list[str],
+    query: str,
     *,
     context_lines: int,
     max_matches: int,
     max_chars: int,
-) -> list[DocumentGrepMatch]:
-    """对已加载文本执行字面检索，返回稳定行号窗口。"""
+    offset: int = 0,
+) -> GrepResult:
+    """对已加载文本执行单查询词的字面检索，返回**可见截断、可续读**的窗口结果。
 
-    results: list[DocumentGrepMatch] = []
-    used_chars = 0
-    seen_ranges: set[tuple[int, int, str]] = set()
-    for query in dict.fromkeys(item.strip() for item in queries if item.strip()):
-        needle = query.casefold()
+    一次调用只查一个词:批量由 agent 在同一回合并行发起多个 GrepDocument 实现
+    (该工具非 serial)。因此不存在跨查询词的配额抢占/饿死,`offset` 就是"跳过该词
+    去重后的前 N 个窗口"这一单纯分页。截断(受 max_matches / max_chars 约束)通过
+    total_matches/has_more/next_offset 显式回报;max_chars 触顶时**整窗不截半行**,
+    留待下一页。为保证翻页必定前进,当某次调用一个窗口都还没发出、而下一个窗口又
+    超过字符预算时,仍整窗发出这一次(受 context_lines 上限约束,单个窗口有限)。
+    """
+
+    needle = query.strip().casefold()
+    # 全文扫描得到去重后的候选窗口(文档序);据此得出 total_matches(截断前)。
+    windows: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    if needle:
         for index, line in enumerate(lines):
             if needle not in line.casefold():
                 continue
-            start = max(1, index + 1 - context_lines)
-            end = min(len(lines), index + 1 + context_lines)
-            key = (start, end, query)
-            if key in seen_ranges:
+            window = (
+                max(1, index + 1 - context_lines),
+                min(len(lines), index + 1 + context_lines),
+            )
+            if window in seen:
                 continue
-            content = "\n".join(
-                f"L{line_number}: {lines[line_number - 1]}" for line_number in range(start, end + 1)
-            )
-            remaining = max_chars - used_chars
-            if remaining <= 0:
-                return results
-            content = content[:remaining]
-            results.append(
-                DocumentGrepMatch(
-                    query=query,
-                    start_line=start,
-                    end_line=end,
-                    content=content,
-                )
-            )
-            seen_ranges.add(key)
-            used_chars += len(content)
-            if len(results) >= max_matches:
-                return results
-    return results
+            seen.add(window)
+            windows.append(window)
+
+    matches: list[DocumentGrepMatch] = []
+    used_chars = 0
+    for start, end in windows[offset : offset + max_matches]:
+        content = "\n".join(
+            f"L{line_number}: {lines[line_number - 1]}" for line_number in range(start, end + 1)
+        )
+        # 整窗预算;仅在"已发出至少一个窗口"时因字符预算停手,保证至少前进一格、不死循环。
+        if matches and used_chars + len(content) > max_chars:
+            break
+        matches.append(DocumentGrepMatch(query=query, start_line=start, end_line=end, content=content))
+        used_chars += len(content)
+
+    consumed = offset + len(matches)
+    has_more = consumed < len(windows)
+    return GrepResult(
+        query=query,
+        matches=matches,
+        total_matches=len(windows),
+        has_more=has_more,
+        next_offset=consumed if has_more else 0,
+    )

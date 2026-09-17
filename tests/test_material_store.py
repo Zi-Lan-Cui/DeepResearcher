@@ -33,15 +33,56 @@ async def test_memory_material_store_keeps_searches_and_readable_documents():
     assert (await store.read(ref.document_id, [(2, 3)], max_lines=10, max_chars=1_000))[
         0
     ].content == "L2: beta keyword\nL3: gamma"
-    assert (
-        await store.grep(
-            ref.document_id,
-            ["keyword"],
-            context_lines=1,
-            max_matches=5,
-            max_chars=1_000,
-        )
-    )[0].content == "L1: alpha\nL2: beta keyword\nL3: gamma"
+    result = await store.grep(
+        ref.document_id,
+        "keyword",
+        context_lines=1,
+        max_matches=5,
+        max_chars=1_000,
+    )
+    assert result.matches[0].content == "L1: alpha\nL2: beta keyword\nL3: gamma"
+    assert result.total_matches == 1 and not result.has_more and result.next_offset == 0
+
+
+@pytest.mark.asyncio
+async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windows():
+    """截断可见、可翻页;字符预算触顶时整窗丢弃,不截半行。"""
+    store = MemoryResearchMaterialStore()
+    ref = await store.put(
+        text="\n".join(f"L{index} match" for index in range(1, 21)),
+        title="paging",
+        source_url="https://example.com",
+    )
+
+    # 首页:context_lines=0 每窗单行;max_matches=3 → 返回前 3 窗 + 显式 has_more。
+    first = await store.grep(
+        ref.document_id, "match", context_lines=0, max_matches=3, max_chars=1_000
+    )
+    assert first.total_matches == 20
+    assert [m.start_line for m in first.matches] == [1, 2, 3]
+    assert first.has_more and first.next_offset == 3
+
+    # 续页:带 next_offset → 取后续窗口,与首页不重叠、不遗漏。
+    second = await store.grep(
+        ref.document_id,
+        "match",
+        context_lines=0,
+        max_matches=3,
+        max_chars=1_000,
+        offset=first.next_offset,
+    )
+    assert [m.start_line for m in second.matches] == [4, 5, 6]
+    assert second.has_more and second.next_offset == 6
+
+    # 字符预算触顶:第二个窗口装不下 → 整窗跳过(has_more 保留),首窗仍完整未截半行。
+    # 每行原文 "L{n} match"，grep 再加 "L{n}: " 前缀；首窗 (context_lines=2, 命中第1行)
+    # = "L1: L1 match\nL2: L2 match\nL3: L3 match" 共 38 字符;max_chars=40 容首窗拒次窗。
+    tight = await store.grep(
+        ref.document_id, "match", context_lines=2, max_matches=3, max_chars=40
+    )
+    assert len(tight.matches) == 1
+    assert tight.matches[0].content == "L1: L1 match\nL2: L2 match\nL3: L3 match"  # 完整,非截半
+    assert tight.has_more and tight.next_offset == 1
 
 
 class _Pipeline:

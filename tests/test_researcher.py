@@ -504,8 +504,9 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
     grep = asyncio.run(
         agent._grep_document(
             document.document_id,
-            ["延迟"],
+            "延迟",
             1,
+            0,
             "定位数据",
             run_state=run_state,
         )

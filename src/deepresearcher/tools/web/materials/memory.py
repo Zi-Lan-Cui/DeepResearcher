@@ -1,10 +1,10 @@
 """进程内研究材料存储：用于测试和 Redis 降级。"""
 
 from deepresearcher.tools.web.documents import (
-    DocumentGrepMatch,
     DocumentOutlineItem,
     DocumentReadRange,
     DocumentRef,
+    GrepResult,
 )
 from deepresearcher.tools.web.materials.models import (
     SearchResultSet,
@@ -90,19 +90,21 @@ class MemoryResearchMaterialStore:
     async def grep(
         self,
         document_id: str,
-        queries: list[str],
+        query: str,
         *,
         context_lines: int,
         max_matches: int,
         max_chars: int,
-    ) -> list[DocumentGrepMatch]:
+        offset: int = 0,
+    ) -> GrepResult:
         document = await self._document(document_id)
         return grep_lines(
             document.content.splitlines(),
-            queries,
+            query,
             context_lines=context_lines,
             max_matches=max_matches,
             max_chars=max_chars,
+            offset=offset,
         )
 
     async def close(self) -> None:
