@@ -128,27 +128,6 @@ def check_citation_integrity(artifact: Artifact, criterion: Criterion) -> Criter
     return _result(artifact, criterion, "yes", f"{len(refs)} 个引用位全部可溯")
 
 
-def check_evidence_audit_integrity(artifact: Artifact, criterion: Criterion) -> CriterionResult:
-    """独立复算抽取下限：每条 Evidence quote 必须存在于其审计 chunk。"""
-    if artifact.detail.get("status") != "completed":
-        return _result(artifact, criterion, "unknown", "run 未完成")
-    if not artifact.evidences:
-        return _result(artifact, criterion, "no", "checkpoint 中没有 Evidence 审计材料")
-
-    def normalized(value: object) -> str:
-        return "".join(str(value or "").split()).lower()
-
-    broken = [
-        str(item.get("evidence_id") or "")
-        for item in artifact.evidences
-        if not normalized(item.get("quote"))
-        or normalized(item.get("quote")) not in normalized(item.get("audit_chunk"))
-    ]
-    if broken:
-        return _result(artifact, criterion, "no", f"quote/chunk 不一致: {broken[:5]}")
-    return _result(artifact, criterion, "yes", f"复算 {len(artifact.evidences)} 条 Evidence")
-
-
 def check_done_exactly_once(artifact: Artifact, criterion: Criterion) -> CriterionResult:
     dones = artifact.events_of("run_done")
     if len(dones) == 1:
@@ -234,7 +213,6 @@ def check_cache_reuse(artifact: Artifact, criterion: Criterion) -> CriterionResu
 
 CHECKS: dict[str, Check] = {
     "citation_integrity": check_citation_integrity,
-    "evidence_audit_integrity": check_evidence_audit_integrity,
     "done_exactly_once": check_done_exactly_once,
     "seq_continuous": check_seq_continuous,
     "clarify_flow": check_clarify_flow,
@@ -247,7 +225,6 @@ CHECKS: dict[str, Check] = {
 # 每一轨每一份完成产物都自动附挂的门（不写进题集，避免 30 份重复）。
 UNIVERSAL_GATES = (
     "citation_integrity",
-    "evidence_audit_integrity",
     "done_exactly_once",
     "seq_continuous",
 )

@@ -115,8 +115,7 @@ def k_metrics(scores: list[CaseScore]) -> dict[str, dict[str, Any]]:
                     / max(1, sum(1 for s in runs if s.quality_score is not None)),
                     1,
                 )
-                if runs[0].track == "external"
-                and any(s.quality_score is not None for s in runs)
+                if runs[0].track == "external" and any(s.quality_score is not None for s in runs)
                 else None
             ),
             "unknown_rate": round(
