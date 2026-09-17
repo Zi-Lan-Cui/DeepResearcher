@@ -523,14 +523,17 @@ class ResearchSupervisor:
             if selected_synthesis is not None and report_brief is not None
             else None
         )
-        deltas = working.deltas()
         research_status = "completed" if working.sufficient else "incomplete"
         generation_mode = "full" if working.sufficient else "partial" if can_write else "not_ready"
         can_continue_to_writer = can_write
+        # evidences / source_refs / task_results 的 reducer 幂等(merge_evidences /
+        # merge_task_results / merge_unique),直接把 WorkingState 全量副本交给 channel;
+        # reducer 按 id 折回原样,等价于只发新增。attempted_source_urls 保留 RunUrlReservations
+        # 自己维护的"本轮新预留"增量视图(非位置切片),对 merge_unique 幂等 reducer 同样安全。
         return SupervisorStateUpdate(
-            evidences=cast(list[Evidence], deltas["evidences"]),
-            source_refs=cast(list[str], deltas["source_refs"]),
-            task_results=cast(list[ResearchDirectionResult], deltas["task_results"]),
+            evidences=cast(list[Evidence], working.evidences),
+            source_refs=cast(list[str], working.source_refs),
+            task_results=cast(list[ResearchDirectionResult], working.task_results),
             attempted_source_urls=url_reservations.newly_attempted,
             working_set_revision=working.working_set_revision,
             research_synthesis=working.research_synthesis,
