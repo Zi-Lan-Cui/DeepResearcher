@@ -190,6 +190,9 @@ class SearchToolResult(BaseModel):
     queries: list[str] = Field(default_factory=list)
     failures: list[SearchFailure] = Field(default_factory=list)
     error: str = ""
+    # 账户级不可用（额度/鉴权）：与普通"这次没搜到"区分，上层据此停止重试并快速收尾。
+    provider_exhausted: bool = False
+    provider_user_code: str = ""
 
 
 def failed_search(
@@ -204,10 +207,15 @@ def failed_search(
     details = failures or [
         SearchFailure(query=query, error=str(error)[:500]) for query in search_queries
     ]
+    from deepresearcher.tools.errors import ProviderExhaustedError
+
+    exhausted = isinstance(error, ProviderExhaustedError)
     return SearchToolResult(
         task_id=task["id"],
         status="failed",
         queries=search_queries,
         failures=details,
         error=str(error)[:500],
+        provider_exhausted=exhausted,
+        provider_user_code=getattr(error, "user_code", "") if exhausted else "",
     )

@@ -16,12 +16,15 @@ from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFA
 
 from deepresearcher.config import SearchConfig
 from deepresearcher.observability.usage_runtime import record_external_request
-from deepresearcher.tools.errors import ToolRequestError
+from deepresearcher.tools.errors import ProviderExhaustedError, ToolRequestError
 from deepresearcher.tools.transport.url_guard import PublicUrlGuard
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # 429/503 是“配额/限流”型失败：除了退避重试，还要给调用方留下跨请求的恢复点。
 _RATE_LIMITED_STATUS = {429, 503}
+# 搜索提供方（同一 key）账户级不可自愈状态：重试单条无意义 → 抛 ProviderExhausted 触熔断。
+# 只对 request_kind=="search" 生效；fetch 的 401/403 是单来源（付费墙/登录墙），非 provider 挂。
+_SEARCH_PROVIDER_FATAL = {401: "invalid_key", 402: "insufficient_credit", 403: "forbidden", 432: "quota_exhausted"}
 _DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 30.0
 _IMPERSONATE_TARGETS = (DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI)
 _JITTER_RATIO = 0.25
@@ -127,6 +130,12 @@ class HttpClient:
                         rate_limit_reset_ts = time.monotonic() + window
                     last_error = ToolRequestError(f"HTTP {response.status_code} from {url}")
                 elif response.status_code >= 400:
+                    if request_kind == "search" and response.status_code in _SEARCH_PROVIDER_FATAL:
+                        # 搜索提供方账户级不可用：不重试、抛专用类型，让上层开熔断并快速收尾。
+                        raise ProviderExhaustedError(
+                            _SEARCH_PROVIDER_FATAL[response.status_code],
+                            f"HTTP {response.status_code} from {url}",
+                        )
                     raise ToolRequestError(
                         f"HTTP {response.status_code} from {url}", retryable=False
                     )
