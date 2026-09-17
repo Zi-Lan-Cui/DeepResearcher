@@ -303,6 +303,72 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             assert completed["report_markdown"].startswith("# M8")
             await _validate_database(database_url, failover_run)
 
+            # ---- F2: graceful SIGTERM -> interrupted -> checkpoint resume ----
+            # A graceful Worker stop releases its in-flight run as ``interrupted``
+            # with a clean lease release (distinct from the lease-expiry takeover
+            # exercised above).  Neither the poll loop (claims only ``queued``) nor
+            # the lease reaper (targets expired ``running`` leases) can resume such a
+            # row -- only a Worker's startup reconcile does, by submitting an
+            # explicit ``resume=True`` claim.  This exercises that whole path on a
+            # dedicated run, still blocked on the release marker.
+            graceful_run = await _create_run(client, token, "M8 graceful resume")
+            run_ids.append(graceful_run)
+            await _eventually(
+                lambda: _run_detail(client, token, graceful_run),
+                lambda item: item["status"] == "running",
+                timeout=20,
+                label="graceful run first claim",
+            )
+            graceful_pids = await _eventually(
+                lambda: asyncio.sleep(0, result=_entered_pids(marker_dir, graceful_run)),
+                lambda item: len(item) == 1,
+                timeout=10,
+                label="graceful run single initial execution",
+            )
+            graceful_owner_pid = next(iter(graceful_pids))
+            graceful_owner = next(p for p in workers if p.pid == graceful_owner_pid)
+
+            # SIGTERM (not SIGKILL): the Worker drains and releases the run cleanly.
+            group.stop(graceful_owner, hard=False)
+            interrupted = await _eventually(
+                lambda: _run_detail(client, token, graceful_run),
+                lambda item: item["status"] == "interrupted",
+                timeout=10,
+                label="graceful shutdown marks the run interrupted",
+            )
+            assert interrupted["terminal_reason"] == "server_shutdown", (
+                f"expected server_shutdown, got {interrupted['terminal_reason']!r}"
+            )
+
+            # A freshly started Worker's startup reconcile resumes the run from its
+            # checkpoint; it re-enters the graph under a new PID.
+            resume_worker = group.start(
+                "worker-f2-resume", sys.executable, "scripts/m8_fake_worker.py"
+            )
+            workers.append(resume_worker)
+            resumed = await _eventually(
+                lambda: _run_detail(client, token, graceful_run),
+                lambda item: item["status"] == "running",
+                timeout=args.lease_seconds + 15,
+                label="startup reconcile resumes the interrupted run",
+            )
+            assert resumed["status"] == "running"
+            await _eventually(
+                lambda: asyncio.sleep(0, result=_entered_pids(marker_dir, graceful_run)),
+                lambda item: len(item) == 2,
+                timeout=15,
+                label="resumed execution under a new Worker PID",
+            )
+            (marker_dir / f"release-{graceful_run}").touch()
+            completed_graceful = await _eventually(
+                lambda: _run_detail(client, token, graceful_run),
+                lambda item: item["status"] == "completed",
+                timeout=20,
+                label="graceful resume completion",
+            )
+            assert completed_graceful["report_markdown"].startswith("# M8")
+            await _validate_database(database_url, graceful_run)
+
             # Restore two live Workers, then verify queue/capacity at 1/2/4/8.
             workers.append(
                 group.start("worker-replacement", sys.executable, "scripts/m8_fake_worker.py")
@@ -363,6 +429,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             "concurrency_seconds": concurrency_results,
             "failover_attempt": 2,
             "run_done_count": 1,
+            "graceful_shutdown_recovered": True,
         }
         passed = True
         return result
