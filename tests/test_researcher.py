@@ -604,8 +604,8 @@ def test_add_evidence_validates_before_ranking_by_confidence():
     assert run_state.evidences[0].claim == "较高优先级"
     assert result["truncated_submission_count"] == 1
     assert any(
-        item["reason"] == "quote_not_in_source" for item in result["rejected"]
-    )  # 唯一不变式：quote 必须逐字（忽略空白）出现在原文
+        item["reason"] == "quote_paraphrase" for item in result["rejected"]
+    )  # 宽松归一仍不过 → 判定为模型改述
 
 
 def test_concurrent_add_evidence_commits_under_one_source_limit():
