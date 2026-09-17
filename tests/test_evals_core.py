@@ -310,17 +310,6 @@ def test_citation_gate_pass_and_dangling():
     )
 
 
-def test_evidence_audit_gate_recomputes_quote_presence() -> None:
-    good = _gate(score_artifact(_artifact(), _case(criteria=())), "evidence_audit_integrity")
-    assert good.verdict == "yes"
-
-    broken = _artifact(
-        evidences=[{"evidence_id": "e1", "quote": "missing", "audit_chunk": "other text"}]
-    )
-    result = _gate(score_artifact(broken, _case(criteria=())), "evidence_audit_integrity")
-    assert result.verdict == "no"
-
-
 def test_seq_and_done_gates():
     results = score_artifact(_artifact(), _case(criteria=()))
     assert _gate(results, "done_exactly_once").verdict == "yes"

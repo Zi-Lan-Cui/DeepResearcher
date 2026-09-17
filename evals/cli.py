@@ -38,9 +38,7 @@ def collect_cases(args: argparse.Namespace) -> list[EvalCase]:
     if profile:
         spec = json.loads((PROFILES_DIR / f"{profile}.json").read_text("utf-8"))
         behavior = {case.case_id: case for case in load_cases(BEHAVIOR_FILE)}
-        external = {
-            case.case_id: case for case in drb.build_cases(drb.drb_root(args.drb_root))
-        }
+        external = {case.case_id: case for case in drb.build_cases(drb.drb_root(args.drb_root))}
         requested = [*spec["external_ids"], *spec["behavior_ids"]]
         available = {**external, **behavior}
         missing = [case_id for case_id in requested if case_id not in available]
