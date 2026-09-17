@@ -221,6 +221,25 @@ class WorkingState:
             return value
         return ResearchSynthesis.model_validate(value)
 
+    def set_stop_reason(self, reason: StopReason) -> None:
+        """按 `StopReason.rank` 采纳终止原因；低权威度不覆盖已采纳的高权威度。
+
+        取代过去"直接赋值 + 零散 is None 守卫"的隐式优先级：谁都能写、顺序说了算。
+        现在写点只需调用本方法并选对 reason，冲突由声明式 rank 裁决（见 StopReason.rank）。
+        """
+        current = self.stop_reason
+        if current is None or reason.rank >= current.rank:
+            self.stop_reason = reason
+
+    def _bump_working_set(self) -> None:
+        """工作集版本前进的唯一出口。
+
+        不变式：任何改变 `active_evidence_ids` 成员的操作都必须经此推进 revision，
+        否则 `synthesis_is_fresh` 会误判综合稿仍然新鲜、放行基于过期证据的 ResearchComplete。
+        新增 mutation 方法时记得调用它（版本单调性无法由类型系统强制，只能约定）。
+        """
+        self.working_set_revision += 1
+
     def allocate_task_index(self) -> int:
         """分配独立的任务序号，不把研究轮次编码进任务 ID。
 
@@ -262,7 +281,7 @@ class WorkingState:
         self.task_results.append(execution.task_result)
         self.coverage_gaps.extend(execution.task_result.remaining_gaps)
         self.coverage_gaps = list(dict.fromkeys(gap for gap in self.coverage_gaps if gap.strip()))
-        self.working_set_revision += 1
+        self._bump_working_set()
 
     def release_evidence(self, evidence_ids: list[str]) -> list[str]:
         """从 Supervisor 当前工作集释放 Evidence；全量档案仍保留。"""
@@ -270,7 +289,7 @@ class WorkingState:
         self.active_evidence_ids.difference_update(existing)
         self.released_evidence_ids.update(existing)
         if existing:
-            self.working_set_revision += 1
+            self._bump_working_set()
         return sorted(existing)
 
     def restore_evidence(self, evidence_ids: list[str]) -> list[str]:
@@ -286,7 +305,7 @@ class WorkingState:
         self.active_evidence_ids.update(restored)
         self.released_evidence_ids.difference_update(restored)
         if restored:
-            self.working_set_revision += 1
+            self._bump_working_set()
         return restored
 
     def synthesis_is_fresh(self, synthesis: ResearchSynthesis | None) -> bool:

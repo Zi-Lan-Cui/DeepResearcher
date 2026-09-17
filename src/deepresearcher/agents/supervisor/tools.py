@@ -87,7 +87,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                 and not synthesis.conflicts
             )
             working.completed_synthesis = synthesis
-            working.stop_reason = (
+            working.set_stop_reason(
                 StopReason.SUFFICIENT if working.sufficient else StopReason.SUBMITTED_WITH_GAPS
             )
         else:
