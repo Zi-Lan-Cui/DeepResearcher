@@ -87,13 +87,16 @@ def build_researcher_tools() -> list[BaseTool]:
     @tool("GrepDocument", args_schema=GrepDocument)
     async def grep_document(
         document_id: str,
-        queries: list[str],
+        query: str,
         context_lines: int,
+        offset: int,
         reason: str,
         runtime: ToolRuntime[ResearchRuntimeContext],
     ) -> str:
-        """在当前方向已经登记的长文中批量定位普通文本。"""
-        result = await runtime.context.grep_document(document_id, queries, context_lines, reason)
+        """在当前方向已登记的长文中定位单个关键词；多词请并发起多个调用，翻页用 offset。"""
+        result = await runtime.context.grep_document(
+            document_id, query, context_lines, offset, reason
+        )
         return _tool_result(result)
 
     @tool("ReadDocument", args_schema=ReadDocument)

@@ -9,10 +9,10 @@ from typing import Any
 
 from deepresearcher.observability.usage_runtime import record_cache_event
 from deepresearcher.tools.web.documents import (
-    DocumentGrepMatch,
     DocumentOutlineItem,
     DocumentReadRange,
     DocumentRef,
+    GrepResult,
 )
 from deepresearcher.tools.web.materials import (
     MemoryResearchMaterialStore,
@@ -185,19 +185,21 @@ class RedisResearchMaterialStore:
     async def grep(
         self,
         document_id: str,
-        queries: list[str],
+        query: str,
         *,
         context_lines: int,
         max_matches: int,
         max_chars: int,
-    ) -> list[DocumentGrepMatch]:
+        offset: int = 0,
+    ) -> GrepResult:
         document = await self._document(document_id)
         return grep_lines(
             document.content.splitlines(),
-            queries,
+            query,
             context_lines=context_lines,
             max_matches=max_matches,
             max_chars=max_chars,
+            offset=offset,
         )
 
     async def close(self) -> None:

@@ -59,7 +59,7 @@ class ResearchRuntimeContext:
     search_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
     list_search_results: Callable[[str, int, int, str], Awaitable[dict[str, object]]]
     read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
-    grep_document: Callable[[str, list[str], int, str], Awaitable[dict[str, object]]]
+    grep_document: Callable[[str, str, int, int, str], Awaitable[dict[str, object]]]
     read_document: Callable[[str, list[tuple[int, int]], str], Awaitable[dict[str, object]]]
     add_evidence: Callable[[list[dict[str, object]], str], Awaitable[dict[str, object]]]
     on_url_already_attempted: Callable[[str], None] | None = None
