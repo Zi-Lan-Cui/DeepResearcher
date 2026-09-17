@@ -198,9 +198,9 @@ def test_research_task_card_lifecycle():
     reading = project(_record("source_fetch_completed", {"task_id": "task-0001"}))
     assert (reading.event, reading.data["text"]) == ("task_update", "来源读取完成")
     extracting = project(
-        _record("evidence_chunk_completed", {"task_id": "task-0001", "candidate_count": 4})
+        _record("direction_evidence_added", {"task_id": "task-0001", "accepted_count": 4})
     )
-    assert extracting.data["text"] == "证据抽取 +4"
+    assert extracting.data["text"] == "证据入池 +4"
     done = project(
         _record(
             "research_task_completed",
@@ -312,8 +312,7 @@ def test_truncation_marker_becomes_error_frame():
         "research_round_completed",
         "research_stopped",
         "source_fetch_completed",
-        "source_reader_completed",
-        "evidence_chunk_completed",
+        "direction_evidence_added",
         "writer_draft_ready",
         "run_status",
         "run_done",

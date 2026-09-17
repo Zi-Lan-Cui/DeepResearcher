@@ -11,6 +11,7 @@ from deepresearcher.schemas import (
     DocumentLineRange,
     EvidenceSubmission,
     GrepDocument,
+    ListSearchResults,
     ReadDocument,
     ReadSources,
     ReadWorkingSet,
@@ -69,6 +70,18 @@ def build_researcher_tools() -> list[BaseTool]:
     ) -> str:
         """抓取模型选中的来源；短文内联，长文返回可按行读取的句柄。"""
         result = await runtime.context.read_sources(candidate_ids, reason)
+        return _tool_result(result)
+
+    @tool("ListSearchResults", args_schema=ListSearchResults)
+    async def list_search_results(
+        search_id: str,
+        offset: int,
+        limit: int,
+        reason: str,
+        runtime: ToolRuntime[ResearchRuntimeContext],
+    ) -> str:
+        """分页查看 SearchSources 已落盘的完整候选目录。"""
+        result = await runtime.context.list_search_results(search_id, offset, limit, reason)
         return _tool_result(result)
 
     @tool("GrepDocument", args_schema=GrepDocument)
@@ -205,6 +218,7 @@ def build_researcher_tools() -> list[BaseTool]:
 
     return [
         search_sources,
+        list_search_results,
         read_sources,
         grep_document,
         read_document,

@@ -1,18 +1,15 @@
-"""工具调用入参与工具结果契约。
-
-``allow_parallel`` ClassVar 标记该工具是否允许在同一模型回合内批量派发，
-由中间件层（SerialToolMiddleware）读取，不是模型可见字段。
-"""
+"""工具调用入参与工具结果契约。"""
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
     SEARCH_QUERIES_PER_CALL,
+    SEARCH_RESULTS_PAGE_HARD_LIMIT,
     SOURCE_CANDIDATES_PER_READ,
     STRUCTURED_COLLECTION_HARD_LIMIT,
     STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
@@ -25,8 +22,6 @@ from deepresearcher.schemas.sections import ResearchDirectionResult
 class SearchSources(BaseModel):
     """ResearchAgent 请求发现当前方向的候选来源。"""
 
-    allow_parallel: ClassVar[bool] = False
-
     reason: str = Field(description="为什么这些检索式能补足当前方向的证据。")
     queries: list[str] = Field(
         min_length=1,
@@ -38,8 +33,6 @@ class SearchSources(BaseModel):
 class ReadSources(BaseModel):
     """ResearchAgent 从候选目录中选择实际读取的来源。"""
 
-    allow_parallel: ClassVar[bool] = False
-
     candidate_ids: list[str] = Field(
         min_length=1,
         max_length=SOURCE_CANDIDATES_PER_READ,
@@ -48,10 +41,22 @@ class ReadSources(BaseModel):
     reason: str = Field(description="说明这些来源与当前方向缺口的关系。")
 
 
+class ListSearchResults(BaseModel):
+    """分页查看已落盘的搜索结果。"""
+
+    search_id: str = Field(min_length=1, description="SearchSources 返回的搜索结果句柄。")
+    offset: int = Field(default=0, ge=0, description="从第几条结果开始，从 0 计数。")
+    limit: int = Field(
+        default=5,
+        ge=1,
+        le=SEARCH_RESULTS_PAGE_HARD_LIMIT,
+        description="本次返回的结果数。",
+    )
+    reason: str = Field(description="为什么需要继续查看该批搜索结果。")
+
+
 class GrepDocument(BaseModel):
     """在已读取长文中按普通文本查询定位相关行。"""
-
-    allow_parallel: ClassVar[bool] = False
 
     document_id: str = Field(min_length=1)
     queries: list[str] = Field(min_length=1, max_length=8)
@@ -66,8 +71,6 @@ class DocumentLineRange(BaseModel):
 
 class ReadDocument(BaseModel):
     """按行号批量读取已登记文档的有限窗口。"""
-
-    allow_parallel: ClassVar[bool] = False
 
     document_id: str = Field(min_length=1)
     ranges: list[DocumentLineRange] = Field(min_length=1, max_length=32)
@@ -87,8 +90,6 @@ class EvidenceSubmission(BaseModel):
 class AddEvidence(BaseModel):
     """批量提交 Evidence 候选；系统逐字验证后才会入池。"""
 
-    allow_parallel: ClassVar[bool] = False
-
     evidences: list[EvidenceSubmission] = Field(min_length=1, max_length=32)
     reason: str = Field(description="这些 Evidence 如何回答当前方向。")
 
@@ -96,15 +97,11 @@ class AddEvidence(BaseModel):
 class ReadWorkingSet(BaseModel):
     """查看当前 Agent 工作集的轻量摘要。"""
 
-    allow_parallel: ClassVar[bool] = False
-
     reason: str = Field(default="", description="说明需要重新检查工作集的原因。")
 
 
 class ReleaseEvidence(BaseModel):
     """从当前 Agent 活跃工作集释放 Evidence；不删除 Evidence 档案。"""
-
-    allow_parallel: ClassVar[bool] = False
 
     evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(description="说明这些 Evidence 为什么应从当前工作集中释放。")
@@ -113,16 +110,12 @@ class ReleaseEvidence(BaseModel):
 class RestoreEvidence(BaseModel):
     """将 Evidence 档案中的候选重新放回当前活跃工作集。"""
 
-    allow_parallel: ClassVar[bool] = False
-
     evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(description="说明为什么需要重新启用这些 Evidence。")
 
 
 class ResearchDirectionComplete(BaseModel):
     """ResearchAgent 提交方向结果并结束当前工具循环。"""
-
-    allow_parallel: ClassVar[bool] = False
 
     reason: str = Field(description="为什么当前方向可以停止探索。")
     selected_evidence_ids: list[str] = Field(
@@ -144,8 +137,6 @@ class ResearchDirectionComplete(BaseModel):
 class ResearchDelegate(BaseModel):
     """派发方向级研究任务的工具调用 Schema；task_id 由本地程序分配，不信任模型。"""
 
-    allow_parallel: ClassVar[bool] = True
-
     research_topic: str = Field(
         description=(
             "要研究的具体方向。必须包含研究对象、范围、待回答的局部问题、"
@@ -157,16 +148,12 @@ class ResearchDelegate(BaseModel):
 class ResearchComplete(BaseModel):
     """冻结最新研究综合稿并终止研究阶段。"""
 
-    allow_parallel: ClassVar[bool] = False
-
     synthesis_revision: int = Field(ge=1)
     reason: str = Field(description="为什么该综合版本已经足以形成完整报告。")
 
 
 class ReviseResearchSynthesis(BaseModel):
     """提交 Supervisor 对当前研究状态的下一版完整规范化综合稿。"""
-
-    allow_parallel: ClassVar[bool] = False
 
     expected_revision: int = Field(
         ge=0,

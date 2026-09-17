@@ -46,13 +46,11 @@ _STAGE_TITLES: dict[str, str] = {
     NodeName.RENDER_FINAL_REPORT: "生成最终报告",
 }
 
-# 方向卡第二行动作：{event_type: 文案}，带 {candidate_count} 的会格式化
+# 方向卡第二行动作：{event_type: 文案}。
 _TASK_UPDATES: dict[str, str] = {
     "source_fetch_started": "读取来源中…",
     "source_fetch_completed": "来源读取完成",
-    "source_reader_completed": "来源读取完成",
-    "evidence_chunk_completed": "证据抽取 +{candidate_count}",
-    "evidence_extraction_failed": "部分来源抽取失败",
+    "direction_evidence_added": "证据入池 +{accepted_count}",
     "source_timeout": "来源读取超时",
     "source_read_failed": "某来源不可读，已跳过",
     "source_read_skipped": "来源重复，已跳过",
@@ -140,6 +138,8 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         text = _TASK_UPDATES[event_type]
         if "{candidate_count}" in text:
             text = text.format(candidate_count=_int(payload.get("candidate_count")))
+        if "{accepted_count}" in text:
+            text = text.format(accepted_count=_int(payload.get("accepted_count")))
         return _task("task_update", seq, payload, {"text": text})
     if event_type == "direction_search_completed":
         text = "检索完成：{} 条候选来源".format(_int(payload.get("candidate_count")))

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import re
 
@@ -17,13 +16,12 @@ from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
     ResearchAgentResult,
-    ResearchDirectionDecision,
     ResearchDirectionResult,
     ResearchSynthesis,
     ReviseResearchSynthesis,
     StopReason,
 )
-from fakes import evidence, researcher_agent
+from fakes import evidence
 
 
 def test_synthesis_arguments_leave_selected_evidence_union_to_handler():
@@ -109,14 +107,12 @@ def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
     item.source_url = "https://docs.example.com/report"
     item.source_title = "来源标题"
     item.published_at = "2026-09-01"
-    item.audit_chunk = "SECRET_AUDIT_CHUNK"
     card = evidence_card(item)
 
     assert card["source_title"] == "来源标题"
     assert card["source_domain"] == "docs.example.com"
     assert card["published_at"] == "2026-09-01"
     assert "quote" not in card
-    assert "audit_chunk" not in card
 
     synthesis = ResearchSynthesis.model_validate(
         {
@@ -590,23 +586,7 @@ def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["一个局部方向"], ready=True),
         AgentConfig(max_research_rounds=1),
-        research_agent=researcher_agent(
-            AgentConfig(research_agent_max_evidences_per_direction=1, research_agent_max_turns=3),
-            [
-                ResearchDirectionDecision(
-                    action="search", reason="检索局部事实", queries=["局部事实"]
-                ),
-                ResearchDirectionDecision(
-                    action="read",
-                    reason="读取局部来源",
-                    candidate_ids=[
-                        "c-"
-                        + hashlib.sha1("https://example.com/局部事实/a".encode()).hexdigest()[:10]
-                    ],
-                ),
-                ResearchDirectionDecision(action="complete", reason="方向材料已收集"),
-            ],
-        ),
+        research_agent=FixedResearchAgent(),
     )
 
     result = asyncio.run(
@@ -706,24 +686,10 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
                 )
             return await super().ainvoke(messages)
 
-    agent = researcher_agent(
-        AgentConfig(research_agent_max_evidences_per_direction=1, research_agent_max_turns=3),
-        [
-            ResearchDirectionDecision(action="search", reason="检索", queries=["补充方向"]),
-            ResearchDirectionDecision(
-                action="read",
-                reason="读取补充来源",
-                candidate_ids=[
-                    "c-" + hashlib.sha1("https://example.com/补充方向/a".encode()).hexdigest()[:10]
-                ],
-            ),
-            ResearchDirectionDecision(action="complete", reason="补充完成"),
-        ],
-    )
     supervisor = ResearchSupervisor(
         ReviewStateAwareLLM(),
         AgentConfig(max_research_rounds=1, max_post_review_recovery_cycles=1),
-        research_agent=agent,
+        research_agent=FixedResearchAgent(),
     )
     result = asyncio.run(
         supervisor.run(

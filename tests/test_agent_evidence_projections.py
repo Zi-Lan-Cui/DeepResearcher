@@ -3,7 +3,7 @@
 from deepresearcher.agents.researcher.state import evidence_observation_card
 from deepresearcher.agents.supervisor.state import evidence_card as supervisor_evidence_card
 from deepresearcher.agents.writer.state import evidence_detail_card, evidence_index_card
-from deepresearcher.evidence.models import Evidence, EvidenceLocator
+from deepresearcher.evidence.models import Evidence
 from deepresearcher.orchestration.nodes.reflection import reflection_evidence_card
 from deepresearcher.reporting.validation import validate_and_bind
 from deepresearcher.schemas import Citation, SourceProfile
@@ -26,10 +26,8 @@ def _evidence() -> Evidence:
             primary_source=True,
         ),
         retrieval_method="origin_fetch",
-        locator=EvidenceLocator(block_ids=["b-7"], heading_path=["结果"]),
         support="partial",
         confidence=0.82,
-        audit_chunk="不得暴露的审计正文",
     )
 
 

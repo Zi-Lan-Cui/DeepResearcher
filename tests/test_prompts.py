@@ -1,9 +1,4 @@
-"""提示词外置层的守卫：每个 prompt 都能加载且非空、关键片段逐字保留。
-
-外置（prompts/*.md）最大的风险是文件漏打包或被误删导致运行时静默退化；这里把
-"能加载 + 保留了关键判据短语" 钉成测试。extractor 的 marker 另有
-test_evidence_extract 双重覆盖，这里补 router/reflection/language。
-"""
+"""提示词外置层的守卫：每个运行时 prompt 都能加载且保留关键结构。"""
 
 from deepresearcher.config import language_directive
 from deepresearcher.prompts import json_data_section, load_prompt
@@ -13,8 +8,6 @@ ALL_PROMPTS = (
     "supervisor",
     "clarifier",
     "writer",
-    "evidence_extraction",
-    "evidence_extraction_summary",
     "router",
     "quick_answer",
     "reflection",
@@ -37,10 +30,20 @@ def test_language_directive_matches_template_byte_for_byte():
 def test_role_prompts_keep_identity_markers():
     assert "# 角色" in load_prompt("researcher")
     assert "Supervisor" in load_prompt("supervisor")
-    assert "唯一允许引用的事实基础" in load_prompt("evidence_extraction")
     assert "整体审阅者" in load_prompt("reflection")
     # writer 保留语言占位符（由调用点 .replace 填充）
     assert "__LANG__" in load_prompt("writer")
+
+
+def test_researcher_prompt_teaches_early_evidence_submission_with_examples():
+    prompt = load_prompt("researcher")
+
+    assert "在开启下一轮搜索、翻页或扩大范围之前" in prompt
+    assert "不要为每个句子或单个窗口分别调用 `AddEvidence`" in prompt
+    assert "系统不会猜测或自动删除" in prompt
+    assert prompt.count("### 示例") == 3
+    assert '"quote":"The system remained stable for 50 hours."' in prompt
+    assert '"quote":"L18:' not in prompt
 
 
 def test_prompts_keep_markdown_section_snapshot():
@@ -50,7 +53,6 @@ def test_prompts_keep_markdown_section_snapshot():
         "supervisor": ("# 角色", "## 职责边界", "## 工具", "## 预算与完成契约"),
         "writer": ("# 角色与边界", "## 交付原则", "## 写作质量", "## 完成契约"),
         "reflection": ("# 角色", "## 审阅目标", "## 问题分级", "## 输出边界"),
-        "evidence_extraction": ("# 角色", "## 数据边界", "## 任务", "## 输出契约"),
     }
     for prompt_name, sections in expected_sections.items():
         prompt = load_prompt(prompt_name)
