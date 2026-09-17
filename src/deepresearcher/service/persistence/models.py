@@ -145,20 +145,3 @@ class RunUsage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     run: Mapped["Run"] = relationship(back_populates="usage_records")
-
-
-class ToolCacheEntry(Base):
-    """与 run/task 身份无关的工具成功结果。"""
-
-    __tablename__ = "tool_cache_entries"
-
-    namespace: Mapped[str] = mapped_column(String(32), primary_key=True)
-    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value_json: Mapped[dict | list] = mapped_column(JSON)
-    metrics_json: Mapped[dict | None] = mapped_column(JSON)
-    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
-    schema_version: Mapped[str] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    last_accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    hit_count: Mapped[int] = mapped_column(Integer, default=0)

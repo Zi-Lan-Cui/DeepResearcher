@@ -29,6 +29,9 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
         nudge_message: str,
         submitted_probe: Callable[[Any], bool],
         max_nudges: int = 2,
+        run_limit: int = 0,
+        reminder_message: str = "",
+        reminder_turns: int = 0,
         emit: Callable[[str, dict[str, object]], None] | None = None,
     ):
         super().__init__()
@@ -36,8 +39,40 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
         self.nudge_message = nudge_message
         self.submitted_probe = submitted_probe
         self.max_nudges = max_nudges
+        self.run_limit = run_limit
+        self.reminder_message = reminder_message
+        self.reminder_turns = reminder_turns
         self._emit = emit
         self._logger = get_logger("deepresearcher.agents.middleware.tool_loop_guard")
+
+    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        """最后几回合显式告知剩余预算，促使模型先提交已验证材料。"""
+        if not self.reminder_message or self.reminder_turns <= 0 or self.run_limit <= 0:
+            return None
+        if self.submitted_probe(getattr(runtime, "context", None)):
+            return None
+        messages = state.get("messages", []) if isinstance(state, dict) else []
+        calls = int(state.get("run_model_call_count", 0) or 0) if isinstance(state, dict) else 0
+        remaining = self.run_limit - calls
+        if remaining <= 0 or remaining > self.reminder_turns:
+            return None
+        content = self.reminder_message.format(remaining_turns=remaining)
+        if any(
+            isinstance(message, HumanMessage) and message.content == content for message in messages
+        ):
+            return None
+        payload = {
+            "agent": self.agent_name,
+            "remaining_turns": remaining,
+            "run_limit": self.run_limit,
+        }
+        if self._emit is not None:
+            self._emit(f"{self.agent_name.lower()}_finalization_reminded", payload)
+        else:
+            self._logger.info(
+                "%s_finalization_reminded payload=%s", self.agent_name.lower(), payload
+            )
+        return {"messages": [HumanMessage(content=content)]}
 
     @hook_config(can_jump_to=["model"])
     async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:

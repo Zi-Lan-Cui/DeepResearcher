@@ -73,6 +73,9 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
                 nudge_message=profile.submission_guard.nudge_message,
                 submitted_probe=profile.submission_guard.submitted_probe,
                 max_nudges=profile.submission_guard.max_nudges,
+                run_limit=profile.max_turns,
+                reminder_message=profile.submission_guard.reminder_message,
+                reminder_turns=profile.submission_guard.reminder_turns,
                 emit=profile.emit,
             )
         )

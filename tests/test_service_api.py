@@ -31,10 +31,16 @@ async def client(tmp_path):
     graphs: list[FakeGraph] = []
 
     def graph_factory(
-        *, settings, event_sink, trace_recorder, http_client, checkpointer=None, tool_cache=None
+        *,
+        settings,
+        event_sink,
+        trace_recorder,
+        http_client,
+        checkpointer=None,
+        material_store=None,
     ):
         del trace_recorder
-        del tool_cache
+        del material_store
         graph = graphs.pop(0) if graphs else FakeGraph()
         graph._sink = event_sink
         return graph
@@ -187,7 +193,6 @@ async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
             )
             assert detail.json()["status"] == "queued"
             assert app.state.execution is None
-            assert app.state.tool_cache is None
             cancelled = await isolated.post(
                 f"/api/runs/{created.json()['run_id']}/cancel", headers=_auth(token)
             )

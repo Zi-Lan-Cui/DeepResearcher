@@ -4,7 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from deepresearcher.evidence.models import Evidence
 from deepresearcher.state import SubTask
 from deepresearcher.tools.web.documents import DocumentView
 from deepresearcher.tools.web.parsing.models import ParsedContent
@@ -36,11 +35,10 @@ class SourceDocument(ParsedContent, total=False):
 
 
 class SourceReaderToolResult(BaseModel):
-    """单来源读取结果；新路径返回文档，旧抽取基线仍可返回 Evidence。"""
+    """单来源读取结果；只返回已登记文档，不在 Reader 内抽取 Evidence。"""
 
     task_id: str
     status: Literal["completed", "failed", "skipped"]
-    evidences: list[Evidence] = Field(default_factory=list)
     documents: list[DocumentView] = Field(default_factory=list)
     source_url: str = ""
     error: str = ""

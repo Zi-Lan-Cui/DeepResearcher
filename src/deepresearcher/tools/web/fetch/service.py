@@ -1,9 +1,7 @@
 """网页抓取编排：缓存、Provider 顺序和可恢复降级。"""
 
 import asyncio
-from typing import cast
 
-from deepresearcher.tools.cache import CacheValue, NoOpToolCache, ToolCache
 from deepresearcher.tools.cache_keys import canonical_url, semantic_cache_key
 from deepresearcher.tools.web.fetch.models import SourceDocument
 from deepresearcher.tools.web.fetch.protocol import FetchProvider
@@ -18,18 +16,27 @@ class FetchService:
         self,
         providers: list[FetchProvider],
         *,
-        tool_cache: ToolCache | None = None,
-        cache_ttl_seconds: int = 0,
         fetch_policy_version: str = "public-fetch-v1",
         parser_version: str = "parser-v1",
     ):
         if not providers:
             raise ValueError("FetchService 至少需要一个 FetchProvider。")
         self.providers = list(providers)
-        self.tool_cache = tool_cache or NoOpToolCache()
-        self.cache_ttl_seconds = cache_ttl_seconds
         self.fetch_policy_version = fetch_policy_version
         self.parser_version = parser_version
+
+    def material_fetch_key(self, url: str) -> str:
+        """返回可跨 Run 复用的正文身份；与现有 ToolCache 版本语义一致。"""
+
+        normalized_url = canonical_url(url)
+        if not normalized_url:
+            return ""
+        return semantic_cache_key(
+            normalized_url,
+            tuple(provider.name for provider in self.providers),
+            self.fetch_policy_version,
+            self.parser_version,
+        )
 
     async def afetch(
         self,
@@ -43,38 +50,9 @@ class FetchService:
             return await self._fetch_uncached(
                 url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
             )
-
-        async def compute() -> CacheValue:
-            document = await self._fetch_uncached(
-                url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
-            )
-            return CacheValue(
-                value=dict(document),
-                content_hash=document.get("content_hash"),
-                metrics={"saved_external_requests": 1},
-                cacheable=document.get("status") == "completed" and not document.get("error"),
-            )
-
-        provider_chain = tuple(provider.name for provider in self.providers)
-        cached = await self.tool_cache.get_or_compute(
-            "fetch",
-            semantic_cache_key(
-                normalized_url,
-                provider_chain,
-                self.fetch_policy_version,
-                self.parser_version,
-            ),
-            ttl_seconds=self.cache_ttl_seconds,
-            schema_version=self.parser_version,
-            compute=compute,
+        return await self._fetch_uncached(
+            url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
         )
-        document = cast(SourceDocument, dict(cached.value))
-        document["source_url"] = url
-        document["cache_hit"] = cached.hit
-        if cached.hit:
-            document["fetch_duration_ms"] = 0
-            document["parse_duration_ms"] = 0
-        return document
 
     async def _fetch_uncached(
         self,

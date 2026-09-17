@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-from typing import cast
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 from deepresearcher.context.execution import AgentExecutionScope
@@ -11,7 +10,6 @@ from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
 from deepresearcher.observability.tracing.recorder import TraceRecorder
 from deepresearcher.state import SubTask
-from deepresearcher.tools.cache import CacheValue, NoOpToolCache, ToolCache
 from deepresearcher.tools.cache_keys import normalize_text, semantic_cache_key
 from deepresearcher.tools.errors import ToolConfigurationError
 from deepresearcher.tools.web.search.client import SearchClient
@@ -32,9 +30,6 @@ class SearchTool:
         *,
         trace_recorder: TraceRecorder | None = None,
         event_sink: JsonlSink | None = None,
-        tool_cache: ToolCache | None = None,
-        cache_ttl_seconds: int = 0,
-        cache_version: str = "search-v1",
     ):
         if client is None:
             raise ToolConfigurationError("SearchTool 需要已配置的 SearchClient。")
@@ -42,9 +37,6 @@ class SearchTool:
         self.trace_recorder = trace_recorder
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.tools.web_search")
-        self.tool_cache = tool_cache or NoOpToolCache()
-        self.cache_ttl_seconds = cache_ttl_seconds
-        self.cache_version = cache_version
         self._query_cache: dict[str, list[SearchResult]] = {}
         self._query_cache_lock = asyncio.Lock()
 
@@ -84,19 +76,8 @@ class SearchTool:
                     else:
                         missing_queries.append(query)
 
-            async def search_one(query: str) -> tuple[list[SearchResult], bool]:
-                async def compute() -> CacheValue:
-                    results = await self.client.asearch(query)
-                    return CacheValue(value=list(results), metrics={"saved_external_requests": 1})
-
-                cached = await self.tool_cache.get_or_compute(
-                    "search",
-                    self._cache_key(query),
-                    ttl_seconds=self.cache_ttl_seconds,
-                    schema_version=self.cache_version,
-                    compute=compute,
-                )
-                return cast(list[SearchResult], cached.value), cached.hit
+            async def search_one(query: str) -> list[SearchResult]:
+                return list(await self.client.asearch(query))
 
             if self.trace_recorder is not None:
                 with self.trace_recorder.span("search", kind="tool"):
@@ -119,14 +100,11 @@ class SearchTool:
                 for query, batch in zip(missing_queries, batches, strict=True)
                 if isinstance(batch, BaseException)
             ]
-            fetched_batches = [batch[0] for batch in batches if isinstance(batch, tuple)]
-            persistent_hit_count = sum(
-                int(batch[1]) for batch in batches if isinstance(batch, tuple)
-            )
+            fetched_batches = [batch for batch in batches if isinstance(batch, list)]
             async with self._query_cache_lock:
                 for query, batch in zip(missing_queries, batches, strict=True):
-                    if isinstance(batch, tuple):
-                        self._query_cache[self._cache_key(query)] = list(batch[0])
+                    if isinstance(batch, list):
+                        self._query_cache[self._cache_key(query)] = list(batch)
             results = [
                 result
                 for result_set in [*cached_queries.values(), *fetched_batches]
@@ -157,7 +135,7 @@ class SearchTool:
                             "candidate_count": len(ranked),
                             "failed_query_count": len(failures),
                             "failed_queries": [item.model_dump() for item in failures],
-                            "cache_hit_count": len(cached_queries) + persistent_hit_count,
+                            "cache_hit_count": len(cached_queries),
                             "candidates": [
                                 {
                                     "title": item.get("title", "")[:160],
@@ -201,7 +179,6 @@ class SearchTool:
             normalize_text(query),
             getattr(self.client, "provider_name", "unknown"),
             getattr(self.client, "effective_limit", None),
-            self.cache_version,
         )
 
     @staticmethod

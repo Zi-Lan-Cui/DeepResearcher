@@ -29,14 +29,13 @@ from deepresearcher.tools import (
     DirectHttpFetchProvider,
     FetchService,
     HttpClient,
-    LocalDocumentStore,
-    NoOpToolCache,
     SearchClient,
     SearchTool,
     SourceReaderTool,
     ToolConfigurationError,
 )
 from deepresearcher.tools.web.aliyun import create_aliyun_dts_client
+from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 
 
 def _guarded_node(name, node, *, event_sink=None, trace_recorder=None, max_text_chars=1_000):
@@ -89,7 +88,7 @@ def build_graph(
     trace_recorder: TraceRecorder | None = None,
     http_client: HttpClient | None = None,
     checkpointer=None,
-    tool_cache=None,
+    material_store=None,
 ):
     """装配完整研究应用；必需模型和联网工具缺失时立即失败。
 
@@ -113,7 +112,7 @@ def build_graph(
         raise ToolConfigurationError(f"深度研究搜索不可用：{detail}。")
 
     shared_http = http_client or HttpClient(settings.search)
-    shared_cache = tool_cache or NoOpToolCache()
+    shared_materials = material_store or MemoryResearchMaterialStore()
     owns_http_client = http_client is None
     uses_aliyun = settings.search.provider == "aliyun" or (
         "aliyun" in settings.search.fetch_provider_order
@@ -123,9 +122,6 @@ def build_graph(
         SearchClient(settings.search, shared_http, aliyun_client=aliyun_client),
         trace_recorder=trace_recorder,
         event_sink=event_sink,
-        tool_cache=shared_cache,
-        cache_ttl_seconds=settings.tool_cache.search_ttl_seconds,
-        cache_version=settings.tool_cache.search_version,
     )
     fetch_providers = []
     for provider_name in settings.search.fetch_provider_order:
@@ -138,36 +134,12 @@ def build_graph(
     reader_tool = SourceReaderTool(
         FetchService(
             fetch_providers,
-            tool_cache=shared_cache,
-            cache_ttl_seconds=settings.tool_cache.fetch_ttl_seconds,
-            fetch_policy_version=settings.tool_cache.fetch_policy_version,
-            parser_version=settings.tool_cache.parser_version,
         ),
-        llm=llm,
         trace_recorder=trace_recorder,
         event_sink=event_sink,
-        context_window_tokens=settings.llm.context_window_tokens,
-        evidence_input_budget_tokens=settings.agent.evidence_input_budget_tokens,
-        evidence_output_budget_tokens=settings.agent.evidence_output_budget_tokens,
-        evidence_safety_margin_tokens=settings.agent.evidence_safety_margin_tokens,
-        evidence_chunk_concurrency=settings.agent.evidence_chunk_concurrency,
-        evidence_max_per_source=settings.agent.evidence_max_per_source,
-        evidence_full_context_max_tokens=settings.agent.evidence_full_context_max_tokens,
-        evidence_bm25_top_k=settings.agent.evidence_bm25_top_k,
-        evidence_bm25_window=settings.agent.evidence_bm25_window,
-        evidence_retriever_backend=settings.agent.evidence_retriever_backend,
         fetch_timeout=settings.agent.source_fetch_timeout,
         parse_timeout=settings.agent.source_parse_timeout,
-        evidence_extract_timeout=settings.agent.evidence_extract_timeout,
-        tool_cache=shared_cache,
-        evidence_cache_ttl_seconds=settings.tool_cache.evidence_ttl_seconds,
-        extractor_prompt_version=settings.tool_cache.extractor_prompt_version,
-        evidence_schema_version=settings.tool_cache.evidence_schema_version,
-        chunking_version=settings.tool_cache.chunking_version,
-        model_id=settings.llm.model,
-        input_usd_per_million=settings.llm.input_usd_per_million,
-        output_usd_per_million=settings.llm.output_usd_per_million,
-        document_store=LocalDocumentStore(settings.agent.document_store_root),
+        material_store=shared_materials,
         document_inline_max_tokens=settings.agent.document_inline_max_tokens,
     )
     clarifier = Clarifier(
@@ -195,6 +167,7 @@ def build_graph(
         reader_tool=reader_tool,
         event_sink=event_sink,
         context_window_tokens=settings.llm.context_window_tokens,
+        material_store=shared_materials,
     )
     supervisor = ResearchSupervisor(
         llm,

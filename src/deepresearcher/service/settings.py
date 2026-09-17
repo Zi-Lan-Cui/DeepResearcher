@@ -70,6 +70,11 @@ class ServiceConfig:
     redis_url: str = "redis://127.0.0.1:6379/0"
     redis_channel_prefix: str = "deepresearcher"
     redis_preview_queue_size: int = 128
+    material_store_backend: str = "memory"
+    material_redis_url: str = "redis://127.0.0.1:6379/0"
+    material_key_prefix: str = "deepresearcher:material"
+    search_material_ttl_seconds: int = 6 * 60 * 60
+    document_material_ttl_seconds: int = 24 * 60 * 60
     login_account_attempts: int = 5
     login_ip_attempts: int = 20
     login_rate_window_seconds: int = 5 * 60
@@ -103,6 +108,10 @@ def get_service_config() -> ServiceConfig:
             "SERVICE_JWT_SECRET 缺失或过短（%s 环境），已生成一次性密钥；进程重启后登录态失效。",
             environment,
         )
+    redis_url = _env("SERVICE_REDIS_URL", "redis://127.0.0.1:6379/0")
+    material_backend = _env("SERVICE_MATERIAL_STORE_BACKEND", "memory").strip().lower()
+    if material_backend not in {"memory", "redis"}:
+        raise ValueError("SERVICE_MATERIAL_STORE_BACKEND 只能是 memory 或 redis。")
     return ServiceConfig(
         database_url=database_url,
         jwt_secret=jwt_secret,
@@ -115,9 +124,19 @@ def get_service_config() -> ServiceConfig:
         worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 15.0)),
         api_embedded_worker=_bool_env("SERVICE_API_EMBEDDED_WORKER", False),
         redis_preview_enabled=_bool_env("SERVICE_REDIS_PREVIEW_ENABLED", False),
-        redis_url=_env("SERVICE_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        redis_url=redis_url,
         redis_channel_prefix=_env("SERVICE_REDIS_CHANNEL_PREFIX", "deepresearcher"),
         redis_preview_queue_size=max(1, _int_env("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", 128)),
+        material_store_backend=material_backend,
+        material_redis_url=_env("SERVICE_MATERIAL_REDIS_URL", redis_url),
+        material_key_prefix=(
+            _env("SERVICE_MATERIAL_KEY_PREFIX", "deepresearcher:material")
+            or "deepresearcher:material"
+        ),
+        search_material_ttl_seconds=max(1, _int_env("SERVICE_SEARCH_MATERIAL_TTL_SECONDS", 21_600)),
+        document_material_ttl_seconds=max(
+            1, _int_env("SERVICE_DOCUMENT_MATERIAL_TTL_SECONDS", 86_400)
+        ),
         login_account_attempts=max(1, _int_env("SERVICE_LOGIN_ACCOUNT_ATTEMPTS", 5)),
         login_ip_attempts=max(1, _int_env("SERVICE_LOGIN_IP_ATTEMPTS", 20)),
         login_rate_window_seconds=max(1, _int_env("SERVICE_LOGIN_RATE_WINDOW_SECONDS", 300)),
