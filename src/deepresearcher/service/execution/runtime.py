@@ -102,7 +102,9 @@ async def worker_lifespan(
     if dsn is not None:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-        checkpoint_cm = AsyncPostgresSaver.from_conn_string(dsn)
+        from deepresearcher.checkpoint_serde import build_checkpointer_serde
+
+        checkpoint_cm = AsyncPostgresSaver.from_conn_string(dsn, serde=build_checkpointer_serde())
         checkpointer = await checkpoint_cm.__aenter__()
         await checkpointer.setup()
 
