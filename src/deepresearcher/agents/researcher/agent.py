@@ -25,7 +25,11 @@ from deepresearcher.config import AgentConfig, language_directive
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.evidence.validator import normalize_text, quote_in_source
+from deepresearcher.evidence.validator import (
+    normalize_text,
+    quote_in_source,
+    quote_verbatim_strict,
+)
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
@@ -485,6 +489,7 @@ class ResearchAgent:
         duplicates: list[str] = []
         pending_ids: set[str] = set()
         candidates: list[tuple[int, str, Evidence]] = []
+        accepted_via_normalization = 0  # 逐字被连字符/ligature 编码差异卡住、靠归一救回的条数
         for index, raw in enumerate(submissions):
             document_id = str(raw.get("document_id", ""))
             document = run_state.documents.get(document_id)
@@ -498,11 +503,13 @@ class ResearchAgent:
             except (FileNotFoundError, KeyError) as exc:
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
-            # 唯一不变式：quote 必须逐字（忽略空白）出现在该来源正文里。模型能复现原文
-            # 子串即等价于"确实读过"，无需行号定位，也不受重复句 / 换行分隔符错位影响。
+            # 入池不变式：quote 逐字（忽略空白 + 连字符/ligature 编码差异）出现在该来源正文里。
+            # 宽松匹配只救"忠实引用的编码变体"，改述仍不过 → 记 quote_paraphrase。
             if not quote_in_source(source_text, quote):
-                rejected.append({"index": index, "reason": "quote_not_in_source"})
+                rejected.append({"index": index, "reason": "quote_paraphrase"})
                 continue
+            if not quote_verbatim_strict(source_text, quote):
+                accepted_via_normalization += 1
             digest = hashlib.sha1(
                 f"{document_id}\0{normalize_text(quote)}".encode("utf-8")
             ).hexdigest()[:16]
@@ -577,9 +584,10 @@ class ResearchAgent:
                 "accepted_count": len(accepted),
                 "rejected_count": len(rejected),
                 "duplicate_count": len(duplicates),
-                # 拒绝原因直方图：让 trace 能直接归因证据为何被丢（quote_not_in_source /
-                # source_evidence_limit_reached / evidence_archive_full / …），不必再猜。
+                # 直方图归因证据为何被丢；quote_paraphrase=改述（宽松也不过）；
+                # 另有 accepted_via_normalization 记"逐字但被连字符/ligature 卡、靠归一救回"的条数。
                 "rejected_reasons": rejected_reasons,
+                "accepted_via_normalization": accepted_via_normalization,
                 # 模型提交证据时的理由：留作审计/归因的可解释信号，不再静默丢弃。
                 "reason": reason.strip()[:400],
             },

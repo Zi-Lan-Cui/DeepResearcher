@@ -1,26 +1,46 @@
 """Evidence 的确定性来源校验：只保证"quote 逐字在原文里"。
 
 不做行号定位——行号会引入 splitlines/`\n` 数行口径不一致、重复句错定位等脆弱性，
-而它对 Writer/前端零消费（引用靠 [来源N]→URL）。唯一不变式：
-`normalize_text(quote)` 是 `normalize_text(source_text)` 的子串。
-模型能逐字复现某段文本，当且仅当它被展示过该文本，故无需额外的"读过区间"追踪。
+而它对 Writer/前端零消费（引用靠 [来源N]→URL）。唯一不变式：quote 的非空白字符序列
+必须逐字出现在原文里。
+
+两级匹配：
+- `quote_verbatim_strict`：仅忽略空白差异（旧口径）。
+- `quote_in_source`（入池判定）：在忽略空白之上，再做 NFKC + 去软连字符/断词连字符，
+  把 PDF/网页里 `exam‑ple`、`exam-\nple`、ligature `ﬁ` 这类**忠实引用的编码变体**
+  救回来。两侧对称归一，改述仍不可能匹配（字母序列不同）。
+调用方据此区分"编码误杀"（strict 不过但 loose 过）与"模型改述"（loose 也不过）。
 """
 
 import re
+import unicodedata
+
+_SOFT_HYPHENS = "­‐‑"  # soft hyphen / hyphen / no-break hyphen
 
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
-def quote_in_source(source_text: str, quote: str) -> bool:
-    """quote 逐字内容必须出现在原文中，忽略一切空白差异（换行/多空格/换页）。
+def _norm_whitespace(text: str) -> str:
+    """仅去除空白、小写（旧严格口径）。"""
+    return re.sub(r"\s+", "", str(text)).lower()
 
-    用"去掉所有空白后子串"而非"折叠为单空格"：PDF/网页正文里 quote 跨越的位置可能是
-    `\n`、`\f` 或多空格，模型复现时空白形态不确定；只要求非空白字符序列逐字一致。
-    """
-    stripped_quote = re.sub(r"\s+", "", quote).lower()
-    if not stripped_quote:
-        return False
-    stripped_source = re.sub(r"\s+", "", source_text).lower()
-    return stripped_quote in stripped_source
+
+def _norm_loose(text: str) -> str:
+    """NFKC 归一 + 去软连字符 + 去所有连字符与空白 + 小写。"""
+    normalized = unicodedata.normalize("NFKC", str(text))
+    for ch in _SOFT_HYPHENS:
+        normalized = normalized.replace(ch, "")
+    return re.sub(r"[-\s]+", "", normalized).lower()
+
+
+def quote_verbatim_strict(source_text: str, quote: str) -> bool:
+    key = _norm_whitespace(quote)
+    return bool(key) and key in _norm_whitespace(source_text)
+
+
+def quote_in_source(source_text: str, quote: str) -> bool:
+    """入池判定：忽略空白与连字符/ligature 后的忠实逐字。"""
+    key = _norm_loose(quote)
+    return bool(key) and key in _norm_loose(source_text)
