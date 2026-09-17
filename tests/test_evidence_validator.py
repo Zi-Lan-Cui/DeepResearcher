@@ -1,8 +1,22 @@
 from deepresearcher.evidence.validator import (
     normalize_text,
     quote_in_source,
+    quote_matches_ignoring_punctuation,
     quote_verbatim_strict,
 )
+
+
+def test_punctuation_only_diff_is_format_variant_not_paraphrase():
+    # 源用弯引号/破折号，模型写成直引号/连字符：词序列一致 → 格式变体（第三档能命中）。
+    source = "The report — “very robust” — passed."
+    quote = 'The report - "very robust" - passed.'
+    assert quote_matches_ignoring_punctuation(source, quote)
+    assert not quote_in_source(source, quote)  # 连字符/引号样式差异，第二档仍不过
+
+
+def test_reworded_quote_is_paraphrase_across_all_tiers():
+    source = "The system remained stable for 50 hours."
+    assert not quote_matches_ignoring_punctuation(source, "The device stayed up two days")
 
 
 def test_encoding_variants_rescued_by_loose_but_rejected_by_strict():

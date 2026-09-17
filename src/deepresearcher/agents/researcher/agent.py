@@ -28,6 +28,7 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.evidence.validator import (
     normalize_text,
     quote_in_source,
+    quote_matches_ignoring_punctuation,
     quote_verbatim_strict,
 )
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
@@ -504,9 +505,15 @@ class ResearchAgent:
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
             # 入池不变式：quote 逐字（忽略空白 + 连字符/ligature 编码差异）出现在该来源正文里。
-            # 宽松匹配只救"忠实引用的编码变体"，改述仍不过 → 记 quote_paraphrase。
+            # 宽松仍不过时再分一档：只差异标点/引号/破折号（词序列一致）→ quote_format_variant；
+            # 词都不同 → quote_paraphrase。这样能真正区分"格式误杀"与"模型改述"。
             if not quote_in_source(source_text, quote):
-                rejected.append({"index": index, "reason": "quote_paraphrase"})
+                reason = (
+                    "quote_format_variant"
+                    if quote_matches_ignoring_punctuation(source_text, quote)
+                    else "quote_paraphrase"
+                )
+                rejected.append({"index": index, "reason": reason})
                 continue
             if not quote_verbatim_strict(source_text, quote):
                 accepted_via_normalization += 1
