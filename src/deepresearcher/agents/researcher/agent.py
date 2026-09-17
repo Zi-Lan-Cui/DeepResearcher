@@ -566,6 +566,10 @@ class ResearchAgent:
                 accepted.extend(added)
                 existing_ids.add(evidence.evidence_id)
                 per_source[document.source_url] = source_count + 1
+        rejected_reasons: dict[str, int] = {}
+        for item in rejected:
+            key = str(item.get("reason", ""))[:40]
+            rejected_reasons[key] = rejected_reasons.get(key, 0) + 1
         self._emit(
             "direction_evidence_added",
             {
@@ -573,6 +577,9 @@ class ResearchAgent:
                 "accepted_count": len(accepted),
                 "rejected_count": len(rejected),
                 "duplicate_count": len(duplicates),
+                # 拒绝原因直方图：让 trace 能直接归因证据为何被丢（quote_not_in_source /
+                # source_evidence_limit_reached / evidence_archive_full / …），不必再猜。
+                "rejected_reasons": rejected_reasons,
                 # 模型提交证据时的理由：留作审计/归因的可解释信号，不再静默丢弃。
                 "reason": reason.strip()[:400],
             },
@@ -656,13 +663,12 @@ class ResearchAgent:
                 )
             )
 
-        candidates: list[SearchCandidate] = []
         for item in result.results:
             url = str(item.get("url", "")).strip()
             if not url:
                 continue
             candidate_id = "c-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
-            candidate = SearchCandidate(
+            run_state.candidates[candidate_id] = SearchCandidate(
                 candidate_id=candidate_id,
                 title=str(item.get("title", "")),
                 url=url,
@@ -674,18 +680,19 @@ class ResearchAgent:
                 source_tier=classify_source(url),
                 source_profile=describe_source(url),
             )
-            run_state.candidates[candidate_id] = candidate
-            candidates.append(candidate)
-        preview = [self._search_candidate_card(item, include_snippet=False) for item in candidates]
-        preview = preview[:SEARCH_RESULTS_PREVIEW_COUNT]
+        raw_results = [dict(item) for item in result.results]
+        # 预览与 ListSearchResults 共用同一卡片形状 + 同一 raw_results 下标偏移口径。
+        preview, next_offset = self._candidate_cards(
+            run_state, raw_results, start=0, count=SEARCH_RESULTS_PREVIEW_COUNT
+        )
         return {
             "status": "completed",
             "queries": new_queries,
             "search_id": search_id,
-            "result_count": len(candidates),
+            "result_count": len(raw_results),
             "candidates": preview,
-            "next_offset": len(preview),
-            "has_more": len(preview) < len(candidates),
+            "next_offset": next_offset,
+            "has_more": next_offset is not None,
         }
 
     async def _list_search_results(
@@ -718,42 +725,55 @@ class ResearchAgent:
             if result.status != "completed":
                 return {"status": "failed", "reason": result.error or "search_cache_read_failed"}
             raw_results = [dict(item) for item in result.results]
-        end = min(len(raw_results), offset + limit)
-        candidates: list[dict[str, object]] = []
-        for raw in raw_results[offset:end]:
-            url = str(raw.get("url", "")).strip()
-            if not url:
-                continue
-            candidate_id = "c-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
-            candidate = run_state.candidates.get(candidate_id)
-            if candidate is not None:
-                candidates.append(self._search_candidate_card(candidate, include_snippet=True))
+        cards, next_offset = self._candidate_cards(
+            run_state, raw_results, start=offset, count=limit
+        )
         return {
             "status": "completed",
             "search_id": search_id,
             "offset": offset,
-            "returned_count": len(candidates),
+            "returned_count": len(cards),
             "result_count": len(raw_results),
-            "candidates": candidates,
-            "next_offset": end if end < len(raw_results) else None,
-            "has_more": end < len(raw_results),
+            "candidates": cards,
+            "next_offset": next_offset,
+            "has_more": next_offset is not None,
         }
 
+    def _candidate_cards(
+        self,
+        run_state: DirectionRunState,
+        raw_results: list[dict[str, object]],
+        *,
+        start: int,
+        count: int,
+    ) -> tuple[list[dict[str, object]], int | None]:
+        """按 raw_results 原始下标分页出候选卡；SearchSources 预览与 ListSearchResults 共用，
+        保证同一候选在两处形状一致、且 offset 坐标同一（跳过空 url 不移动游标）。"""
+        cards: list[dict[str, object]] = []
+        for raw in raw_results[start : start + count]:
+            url = str(raw.get("url", "")).strip()
+            if not url:
+                continue
+            candidate = run_state.candidates.get(
+                "c-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+            )
+            if candidate is not None:
+                cards.append(self._search_candidate_card(candidate))
+        next_start = start + count
+        return cards, (next_start if next_start < len(raw_results) else None)
+
     @staticmethod
-    def _search_candidate_card(
-        candidate: SearchCandidate, *, include_snippet: bool
-    ) -> dict[str, object]:
-        card: dict[str, object] = {
+    def _search_candidate_card(candidate: SearchCandidate) -> dict[str, object]:
+        """统一的候选卡形状：始终带（截断）snippet，供首屏即可判断是否值得 ReadSources。"""
+        return {
             "candidate_id": candidate.candidate_id,
             "title": candidate.title,
             "url": candidate.url,
+            "snippet": candidate.snippet[:SEARCH_RESULT_SNIPPET_PREVIEW_CHARS],
             "published_at": candidate.published_at,
             "source_tier": candidate.source_tier,
             "source_profile": candidate.source_profile.model_dump(mode="json"),
         }
-        if include_snippet:
-            card["snippet"] = candidate.snippet[:SEARCH_RESULT_SNIPPET_PREVIEW_CHARS]
-        return card
 
     def _emit(self, event_type: str, payload: dict[str, object]) -> None:
         """写入方向级 Agent 事件；事件只包含诊断元数据，不包含完整正文。"""

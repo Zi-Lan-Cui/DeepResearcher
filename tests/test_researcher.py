@@ -176,8 +176,10 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
 
     assert first["result_count"] == 12
     assert len(first["candidates"]) == 5
-    assert all("snippet" not in item for item in first["candidates"])
     assert first["has_more"] is True
+    # 预览与分页统一形状：首屏即带（截断）snippet，模型不必再翻 ListSearchResults(offset=0) 才能判断。
+    assert all(item["snippet"] and len(item["snippet"]) <= 1_200 for item in first["candidates"])
+    assert first["next_offset"] == 5  # 偏移以 raw_results 下标计，预览消费 0..4 → 下一页从 5
 
     page = asyncio.run(
         agent._list_search_results(
@@ -193,7 +195,8 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     assert page["offset"] == 5
     assert page["returned_count"] == 3
     assert page["next_offset"] == 8
-    assert all(len(item["snippet"]) <= 1_200 for item in page["candidates"])
+    # 同一候选在预览与分页里字段完全一致（无 include_snippet 分叉）。
+    assert set(first["candidates"][0]) == set(page["candidates"][0])
     # 分页重建只从 SearchTool 的进程/持久缓存取数，不再请求 Provider。
     assert client.calls == 1
     stored = asyncio.run(
