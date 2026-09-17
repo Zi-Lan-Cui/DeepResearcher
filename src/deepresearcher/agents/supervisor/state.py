@@ -172,10 +172,14 @@ class TaskExecution:
 
 
 class WorkingState:
-    """工具循环的工作状态：State 快照 + 可变副本 + 去重 + delta 切片。
+    """工具循环的工作状态：State 载入的可变副本 + 去重簿记。
 
-    State 的语义 reducer 只接受本次新增的 delta，节点内需要入口快照与
-    工作副本分离；这些簿记集中在这里，而不是散落成一组平行局部变量。
+    节点结束时把整份副本交给 LangGraph 的幂等 reducer 合并
+    （`merge_evidences` / `merge_task_results` / `merge_unique`）——reducer 会把
+    已存在项按 id 折回原样。曾经这里靠 `_snapshot` 三元组 + `deltas()` 手搓
+    "入口长度快照 / 出口位置切片"来只发新增,但那把一个不变式拆成了三处平行簿记
+    (定义快照、切片、`_final_update` 搬运),加字段忘同步就静默丢数据。改回全量
+    交给幂等 reducer 后,数据形状跟着 channel 语义走,少一层脆弱机制。
     """
 
     def __init__(
@@ -204,7 +208,6 @@ class WorkingState:
         self.seen_questions = {
             dedup_key(item.question) for item in self.task_results if item.question
         }
-        self._snapshot = (len(self.evidences), len(self.source_refs), len(self.task_results))
         self.sufficient = False
         self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
@@ -317,12 +320,3 @@ class WorkingState:
     def active_evidences(self) -> list[Evidence]:
         """返回当前工作集中的 Evidence。"""
         return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
-
-    def deltas(self) -> dict[str, object]:
-        """本次调用新增的 State 增量；由语义 reducer 合并，不能返回全量。"""
-        ev_n, sr_n, tr_n = self._snapshot
-        return {
-            "evidences": self.evidences[ev_n:],
-            "source_refs": self.source_refs[sr_n:],
-            "task_results": self.task_results[tr_n:],
-        }
