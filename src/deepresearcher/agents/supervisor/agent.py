@@ -270,24 +270,31 @@ class ResearchSupervisor:
             )
             async with runtime.tool_lock:
                 working.absorb(execution)
-            return _reported(
-                {
-                    "status": execution.task_result.execution_status,
-                    "research_direction": execution.task_result.research_direction,
-                    "coverage_status": execution.task_result.coverage_status,
-                    "evidence_count": execution.task_result.evidence_count,
-                    "source_count": execution.task_result.source_count,
-                    "remaining_gaps": execution.task_result.remaining_gaps,
-                    "conclusion": execution.task_result.conclusion,
-                    "failures": execution.task_result.failures,
-                    "working_set_revision": working.working_set_revision,
-                    "evidence": [
-                        evidence_card(item)
-                        for item in execution.evidences
-                        if item.evidence_id in working.active_evidence_ids
-                    ],
-                }
-            )
+            direction_report: dict[str, object] = {
+                "status": execution.task_result.execution_status,
+                "research_direction": execution.task_result.research_direction,
+                "coverage_status": execution.task_result.coverage_status,
+                "evidence_count": execution.task_result.evidence_count,
+                "source_count": execution.task_result.source_count,
+                "remaining_gaps": execution.task_result.remaining_gaps,
+                "conclusion": execution.task_result.conclusion,
+                "failures": execution.task_result.failures,
+                "working_set_revision": working.working_set_revision,
+                "evidence": [
+                    evidence_card(item)
+                    for item in execution.evidences
+                    if item.evidence_id in working.active_evidence_ids
+                ],
+            }
+            if execution.task_result.provider_exhausted:
+                # 数据提示（无分支控制流）：让 Supervisor 模型读到系统性不可用后自然停止派发、收尾。
+                direction_report["provider_exhausted"] = True
+                direction_report["instruction"] = (
+                    "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
+                    "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后 "
+                    "ResearchComplete（足以成文）或 ResearchReady（保存部分报告）收尾。"
+                )
+            return _reported(direction_report)
 
         runtime = SupervisorRuntimeContext(
             scope=AgentExecutionScope(

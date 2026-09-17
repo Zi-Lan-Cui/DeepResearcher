@@ -24,7 +24,12 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _RATE_LIMITED_STATUS = {429, 503}
 # 搜索提供方（同一 key）账户级不可自愈状态：重试单条无意义 → 抛 ProviderExhausted 触熔断。
 # 只对 request_kind=="search" 生效；fetch 的 401/403 是单来源（付费墙/登录墙），非 provider 挂。
-_SEARCH_PROVIDER_FATAL = {401: "invalid_key", 402: "insufficient_credit", 403: "forbidden", 432: "quota_exhausted"}
+_SEARCH_PROVIDER_FATAL = {
+    401: "invalid_key",
+    402: "insufficient_credit",
+    403: "forbidden",
+    432: "quota_exhausted",
+}
 _DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 30.0
 _IMPERSONATE_TARGETS = (DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI)
 _JITTER_RATIO = 0.25
