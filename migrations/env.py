@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
@@ -10,11 +9,11 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from deepresearcher.service.persistence.models import Base
 
 config = context.config
-if config.config_file_name is not None:
-    # Alembic runs inside the API/Worker process during application startup.
-    # Keep the host process loggers alive so lifespan failures remain visible.
-    fileConfig(config.config_file_name, disable_existing_loggers=False)
-
+# 故意不调用 fileConfig：Alembic 跑在 API/Worker 进程内、在 configure_logging 之后。
+# fileConfig(alembic.ini) 会按 [logger_root] handlers=console 覆盖 root 的 handlers，
+# 把应用刚装好的 RotatingFileHandler 抹掉（disable_existing_loggers=False 只保活子 logger、
+# 挡不住覆盖 root.handlers）→ agent.log 停写。这里让 Alembic 直接沿用进程已有日志配置，
+# 迁移日志反而一并进入 agent.log。
 target_metadata = Base.metadata
 
 

@@ -7,7 +7,6 @@ serializes None as SQL NULL; this backfill repairs rows already stuck as JSON
 null so already-parked runs can be answered again.
 """
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "0007_fix_null_resume_payload"
