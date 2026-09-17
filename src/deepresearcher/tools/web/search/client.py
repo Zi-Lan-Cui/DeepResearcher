@@ -6,12 +6,20 @@ import time
 from typing import TYPE_CHECKING
 
 from deepresearcher.config import SearchConfig
-from deepresearcher.tools.errors import ToolConfigurationError, ToolRequestError
+from deepresearcher.tools.errors import (
+    ProviderExhaustedError,
+    ToolConfigurationError,
+    ToolRequestError,
+)
 from deepresearcher.tools.transport.http_client import HttpClient
+from deepresearcher.tools.web.search.health import MemoryProviderHealth, ProviderHealth
 from deepresearcher.tools.web.search.models import SearchResult
 
 if TYPE_CHECKING:
     from deepresearcher.tools.web.aliyun import AliyunDtsApi
+
+# 账户级不可用（额度/鉴权）的默认熔断窗口：够长以止住 hammer，又能在上游恢复后自愈。
+_PROVIDER_HEALTH_SECONDS = 900.0
 
 
 class SearchClient:
@@ -21,6 +29,7 @@ class SearchClient:
         http_client: HttpClient | None = None,
         *,
         aliyun_client: "AliyunDtsApi | None" = None,
+        provider_health: ProviderHealth | None = None,
     ):
         self.config = config
         self.http = http_client or HttpClient(config)
@@ -31,9 +40,17 @@ class SearchClient:
         # 在这里收敛为对供应商的恒定在飞请求数。
         self._provider_semaphores: dict[str, asyncio.Semaphore] = {}
         self._aliyun_client = aliyun_client
+        # 账户级健康（额度/鉴权）：可跨进程共享；默认进程内存。
+        self._health: ProviderHealth = provider_health or MemoryProviderHealth()
 
     async def asearch(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
         provider = self.provider_name
+        # 账户级熔断优先：同 key 已不可用时连出网都不必。
+        open_reason = self._health.is_open(provider)
+        if open_reason:
+            raise ProviderExhaustedError(
+                open_reason, f"搜索供应商 {provider} 已熔断（{open_reason}），暂停出网。"
+            )
         self._raise_if_rate_limited(provider)
         async with self._semaphore(provider):
             # 排队期间断路可能已被别的请求打开；拿到许可后必须复查。
@@ -41,6 +58,10 @@ class SearchClient:
             limit = max_results or self.config.max_results
             try:
                 return await self._provider().asearch(query, limit)
+            except ProviderExhaustedError as exc:
+                # 鉴权/额度型：打开健康位，让本 worker 后续（乃至跨 worker）快速失败。
+                self._health.trip(provider, exc.user_code, _PROVIDER_HEALTH_SECONDS)
+                raise
             except ToolRequestError as exc:
                 reset = getattr(exc, "rate_limit_reset_ts", None)
                 if reset:

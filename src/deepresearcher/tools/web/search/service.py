@@ -11,7 +11,7 @@ from deepresearcher.observability.tracing.context import SpanContext, current_sp
 from deepresearcher.observability.tracing.recorder import TraceRecorder
 from deepresearcher.state import SubTask
 from deepresearcher.tools.cache_keys import normalize_text, semantic_cache_key
-from deepresearcher.tools.errors import ToolConfigurationError
+from deepresearcher.tools.errors import ProviderExhaustedError, ToolConfigurationError
 from deepresearcher.tools.web.search.client import SearchClient
 from deepresearcher.tools.web.search.models import (
     SearchFailure,
@@ -101,6 +101,13 @@ class SearchTool:
                 if isinstance(batch, BaseException)
             ]
             fetched_batches = [batch for batch in batches if isinstance(batch, list)]
+            # 账户级不可用优先于"这次没搜到"：直接上抛专用错误，让 failed_search 打标志，
+            # 上层据此停止重试、快速收尾（而不是把每条 query 当普通空结果反复试）。
+            exhausted = next(
+                (b for b in batches if isinstance(b, ProviderExhaustedError)), None
+            )
+            if exhausted is not None:
+                raise exhausted
             async with self._query_cache_lock:
                 for query, batch in zip(missing_queries, batches, strict=True):
                     if isinstance(batch, list):
