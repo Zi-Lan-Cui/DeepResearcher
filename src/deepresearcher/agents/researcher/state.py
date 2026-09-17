@@ -89,6 +89,9 @@ class DirectionRunState:
     conclusion: str = ""
     stop_reason: str = "step_budget_exhausted"
     stop_detail: str = "方向级探索步数预算已耗尽。"
+    # 搜索提供方账户级不可用（额度/鉴权）。仅作数据：让本方向与 Supervisor 的模型读到后
+    # 自然收尾/停止派发，不引入控制流分支。
+    provider_exhausted: bool = False
 
     def active_evidences(self) -> list[Evidence]:
         return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]

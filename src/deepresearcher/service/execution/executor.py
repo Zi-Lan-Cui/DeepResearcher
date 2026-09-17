@@ -495,7 +495,9 @@ class RunExecutor:
     async def publish_done(self, run_id: str) -> None:
         await self._event_publisher.publish_done(run_id)
 
-    async def _fail_llm_unavailable(self, run_id: str, user_code: str, claim: RunWork | None) -> bool:
+    async def _fail_llm_unavailable(
+        self, run_id: str, user_code: str, claim: RunWork | None
+    ) -> bool:
         """LLM 网关账户级不可用：类型化 terminal_reason + 安全文案，快速失败。"""
         logger.warning("research_llm_unavailable run_id=%s code=%s", run_id, user_code)
         return await self.persist_status(

@@ -18,7 +18,9 @@ class ProviderExhaustedError(ToolError):
 
     def __init__(self, user_code: str, message: str):
         super().__init__(message)
-        self.user_code = user_code  # invalid_key / forbidden / insufficient_credit / quota_exhausted
+        self.user_code = (
+            user_code  # invalid_key / forbidden / insufficient_credit / quota_exhausted
+        )
 
 
 class ToolConfigurationError(ToolError):

@@ -36,6 +36,8 @@ class StopReason(StrEnum):
     GLOBAL_ROUND_BUDGET_EXHAUSTED = "global_round_budget_exhausted"
     MODEL_CALL_LIMIT_EXCEEDED = "supervisor_model_call_limit_exceeded"
     AGENT_FAILED = "supervisor_agent_failed"
+    # 搜索提供方账户级不可用（额度/鉴权）：非本方向偶发，应停止重试/派发、自然收尾。
+    SEARCH_PROVIDER_EXHAUSTED = "search_provider_exhausted"
 
     @property
     def allows_partial_report(self) -> bool:
@@ -164,6 +166,8 @@ class ResearchDirectionResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
     stop_reason: str
     stop_detail: str = ""
+    # 数据信号（非控制流）：搜索服务账户级不可用时置真，供 Supervisor 模型读到后自然停止派发/收尾。
+    provider_exhausted: bool = False
 
 
 class ResearchAgentResult(BaseModel):

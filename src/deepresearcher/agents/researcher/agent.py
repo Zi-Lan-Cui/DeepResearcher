@@ -663,6 +663,23 @@ class ResearchAgent:
         if result.status != "completed":
             error = result.error or "search_failed"
             run_state.failures.append(f"search: {error}")
+            if getattr(result, "provider_exhausted", False):
+                # 把"原因 + 下一步"写清楚交给模型自然收尾，不加控制流分支：
+                # 熔断后系统级不可用，重试/换向无意义。
+                run_state.provider_exhausted = True
+                return {
+                    "status": "failed",
+                    "provider_exhausted": True,
+                    "user_code": result.provider_user_code,
+                    "queries": new_queries,
+                    "error": error,
+                    "instruction": (
+                        "搜索服务账户级不可用（额度耗尽或密钥无效），系统性、非本方向偶发。"
+                        "不要再重试、换词或扩大范围。若已读到可用原文，立即调用 "
+                        "ResearchDirectionComplete 提交已覆盖内容并把缺口写入 remaining_gaps；"
+                        "若尚无原文，也直接 Complete 并标注证据不足。"
+                    ),
+                }
             return {"status": "failed", "queries": new_queries, "error": error}
 
         batch_key = "\0".join([task["id"], *result.queries])
@@ -895,6 +912,7 @@ class ResearchAgent:
             failures=run_state.failures[: self.config.research_failure_history_limit],
             stop_reason=run_state.stop_reason,
             stop_detail=run_state.stop_detail,
+            provider_exhausted=run_state.provider_exhausted,
         )
         return ResearchAgentResult(
             evidences=run_state.evidences,
