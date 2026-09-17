@@ -423,6 +423,27 @@ const STATUS_LABEL = {
   completed: "已完成", failed: "失败", cancelled: "已取消",
 };
 
+// 失败原因专属徽章：executor 写的 terminal_reason 精确到"为什么失败"，让用户一眼区分
+// 基础设施（模型额度/密钥/限流、搜索额度、服务重启）与运行本身出错，而非笼统"失败"。
+const REASON_LABEL = {
+  "llm_unavailable:invalid_key": "模型密钥无效",
+  "llm_unavailable:insufficient_credit": "模型余额不足",
+  "llm_unavailable:forbidden": "模型拒绝访问",
+  "llm_unavailable:rate_limited": "模型限流",
+  search_exhausted: "搜索额度耗尽",
+  budget_exhausted: "用量预算耗尽",
+  server_restart: "服务重启中断",
+  lease_expired_without_checkpoint: "中断且无断点",
+  run_exception: "运行异常",
+};
+
+function reasonBadge(reason) {
+  if (!reason) return null;
+  if (REASON_LABEL[reason]) return REASON_LABEL[reason];
+  if (reason.startsWith("llm_unavailable:")) return "模型服务不可用";
+  return null;
+}
+
 function badgeFor(status, info) {
   if (status === "completed" && info && info.answer_mode === "review_limited") {
     return { cls: "degraded", text: "受限报告" };
@@ -430,6 +451,10 @@ function badgeFor(status, info) {
   const degraded = status === "completed" && info &&
     (info.answer_mode === "research_incomplete" || info.terminal_reason === "writer_exhausted");
   if (degraded) return { cls: "degraded", text: "部分报告" };
+  if (status === "failed" && info) {
+    const label = reasonBadge(info.terminal_reason);
+    if (label) return { cls: "failed", text: label };
+  }
   return { cls: status, text: STATUS_LABEL[status] || status };
 }
 
