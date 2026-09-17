@@ -376,6 +376,20 @@ async def test_failure_persists_failed_with_truncated_message(manager):
     assert len(run.error_message) <= 500
 
 
+async def test_llm_auth_error_fails_fast_with_typed_reason(manager):
+    class APIError(Exception):  # 模仿 openai.APIStatusError：带 status_code
+        status_code = 401
+
+    manager.holder["graph"] = FakeGraph(error=APIError("Invalid API key"))
+    run_id = await manager.start(USER_ID, "q")
+    await _settle(manager, run_id)
+    run = await _row(manager, run_id)
+    assert run.status == "failed"
+    assert run.terminal_reason == "llm_unavailable:invalid_key"
+    # 面向用户的安全文案，不含原始内部错误串
+    assert "密钥" in run.error_message and "Invalid API key" not in run.error_message
+
+
 async def test_cancel_mid_run_persists_cancelled_once(manager):
     gate = asyncio.Event()
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())

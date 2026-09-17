@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import update
 
 from deepresearcher.config import Settings
+from deepresearcher.llm.errors import LLMUnavailableError, classify_llm_error
 from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
 from deepresearcher.orchestration.graph import build_graph
@@ -41,6 +42,14 @@ logger = logging.getLogger("deepresearcher.service.execution.executor")
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 _FLUSH_INTERVAL_SECONDS = 2.0
+
+# 账户级 LLM 不可用 → 面向用户的安全文案（不泄露内部错误串）。
+_LLM_UNAVAILABLE_MESSAGE = {
+    "invalid_key": "模型服务密钥无效，请检查配置后重试。",
+    "insufficient_credit": "模型服务余额不足，请充值或更换密钥后重试。",
+    "forbidden": "模型服务拒绝访问（权限不足或模型不可用）。",
+    "rate_limited": "模型服务当前限流，请稍后重试。",
+}
 
 
 def _utcnow() -> datetime:
@@ -167,15 +176,25 @@ class RunExecutor:
             )
             if claim is not None and not persisted:
                 self.mark_lease_lost(run_id)
-        except Exception:  # noqa: BLE001 - 后台执行必须自收口
-            logger.exception("research_run_failed run_id=%s", run_id)
-            persisted = await self.persist_status(
-                run_id,
-                status="failed",
-                terminal_reason="run_exception",
-                error_message="运行执行失败，请稍后重试或重新发起。",
-                claim=claim,
-            )
+        except LLMUnavailableError as exc:
+            persisted = await self._fail_llm_unavailable(run_id, exc.user_code, claim)
+            if claim is not None and not persisted:
+                self.mark_lease_lost(run_id)
+        except Exception as exc:  # noqa: BLE001 - 后台执行必须自收口
+            # 冒泡的原始 LLM 异常若属账户级不可用（key/余额/硬限流），按类型化原因收口，
+            # 让前端能渲染明确错误，而不是笼统"运行失败"。
+            llm_code = classify_llm_error(exc)
+            if llm_code is not None:
+                persisted = await self._fail_llm_unavailable(run_id, llm_code, claim)
+            else:
+                logger.exception("research_run_failed run_id=%s", run_id)
+                persisted = await self.persist_status(
+                    run_id,
+                    status="failed",
+                    terminal_reason="run_exception",
+                    error_message="运行执行失败，请稍后重试或重新发起。",
+                    claim=claim,
+                )
             if claim is not None and not persisted:
                 self.mark_lease_lost(run_id)
         finally:
@@ -475,6 +494,19 @@ class RunExecutor:
 
     async def publish_done(self, run_id: str) -> None:
         await self._event_publisher.publish_done(run_id)
+
+    async def _fail_llm_unavailable(self, run_id: str, user_code: str, claim: RunWork | None) -> bool:
+        """LLM 网关账户级不可用：类型化 terminal_reason + 安全文案，快速失败。"""
+        logger.warning("research_llm_unavailable run_id=%s code=%s", run_id, user_code)
+        return await self.persist_status(
+            run_id,
+            status="failed",
+            terminal_reason=f"llm_unavailable:{user_code}",
+            error_message=_LLM_UNAVAILABLE_MESSAGE.get(
+                user_code, "模型服务暂时不可用，请稍后重试。"
+            ),
+            claim=claim,
+        )
 
 
 def _field(container: Any, key: str, default: Any = None) -> Any:
