@@ -380,6 +380,7 @@ class ReportWriter:
                 "markdown": last_markdown,
             },
         )
+        review_attempts = section(state, "review", ReviewProgress).attempts
         return WriterResult(
             run=RunLifecycle(phase="rendering"),
             writer=WriterProgress(
@@ -390,7 +391,9 @@ class ReportWriter:
                 selected_evidence_ids=[],
             ),
             writer_draft=last_markdown,
-            review=ReviewProgress(status="pending"),
+            # 新草稿开启下一次审阅，但不得清零跨草稿的累计次数；
+            # 否则 Supervisor 的审阅恢复上限永远无法生效。
+            review=ReviewProgress(status="pending", attempts=review_attempts),
         ).state_update()
 
     def _render_ready_result(
@@ -409,6 +412,7 @@ class ReportWriter:
                 "citation_ids": [item.id for item in draft.citations],
             },
         )
+        review_attempts = section(state, "review", ReviewProgress).attempts
         return WriterResult(
             report_draft=draft.body,
             citations=draft.citations,
@@ -423,7 +427,7 @@ class ReportWriter:
                 attempts=section(state, "writer", WriterProgress).attempts + 1,
                 selected_evidence_ids=draft.selected_evidence_ids,
             ),
-            review=ReviewProgress(status="pending"),
+            review=ReviewProgress(status="pending", attempts=review_attempts),
         ).state_update()
 
     @staticmethod

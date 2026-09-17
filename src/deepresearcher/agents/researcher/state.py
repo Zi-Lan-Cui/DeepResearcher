@@ -7,6 +7,7 @@ from typing import TypedDict
 
 from langchain_core.messages import BaseMessage
 
+from deepresearcher.context.concurrency import ToolExecutionGate
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas.sources import source_domain
@@ -56,6 +57,7 @@ class ResearchRuntimeContext:
     scope: AgentExecutionScope
     run_state: "DirectionRunState"
     search_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
+    list_search_results: Callable[[str, int, int, str], Awaitable[dict[str, object]]]
     read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
     grep_document: Callable[[str, list[str], int, str], Awaitable[dict[str, object]]]
     read_document: Callable[[str, list[tuple[int, int]], str], Awaitable[dict[str, object]]]
@@ -63,6 +65,8 @@ class ResearchRuntimeContext:
     on_url_already_attempted: Callable[[str], None] | None = None
     event_context: dict[str, object] = field(default_factory=dict)
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
+    evidence_commit_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass
@@ -76,8 +80,8 @@ class DirectionRunState:
     queries: list[str] = field(default_factory=list)
     read_urls: list[str] = field(default_factory=list)
     candidates: dict[str, SearchCandidate] = field(default_factory=dict)
+    search_batches: dict[str, list[str]] = field(default_factory=dict)
     documents: dict[str, DocumentRef] = field(default_factory=dict)
-    observed_document_ranges: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     selected_candidate_ids: set[str] = field(default_factory=set)
     skipped: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)

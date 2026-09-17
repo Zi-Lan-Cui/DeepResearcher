@@ -7,15 +7,15 @@ from langchain_core.messages import AIMessage
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.researcher.state import DirectionRunState
 from deepresearcher.config import AgentConfig
-from deepresearcher.evidence.extractor import ExtractionResult
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.schemas import (
     ResearchDirectionDecision,
     ResearchDirectionResult,
 )
-from deepresearcher.tools import LocalDocumentStore, SearchTool, SourceReaderTool
+from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.errors import SourceUnavailableError
+from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 from fakes import (
     TASK,
     DirectionLLM,
@@ -46,7 +46,7 @@ def test_direction_result_ignores_legacy_answered_points_on_checkpoint_restore()
     assert "answered_points" not in restored.model_dump()
 
 
-def test_research_agent_autonomously_decides_queries_then_collects_direction_evidence():
+def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
     class CapturingReader(FakeReader):
         def __init__(self):
             super().__init__()
@@ -94,12 +94,11 @@ def test_research_agent_autonomously_decides_queries_then_collects_direction_evi
     task_result = result.task_result
     assert task_result.execution_status == "completed"
     assert task_result.queries == ["稳定术语 定义", "稳定术语 直接证据"]
-    assert task_result.stop_reason == "complete"
+    assert task_result.stop_reason == "blocked_without_evidence"
     assert task_result.research_direction == TASK["question"]
-    assert len(result.evidences) == 1
+    assert result.evidences == []
     assert reader.max_active == 1
-    assert reader.tasks[0]["research_direction"] == TASK["question"]
-    assert reader.tasks[0]["subquestions"] == ["稳定术语 定义", "稳定术语 直接证据"]
+    assert reader.tasks[0] == TASK
 
 
 def test_research_agent_records_context_observations_and_tool_results():
@@ -122,7 +121,8 @@ def test_research_agent_records_context_observations_and_tool_results():
     )
 
     result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
-    assert result.evidences
+    assert result.evidences == []
+    assert result.task_result.stop_reason == "blocked_without_evidence"
     contents = [
         str(message.content) for snapshot in agent.llm.seen_messages for message in snapshot
     ]
@@ -135,6 +135,115 @@ def test_research_agent_records_context_observations_and_tool_results():
         for snapshot in agent.llm.seen_messages
         for message in snapshot
     )
+
+
+def test_search_results_are_compact_and_can_be_paged_from_search_cache():
+    class ManySearchClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def asearch(self, query):
+            self.calls += 1
+            return [
+                {
+                    "title": f"{query}-{index}",
+                    "url": f"https://example.com/{index}",
+                    "snippet": f"摘要-{index}-" + "x" * 5_000,
+                    "score": 1.0 - index / 100,
+                }
+                for index in range(12)
+            ]
+
+    client = ManySearchClient()
+    materials = MemoryResearchMaterialStore()
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(client),
+        reader_tool=FakeReader(),
+        material_store=materials,
+    )
+    run_state = DirectionRunState()
+    first = asyncio.run(
+        agent._search_sources(
+            TASK,
+            ["分页测试"],
+            "发现候选",
+            run_state=run_state,
+            event_context={},
+        )
+    )
+
+    assert first["result_count"] == 12
+    assert len(first["candidates"]) == 5
+    assert all("snippet" not in item for item in first["candidates"])
+    assert first["has_more"] is True
+
+    page = asyncio.run(
+        agent._list_search_results(
+            TASK,
+            first["search_id"],
+            5,
+            3,
+            "查看下一页",
+            run_state=run_state,
+        )
+    )
+
+    assert page["offset"] == 5
+    assert page["returned_count"] == 3
+    assert page["next_offset"] == 8
+    assert all(len(item["snippet"]) <= 1_200 for item in page["candidates"])
+    # 分页重建只从 SearchTool 的进程/持久缓存取数，不再请求 Provider。
+    assert client.calls == 1
+    stored = asyncio.run(
+        materials.get_search_results(str(TASK.get("run_id") or TASK["id"]), first["search_id"])
+    )
+    assert len(stored.results) == 12
+
+
+def test_source_reader_reuses_document_from_material_store():
+    class Fetcher:
+        def __init__(self):
+            self.calls = 0
+
+        def material_fetch_key(self, url):
+            return f"fetch:{url}"
+
+        async def afetch(self, url, **_kwargs):
+            self.calls += 1
+            return {"title": "cached", "text": "first\nsecond", "final_url": url}
+
+    fetcher = Fetcher()
+    materials = MemoryResearchMaterialStore()
+    tool = SourceReaderTool(
+        fetcher,
+        material_store=materials,
+        document_inline_max_tokens=1_000,
+    )
+    first = asyncio.run(tool.arun(TASK, {"url": "https://example.com"}))
+    second = asyncio.run(tool.arun(TASK, {"url": "https://example.com"}))
+
+    assert first.status == second.status == "completed"
+    assert first.documents[0].document_id == second.documents[0].document_id
+    assert second.documents[0].content == "L1: first\nL2: second"
+    assert fetcher.calls == 1
+
+
+def test_list_search_results_rejects_another_direction_handle():
+    agent = researcher_agent(AgentConfig(), [])
+    result = asyncio.run(
+        agent._list_search_results(
+            TASK,
+            "search-not-owned",
+            0,
+            5,
+            "越权查看",
+            run_state=DirectionRunState(),
+        )
+    )
+
+    assert result == {"status": "rejected", "reason": "unknown_search_id"}
 
 
 def test_research_agent_can_inspect_and_forget_its_working_set():
@@ -240,7 +349,7 @@ def test_researcher_builds_blocked_minimum_result_without_evidence():
     assert "未获得可用 Evidence。" in run_state.remaining_gaps
 
 
-def test_researcher_exhaustion_preserves_collected_evidence_as_minimum_result():
+def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidence():
     agent = researcher_agent(
         AgentConfig(
             research_agent_max_turns=1,
@@ -261,10 +370,10 @@ def test_researcher_exhaustion_preserves_collected_evidence_as_minimum_result():
 
     result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
 
-    assert result.evidences
+    assert result.evidences == []
     assert result.task_result.execution_status == "completed"
-    assert result.task_result.stop_reason == "fallback_complete"
-    assert result.task_result.conclusion.startswith("本方向未完成模型综合")
+    assert result.task_result.stop_reason == "blocked_without_evidence"
+    assert result.task_result.conclusion == ""
 
 
 def test_research_direction_decision_rejects_conclusions_during_search():
@@ -313,16 +422,16 @@ def test_research_agent_requires_all_dependencies_at_construction():
         ResearchAgent(DirectionLLM([]), AgentConfig(), search_tool=None, reader_tool=FakeReader())
 
 
-def test_source_reader_requires_llm_at_construction():
+def test_source_reader_requires_material_store_at_construction():
     class Fetcher:
         async def afetch(self, _url, **_kwargs):
             return {"text": "正文"}
 
-    with pytest.raises(LLMConfigurationError):
-        SourceReaderTool(Fetcher(), llm=None)
+    with pytest.raises(TypeError, match="material_store"):
+        SourceReaderTool(Fetcher())
 
 
-def test_source_reader_inlines_short_document_and_registers_it(tmp_path):
+def test_source_reader_inlines_short_document_and_registers_it():
     class Fetcher:
         async def afetch(self, _url, **_kwargs):
             return {
@@ -332,11 +441,10 @@ def test_source_reader_inlines_short_document_and_registers_it(tmp_path):
                 "retrieval_method": "origin_fetch",
             }
 
-    store = LocalDocumentStore(tmp_path)
+    store = MemoryResearchMaterialStore()
     tool = SourceReaderTool(
         Fetcher(),
-        llm=object(),
-        document_store=store,
+        material_store=store,
         document_inline_max_tokens=1_000,
     )
     result = asyncio.run(
@@ -344,21 +452,19 @@ def test_source_reader_inlines_short_document_and_registers_it(tmp_path):
     )
 
     assert result.status == "completed"
-    assert result.evidences == []
     assert result.documents[0].inline is True
     assert result.documents[0].content == "L1: 第一行\nL2: 第二行"
     assert asyncio.run(store.get(result.documents[0].document_id)).source_url.endswith("/final")
 
 
-def test_source_reader_keeps_long_document_out_of_tool_result(tmp_path):
+def test_source_reader_keeps_long_document_out_of_tool_result():
     class Fetcher:
         async def afetch(self, _url, **_kwargs):
             return {"title": "长文", "text": "很长的正文" * 100, "final_url": _url}
 
     tool = SourceReaderTool(
         Fetcher(),
-        llm=object(),
-        document_store=LocalDocumentStore(tmp_path),
+        material_store=MemoryResearchMaterialStore(),
         document_inline_max_tokens=1,
     )
     result = asyncio.run(
@@ -371,8 +477,8 @@ def test_source_reader_keeps_long_document_out_of_tool_result(tmp_path):
     assert result.documents[0].line_count == 1
 
 
-def test_researcher_reads_registered_document_and_adds_verified_evidence(tmp_path):
-    store = LocalDocumentStore(tmp_path)
+def test_researcher_reads_registered_document_and_adds_verified_evidence():
+    store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
             text="引言\n实验表明端到端延迟为 20ms。\n结论",
@@ -387,7 +493,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence(tmp_pat
         AgentConfig(evidence_max_per_source=4),
         search_tool=SearchTool(FakeSearchClient()),
         reader_tool=FakeReader(),
-        document_store=store,
+        material_store=store,
     )
     run_state = DirectionRunState(active_evidence_limit=4, evidence_archive_limit=8)
     run_state.documents[document.document_id] = document
@@ -431,6 +537,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence(tmp_pat
             "批量提交",
             run_state=run_state,
             event_context={},
+            commit_lock=asyncio.Lock(),
         )
     )
 
@@ -439,12 +546,10 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence(tmp_pat
     assert len(added["accepted"]) == 1
     assert len(added["rejected"]) == 1
     assert run_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
-    assert run_state.evidences[0].locator.start_line == 2
-    assert run_state.evidences[0].locator.end_line == 2
 
 
-def test_add_evidence_validates_before_ranking_by_confidence(tmp_path):
-    store = LocalDocumentStore(tmp_path)
+def test_add_evidence_validates_before_ranking_by_confidence():
+    store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
             text="低优先级事实\n高优先级事实",
@@ -457,11 +562,10 @@ def test_add_evidence_validates_before_ranking_by_confidence(tmp_path):
         AgentConfig(evidence_add_batch_size=1, evidence_max_per_source=2),
         search_tool=SearchTool(FakeSearchClient()),
         reader_tool=FakeReader(),
-        document_store=store,
+        material_store=store,
     )
     run_state = DirectionRunState(active_evidence_limit=2, evidence_archive_limit=2)
     run_state.documents[document.document_id] = document
-    run_state.observed_document_ranges[document.document_id] = [(1, 2)]
 
     result = asyncio.run(
         agent._add_evidence(
@@ -489,13 +593,67 @@ def test_add_evidence_validates_before_ranking_by_confidence(tmp_path):
             "验证后排序",
             run_state=run_state,
             event_context={},
+            commit_lock=asyncio.Lock(),
         )
     )
 
     assert len(result["accepted"]) == 1
     assert run_state.evidences[0].claim == "较高优先级"
     assert result["truncated_submission_count"] == 1
-    assert any(item["reason"].endswith("不存在于候选原文") for item in result["rejected"])
+    assert any(
+        item["reason"] == "quote_not_in_source" for item in result["rejected"]
+    )  # 唯一不变式：quote 必须逐字（忽略空白）出现在原文
+
+
+def test_concurrent_add_evidence_commits_under_one_source_limit():
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(
+            text="事实甲\n事实乙",
+            title="并发提交",
+            source_url="https://example.com/concurrent",
+        )
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(evidence_add_batch_size=2, evidence_max_per_source=1),
+        search_tool=SearchTool(FakeSearchClient()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    run_state = DirectionRunState(active_evidence_limit=4, evidence_archive_limit=4)
+    run_state.documents[document.document_id] = document
+    commit_lock = asyncio.Lock()
+
+    async def submit(claim: str, quote: str):
+        return await agent._add_evidence(
+            TASK,
+            [
+                {
+                    "document_id": document.document_id,
+                    "claim": claim,
+                    "quote": quote,
+                    "confidence": 0.9,
+                }
+            ],
+            "并发提交",
+            run_state=run_state,
+            event_context={},
+            commit_lock=commit_lock,
+        )
+
+    async def submit_both():
+        return await asyncio.gather(submit("论点甲", "事实甲"), submit("论点乙", "事实乙"))
+
+    results = asyncio.run(submit_both())
+
+    assert sum(len(result["accepted"]) for result in results) == 1
+    assert len(run_state.evidences) == 1
+    assert any(
+        item["reason"] == "source_evidence_limit_reached"
+        for result in results
+        for item in result["rejected"]
+    )
 
 
 def test_source_reader_keeps_access_challenge_as_nonfatal_source_outcome():
@@ -503,7 +661,7 @@ def test_source_reader_keeps_access_challenge_as_nonfatal_source_outcome():
         async def afetch(self, _url, **_kwargs):
             raise SourceUnavailableError("access_challenge", "来源返回验证码页")
 
-    tool = SourceReaderTool(ChallengeFetcher(), llm=object())
+    tool = SourceReaderTool(ChallengeFetcher(), material_store=MemoryResearchMaterialStore())
     result = asyncio.run(
         tool.arun(TASK, {"title": "x", "url": "https://example.com", "score": 0.9})
     )
@@ -511,36 +669,13 @@ def test_source_reader_keeps_access_challenge_as_nonfatal_source_outcome():
     assert result.reason_code == "access_challenge"
 
 
-def test_source_reader_uses_tavily_raw_content_when_page_fetch_is_unavailable():
+def test_source_reader_registers_tavily_raw_content_when_page_fetch_is_unavailable():
     class BlockedFetcher:
         async def afetch(self, _url, **_kwargs):
             raise SourceUnavailableError("access_challenge", "来源返回验证码页")
 
-    class CapturingExtractor:
-        async def aextract_result(self, task, document, result):
-            assert document["retrieval_method"] == "tavily_raw_content"
-            assert document["support_ceiling"] == "direct"
-            assert document["published_at"] == "2026-07-04"  # 搜索元信息随退化文档下传
-            return ExtractionResult(
-                evidences=[
-                    Evidence(
-                        evidence_id="r1-1-ev-1",
-                        subtask_id=task["id"],
-                        research_direction=task["question"],
-                        claim="来源正文直接支持的事实",
-                        quote=document["text"],
-                        source_url=result["url"],
-                        retrieval_method=document["retrieval_method"],
-                        support=document["support_ceiling"],
-                    )
-                ],
-                strategy="full_document",
-                chunk_count=1,
-                candidate_chars=len(document["text"]),
-            )
-
-    tool = SourceReaderTool(BlockedFetcher(), llm=object())
-    tool.extractor = CapturingExtractor()
+    store = MemoryResearchMaterialStore()
+    tool = SourceReaderTool(BlockedFetcher(), material_store=store)
     result = asyncio.run(
         tool.arun(
             TASK,
@@ -556,8 +691,10 @@ def test_source_reader_uses_tavily_raw_content_when_page_fetch_is_unavailable():
     )
 
     assert result.status == "completed"
-    assert result.evidences[0].retrieval_method == "tavily_raw_content"
-    assert result.evidences[0].support == "direct"
+    ref = asyncio.run(store.get(result.documents[0].document_id))
+    assert ref.retrieval_method == "tavily_raw_content"
+    assert ref.support_ceiling == "direct"
+    assert ref.published_at == "2026-07-04"
 
 
 def test_source_reader_attaches_search_published_at_to_fetched_document():
@@ -565,68 +702,26 @@ def test_source_reader_attaches_search_published_at_to_fetched_document():
         async def afetch(self, _url, **_kwargs):
             return {"text": "正文", "final_url": "https://example.com"}
 
-    class CapturingExtractor:
-        async def aextract_result(self, task, document, result):
-            assert document["published_at"] == "2026-01-02"  # 成功抓取路径同样透传
-            return ExtractionResult(
-                evidences=[
-                    Evidence(
-                        evidence_id="r1-1-ev-1",
-                        subtask_id=task["id"],
-                        research_direction=task["question"],
-                        claim="正文支持的事实",
-                        quote=document["text"],
-                        source_url=result["url"],
-                        retrieval_method="origin_fetch",
-                        support="direct",
-                    )
-                ],
-                strategy="full_document",
-                chunk_count=1,
-                candidate_chars=len(document["text"]),
-            )
-
-    tool = SourceReaderTool(OkFetcher(), llm=object())
-    tool.extractor = CapturingExtractor()
+    store = MemoryResearchMaterialStore()
+    tool = SourceReaderTool(OkFetcher(), material_store=store)
     result = asyncio.run(
         tool.arun(
             TASK,
             {"title": "t", "url": "https://example.com", "published_at": "2026-01-02"},
         )
     )
-    assert result.status == "completed"  # 空 evidence 会被生产语义判 skipped，故须回一条
-    assert result.evidences[0].evidence_id == "r1-1-ev-1"
+    assert result.status == "completed"
+    ref = asyncio.run(store.get(result.documents[0].document_id))
+    assert ref.published_at == "2026-01-02"
 
 
-def test_source_reader_caps_search_summary_evidence_at_partial_support():
+def test_source_reader_caps_search_summary_document_at_partial_support():
     class BlockedFetcher:
         async def afetch(self, _url, **_kwargs):
             raise SourceUnavailableError("access_challenge", "来源返回验证码页")
 
-    class CapturingExtractor:
-        async def aextract_result(self, task, document, result):
-            assert document["retrieval_method"] == "search_summary"
-            assert document["support_ceiling"] == "partial"
-            return ExtractionResult(
-                evidences=[
-                    Evidence(
-                        evidence_id="r1-1-ev-1",
-                        subtask_id=task["id"],
-                        research_direction=task["question"],
-                        claim="搜索摘要的事实",
-                        quote=document["text"],
-                        source_url=result["url"],
-                        retrieval_method=document["retrieval_method"],
-                        support=document["support_ceiling"],
-                    )
-                ],
-                strategy="full_document",
-                chunk_count=1,
-                candidate_chars=len(document["text"]),
-            )
-
-    tool = SourceReaderTool(BlockedFetcher(), llm=object())
-    tool.extractor = CapturingExtractor()
+    store = MemoryResearchMaterialStore()
+    tool = SourceReaderTool(BlockedFetcher(), material_store=store)
     result = asyncio.run(
         tool.arun(
             TASK,
@@ -640,8 +735,9 @@ def test_source_reader_caps_search_summary_evidence_at_partial_support():
     )
 
     assert result.status == "completed"
-    assert result.evidences[0].retrieval_method == "search_summary"
-    assert result.evidences[0].support == "partial"
+    ref = asyncio.run(store.get(result.documents[0].document_id))
+    assert ref.retrieval_method == "search_summary"
+    assert ref.support_ceiling == "partial"
 
 
 async def _true() -> bool:

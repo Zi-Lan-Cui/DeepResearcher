@@ -11,6 +11,7 @@ from deepresearcher.schemas import (
     MarkdownReportDraft,
     ParagraphBinding,
     ReportBrief,
+    ReviewProgress,
     WriterDirective,
     WriterResult,
 )
@@ -41,31 +42,16 @@ def test_writer_directive_accepts_configured_ten_known_gaps() -> None:
     assert len(directive.known_gaps) == 10
 
 
-def test_writer_never_receives_evidence_audit_chunk() -> None:
+def test_evidence_has_no_audit_or_locator_surface() -> None:
+    # 行号定位与 audit_chunk 已整体删除；这里锁定不再有这两个面（防止回潮）。
     evidence = _ev(
         "e1",
         "可公开的结论",
         quote="可公开的原文。",
         url="https://example.com/source",
     )
-    evidence.audit_chunk = "SECRET_AUDIT_CONTEXT"
-    observed_messages = []
-
-    async def draft_output(_llm, _schema, messages, **_kwargs):
-        observed_messages.extend(messages)
-        return MarkdownReportDraft(
-            selected_evidence_ids=["e1"],
-            markdown="## 结论\n\n可公开的结论。[[cite:e1]]",
-        )
-
-    write_with(
-        draft_output,
-        {"clarified_query": "测试", "evidences": [evidence]},
-    )
-
-    assert "SECRET_AUDIT_CONTEXT" not in "\n".join(
-        str(message.content) for message in observed_messages
-    )
+    assert not hasattr(evidence, "audit_chunk")
+    assert not hasattr(evidence, "locator")
 
 
 def test_writer_exposes_published_at_as_metadata_but_not_locator() -> None:
@@ -76,14 +62,12 @@ def test_writer_exposes_published_at_as_metadata_but_not_locator() -> None:
         url="https://example.com/source",
     )
     evidence.published_at = "2026-07-04"
-    evidence.locator.block_ids = ["private-block-id"]
-    evidence.locator.heading_path = ["内部章节"]
 
     catalogue = ReportWriter._evidence_catalogue({"e1": evidence})
 
     assert "published_at=2026-07-04(搜索元信息)" in catalogue
-    assert "private-block-id" not in catalogue
-    assert "内部章节" not in catalogue
+    assert "start_line" not in catalogue
+    assert "end_line" not in catalogue
     assert "confidence=" not in catalogue
     assert "retrieval=" not in catalogue
     assert "source_profile=" not in catalogue
@@ -184,12 +168,47 @@ def test_writer_ends_without_tool_call_as_exhausted_submission():
                     generation_mode="full",
                 ),
                 "evidences": [_ev("e1", "可验证事实")],
+                "review": ReviewProgress(status="rejected", attempts=2),
             }
         )
     )
 
     assert result["writer"].status == "exhausted"
     assert result["writer"].feedback == "Writer 未提交有效报告。"
+    assert result["review"].attempts == 2
+
+
+def test_writer_preserves_review_attempts_when_draft_is_ready():
+    async def draft_output(*_args, **_kwargs):
+        return MarkdownReportDraft(
+            selected_evidence_ids=["e1"],
+            markdown="## 结论\n\n可验证事实。[[cite:e1]]",
+        )
+
+    result = asyncio.run(
+        ReportWriter(
+            writer_llm(draft_output),
+            AgentConfig(),
+            render_incomplete=lambda _state: "incomplete",
+        ).run(
+            {
+                "clarified_query": "测试问题",
+                "report_brief": REPORT_BRIEF,
+                "writer_directive": WriterDirective(
+                    query="测试问题",
+                    report_brief=ReportBrief.model_validate(REPORT_BRIEF),
+                    research_status="completed",
+                    generation_mode="full",
+                ),
+                "evidences": [_ev("e1", "可验证事实")],
+                "review": ReviewProgress(status="rejected", attempts=2),
+            }
+        )
+    )
+
+    assert result["writer"].status == "completed"
+    assert result["review"].status == "pending"
+    assert result["review"].attempts == 2
 
 
 def test_writer_result_serializes_nested_citation_models_for_graph_state():
