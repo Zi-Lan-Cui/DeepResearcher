@@ -44,3 +44,16 @@ def quote_in_source(source_text: str, quote: str) -> bool:
     """入池判定：忽略空白与连字符/ligature 后的忠实逐字。"""
     key = _norm_loose(quote)
     return bool(key) and key in _norm_loose(source_text)
+
+
+def _norm_wordonly(text: str) -> str:
+    """再进一步：NFKC + 只保留字母/数字/CJK，剔除一切标点、引号、破折号族、
+    省略号、零宽与符号。用于区分"只差标点/引号样式（格式变体）"与"真的改词（改述）"。"""
+    normalized = unicodedata.normalize("NFKC", str(text)).casefold()
+    return "".join(ch for ch in normalized if ch.isalnum() or "一" <= ch <= "鿿")
+
+
+def quote_matches_ignoring_punctuation(source_text: str, quote: str) -> bool:
+    """词序列一致、仅标点/引号/破折号/空白不同 → 判为格式变体（不是改述）。"""
+    key = _norm_wordonly(quote)
+    return bool(key) and key in _norm_wordonly(source_text)
