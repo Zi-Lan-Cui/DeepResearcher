@@ -22,12 +22,13 @@ from deepresearcher.service.persistence.database import (
     make_session_factory,
     migrate_database,
 )
-from deepresearcher.service.persistence.tool_cache import PostgresToolCache
+from deepresearcher.service.persistence.redis_material_store import (
+    create_research_material_store,
+)
 from deepresearcher.service.runs.manager import RunManager
 from deepresearcher.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
 from deepresearcher.service.signals import PostgresSignalBus, SignalKind
 from deepresearcher.service.web.login_rate_limit import LoginRateLimiter
-from deepresearcher.tools.cache import NoOpToolCache
 from deepresearcher.tools.transport import HttpClient
 
 
@@ -43,15 +44,16 @@ def make_lifespan(
         await migrate_database(cfg.database_url)
         engine = make_engine(cfg.database_url)
         session_factory = make_session_factory(engine)
-        tool_cache = None
+        material_store = None
         http_client = None
         if cfg.api_embedded_worker:
-            tool_cache = (
-                PostgresToolCache(session_factory)
-                if engine_settings.tool_cache.enabled
-                else NoOpToolCache()
+            material_store = await create_research_material_store(
+                backend=cfg.material_store_backend,
+                redis_url=cfg.material_redis_url,
+                key_prefix=cfg.material_key_prefix,
+                search_ttl_seconds=cfg.search_material_ttl_seconds,
+                document_ttl_seconds=cfg.document_material_ttl_seconds,
             )
-            await tool_cache.delete_expired()
             http_client = HttpClient(engine_settings.search)
         fanout = FanoutSink(asyncio.get_running_loop())
         signal_bus = PostgresSignalBus()
@@ -98,7 +100,7 @@ def make_lifespan(
                 http_client=http_client,
                 graph_factory=graph_factory,
                 checkpointer=checkpointer,
-                tool_cache=tool_cache,
+                material_store=material_store,
             )
         manager = RunManager(
             session_factory=session_factory,
@@ -139,7 +141,7 @@ def make_lifespan(
         app.state.manager = manager
         app.state.execution = execution
         app.state.checkpointer = checkpointer
-        app.state.tool_cache = tool_cache
+        app.state.material_store = material_store
         app.state.ephemeral_bus = ephemeral_bus
         app.state.codec = TokenCodec(cfg.jwt_secret, cfg.token_ttl_hours)
         app.state.login_rate_limiter = LoginRateLimiter(
@@ -161,6 +163,8 @@ def make_lifespan(
             await signal_bus.close()
             if ephemeral_bus is not None:
                 await ephemeral_bus.close()
+            if material_store is not None:
+                await material_store.close()
             if http_client is not None:
                 await http_client.aclose()
             if checkpoint_cm is not None:

@@ -188,9 +188,15 @@ async def manager(tmp_path):
     holder: dict = {}
 
     def graph_factory(
-        *, settings, event_sink, trace_recorder, http_client, checkpointer=None, tool_cache=None
+        *,
+        settings,
+        event_sink,
+        trace_recorder,
+        http_client,
+        checkpointer=None,
+        material_store=None,
     ):
-        del tool_cache
+        del material_store
         holder["sink"] = event_sink
         holder["trace_recorder"] = trace_recorder
         holder["checkpointer"] = checkpointer
@@ -891,10 +897,16 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     gate = asyncio.Event()
 
     def graph_factory(
-        *, settings, event_sink, trace_recorder, http_client, checkpointer=None, tool_cache=None
+        *,
+        settings,
+        event_sink,
+        trace_recorder,
+        http_client,
+        checkpointer=None,
+        material_store=None,
     ):
         del trace_recorder
-        del tool_cache
+        del material_store
         graph = FakeGraph(
             result=_completed_result(),
             emit_events=3,

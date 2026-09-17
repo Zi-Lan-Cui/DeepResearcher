@@ -139,17 +139,7 @@ class AgentConfig:
     report_max_caveats: int = 6
     # 单一网页可贡献的 Evidence 上限，避免某篇来源主导整个研究方向。
     evidence_max_per_source: int = 2
-    evidence_input_budget_tokens: int = 24_000
-    evidence_output_budget_tokens: int = 4_000
-    evidence_safety_margin_tokens: int = 2_000
-    evidence_chunk_concurrency: int = 2
-    # 短文直接全文抽取；长文先按研究子问题做块级召回，再进入同一抽取/校验链路。
-    evidence_full_context_max_tokens: int = 8_192
-    evidence_bm25_top_k: int = 10
-    evidence_bm25_window: int = 1
-    evidence_retriever_backend: Literal["bm25", "head_truncate"] = "bm25"
-    # 抓取正文统一写入 DocumentStore；短文额外内联给 Researcher，长文按行读取。
-    document_store_root: Path = _PROJECT_ROOT / "var" / "documents"
+    # 抓取正文统一写入 ResearchMaterialStore；短文内联，长文按行读取。
     document_inline_max_tokens: int = 6_000
     document_inline_total_max_tokens: int = 12_000
     document_read_max_ranges: int = 6
@@ -160,7 +150,7 @@ class AgentConfig:
     document_grep_max_chars: int = 12_000
     evidence_add_batch_size: int = 8
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
-    research_agent_max_turns: int = 3
+    research_agent_max_turns: int = 12
     research_agent_max_queries: int = 6
     # 一个方向级 ResearchAgent 最多带回的 Evidence 数；限制上下文与成本，
     # 但不等同于单网页抽取上限。
@@ -168,10 +158,9 @@ class AgentConfig:
     # 单方向发现过的完整候选档案上限；活跃工作集仍由上一项限制。
     research_agent_max_evidence_candidates_per_direction: int = 12
     research_agent_read_concurrency: int = 3
-    # 来源处理的分层 deadline；总时限必须大于各阶段的正常预算。
+    # 来源抓取与解析的分层 deadline。
     source_fetch_timeout: float = 30.0
     source_parse_timeout: float = 20.0
-    evidence_extract_timeout: float = 120.0
     source_total_timeout: float = 180.0
     research_query_chars: int = 180
     research_observation_quote_chars: int = 500
@@ -280,27 +269,12 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
-class ToolCacheConfig:
-    enabled: bool = True
-    search_ttl_seconds: int = 6 * 60 * 60
-    fetch_ttl_seconds: int = 24 * 60 * 60
-    evidence_ttl_seconds: int = 7 * 24 * 60 * 60
-    search_version: str = "search-v1"
-    fetch_policy_version: str = "public-fetch-v1"
-    parser_version: str = "parser-v1"
-    extractor_prompt_version: str = "evidence-prompt-v2"
-    evidence_schema_version: str = "evidence-schema-v1"
-    chunking_version: str = "chunks-v2"
-
-
-@dataclass(frozen=True)
 class Settings:
     llm: LLMConfig
     agent: AgentConfig
     search: SearchConfig
     app: AppConfig
     observability: ObservabilityConfig
-    tool_cache: ToolCacheConfig = ToolCacheConfig()
 
 
 @lru_cache(maxsize=1)
@@ -314,7 +288,6 @@ def get_settings() -> Settings:
         search=_search_config(),
         app=_app_config(),
         observability=_observability_config(),
-        tool_cache=_tool_cache_config(),
     )
 
 
@@ -381,32 +354,6 @@ def _agent_config() -> AgentConfig:
         supervisor_preview_chars=max(100, _int_env("AGENT_SUPERVISOR_PREVIEW_CHARS", 300)),
         report_max_caveats=max(1, _int_env("AGENT_REPORT_MAX_CAVEATS", 6)),
         evidence_max_per_source=max(1, _int_env("AGENT_EVIDENCE_MAX_PER_SOURCE", 2)),
-        evidence_input_budget_tokens=max(
-            1_000, _int_env("AGENT_EVIDENCE_INPUT_BUDGET_TOKENS", 24_000)
-        ),
-        evidence_output_budget_tokens=max(
-            500, _int_env("AGENT_EVIDENCE_OUTPUT_BUDGET_TOKENS", 4_000)
-        ),
-        evidence_safety_margin_tokens=max(
-            0, _int_env("AGENT_EVIDENCE_SAFETY_MARGIN_TOKENS", 2_000)
-        ),
-        evidence_chunk_concurrency=max(1, _int_env("AGENT_EVIDENCE_CHUNK_CONCURRENCY", 2)),
-        evidence_full_context_max_tokens=max(
-            1_000, _int_env("EVIDENCE_FULL_CONTEXT_MAX_TOKENS", 8_192)
-        ),
-        evidence_bm25_top_k=max(1, _int_env("EVIDENCE_BM25_TOP_K", 10)),
-        evidence_bm25_window=max(0, _int_env("EVIDENCE_BM25_WINDOW", 1)),
-        evidence_retriever_backend=cast(
-            Literal["bm25", "head_truncate"],
-            _choice_env(
-                "EVIDENCE_RETRIEVER_BACKEND",
-                "bm25",
-                {"bm25", "head_truncate"},
-            ),
-        ),
-        document_store_root=_project_path_env(
-            "AGENT_DOCUMENT_STORE_ROOT", _PROJECT_ROOT / "var" / "documents"
-        ),
         document_inline_max_tokens=max(500, _int_env("AGENT_DOCUMENT_INLINE_MAX_TOKENS", 6_000)),
         document_inline_total_max_tokens=max(
             500, _int_env("AGENT_DOCUMENT_INLINE_TOTAL_MAX_TOKENS", 12_000)
@@ -418,7 +365,7 @@ def _agent_config() -> AgentConfig:
         document_grep_max_matches=max(1, _int_env("AGENT_DOCUMENT_GREP_MAX_MATCHES", 12)),
         document_grep_max_chars=max(1_000, _int_env("AGENT_DOCUMENT_GREP_MAX_CHARS", 12_000)),
         evidence_add_batch_size=max(1, _int_env("AGENT_EVIDENCE_ADD_BATCH_SIZE", 8)),
-        research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 3)),
+        research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 12)),
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),
         research_agent_max_evidences_per_direction=max(
             1, _int_env("AGENT_RESEARCH_MAX_EVIDENCES_PER_DIRECTION", 6)
@@ -429,7 +376,6 @@ def _agent_config() -> AgentConfig:
         research_agent_read_concurrency=max(1, _int_env("AGENT_RESEARCH_READ_CONCURRENCY", 3)),
         source_fetch_timeout=max(1.0, _float_env("AGENT_SOURCE_FETCH_TIMEOUT", 30.0)),
         source_parse_timeout=max(1.0, _float_env("AGENT_SOURCE_PARSE_TIMEOUT", 20.0)),
-        evidence_extract_timeout=max(1.0, _float_env("AGENT_EVIDENCE_EXTRACT_TIMEOUT", 120.0)),
         source_total_timeout=max(1.0, _float_env("AGENT_SOURCE_TOTAL_TIMEOUT", 180.0)),
         research_query_chars=max(40, _int_env("AGENT_RESEARCH_QUERY_CHARS", 180)),
         research_observation_quote_chars=max(
@@ -488,28 +434,6 @@ def _observability_config() -> ObservabilityConfig:
         event_file=_env("OBSERVABILITY_EVENT_FILE", "events.jsonl"),
         trace_file=_env("OBSERVABILITY_TRACE_FILE", "traces.jsonl"),
         max_text_chars=max(100, _int_env("OBSERVABILITY_MAX_TEXT_CHARS", 1_000)),
-    )
-
-
-def _tool_cache_config() -> ToolCacheConfig:
-    return ToolCacheConfig(
-        enabled=_bool_env("TOOL_CACHE_ENABLED", True),
-        search_ttl_seconds=max(0, _int_env("TOOL_CACHE_SEARCH_TTL_SECONDS", 21_600)),
-        fetch_ttl_seconds=max(0, _int_env("TOOL_CACHE_FETCH_TTL_SECONDS", 86_400)),
-        evidence_ttl_seconds=max(0, _int_env("TOOL_CACHE_EVIDENCE_TTL_SECONDS", 604_800)),
-        search_version=_env("TOOL_CACHE_SEARCH_VERSION", "search-v1") or "search-v1",
-        fetch_policy_version=(
-            _env("TOOL_CACHE_FETCH_POLICY_VERSION", "public-fetch-v1") or "public-fetch-v1"
-        ),
-        parser_version=_env("TOOL_CACHE_PARSER_VERSION", "parser-v1") or "parser-v1",
-        extractor_prompt_version=(
-            _env("TOOL_CACHE_EXTRACTOR_PROMPT_VERSION", "evidence-prompt-v2")
-            or "evidence-prompt-v2"
-        ),
-        evidence_schema_version=(
-            _env("TOOL_CACHE_EVIDENCE_SCHEMA_VERSION", "evidence-schema-v1") or "evidence-schema-v1"
-        ),
-        chunking_version=(_env("TOOL_CACHE_CHUNKING_VERSION", "chunks-v2") or "chunks-v2"),
     )
 
 

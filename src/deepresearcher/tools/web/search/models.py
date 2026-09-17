@@ -29,6 +29,8 @@ class SearchCandidate(BaseModel):
     title: str = ""
     url: str
     snippet: str = ""
+    # 仅供 Reader 在原站抓取失败时降级；Agent 候选卡不渲染此字段。
+    raw_content: str = ""
     score: float = 0.0
     content_provider: str = ""
     published_at: str = ""  # 搜索引擎给出的发布时间（时效性判断用，非正文事实）

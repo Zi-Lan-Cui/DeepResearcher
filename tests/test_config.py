@@ -10,12 +10,6 @@ def test_settings_are_cached_and_grouped():
     assert first is second
     assert first.agent.max_research_rounds >= 1
     assert isinstance(first.llm.model, str)
-    assert first.agent.evidence_full_context_max_tokens >= 1_000
-    assert first.agent.evidence_bm25_top_k >= 1
-    assert first.agent.evidence_bm25_window >= 0
-    assert first.agent.evidence_retriever_backend == "bm25"
-    assert first.tool_cache.extractor_prompt_version == "evidence-prompt-v2"
-    assert first.tool_cache.chunking_version == "chunks-v2"
 
 
 def test_output_language_default_and_directive():

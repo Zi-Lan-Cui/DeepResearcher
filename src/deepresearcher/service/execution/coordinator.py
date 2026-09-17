@@ -20,7 +20,7 @@ from deepresearcher.service.persistence.models import Run, RunEvent
 from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
-from deepresearcher.tools.cache import ToolCache
+from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 
 def _utcnow() -> datetime:
@@ -42,7 +42,7 @@ class WorkerCoordinator:
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
-        tool_cache: ToolCache | None = None,
+        material_store: ResearchMaterialStore | None = None,
         ephemeral_bus: EphemeralEventBus | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -71,7 +71,7 @@ class WorkerCoordinator:
             http_client=http_client,
             graph_factory=graph_factory,
             checkpointer=checkpointer,
-            tool_cache=tool_cache,
+            material_store=material_store,
             ephemeral_bus=ephemeral_bus,
         )
         self.worker = RunWorker(

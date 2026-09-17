@@ -27,10 +27,11 @@ from deepresearcher.service.persistence.database import (
     make_session_factory,
     migrate_database,
 )
-from deepresearcher.service.persistence.tool_cache import PostgresToolCache
+from deepresearcher.service.persistence.redis_material_store import (
+    create_research_material_store,
+)
 from deepresearcher.service.settings import ServiceConfig, checkpoint_dsn, get_service_config
 from deepresearcher.service.signals import PostgresSignalBus
-from deepresearcher.tools.cache import NoOpToolCache
 from deepresearcher.tools.transport import HttpClient
 
 logger = get_logger("deepresearcher.service.execution.runtime")
@@ -87,12 +88,13 @@ async def worker_lifespan(
             channel_prefix=cfg.redis_channel_prefix,
             queue_size=cfg.redis_preview_queue_size,
         )
-    tool_cache = (
-        PostgresToolCache(session_factory)
-        if engine_settings.tool_cache.enabled
-        else NoOpToolCache()
+    material_store = await create_research_material_store(
+        backend=cfg.material_store_backend,
+        redis_url=cfg.material_redis_url,
+        key_prefix=cfg.material_key_prefix,
+        search_ttl_seconds=cfg.search_material_ttl_seconds,
+        document_ttl_seconds=cfg.document_material_ttl_seconds,
     )
-    await tool_cache.delete_expired()
 
     checkpoint_cm = None
     checkpointer = None
@@ -124,7 +126,7 @@ async def worker_lifespan(
         http_client=http_client,
         graph_factory=graph_factory,
         checkpointer=checkpointer,
-        tool_cache=tool_cache,
+        material_store=material_store,
         ephemeral_bus=ephemeral_bus,
     )
     work_subscription = signal_bus.subscribe("run_available", lambda _payload: worker.wake())
@@ -151,6 +153,7 @@ async def worker_lifespan(
         await signal_bus.close()
         if ephemeral_bus is not None:
             await ephemeral_bus.close()
+        await material_store.close()
         await http_client.aclose()
         if checkpoint_cm is not None:
             await checkpoint_cm.__aexit__(None, None, None)

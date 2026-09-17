@@ -9,7 +9,7 @@ class DocumentOutlineItem(BaseModel):
 
 
 class DocumentRef(BaseModel):
-    """DocumentStore 中正文的稳定句柄；不携带完整正文。"""
+    """ResearchMaterialStore 中正文的稳定句柄；不携带完整正文。"""
 
     document_id: str
     title: str = ""

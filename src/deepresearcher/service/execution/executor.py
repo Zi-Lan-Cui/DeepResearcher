@@ -35,7 +35,7 @@ from deepresearcher.service.usage import (
     bind_usage_runtime,
     reset_usage_runtime,
 )
-from deepresearcher.tools.cache import ToolCache
+from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 logger = logging.getLogger("deepresearcher.service.execution.executor")
 
@@ -65,7 +65,7 @@ class RunExecutor:
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
-        tool_cache: ToolCache | None = None,
+        material_store: ResearchMaterialStore | None = None,
         ephemeral_bus: EphemeralEventBus | None = None,
     ) -> None:
         self._settings = settings
@@ -84,7 +84,7 @@ class RunExecutor:
         self._http_client = http_client
         self._graph_factory = graph_factory
         self._checkpointer = checkpointer
-        self._tool_cache = tool_cache
+        self._material_store = material_store
         self._ephemeral_bus = ephemeral_bus
         self._shutdown_interrupts: set[str] = set()
         self._lost_leases: set[str] = set()
@@ -224,7 +224,7 @@ class RunExecutor:
             trace_recorder=trace_recorder,
             http_client=self._http_client,
             checkpointer=self._checkpointer,
-            tool_cache=self._tool_cache,
+            material_store=self._material_store,
         )
         # resume 时传 None 或 Command，由 checkpointer + thread_id 从断点继续。
         inputs = (
