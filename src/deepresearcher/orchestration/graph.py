@@ -89,6 +89,7 @@ def build_graph(
     http_client: HttpClient | None = None,
     checkpointer=None,
     material_store=None,
+    provider_health=None,
 ):
     """装配完整研究应用；必需模型和联网工具缺失时立即失败。
 
@@ -119,7 +120,12 @@ def build_graph(
     )
     aliyun_client = create_aliyun_dts_client(settings.search) if uses_aliyun else None
     search_tool = SearchTool(
-        SearchClient(settings.search, shared_http, aliyun_client=aliyun_client),
+        SearchClient(
+            settings.search,
+            shared_http,
+            aliyun_client=aliyun_client,
+            provider_health=provider_health,
+        ),
         trace_recorder=trace_recorder,
         event_sink=event_sink,
     )

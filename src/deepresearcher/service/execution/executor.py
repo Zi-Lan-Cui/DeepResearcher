@@ -24,6 +24,7 @@ from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.events.stream import CompositeSink, FanoutSink
 from deepresearcher.service.persistence.models import Run
+from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
 from deepresearcher.service.runs.queue import RunWork
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.usage import (
@@ -95,6 +96,12 @@ class RunExecutor:
         self._checkpointer = checkpointer
         self._material_store = material_store
         self._ephemeral_bus = ephemeral_bus
+        # 搜索提供方账户级健康跨 worker 共享（PG）；非 PG（测试/SQLite）用 SearchClient 的内存默认。
+        self._provider_health = (
+            PostgresProviderHealth(session_factory)
+            if str(getattr(config, "database_url", "")).startswith("postgresql")
+            else None
+        )
         self._shutdown_interrupts: set[str] = set()
         self._lost_leases: set[str] = set()
         self._cancellation_requests: set[str] = set()
@@ -244,6 +251,7 @@ class RunExecutor:
             http_client=self._http_client,
             checkpointer=self._checkpointer,
             material_store=self._material_store,
+            provider_health=self._provider_health,
         )
         # resume 时传 None 或 Command，由 checkpointer + thread_id 从断点继续。
         inputs = (

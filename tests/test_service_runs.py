@@ -195,6 +195,7 @@ async def manager(tmp_path):
         http_client,
         checkpointer=None,
         material_store=None,
+        provider_health=None,
     ):
         del material_store
         holder["sink"] = event_sink
@@ -918,6 +919,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         http_client,
         checkpointer=None,
         material_store=None,
+        provider_health=None,
     ):
         del trace_recorder
         del material_store

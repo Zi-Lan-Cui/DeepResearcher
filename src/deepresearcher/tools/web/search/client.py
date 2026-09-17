@@ -46,7 +46,7 @@ class SearchClient:
     async def asearch(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
         provider = self.provider_name
         # 账户级熔断优先：同 key 已不可用时连出网都不必。
-        open_reason = self._health.is_open(provider)
+        open_reason = await self._health.is_open(provider)
         if open_reason:
             raise ProviderExhaustedError(
                 open_reason, f"搜索供应商 {provider} 已熔断（{open_reason}），暂停出网。"
@@ -60,7 +60,7 @@ class SearchClient:
                 return await self._provider().asearch(query, limit)
             except ProviderExhaustedError as exc:
                 # 鉴权/额度型：打开健康位，让本 worker 后续（乃至跨 worker）快速失败。
-                self._health.trip(provider, exc.user_code, _PROVIDER_HEALTH_SECONDS)
+                await self._health.trip(provider, exc.user_code, _PROVIDER_HEALTH_SECONDS)
                 raise
             except ToolRequestError as exc:
                 reset = getattr(exc, "rate_limit_reset_ts", None)

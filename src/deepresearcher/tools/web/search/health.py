@@ -14,10 +14,10 @@ from typing import Protocol
 
 
 class ProviderHealth(Protocol):
-    def is_open(self, provider: str) -> str | None:
+    async def is_open(self, provider: str) -> str | None:
         """返回打开原因（invalid_key/quota_exhausted/...），未打开返回 None。"""
 
-    def trip(self, provider: str, reason: str, seconds: float) -> None:
+    async def trip(self, provider: str, reason: str, seconds: float) -> None:
         """把某 provider 标为不可用一段时间（取更长的窗口）。"""
 
 
@@ -25,13 +25,10 @@ class MemoryProviderHealth:
     def __init__(self) -> None:
         self._open: dict[str, tuple[float, str]] = {}  # provider -> (恢复点, 原因)
 
-    def is_open(self, provider: str) -> str | None:
+    async def is_open(self, provider: str) -> str | None:
         until, reason = self._open.get(provider, (0.0, ""))
-        if time.monotonic() < until:
-            return reason
-        return None
+        return reason if time.monotonic() < until else None
 
-    def trip(self, provider: str, reason: str, seconds: float) -> None:
+    async def trip(self, provider: str, reason: str, seconds: float) -> None:
         current = self._open.get(provider, (0.0, reason))
-        until = max(current[0], time.monotonic() + seconds)
-        self._open[provider] = (until, reason)
+        self._open[provider] = (max(current[0], time.monotonic() + seconds), reason)
