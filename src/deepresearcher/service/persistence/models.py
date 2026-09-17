@@ -33,6 +33,21 @@ class Base(DeclarativeBase):
     pass
 
 
+class ProviderHealthRecord(Base):
+    """搜索提供方账户级健康（跨 worker 共享的熔断位）。
+
+    provider 主键；open_until 为该 key 判定不可用的恢复时刻（UTC）；
+    reason 是稳定 user_code（invalid_key/insufficient_credit/forbidden/quota_exhausted）。
+    """
+
+    __tablename__ = "provider_health"
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(32))
+    open_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class User(Base):
     __tablename__ = "users"
 

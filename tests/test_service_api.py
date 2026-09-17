@@ -38,9 +38,11 @@ async def client(tmp_path):
         http_client,
         checkpointer=None,
         material_store=None,
+        provider_health=None,
     ):
         del trace_recorder
         del material_store
+        del provider_health
         graph = graphs.pop(0) if graphs else FakeGraph()
         graph._sink = event_sink
         return graph
