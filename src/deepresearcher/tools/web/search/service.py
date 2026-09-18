@@ -9,6 +9,10 @@ from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
 from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.schemas.limits import (
+    SEARCH_RESULT_TITLE_PREVIEW_CHARS,
+    SEARCH_RESULTS_AUDIT_PREVIEW_COUNT,
+)
 from deepresearcher.state import SubTask
 from deepresearcher.tools.cache_keys import normalize_text, semantic_cache_key
 from deepresearcher.tools.errors import ProviderExhaustedError, ToolConfigurationError
@@ -143,11 +147,11 @@ class SearchTool:
                             "cache_hit_count": len(cached_queries),
                             "candidates": [
                                 {
-                                    "title": item.get("title", "")[:160],
+                                    "title": item.get("title", "")[:SEARCH_RESULT_TITLE_PREVIEW_CHARS],
                                     "url": item.get("url", ""),
                                     "score": item.get("score", 0.0),
                                 }
-                                for item in ranked[:8]
+                                for item in ranked[:SEARCH_RESULTS_AUDIT_PREVIEW_COUNT]
                             ],
                         },
                     )
