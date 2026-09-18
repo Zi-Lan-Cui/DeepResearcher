@@ -172,17 +172,17 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             summary["content_redacted"] = redact
             if not redact:
                 summary["content_preview"] = cls._preview(content)
-                # grep/search 的 total_matches/has_more/candidate_count 等标量排在
-                # 大数组(matches/candidates)之后,常被 content_preview(800 字符)截断
-                # 而看不到 → 无法从日志审计取证漏斗与翻页。把标量 hoist 到事件顶层:
-                # 只搬标量/短串,不改工具返回值、不进模型上下文,纯可观测性增强。
-                metrics = cls._result_metrics(content)
-                if metrics:
-                    summary["result_metrics"] = metrics
+            # total_matches/has_more/candidate_count 等计数排在 matches/candidates 大数组
+            # 之后,常被 content_preview 截断而看不到 → 无法审计取证漏斗与翻页。把标量 hoist
+            # 到事件顶层。**即使正文被 redact(读取类工具含来源原文引用)也照提取计数**——
+            # 数字本身不敏感,不该被正文脱敏一起挡掉;此时只放行 int/float/bool,不放行字符串。
+            metrics = cls._result_metrics(content, numeric_only=redact)
+            if metrics:
+                summary["result_metrics"] = metrics
         return summary
 
     @staticmethod
-    def _result_metrics(content: object) -> dict[str, object]:
+    def _result_metrics(content: object, *, numeric_only: bool = False) -> dict[str, object]:
         if not isinstance(content, str):
             return {}
         body = content.split("\n", 1)[-1] if content.startswith("【系统工具执行结果") else content
@@ -195,7 +195,8 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return {
             key: value
             for key, value in parsed.items()
-            if isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= 48)
+            if isinstance(value, (bool, int, float))
+            or (not numeric_only and isinstance(value, str) and len(value) <= 48)
         }
 
     @staticmethod
