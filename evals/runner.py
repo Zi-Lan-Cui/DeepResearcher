@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
+from deepresearcher.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.service.persistence.database import make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunEvent
 from deepresearcher.service.settings import checkpoint_dsn
@@ -78,7 +79,9 @@ class RunHarness:
         if self._checkpointer is None:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-            self._checkpoint_cm = AsyncPostgresSaver.from_conn_string(self._checkpoint_dsn)
+            self._checkpoint_cm = AsyncPostgresSaver.from_conn_string(
+                self._checkpoint_dsn, serde=build_checkpointer_serde()
+            )
             self._checkpointer = await self._checkpoint_cm.__aenter__()
         tuple_ = await self._checkpointer.aget_tuple(
             {"configurable": {"thread_id": run_id, "checkpoint_ns": ""}}

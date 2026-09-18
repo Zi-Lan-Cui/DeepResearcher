@@ -73,7 +73,14 @@ class RedisResearchMaterialStore:
         if payload is None:
             await record_cache_event(namespace="material_search", status="miss")
             return await self._fallback.get_search_results(run_id, search_id)
-        await record_cache_event(namespace="material_search", status="hit")
+        # 与 material_document 命中对称：一次 search 缓存命中即省去一次外部请求，
+        # 否则 usage 只记 cache_hit_count、saved_external_request_count 恒为 0，
+        # cache-reuse 行为断言（要求 saved>0）会误判失败。
+        await record_cache_event(
+            namespace="material_search",
+            status="hit",
+            detail={"saved_external_requests": 1},
+        )
         return SearchResultSet.model_validate(self._decode(payload))
 
     async def put(
