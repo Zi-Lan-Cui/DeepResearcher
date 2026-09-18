@@ -60,7 +60,8 @@ class Artifact:
         """返回可直接用于归因的标准化失败 Span，不依赖业务 payload。"""
         failures: list[dict[str, Any]] = []
         for event in self.events_of("span_failed"):
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            raw_payload = event.get("payload")
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
 
             def value(name: str, default: Any = "") -> Any:
                 return event.get(name, payload.get(name, default))
