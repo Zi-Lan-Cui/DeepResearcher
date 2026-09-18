@@ -26,7 +26,10 @@ class SearchSources(BaseModel):
     queries: list[str] = Field(
         min_length=1,
         max_length=SEARCH_QUERIES_PER_CALL,
-        description="一到两条针对当前方向缺口的短检索式。",
+        description=(
+            "一到两条针对当前方向缺口的短检索式；写成自然关键词串，"
+            "不要加英文引号包裹短语，也不要 AND/OR/NOT、+/-、括号等布尔语法。"
+        ),
     )
 
 

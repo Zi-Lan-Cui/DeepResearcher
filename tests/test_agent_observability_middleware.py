@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +62,46 @@ async def test_tool_lifecycle_records_scope_and_preserves_result():
     assert completed["content_chars"] == 2
     assert completed["content_preview"] == '"ok"'
     assert isinstance(completed["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
+    """grep 回执里排在 matches 之后的 total_matches/has_more/next_offset 常被预览截断;
+    必须 hoist 到 result_metrics 顶层才可审计。"""
+    events: list[tuple[str, dict[str, object]]] = []
+    middleware = AgentObservabilityMiddleware(
+        "ResearchAgent",
+        run_limit=9,
+        emit=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    big = {
+        "status": "completed",
+        "document_id": "doc-1",
+        "query": "CUDA",
+        "matches": [
+            {"query": "CUDA", "start_line": i, "end_line": i + 4, "content": "x" * 200}
+            for i in range(1, 20)
+        ],
+        "match_count": 19,
+        "total_matches": 42,
+        "has_more": True,
+        "next_offset": 19,
+    }
+    content = "【系统工具执行结果；不是用户补充】\n" + json.dumps(big, ensure_ascii=False)
+
+    async def handler(request):
+        return ToolMessage(content=content, tool_call_id="call-1")
+
+    await middleware.awrap_tool_call(_request(), handler)
+    completed = events[-1][1]
+    assert len(completed["content_preview"]) == 2000  # 预览被截断(工具结果预览上限)
+    assert '"total_matches"' not in completed["content_preview"]  # 预览里根本看不到
+    metrics = completed["result_metrics"]
+    assert metrics["total_matches"] == 42
+    assert metrics["has_more"] is True
+    assert metrics["next_offset"] == 19
+    assert metrics["match_count"] == 19
+    assert metrics["status"] == "completed"
 
 
 @pytest.mark.asyncio
