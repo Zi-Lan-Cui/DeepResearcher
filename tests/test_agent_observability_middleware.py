@@ -104,6 +104,27 @@ async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
     assert metrics["status"] == "completed"
 
 
+def test_result_metrics_numeric_only_drops_strings():
+    """读取类工具正文被 redact 时仍提取计数,但只放行标量数字、不漏字符串。"""
+    payload = json.dumps(
+        {
+            "status": "completed",
+            "query": "CUDA",
+            "total_matches": 42,
+            "has_more": True,
+            "next_offset": 19,
+            "matches": [{"content": "secret原文" * 30}],
+            "note": "z" * 60,
+        },
+        ensure_ascii=False,
+    )
+    numeric = AgentObservabilityMiddleware._result_metrics(payload, numeric_only=True)
+    assert numeric == {"total_matches": 42, "has_more": True, "next_offset": 19}
+    full = AgentObservabilityMiddleware._result_metrics(payload, numeric_only=False)
+    assert full["status"] == "completed" and full["query"] == "CUDA"
+    assert "matches" not in full and "note" not in full  # 大数组/长串不搬
+
+
 @pytest.mark.asyncio
 async def test_tool_failure_is_recorded_and_reraised():
     events: list[tuple[str, dict[str, object]]] = []
