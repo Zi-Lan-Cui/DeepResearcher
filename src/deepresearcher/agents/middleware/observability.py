@@ -172,7 +172,31 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             summary["content_redacted"] = redact
             if not redact:
                 summary["content_preview"] = cls._preview(content)
+                # grep/search 的 total_matches/has_more/candidate_count 等标量排在
+                # 大数组(matches/candidates)之后,常被 content_preview(800 字符)截断
+                # 而看不到 → 无法从日志审计取证漏斗与翻页。把标量 hoist 到事件顶层:
+                # 只搬标量/短串,不改工具返回值、不进模型上下文,纯可观测性增强。
+                metrics = cls._result_metrics(content)
+                if metrics:
+                    summary["result_metrics"] = metrics
         return summary
+
+    @staticmethod
+    def _result_metrics(content: object) -> dict[str, object]:
+        if not isinstance(content, str):
+            return {}
+        body = content.split("\n", 1)[-1] if content.startswith("【系统工具执行结果") else content
+        try:
+            parsed = json.loads(body)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {
+            key: value
+            for key, value in parsed.items()
+            if isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= 48)
+        }
 
     @staticmethod
     def _preview(value: Any) -> str:
