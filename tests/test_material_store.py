@@ -1,5 +1,6 @@
 import pytest
 
+import deepresearcher.service.persistence.redis_material_store as rms_module
 from deepresearcher.service.persistence.redis_material_store import (
     RedisResearchMaterialStore,
 )
@@ -153,3 +154,28 @@ async def test_redis_material_store_uses_run_scoped_search_key_and_fetch_index()
     assert await store.text(ref.document_id) == "first\nsecond"
     await store.close()
     assert redis.closed is True
+
+
+@pytest.mark.asyncio
+async def test_search_cache_hit_records_saved_external_request(monkeypatch):
+    """回归:material_search 命中必须带 saved_external_requests，否则 cache-reuse 断言误判。"""
+    events: list[tuple[str, str, dict | None]] = []
+
+    async def fake_event(*, namespace: str, status: str, detail: dict | None = None) -> None:
+        events.append((namespace, status, detail))
+
+    monkeypatch.setattr(rms_module, "record_cache_event", fake_event)
+    redis = _Redis()
+    store = RedisResearchMaterialStore(
+        redis, key_prefix="t", search_ttl_seconds=60, document_ttl_seconds=60
+    )
+    await store.put_search_results(
+        SearchResultSet(search_id="s1", run_id="r1", queries=["q"], results=[{"url": "https://e.com"}])
+    )
+    events.clear()  # 去掉 put 的 write 事件
+
+    await store.get_search_results("r1", "s1")  # 命中缓存
+    hits = [e for e in events if e[0] == "material_search" and e[1] == "hit"]
+    assert hits, "search 命中未记录 cache hit 事件"
+    assert hits[0][2] == {"saved_external_requests": 1}
+    await store.close()
