@@ -10,6 +10,7 @@ from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
     SEARCH_QUERIES_PER_CALL,
     SEARCH_RESULTS_PAGE_HARD_LIMIT,
+    SEARCH_RESULTS_PREVIEW_COUNT,
     SOURCE_CANDIDATES_PER_READ,
     STRUCTURED_COLLECTION_HARD_LIMIT,
     STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
@@ -50,7 +51,7 @@ class ListSearchResults(BaseModel):
     search_id: str = Field(min_length=1, description="SearchSources 返回的搜索结果句柄。")
     offset: int = Field(default=0, ge=0, description="从第几条结果开始，从 0 计数。")
     limit: int = Field(
-        default=5,
+        default=SEARCH_RESULTS_PREVIEW_COUNT,
         ge=1,
         le=SEARCH_RESULTS_PAGE_HARD_LIMIT,
         description="本次返回的结果数。",
