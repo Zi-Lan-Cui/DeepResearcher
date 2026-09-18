@@ -13,6 +13,7 @@ from deepresearcher.schemas import (
     ResearchDirectionDecision,
     ResearchDirectionResult,
 )
+from deepresearcher.schemas.limits import SEARCH_RESULTS_PREVIEW_COUNT
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.errors import SourceUnavailableError
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
@@ -175,11 +176,11 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     )
 
     assert first["result_count"] == 12
-    assert len(first["candidates"]) == 5
+    assert len(first["candidates"]) == SEARCH_RESULTS_PREVIEW_COUNT
     assert first["has_more"] is True
     # 预览与分页统一形状：首屏即带（截断）snippet，模型不必再翻 ListSearchResults(offset=0) 才能判断。
     assert all(item["snippet"] and len(item["snippet"]) <= 1_200 for item in first["candidates"])
-    assert first["next_offset"] == 5  # 偏移以 raw_results 下标计，预览消费 0..4 → 下一页从 5
+    assert first["next_offset"] == SEARCH_RESULTS_PREVIEW_COUNT  # 预览消费 0..N-1 → 下一页从 N
 
     page = asyncio.run(
         agent._list_search_results(
