@@ -24,4 +24,4 @@ check:
 
 # 启动真实 API/Worker 子进程，但使用无 LLM 费用的可控 Graph。
 verify-m8:
-	uv run python scripts/verify_m8_processes.py
+	uv run python tests/verify_m8_processes.py

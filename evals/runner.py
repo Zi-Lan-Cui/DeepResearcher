@@ -204,7 +204,7 @@ class RunHarness:
         if case.fault in {"kill", "stop", "stop_during_awaiting"}:
             raise NotImplementedError(
                 f"{case.case_id} 的故障注入（fault={case.fault}）需要 harness 掌控 worker "
-                "进程，第二阶段按 scripts/verify_m8_processes.py 模式接线。"
+                "进程，第二阶段按 tests/verify_m8_processes.py 模式接线。"
             )
         async with httpx.AsyncClient(timeout=60.0) as client:
             artifacts = [await self._drive_once(case, client)]

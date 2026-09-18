@@ -82,7 +82,7 @@ judge 模型默认复用 `LLM_MODEL_ID`，`EVAL_JUDGE_MODEL` 可覆盖。
 - `unknown` 代表评审器没有交付有效判定：报告缺失要求内容应判
   `no`；仍出现的 `unknown` 不允许 case 通过，并单独进 unknown rate 供校准。
 - F1/F2（kill/stop 接管）需要 harness 掌控 worker 进程（phase 2，按
-  `scripts/verify_m8_processes.py` 的编排模式接线）；`--with-faults` 才会列出。
+  `tests/verify_m8_processes.py` 的编排模式接线）；`--with-faults` 才会列出。
 
 ## 与防过拟合的关系
 

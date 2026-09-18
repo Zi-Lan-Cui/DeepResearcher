@@ -220,7 +220,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
     group = ProcessGroup(env=env, log_dir=work_dir)
     api = group.start("api-1", sys.executable, "server.py")
     workers = [
-        group.start(f"worker-{index}", sys.executable, "scripts/m8_fake_worker.py")
+        group.start(f"worker-{index}", sys.executable, "tests/m8_fake_worker.py")
         for index in (1, 2)
     ]
     started = time.monotonic()
@@ -343,7 +343,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             # A freshly started Worker's startup reconcile resumes the run from its
             # checkpoint; it re-enters the graph under a new PID.
             resume_worker = group.start(
-                "worker-f2-resume", sys.executable, "scripts/m8_fake_worker.py"
+                "worker-f2-resume", sys.executable, "tests/m8_fake_worker.py"
             )
             workers.append(resume_worker)
             resumed = await _eventually(
@@ -371,7 +371,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
 
             # Restore two live Workers, then verify queue/capacity at 1/2/4/8.
             workers.append(
-                group.start("worker-replacement", sys.executable, "scripts/m8_fake_worker.py")
+                group.start("worker-replacement", sys.executable, "tests/m8_fake_worker.py")
             )
             concurrency_results: dict[int, float] = {}
             for level in args.concurrency_levels:
