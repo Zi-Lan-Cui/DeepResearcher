@@ -48,7 +48,7 @@ from deepresearcher.schemas import (
     ResearchProgress,
     ResearchSynthesis,
     ReviewProgress,
-    RunLifecycle,
+    RunStatus,
     StopReason,
     SupervisorStateUpdate,
     WriterDirective,
@@ -169,7 +169,7 @@ class ResearchSupervisor:
         if review.status == "rejected":
             if review.attempts > self.config.max_post_review_recovery_cycles:
                 update = SupervisorStateUpdate(
-                    run=RunLifecycle(
+                    run=RunStatus(
                         phase="rendering", terminal_reason="review_recovery_exhausted"
                     ),
                     research=section(state, "research", ResearchProgress),
@@ -540,7 +540,7 @@ class ResearchSupervisor:
             report_brief=report_brief,
             writer_directive=writer_directive,
             active_evidence_ids=sorted(working.active_evidence_ids),
-            run=RunLifecycle(
+            run=RunStatus(
                 phase="writing" if can_continue_to_writer else "rendering",
                 terminal_reason="" if can_continue_to_writer else str(working.stop_reason or ""),
             ),

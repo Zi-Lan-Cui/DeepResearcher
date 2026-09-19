@@ -10,7 +10,7 @@ from deepresearcher.agents.clarifier.constants import CLARIFICATION_OPTION_COUNT
 from deepresearcher.agents.clarifier.state import ClarifierGraphState
 from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.prompts import json_data_section
-from deepresearcher.schemas import RunLifecycle
+from deepresearcher.schemas import RunStatus
 
 ClarifierAgentNode = Callable[[ClarifierGraphState], Awaitable[dict[str, object]]]
 
@@ -90,7 +90,7 @@ def build_clarifier_graph(agent: ClarifierAgentNode):
             "clarified_query": query,
             "research_brief": "；".join(part for part in parts if part),
             "answer_mode": "deep_research",
-            "run": RunLifecycle(phase="researching"),
+            "run": RunStatus(phase="researching"),
         }
 
     graph.add_node("prepare", prepare)

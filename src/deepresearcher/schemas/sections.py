@@ -134,7 +134,10 @@ class RunError(BaseModel):
         )
 
 
-class RunLifecycle(BaseModel):
+class RunStatus(BaseModel):
+    """一次 run 的状态快照：当前阶段 + 终止原因 + 错误。值对象，不驱动流程、
+    不代表"正在运行的生命周期"——阶段推进由节点产出增量、Graph 路由决定。"""
+
     phase: Literal[
         "routing",
         "clarification",
@@ -240,7 +243,7 @@ class SupervisorStateUpdate(BaseModel):
     research_synthesis: ResearchSynthesis | None = None
     report_brief: ReportBrief | None = None
     writer_directive: WriterDirective | None = None
-    run: RunLifecycle
+    run: RunStatus
     research: ResearchProgress
     writer: WriterProgress
     supervisor_next: NodeName = NodeName.RENDER_FINAL_REPORT
@@ -276,7 +279,7 @@ class WriterResult(BaseModel):
     current_round: int | None = Field(default=None, ge=0)
     evidence_count: int | None = Field(default=None, ge=0)
     source_count: int | None = Field(default=None, ge=0)
-    run: RunLifecycle | None = None
+    run: RunStatus | None = None
     writer: WriterProgress | None = None
     review: ReviewProgress | None = None
     writer_draft: str | None = None

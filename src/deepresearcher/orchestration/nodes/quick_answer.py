@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.orchestration.nodes.common import content_text
 from deepresearcher.prompts import json_data_section, load_prompt
-from deepresearcher.schemas import ResearchProgress, RunLifecycle
+from deepresearcher.schemas import ResearchProgress, RunStatus
 
 
 async def quick_answer(state, llm):
@@ -28,7 +28,7 @@ async def quick_answer(state, llm):
         "clarified_query": query,
         "draft_answer": answer,
         "answer_mode": "quick_answer",
-        "run": RunLifecycle(phase="writing"),
+        "run": RunStatus(phase="writing"),
         "research": ResearchProgress(
             status="completed", generation_mode="full", is_sufficient=True
         ),

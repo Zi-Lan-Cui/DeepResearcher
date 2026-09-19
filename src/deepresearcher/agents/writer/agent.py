@@ -39,7 +39,7 @@ from deepresearcher.schemas import (
     ReportBrief,
     ResearchProgress,
     ReviewProgress,
-    RunLifecycle,
+    RunStatus,
     WriterDirective,
     WriterProgress,
     WriterResult,
@@ -264,7 +264,7 @@ class ReportWriter:
             current_round=0,
             evidence_count=0,
             source_count=0,
-            run=RunLifecycle(phase="rendering"),
+            run=RunStatus(phase="rendering"),
             writer=WriterProgress(status="completed", attempts=1),
         ).state_update()
 
@@ -302,7 +302,7 @@ class ReportWriter:
             report=report,
             citations=[],
             answer_mode="research_incomplete",
-            run=RunLifecycle(phase="rendering"),
+            run=RunStatus(phase="rendering"),
             writer=WriterProgress(
                 status="failed",
                 attempts=section(state, "writer", WriterProgress).attempts + 1,
@@ -382,7 +382,7 @@ class ReportWriter:
         )
         review_attempts = section(state, "review", ReviewProgress).attempts
         return WriterResult(
-            run=RunLifecycle(phase="rendering"),
+            run=RunStatus(phase="rendering"),
             writer=WriterProgress(
                 status="exhausted",
                 attempts=section(state, "writer", WriterProgress).attempts + 1,
@@ -421,7 +421,7 @@ class ReportWriter:
             current_round=section(state, "research", ResearchProgress).current_round,
             evidence_count=evidence_count,
             source_count=source_count,
-            run=RunLifecycle(phase="reviewing"),
+            run=RunStatus(phase="reviewing"),
             writer=WriterProgress(
                 status="completed",
                 attempts=section(state, "writer", WriterProgress).attempts + 1,
