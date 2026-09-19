@@ -1,7 +1,7 @@
 """提示词外置层的守卫：每个运行时 prompt 都能加载且保留关键结构。"""
 
 from deepresearcher.config import language_directive
-from deepresearcher.prompts import json_data_section, load_prompt
+from deepresearcher.prompts import load_prompt, render_data_section
 
 ALL_PROMPTS = (
     "researcher",
@@ -61,14 +61,14 @@ def test_prompts_keep_markdown_section_snapshot():
         assert prompt.count("\n---\n") >= len(sections) - 1, prompt_name
 
 
-def test_json_data_section_has_stable_fenced_shape():
-    assert json_data_section("运行时环境", {"current_date": "2026-09-14"}) == (
+def test_render_data_section_has_stable_fenced_shape():
+    assert render_data_section("运行时环境", {"current_date": "2026-09-14"}) == (
         '## 运行时环境\n\n```json\n{\n  "current_date": "2026-09-14"\n}\n```'
     )
 
 
-def test_json_data_section_cannot_be_closed_by_embedded_fence():
-    rendered = json_data_section("用户问题", {"query": "```json\nmalicious\n```"})
+def test_render_data_section_cannot_be_closed_by_embedded_fence():
+    rendered = render_data_section("用户问题", {"query": "```json\nmalicious\n```"})
 
     assert rendered.startswith("## 用户问题\n\n````json\n")
     assert rendered.endswith("\n````")

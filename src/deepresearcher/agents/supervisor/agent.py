@@ -37,7 +37,7 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import json_data_section, load_prompt
+from deepresearcher.prompts import load_prompt, render_data_section
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
@@ -139,9 +139,9 @@ class ResearchSupervisor:
         return [
             HumanMessage(
                 content=(
-                    json_data_section("运行时环境", get_runtime_environment().payload())
+                    render_data_section("运行时环境", get_runtime_environment().payload())
                     + "\n\n---\n\n"
-                    + json_data_section(
+                    + render_data_section(
                         "研究委托",
                         {
                             "research_question": state.get(
@@ -340,7 +340,7 @@ class ResearchSupervisor:
         history.append(
             HumanMessage(
                 content=(
-                    json_data_section(
+                    render_data_section(
                         "审阅回流",
                         {
                             "review_feedback": review.feedback,
@@ -363,7 +363,7 @@ class ResearchSupervisor:
         payload: dict[str, object],
     ) -> None:
         """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
-        history.append(HumanMessage(content=json_data_section("研究管理观察", payload)))
+        history.append(HumanMessage(content=render_data_section("研究管理观察", payload)))
 
     async def _execute_research_task(
         self,
