@@ -7,7 +7,6 @@
 
 import asyncio
 from typing import Any, cast
-from urllib.parse import parse_qsl, urldefrag, urlencode, urlsplit, urlunsplit
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -20,7 +19,6 @@ from deepresearcher.agents.middleware import (
 )
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.supervisor.state import (
-    RunUrlReservations,
     SupervisorRuntimeContext,
     TaskExecution,
     WorkingState,
@@ -187,10 +185,6 @@ class ResearchSupervisor:
         history: list[BaseMessage],
     ) -> SupervisorStateUpdate:
         """运行 Supervisor 标准 Agent；工具通过运行时上下文修改 WorkingState。"""
-        url_reservations = RunUrlReservations(
-            state.get("attempted_source_urls", []),
-            normalize_url=self._normalize_source_url,
-        )
         working = WorkingState(
             state,
             dedup_key=self._task_deduplication_key,
@@ -266,7 +260,6 @@ class ResearchSupervisor:
             execution = await self._execute_research_task(
                 new_tasks[0],
                 tool_call_id=f"delegate-{new_tasks[0]['id']}",
-                url_reservations=url_reservations,
             )
             async with runtime.tool_lock:
                 working.absorb(execution)
@@ -302,7 +295,6 @@ class ResearchSupervisor:
                 agent_name="Supervisor",
             ),
             working=working,
-            url_reservations=url_reservations,
             delegate_research=delegate,
             round_no=round_no,
         )
@@ -332,7 +324,7 @@ class ResearchSupervisor:
             working,
             outcome=working.stop_reason or "agent_loop_completed",
         )
-        return self._final_update(state, working, url_reservations)
+        return self._final_update(state, working)
 
     def _append_review_rejection(self, state: ResearchState, history: list[BaseMessage]) -> None:
         """把审阅拒绝作为消息注入历史；如何响应留给工具循环里的模型。"""
@@ -370,7 +362,6 @@ class ResearchSupervisor:
         task: SubTask,
         *,
         tool_call_id: str,
-        url_reservations: RunUrlReservations,
     ) -> TaskExecution:
         """执行单个方向研究；worker 异常降级为 failed 结果，不中断整轮。"""
         round_no = int(task.get("round", 1))
@@ -394,18 +385,7 @@ class ResearchSupervisor:
                 },
             )
             try:
-                result = await self.research_agent.run(
-                    task,
-                    claim_url=url_reservations.reserve,
-                    on_url_already_attempted=lambda url: self._emit_audit_event(
-                        "source_duplicate_skipped",
-                        {
-                            "task_id": task["id"],
-                            "url": self._normalize_source_url(url),
-                            "dedup_scope": "research_run",
-                        },
-                    ),
-                )
+                result = await self.research_agent.run(task)
                 # 研究员是子 Agent 边界：在写入审计事件或 State 前先验证结果契约；
                 # 同 run 内已是模型时零开销，防御性恢复覆盖跨进程 checkpoint。
                 agent_result = (
@@ -496,7 +476,6 @@ class ResearchSupervisor:
         self,
         state: ResearchState,
         working: WorkingState,
-        url_reservations: RunUrlReservations,
     ) -> SupervisorStateUpdate:
         """把工作状态转为 State 增量与路由决策。"""
         # 地板兜底,不是优先级判断:整轮没产生任何信号时才补一个默认终态。
@@ -528,13 +507,11 @@ class ResearchSupervisor:
         can_continue_to_writer = can_write
         # evidences / source_refs / task_results 的 reducer 幂等(merge_evidences /
         # merge_task_results / merge_unique),直接把 WorkingState 全量副本交给 channel;
-        # reducer 按 id 折回原样,等价于只发新增。attempted_source_urls 保留 RunUrlReservations
-        # 自己维护的"本轮新预留"增量视图(非位置切片),对 merge_unique 幂等 reducer 同样安全。
+        # reducer 按 id 折回原样,等价于只发新增。
         return SupervisorStateUpdate(
             evidences=cast(list[Evidence], working.evidences),
             source_refs=cast(list[str], working.source_refs),
             task_results=cast(list[ResearchDirectionResult], working.task_results),
-            attempted_source_urls=url_reservations.newly_attempted,
             working_set_revision=working.working_set_revision,
             research_synthesis=working.research_synthesis,
             report_brief=report_brief,
@@ -716,22 +693,6 @@ class ResearchSupervisor:
             payload,
             component=component,
             node_fallback="supervisor",
-        )
-
-    @staticmethod
-    def _normalize_source_url(url: str) -> str:
-        url, _ = urldefrag(url.strip())
-        parts = urlsplit(url)
-        query = urlencode(
-            [
-                (key, value)
-                for key, value in parse_qsl(parts.query, keep_blank_values=True)
-                if not key.casefold().startswith("utm_")
-            ],
-            doseq=True,
-        )
-        return urlunsplit(
-            (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), query, "")
         )
 
     @staticmethod

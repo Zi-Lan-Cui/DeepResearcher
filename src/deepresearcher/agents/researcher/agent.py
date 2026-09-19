@@ -2,7 +2,6 @@
 
 import asyncio
 import hashlib
-from collections.abc import Awaitable, Callable
 from typing import Any, Literal, cast
 
 from langchain.agents import create_agent
@@ -133,13 +132,7 @@ class ResearchAgent:
             name="researcher",
         )
 
-    async def run(
-        self,
-        task: SubTask,
-        *,
-        claim_url: Callable[[str], Awaitable[bool]],
-        on_url_already_attempted: Callable[[str], None] | None = None,
-    ) -> ResearchAgentResult:
+    async def run(self, task: SubTask) -> ResearchAgentResult:
         """运行方向级 Agent loop，返回方向级研究结论与轨迹。"""
         run_state = DirectionRunState(
             active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
@@ -147,12 +140,7 @@ class ResearchAgent:
                 self.config.research_agent_max_evidence_candidates_per_direction
             ),
         )
-        runtime = self._runtime_context(
-            task,
-            run_state,
-            claim_url=claim_url,
-            on_url_already_attempted=on_url_already_attempted,
-        )
+        runtime = self._runtime_context(task, run_state)
         messages = self._initial_messages(task)
         status: Literal["completed", "failed", "cancelled"] = "completed"
         try:
@@ -216,9 +204,6 @@ class ResearchAgent:
         self,
         task: SubTask,
         run_state: DirectionRunState,
-        *,
-        claim_url: Callable[[str], Awaitable[bool]],
-        on_url_already_attempted: Callable[[str], None] | None,
     ) -> ResearchRuntimeContext:
         scope = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
         event_context = {
@@ -240,8 +225,6 @@ class ResearchAgent:
                 reason,
                 run_state=run_state,
                 event_context=event_context,
-                claim_url=claim_url,
-                on_url_already_attempted=on_url_already_attempted,
             )
 
         async def list_search_results(
@@ -306,7 +289,6 @@ class ResearchAgent:
             grep_document=grep_document,
             read_document=read_document,
             add_evidence=add_evidence,
-            on_url_already_attempted=on_url_already_attempted,
             event_context=event_context,
             evidence_commit_lock=evidence_commit_lock,
         )
@@ -319,8 +301,6 @@ class ResearchAgent:
         *,
         run_state: DirectionRunState,
         event_context: dict[str, object],
-        claim_url: Callable[[str], Awaitable[bool]],
-        on_url_already_attempted: Callable[[str], None] | None,
     ) -> dict[str, object]:
         """读取模型选中的候选来源，并返回紧凑的工具结果。"""
         del reason
@@ -334,11 +314,6 @@ class ResearchAgent:
         candidates: list[SearchCandidate] = []
         for candidate in selected:
             if candidate.candidate_id in run_state.selected_candidate_ids:
-                continue
-            if not await claim_url(candidate.url):
-                if on_url_already_attempted:
-                    on_url_already_attempted(candidate.url)
-                run_state.skipped.append("url_already_attempted")
                 continue
             run_state.selected_candidate_ids.add(candidate.candidate_id)
             run_state.read_urls.append(candidate.url)

@@ -62,7 +62,6 @@ class ResearchRuntimeContext:
     grep_document: Callable[[str, str, int, int, str], Awaitable[dict[str, object]]]
     read_document: Callable[[str, list[tuple[int, int]], str], Awaitable[dict[str, object]]]
     add_evidence: Callable[[list[dict[str, object]], str], Awaitable[dict[str, object]]]
-    on_url_already_attempted: Callable[[str], None] | None = None
     event_context: dict[str, object] = field(default_factory=dict)
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
