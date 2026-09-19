@@ -10,7 +10,6 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
 
 from deepresearcher.config import LLMRetryConfig
-from deepresearcher.llm.errors import LLMConfigurationError
 from deepresearcher.llm.retry import with_transport_retry
 from deepresearcher.observability.usage_runtime import enforce_usage_budget
 
@@ -22,8 +21,6 @@ class LLMInvoker:
     """应用装配期创建的模型调用器，所有调用共享同一明确策略。"""
 
     def __init__(self, model: BaseChatModel, retry: LLMRetryConfig):
-        if model is None:
-            raise LLMConfigurationError("LLMInvoker 需要已配置的聊天模型，不能传入 None。")
         self._model = model
         self._retry = retry
 
@@ -100,6 +97,4 @@ async def ainvoke_structured(
     request_kwargs: dict[str, Any] | None = None,
 ) -> SchemaT:
     """保留单一适配函数，便于节点测试注入；策略由 LLMInvoker 持有。"""
-    if llm is None:
-        raise LLMConfigurationError("结构化调用需要已装配的 LLMInvoker。")
     return await llm.ainvoke_structured(schema, messages, request_kwargs=request_kwargs)
