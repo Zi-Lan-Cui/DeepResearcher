@@ -15,6 +15,7 @@ from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
     ResearchAgentResult,
+    ResearchAspect,
     ResearchDirectionResult,
     ResearchSynthesis,
     ReviseResearchSynthesis,
@@ -99,6 +100,17 @@ def test_synthesis_rejects_duplicate_aspect_ids() -> None:
 
     with pytest.raises(ValueError, match="重复 aspect_id"):
         ResearchSynthesis.model_validate(payload)
+
+
+def test_aspect_grounding_requires_evidence_or_explicit_gap() -> None:
+    """状态层只校验内部一致性：covered 必须挂证据、uncovered 不得伪装、缺口必须写明。"""
+    base = {"aspect_id": "a", "topic": "主题", "role": "主线"}
+    with pytest.raises(ValueError, match="covered 研究方面必须绑定"):
+        ResearchAspect(**base, status="covered", evidence_ids=[])
+    with pytest.raises(ValueError, match="uncovered 研究方面不能绑定"):
+        ResearchAspect(**base, status="uncovered", evidence_ids=["e1"], remaining_gap="缺来源")
+    with pytest.raises(ValueError, match="必须明确 remaining_gap"):
+        ResearchAspect(**base, status="partial", evidence_ids=["e1"])
 
 
 def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
@@ -531,6 +543,204 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
     assert result["supervisor_next"] == "writer"
     assert result["report_brief"] is not None
     assert "ResearchComplete 拒绝" in result["writer"].feedback
+
+
+def _revise_tool_messages(result: dict) -> list[ToolMessage]:
+    return [
+        message
+        for message in result["supervisor_messages"]
+        if isinstance(message, ToolMessage) and message.name == "ReviseResearchSynthesis"
+    ]
+
+
+def test_revise_synthesis_rejects_stale_working_set_revision():
+    """模型基于过期观察提交综合稿：工具返回 stale，不落盘、不覆盖现有综合稿。"""
+
+    class StaleReviseLLM:
+        def bind_tools(self, _tools, tool_choice="any"):
+            return self
+
+        async def ainvoke(self, messages):
+            history = "\n".join(str(message.content) for message in messages)
+            if "research_direction" not in history:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ResearchDelegate",
+                            "args": {"research_topic": "新增证据方向"},
+                            "id": "call_delegate",
+                        }
+                    ],
+                )
+            if '"status": "stale"' not in history:
+                # delegate 的 absorb 已把工作集推进到 1；故意仍提交派发前看到的 0。
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ReviseResearchSynthesis",
+                            "args": {
+                                "expected_revision": 0,
+                                "expected_working_set_revision": 0,
+                                "answer_goal": "回答测试问题",
+                                "overall_summary": "基于过期观察的综合稿。",
+                                "aspects": [
+                                    {
+                                        "aspect_id": "core",
+                                        "topic": "核心结论",
+                                        "role": "主线",
+                                        "required": True,
+                                        "status": "uncovered",
+                                        "remaining_gap": "尚未整合。",
+                                    }
+                                ],
+                                "open_gaps": [],
+                                "conflicts": [],
+                                "next_actions": [],
+                                "decision_rationale": "故意使用过期工作集版本。",
+                            },
+                            "id": "call_revise",
+                        }
+                    ],
+                )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ResearchComplete",
+                        "args": {"synthesis_revision": 1, "reason": "坚持冻结未落盘的综合稿"},
+                        "id": "call_complete",
+                    }
+                ],
+            )
+
+    supervisor = ResearchSupervisor(
+        StaleReviseLLM(),
+        AgentConfig(max_research_rounds=1),
+        research_agent=FixedResearchAgent(),
+    )
+    result = asyncio.run(
+        supervisor.run(
+            {
+                "query": "研究问题",
+                "clarified_query": "研究问题",
+                "evidences": [],
+            }
+        )
+    )
+
+    revised = _revise_tool_messages(result)
+    assert len(revised) == 1
+    assert '"status": "stale"' in str(revised[0].content)
+    assert result["research_synthesis"] is None
+    assert result["working_set_revision"] == 1
+    assert "ResearchComplete 拒绝" in result["writer"].feedback
+
+
+def test_revise_synthesis_rejects_evidence_outside_active_working_set():
+    """Evidence 仍在档案但已被释放：引用它被工具层拒绝，活跃性检查不与模型内部校验混层。"""
+
+    class ReleasedReferenceLLM:
+        def bind_tools(self, _tools, tool_choice="any"):
+            return self
+
+        async def ainvoke(self, messages):
+            history = "\n".join(str(message.content) for message in messages)
+            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
+            if "research_direction" not in history:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ResearchDelegate",
+                            "args": {"research_topic": "证据将被释放的方向"},
+                            "id": "call_delegate",
+                        }
+                    ],
+                )
+            if '"released_evidence_ids"' not in history:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ReleaseEvidence",
+                            "args": {
+                                "evidence_ids": evidence_ids[:1],
+                                "reason": "释放以测试引用边界",
+                            },
+                            "id": "call_release",
+                        }
+                    ],
+                )
+            if '"invalid_evidence_ids"' not in history:
+                revisions = [
+                    int(item) for item in re.findall(r'"working_set_revision":\s*(\d+)', history)
+                ]
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ReviseResearchSynthesis",
+                            "args": {
+                                "expected_revision": 0,
+                                "expected_working_set_revision": max(revisions, default=0),
+                                "answer_goal": "回答测试问题",
+                                "overall_summary": "引用已释放 Evidence 的综合稿。",
+                                "aspects": [
+                                    {
+                                        "aspect_id": "core",
+                                        "topic": "核心结论",
+                                        "role": "主线",
+                                        "required": True,
+                                        "status": "covered",
+                                        "summary": "仅有已释放的依据。",
+                                        "evidence_ids": evidence_ids[:1],
+                                    }
+                                ],
+                                "open_gaps": [],
+                                "conflicts": [],
+                                "next_actions": [],
+                                "decision_rationale": "故意引用非活跃 Evidence。",
+                            },
+                            "id": "call_revise",
+                        }
+                    ],
+                )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ResearchComplete",
+                        "args": {"synthesis_revision": 1, "reason": "坚持终止研究"},
+                        "id": "call_complete",
+                    }
+                ],
+            )
+
+    supervisor = ResearchSupervisor(
+        ReleasedReferenceLLM(),
+        AgentConfig(max_research_rounds=1),
+        research_agent=FixedResearchAgent(),
+    )
+    result = asyncio.run(
+        supervisor.run(
+            {
+                "query": "研究问题",
+                "clarified_query": "研究问题",
+                "evidences": [],
+            }
+        )
+    )
+
+    revised = _revise_tool_messages(result)
+    assert len(revised) == 1
+    content = str(revised[0].content)
+    assert '"status": "rejected"' in content
+    assert "研究综合稿只能引用当前活跃" in content
+    assert result["research_synthesis"] is None
+    # 活跃集已空且没有落盘综合稿：不能进入写作。
+    assert result["supervisor_next"] == "render_final_report"
 
 
 def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
@@ -1063,7 +1273,9 @@ def _delegate_context(run_id: str, current_round: int, agent, *, max_rounds: int
     )
     state: ResearchState = {"query": "q", "clarified_query": "q", "evidences": []}
     loop_state = SupervisorLoopState(
-        state, current_round=current_round, dedup_key=supervisor._task_deduplication_key,
+        state,
+        current_round=current_round,
+        dedup_key=supervisor._task_deduplication_key,
         active_evidence_limit=10,
     )
     context = SupervisorLoopContext(

@@ -72,7 +72,12 @@ class ResearchAspect(BaseModel):
 
 
 class ResearchSynthesis(BaseModel):
-    """Supervisor 持续修订、最终冻结后交给 Writer 的研究综合稿。"""
+    """Supervisor 的结构化研究综合状态。
+
+    记录当前工作集下各研究方面的覆盖、证据绑定、缺口与冲突。它不是最终报告,
+    也不是某个 ResearchAgent 的方向结果;只有经 ResearchComplete 校验并冻结后,
+    才成为交给 Writer 的交接版本。
+    """
 
     revision: int = Field(ge=1)
     based_on_working_set_revision: int = Field(ge=0)
@@ -80,7 +85,9 @@ class ResearchSynthesis(BaseModel):
     overall_summary: str = Field(min_length=1, max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
     aspects: list[ResearchAspect] = Field(min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     selected_evidence_ids: list[str] = Field(
-        default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT
+        default_factory=list,
+        max_length=EVIDENCE_REFERENCES_HARD_LIMIT,
+        description="由 aspects.evidence_ids 按首次出现顺序派生，不由模型独立决定。",
     )
     open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
