@@ -207,95 +207,13 @@ class ResearchSupervisor:
             },
         )
 
-        async def delegate(topic: str) -> dict[str, object]:
-            def _reported(result: dict[str, object]) -> dict[str, object]:
-                # 规划器的工具调用若被静默消化（blocked/skipped），事件流里只会
-                # 看到连续两个 model_turn——delegate_started/completed 让“空轮次”可解释。
-                self._emit_audit_event(
-                    "delegate_completed",
-                    {
-                        "status": str(result.get("status", "")),
-                        "reason": str(result.get("reason", "")),
-                        "topic_chars": len(topic),
-                        "evidence_count": result.get("evidence_count"),
-                        "source_count": result.get("source_count"),
-                    },
-                )
-                return result
-
-            self._emit_audit_event("delegate_started", {"topic_chars": len(topic)})
-            if round_no > self.config.max_research_rounds:
-                loop_state.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
-                return _reported(
-                    {
-                        "status": "blocked",
-                        "reason": "round_budget_exhausted",
-                        "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
-                    }
-                )
-            async with loop_context.tool_lock:
-                task_index = loop_state.allocate_task_index()
-                task: SubTask = {
-                    "id": f"task-{task_index:04d}",
-                    "run_id": str(state.get("run_id") or ""),
-                    "question": topic,
-                    "round": round_no,
-                    "sequence": task_index,
-                    "type": "search",
-                    "status": "pending",
-                    "assigned_agent": "research_agent",
-                    "worker_id": f"research-agent-{task_index:04d}",
-                    "worker_index": task_index,
-                    "parent_task_id": "",
-                    "operation_id": f"research-task-{task_index:04d}",
-                }
-                new_tasks = loop_state.filter_new_tasks(
-                    [task], max_tasks=self.config.max_subtasks_per_round
-                )
-            if not new_tasks:
-                loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
-                return _reported(
-                    {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
-                )
-            execution = await self._execute_research_task(
-                new_tasks[0],
-                tool_call_id=f"delegate-{new_tasks[0]['id']}",
-            )
-            async with loop_context.tool_lock:
-                loop_state.absorb(execution)
-            direction_report: dict[str, object] = {
-                "status": execution.task_result.execution_status,
-                "research_direction": execution.task_result.research_direction,
-                "coverage_status": execution.task_result.coverage_status,
-                "evidence_count": execution.task_result.evidence_count,
-                "source_count": execution.task_result.source_count,
-                "remaining_gaps": execution.task_result.remaining_gaps,
-                "conclusion": execution.task_result.conclusion,
-                "failures": execution.task_result.failures,
-                "working_set_revision": loop_state.working_set_revision,
-                "evidence": [
-                    evidence_card(item)
-                    for item in execution.evidences
-                    if item.evidence_id in loop_state.active_evidence_ids
-                ],
-            }
-            if execution.task_result.provider_exhausted:
-                # 数据提示（无分支控制流）：让 Supervisor 模型读到系统性不可用后自然停止派发、收尾。
-                direction_report["provider_exhausted"] = True
-                direction_report["instruction"] = (
-                    "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
-                    "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后 "
-                    "ResearchComplete（足以成文）或 ResearchReady（保存部分报告）收尾。"
-                )
-            return _reported(direction_report)
-
         loop_context = SupervisorLoopContext(
             scope=AgentExecutionScope(
                 run_id=str(state.get("run_id") or ""),
                 agent_name="Supervisor",
             ),
+            supervisor=self,
             loop_state=loop_state,
-            delegate_research=delegate,
         )
         prepared = history
         try:
@@ -355,6 +273,104 @@ class ResearchSupervisor:
     ) -> None:
         """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
         history.append(HumanMessage(content=render_data_section("研究管理观察", payload)))
+
+    async def _delegate_research(
+        self,
+        context: SupervisorLoopContext,
+        topic: str,
+        *,
+        tool_call_id: str | None = None,
+    ) -> dict[str, object]:
+        """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号/去重、
+        派发 ResearchAgent、吸收结果、向模型返回完整方向报告。
+
+        由 tools.py 的 research_delegate 经 runtime.context.supervisor 调用;
+        业务逻辑集中在此,工具层只做协议与转发。并发簿记受 context.tool_lock 保护,
+        实际子 Agent 并发受 self._worker_limit 限制(见 _execute_research_task)。
+        """
+        loop_state = context.loop_state
+        round_no = loop_state.current_round
+
+        def reported(result: dict[str, object]) -> dict[str, object]:
+            # 规划器的工具调用若被静默消化（blocked/skipped），事件流里只会
+            # 看到连续两个 model_turn——delegate_started/completed 让“空轮次”可解释。
+            self._emit_audit_event(
+                "delegate_completed",
+                {
+                    "status": str(result.get("status", "")),
+                    "reason": str(result.get("reason", "")),
+                    "topic_chars": len(topic),
+                    "evidence_count": result.get("evidence_count"),
+                    "source_count": result.get("source_count"),
+                },
+            )
+            return result
+
+        self._emit_audit_event("delegate_started", {"topic_chars": len(topic)})
+        if round_no > self.config.max_research_rounds:
+            loop_state.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
+            return reported(
+                {
+                    "status": "blocked",
+                    "reason": "round_budget_exhausted",
+                    "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
+                }
+            )
+        async with context.tool_lock:
+            task_index = loop_state.allocate_task_index()
+            task: SubTask = {
+                "id": f"task-{task_index:04d}",
+                "run_id": context.scope.run_id,
+                "question": topic,
+                "round": round_no,
+                "sequence": task_index,
+                "type": "search",
+                "status": "pending",
+                "assigned_agent": "research_agent",
+                "worker_id": f"research-agent-{task_index:04d}",
+                "worker_index": task_index,
+                "parent_task_id": "",
+                "operation_id": f"research-task-{task_index:04d}",
+            }
+            new_tasks = loop_state.filter_new_tasks(
+                [task], max_tasks=self.config.max_subtasks_per_round
+            )
+        if not new_tasks:
+            loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
+            return reported(
+                {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
+            )
+        execution = await self._execute_research_task(
+            new_tasks[0],
+            tool_call_id=tool_call_id or f"delegate-{new_tasks[0]['id']}",
+        )
+        async with context.tool_lock:
+            loop_state.absorb(execution)
+        direction_report: dict[str, object] = {
+            "status": execution.task_result.execution_status,
+            "research_direction": execution.task_result.research_direction,
+            "coverage_status": execution.task_result.coverage_status,
+            "evidence_count": execution.task_result.evidence_count,
+            "source_count": execution.task_result.source_count,
+            "remaining_gaps": execution.task_result.remaining_gaps,
+            "conclusion": execution.task_result.conclusion,
+            "failures": execution.task_result.failures,
+            "working_set_revision": loop_state.working_set_revision,
+            "evidence": [
+                evidence_card(item)
+                for item in execution.evidences
+                if item.evidence_id in loop_state.active_evidence_ids
+            ],
+        }
+        if execution.task_result.provider_exhausted:
+            # 数据提示（无分支控制流）：让 Supervisor 模型读到系统性不可用后自然停止派发、收尾。
+            direction_report["provider_exhausted"] = True
+            direction_report["instruction"] = (
+                "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
+                "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后 "
+                "ResearchComplete（足以成文）或 ResearchReady（保存部分报告）收尾。"
+            )
+        return reported(direction_report)
 
     async def _execute_research_task(
         self,

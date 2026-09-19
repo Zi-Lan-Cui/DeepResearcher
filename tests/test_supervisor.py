@@ -1023,3 +1023,78 @@ def test_loop_state_set_stop_reason_adopts_by_rank():
     # 模型的显式收尾决定压过一切基础设施信号。
     loop_state.set_stop_reason(StopReason.SUFFICIENT)
     assert loop_state.stop_reason == StopReason.SUFFICIENT
+
+
+class _RecordingDelegateAgent:
+    """记录每次派发任务的 run_id；返回可被 ResearchAgentResult.model_validate 接受的 dict。"""
+
+    def __init__(self) -> None:
+        self.task_run_ids: list[str] = []
+
+    async def run(self, task):
+        self.task_run_ids.append(task["run_id"])
+        return {
+            "evidences": [],
+            "source_refs": [],
+            "task_result": {
+                "task_id": task["id"],
+                "round": task.get("round", 1),
+                "task_index": task.get("sequence", 0),
+                "question": task["question"],
+                "research_direction": task["question"],
+                "execution_status": "completed",
+                "coverage_status": "insufficient",
+                "evidence_count": 0,
+                "source_count": 0,
+                "stop_reason": "no_evidence",
+            },
+        }
+
+
+def _delegate_context(run_id: str, current_round: int, agent, *, max_rounds: int = 3):
+    from deepresearcher.agents.supervisor.state import SupervisorLoopContext, SupervisorLoopState
+    from deepresearcher.context.execution import AgentExecutionScope
+    from deepresearcher.state import ResearchState
+
+    supervisor = ResearchSupervisor(
+        object(),
+        AgentConfig(max_research_rounds=max_rounds, max_subtasks_per_round=2),
+        research_agent=agent,
+    )
+    state: ResearchState = {"query": "q", "clarified_query": "q", "evidences": []}
+    loop_state = SupervisorLoopState(
+        state, current_round=current_round, dedup_key=supervisor._task_deduplication_key,
+        active_evidence_limit=10,
+    )
+    context = SupervisorLoopContext(
+        scope=AgentExecutionScope(run_id=run_id, agent_name="Supervisor"),
+        supervisor=supervisor,
+        loop_state=loop_state,
+    )
+    return supervisor, context
+
+
+def test_delegate_research_blocks_when_round_budget_exhausted():
+    """轮次超过 max_research_rounds → 返回 blocked 且绝不派发子 Agent。"""
+    agent = _RecordingDelegateAgent()
+    supervisor, context = _delegate_context("run-x", current_round=5, agent=agent, max_rounds=3)
+    result = asyncio.run(supervisor._delegate_research(context, "一个方向"))
+    assert result["status"] == "blocked"
+    assert result["reason"] == "round_budget_exhausted"
+    assert agent.task_run_ids == []
+
+
+def test_delegate_research_dedups_topics_and_scopes_run_id():
+    """同 topic 第二次 skipped；任务 run_id 取自各自 context.scope.run_id，无跨 run 泄漏。"""
+    agent_a = _RecordingDelegateAgent()
+    sup_a, ctx_a = _delegate_context("run-a", current_round=1, agent=agent_a)
+    first = asyncio.run(sup_a._delegate_research(ctx_a, "重复主题"))
+    second = asyncio.run(sup_a._delegate_research(ctx_a, "重复主题"))
+    assert first["status"] == "completed"
+    assert second["status"] == "skipped" and second["reason"] == "duplicate_or_budget"
+    assert agent_a.task_run_ids == ["run-a"]
+
+    agent_b = _RecordingDelegateAgent()
+    sup_b, ctx_b = _delegate_context("run-b", current_round=1, agent=agent_b)
+    asyncio.run(sup_b._delegate_research(ctx_b, "重复主题"))
+    assert agent_b.task_run_ids == ["run-b"]
