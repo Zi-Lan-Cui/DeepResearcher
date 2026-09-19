@@ -2,8 +2,9 @@
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import ToolMessage
 
@@ -18,6 +19,9 @@ from deepresearcher.schemas import (
 )
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import ResearchState, SubTask, section
+
+if TYPE_CHECKING:
+    from deepresearcher.agents.supervisor.agent import ResearchSupervisor
 
 
 def evidence_card(evidence: Evidence) -> dict[str, object]:
@@ -63,8 +67,8 @@ class SupervisorLoopContext:
     """
 
     scope: AgentExecutionScope
+    supervisor: "ResearchSupervisor"
     loop_state: "SupervisorLoopState"
-    delegate_research: Callable[[str], Awaitable[dict[str, object]]]
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 

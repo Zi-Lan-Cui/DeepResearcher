@@ -57,7 +57,11 @@ def build_supervisor_tools() -> list[BaseTool]:
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """派发一个具体、可验证且与历史互补的研究方向。"""
-        return _result(await runtime.context.delegate_research(research_topic))
+        context = runtime.context
+        result = await context.supervisor._delegate_research(
+            context, research_topic, tool_call_id=runtime.tool_call_id
+        )
+        return _result(result)
 
     # return_direct 才会让 Command(goto=END) 真正终止 Agent 循环；
     # 缺省时 langchain 仍会把消息送回模型，决策调用白白空转一整圈。
