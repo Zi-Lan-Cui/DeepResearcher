@@ -9,7 +9,7 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 from deepresearcher.context.execution import AgentExecutionScope
-from deepresearcher.schemas import RunLifecycle
+from deepresearcher.schemas import RunStatus
 
 
 @dataclass
@@ -45,4 +45,4 @@ class ClarifierGraphState(TypedDict, total=False):
     clarified_query: str
     research_brief: str
     answer_mode: str
-    run: RunLifecycle
+    run: RunStatus

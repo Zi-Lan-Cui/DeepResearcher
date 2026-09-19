@@ -16,7 +16,7 @@ from deepresearcher.observability.events.models import make_node_event
 from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 from deepresearcher.reporting import render_error_report, render_incomplete_report
 from deepresearcher.routing import NodeName
-from deepresearcher.schemas import RunError, RunLifecycle
+from deepresearcher.schemas import RunError, RunStatus
 from deepresearcher.state import ResearchState, restore_state_models, validate_state_invariants
 
 
@@ -62,7 +62,7 @@ async def execute_node(
                 detail=str(exc),
             )
         failure: dict[str, Any] = {
-            "run": RunLifecycle(
+            "run": RunStatus(
                 phase="failed",
                 terminal_reason="budget_exhausted" if budget_exhausted else "node_failed",
                 error=error,

@@ -33,7 +33,7 @@ from deepresearcher.schemas import (
     ReviewIssue,
     RouteDecision,
     RunError,
-    RunLifecycle,
+    RunStatus,
     WriterProgress,
 )
 from deepresearcher.service.usage import UsageBudgetExceeded
@@ -131,7 +131,7 @@ class _CompleteSupervisor:
 
     async def run(self, _state):
         return {
-            "run": RunLifecycle(phase="writing"),
+            "run": RunStatus(phase="writing"),
             "research": ResearchProgress(
                 status="completed", current_round=1, is_sufficient=True, generation_mode="full"
             ),
@@ -146,7 +146,7 @@ class _ExhaustedSupervisor:
 
     async def run(self, _state):
         return {
-            "run": RunLifecycle(phase="rendering", terminal_reason="research_budget_exhausted"),
+            "run": RunStatus(phase="rendering", terminal_reason="research_budget_exhausted"),
             "research": ResearchProgress(status="incomplete", current_round=1),
             "answer_mode": "research_incomplete",
             "supervisor_next": "render_final_report",
@@ -169,7 +169,7 @@ class _ReadyWriter:
     async def run(self, _state):
         citation = Citation(id="e1", claim="测试事实", quote="测试事实。")
         return {
-            "run": RunLifecycle(phase="reviewing"),
+            "run": RunStatus(phase="reviewing"),
             "writer": WriterProgress(status="completed"),
             "answer_mode": "deep_research",
             "report_draft": "测试事实。 [[cite:e1]]",
@@ -251,7 +251,7 @@ def test_execution_boundary_never_converts_graph_interrupt_to_failure():
 
 def test_state_invariant_violation_becomes_run_error():
     async def contradictory_node(_state):
-        return {"run": RunLifecycle(phase="running", terminal_reason="already done")}
+        return {"run": RunStatus(phase="running", terminal_reason="already done")}
 
     result = asyncio.run(
         execute_node(
@@ -268,7 +268,7 @@ def test_state_invariant_violation_becomes_run_error():
 
 def test_failed_state_without_error_is_rejected():
     async def incomplete_failure(_state):
-        return {"run": RunLifecycle(phase="failed", terminal_reason="失败")}
+        return {"run": RunStatus(phase="failed", terminal_reason="失败")}
 
     result = asyncio.run(
         execute_node(
@@ -305,7 +305,7 @@ def test_execution_boundary_restores_checkpoint_models_before_node():
         assert isinstance(state["review"].issues[0], ReviewIssue)
         assert isinstance(state["citations"][0], Citation)
         assert isinstance(state["node_events"][0], NodeEvent)
-        return {"run": RunLifecycle(phase="routing")}
+        return {"run": RunStatus(phase="routing")}
 
     result = asyncio.run(
         execute_node(

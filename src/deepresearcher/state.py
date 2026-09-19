@@ -25,7 +25,7 @@ from deepresearcher.schemas import (
     ResearchProgress,
     ResearchSynthesis,
     ReviewProgress,
-    RunLifecycle,
+    RunStatus,
     WriterDirective,
     WriterProgress,
 )
@@ -96,7 +96,7 @@ def merge_unique(current: list[str], incoming: list[str]) -> list[str]:
 
 class ResearchState(TypedDict, total=False):
     # State 只保存数据快照；Agent、LLM、工具和锁由 Graph 装配层持有。
-    run: RunLifecycle
+    run: RunStatus
     research: ResearchProgress
     writer: WriterProgress
     review: ReviewProgress
@@ -152,7 +152,7 @@ class ResearchState(TypedDict, total=False):
 def restore_state_models(state: dict[str, object]) -> None:
     """恢复 JSON checkpoint 中被还原为 dict 的嵌套模型。"""
     scalar_models = (
-        ("run", RunLifecycle),
+        ("run", RunStatus),
         ("research", ResearchProgress),
         ("writer", WriterProgress),
         ("review", ReviewProgress),
@@ -217,7 +217,7 @@ def validate_state_invariants(
     run = effective.get("run")
     if run is None:
         return
-    run = _coerce(RunLifecycle, run)
+    run = _coerce(RunStatus, run)
     if run.phase == "failed" and run.error is None:
         raise StateInvariantError("run.phase=failed 时必须提供 run.error。")
     # ``rendering`` is a terminal preparation phase: research may have ended
