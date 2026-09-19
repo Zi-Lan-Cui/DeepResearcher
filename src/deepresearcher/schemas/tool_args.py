@@ -187,9 +187,15 @@ class ReviseResearchSynthesis(BaseModel):
     open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     next_actions: list[str] = Field(
-        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
+        default_factory=list,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
+        description="建议性后续研究动作；是否执行由后续的显式工具调用决定，系统不会自动执行。",
     )
-    decision_rationale: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    decision_rationale: str = Field(
+        min_length=1,
+        max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+        description="只解释当前证据选择、覆盖判断、缺口与冲突；不得引入未经 Evidence 支持的新事实。",
+    )
 
 
 class ResearchToolResult(BaseModel):
