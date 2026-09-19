@@ -1,7 +1,7 @@
-"""Checkpointer serde：把**我们自己的** State 类型加入 msgpack 允许清单。
+"""Checkpointer serde：把 State 类型加入 msgpack 允许清单。
 
 LangGraph 把每个 superstep 的 state 以 msgpack 存进 Postgres；反序列化时对未知自定义
-类型默认告警、未来严格模式会**直接拒绝**——这会让"崩溃恢复 / 澄清 resume"在升级后炸。
+类型默认告警、未来严格模式会直接拒绝——这会让"崩溃恢复 / 澄清 resume"在升级后炸。
 这里显式放行 deepresearcher 自有包里的 Pydantic 模型 / Enum / dataclass（即可能进
 ResearchState 的通道类型），既消除告警、又不对任意（外部）类开放反序列化。
 
