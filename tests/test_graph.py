@@ -29,11 +29,11 @@ from deepresearcher.routing import (
 from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,
-    ResearchProgress,
     ReviewIssue,
     RouteDecision,
     RunError,
     RunStatus,
+    SupervisorProgress,
     WriterProgress,
 )
 from deepresearcher.service.usage import UsageBudgetExceeded
@@ -132,7 +132,7 @@ class _CompleteSupervisor:
     async def run(self, _state):
         return {
             "run": RunStatus(phase="writing"),
-            "research": ResearchProgress(
+            "supervisor": SupervisorProgress(
                 status="completed", current_round=1, is_sufficient=True, generation_mode="full"
             ),
             "supervisor_next": "writer",
@@ -147,7 +147,7 @@ class _ExhaustedSupervisor:
     async def run(self, _state):
         return {
             "run": RunStatus(phase="rendering", terminal_reason="research_budget_exhausted"),
-            "research": ResearchProgress(status="incomplete", current_round=1),
+            "supervisor": SupervisorProgress(status="incomplete", current_round=1),
             "answer_mode": "research_incomplete",
             "supervisor_next": "render_final_report",
             "report": "研究轮次已耗尽。",

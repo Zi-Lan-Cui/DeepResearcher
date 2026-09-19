@@ -22,10 +22,10 @@ from deepresearcher.schemas import (
     ParagraphBinding,
     ReportBrief,
     ResearchDirectionResult,
-    ResearchProgress,
     ResearchSynthesis,
     ReviewProgress,
     RunStatus,
+    SupervisorProgress,
     WriterDirective,
     WriterProgress,
 )
@@ -97,7 +97,7 @@ def merge_unique(current: list[str], incoming: list[str]) -> list[str]:
 class ResearchState(TypedDict, total=False):
     # State 只保存数据快照；Agent、LLM、工具和锁由 Graph 装配层持有。
     run: RunStatus
-    research: ResearchProgress
+    supervisor: SupervisorProgress
     writer: WriterProgress
     review: ReviewProgress
     run_id: str
@@ -150,7 +150,7 @@ def restore_state_models(state: dict[str, object]) -> None:
     """恢复 JSON checkpoint 中被还原为 dict 的嵌套模型。"""
     scalar_models = (
         ("run", RunStatus),
-        ("research", ResearchProgress),
+        ("supervisor", SupervisorProgress),
         ("writer", WriterProgress),
         ("review", ReviewProgress),
         ("report_brief", ReportBrief),

@@ -11,10 +11,10 @@ from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
     ResearchDirectionResult,
-    ResearchProgress,
     ResearchSynthesis,
     ResearchToolResult,
     StopReason,
+    SupervisorProgress,
 )
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import ResearchState, SubTask, section
@@ -54,13 +54,17 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
 
 
 @dataclass
-class SupervisorRuntimeContext:
-    """本次 Supervisor Agent 运行的依赖和可变工作状态。"""
+class SupervisorLoopContext:
+    """Supervisor 单次工具循环的执行上下文。
+
+    承载本轮循环的业务可变状态（loop_state）、执行依赖、研究委托回调与并发锁；
+    仅活在一次 loop 内，不作为 LangGraph 顶层 State 持久化。当前轮次唯一来源是
+    ``loop_state.current_round``，此处不再重复保存 round_no。
+    """
 
     scope: AgentExecutionScope
-    working: "WorkingState"
+    loop_state: "SupervisorLoopState"
     delegate_research: Callable[[str], Awaitable[dict[str, object]]]
-    round_no: int = 0
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -138,21 +142,24 @@ class TaskExecution:
         )
 
 
-class WorkingState:
-    """工具循环的工作状态：State 载入的可变副本 + 去重簿记。
+class SupervisorLoopState:
+    """Supervisor 单次工具循环内的可变业务状态（非全局 State、非某 ResearchAgent 状态）。
 
-    节点结束时把整份副本交给 LangGraph 的幂等 reducer 合并
-    （`merge_evidences` / `merge_task_results` / `merge_unique`）——reducer 会把
-    已存在项按 id 折回原样。曾经这里靠 `_snapshot` 三元组 + `deltas()` 手搓
-    "入口长度快照 / 出口位置切片"来只发新增,但那把一个不变式拆成了三处平行簿记
-    (定义快照、切片、`_final_update` 搬运),加字段忘同步就静默丢数据。改回全量
-    交给幂等 reducer 后,数据形状跟着 channel 语义走,少一层脆弱机制。
+    从顶层 ResearchState 载入初始数据，仅在本次 loop 内修改，不直接进入 LangGraph
+    State；loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。职责：Evidence
+    聚合、active 工作集、task result、问题去重、coverage gaps、research synthesis、
+    working_set_revision、stop reason、当前轮次。
+
+    节点结束时把整份副本交给幂等 reducer 合并（merge_evidences / merge_task_results /
+    merge_unique），reducer 按 id 折回原样。曾用 `_snapshot`+`deltas()` 手搓增量切片,
+    把不变式拆成三处平行簿记、易静默丢字段,故改回全量交给幂等 reducer。
     """
 
     def __init__(
         self,
         state: ResearchState,
         *,
+        current_round: int,
         dedup_key: Callable[[str], str],
         active_evidence_limit: int,
     ):
@@ -168,9 +175,11 @@ class WorkingState:
         self.active_evidence_limit = active_evidence_limit
         self.source_refs = list(state.get("source_refs", []))
         self.task_results = list(state.get("task_results", []))
-        research = section(state, "research", ResearchProgress)
-        self.current_round: int = research.current_round
-        self.coverage_gaps = list(research.coverage_gaps)
+        # 当前轮次唯一来源是构造参数（由 _run_agent_loop 从持久化的 SupervisorProgress 推一次）；
+        # 这里仍读 SupervisorProgress 只为取持久化的 coverage_gaps，不决定轮次。
+        persisted = section(state, "supervisor", SupervisorProgress)
+        self.current_round: int = current_round
+        self.coverage_gaps = list(persisted.coverage_gaps)
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
         self.seen_questions = {
             dedup_key(item.question) for item in self.task_results if item.question

@@ -37,9 +37,9 @@ from deepresearcher.prompts import load_prompt, render_data_section
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import (
     ReportBrief,
-    ResearchProgress,
     ReviewProgress,
     RunStatus,
+    SupervisorProgress,
     WriterDirective,
     WriterProgress,
     WriterResult,
@@ -295,7 +295,7 @@ class ReportWriter:
                 "不会用于事实性报告。"
             )
         report = self._render_incomplete(state)
-        research = section(state, "research", ResearchProgress)
+        research = section(state, "supervisor", SupervisorProgress)
         if support_message:
             report += f"\n\n- {support_message}"
         return WriterResult(
@@ -418,7 +418,7 @@ class ReportWriter:
             citations=draft.citations,
             paragraph_bindings=draft.paragraph_bindings,
             answer_mode="deep_research",
-            current_round=section(state, "research", ResearchProgress).current_round,
+            current_round=section(state, "supervisor", SupervisorProgress).current_round,
             evidence_count=evidence_count,
             source_count=source_count,
             run=RunStatus(phase="reviewing"),

@@ -139,11 +139,11 @@ def _node_result_summary(result: dict[str, Any], *, max_text_chars: int = 1_000)
     if run is not None:
         summary["phase"] = getattr(run, "phase", None)
         summary["terminal_reason"] = getattr(run, "terminal_reason", "")
-    for key in ("research", "writer", "review"):
+    for key in ("supervisor", "writer", "review"):
         section = result.get(key)
         if section is not None:
             summary[f"{key}_status"] = getattr(section, "status", None)
-            if key == "research":
+            if key == "supervisor":
                 summary["current_round"] = getattr(section, "current_round", 0)
             if key in {"writer", "review"}:
                 feedback = getattr(section, "feedback", "")
@@ -170,7 +170,7 @@ def _node_result_summary(result: dict[str, Any], *, max_text_chars: int = 1_000)
         summary["report_preview"] = text[:max_text_chars]
     if "report_brief" in result:
         summary["report_brief"] = str(result["report_brief"])[:max_text_chars]
-    research = result.get("research")
+    research = result.get("supervisor")
     coverage_gaps = getattr(research, "coverage_gaps", None) if research is not None else None
     if coverage_gaps:
         summary["coverage_gaps"] = list(coverage_gaps)

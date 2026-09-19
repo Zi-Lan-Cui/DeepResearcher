@@ -63,7 +63,7 @@ class StopReason(StrEnum):
         Supervisor 一次运行里多个位置可能给 stop_reason 赋值(瞬时去重副作用、
         轮次预算、模型调用天花板、异常、模型显式决定);过去依赖"物理书写顺序 +
         零散 is None 守卫"隐式规定优先级,任何新增写点都可能悄悄把该显示的终态
-        压下去。改为单调 rank 之后,`WorkingState.set_stop_reason` 按 rank 采纳,
+        压下去。改为单调 rank 之后,`SupervisorLoopState.set_stop_reason` 按 rank 采纳,
         新增写点不用再操心顺序——只需选一个合适的 rank。
 
         分级理由:
@@ -152,7 +152,7 @@ class RunStatus(BaseModel):
     error: RunError | None = None
 
 
-class ResearchProgress(BaseModel):
+class SupervisorProgress(BaseModel):
     status: Literal["not_started", "running", "completed", "incomplete", "failed"] = "not_started"
     current_round: int = Field(default=0, ge=0)
     coverage_gaps: list[str] = Field(default_factory=list)
@@ -243,7 +243,7 @@ class SupervisorStateUpdate(BaseModel):
     report_brief: ReportBrief | None = None
     writer_directive: WriterDirective | None = None
     run: RunStatus
-    research: ResearchProgress
+    supervisor: SupervisorProgress
     writer: WriterProgress
     supervisor_next: NodeName = NodeName.RENDER_FINAL_REPORT
 
@@ -251,7 +251,7 @@ class SupervisorStateUpdate(BaseModel):
         """转换为 LangGraph 增量；生命周期状态已经在模型边界完成。"""
         return {
             "run": self.run,
-            "research": self.research,
+            "supervisor": self.supervisor,
             "writer": self.writer,
             "supervisor_next": self.supervisor_next,
             "evidences": self.evidences,

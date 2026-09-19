@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from deepresearcher.agents.supervisor import ResearchSupervisor
 from deepresearcher.agents.supervisor.state import (
-    WorkingState,
+    SupervisorLoopState,
     evidence_card,
     synthesis_snapshot,
 )
@@ -299,7 +299,7 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
 
     assert len(result["task_results"]) == 2
     assert len(result["evidences"]) == 2
-    assert result["research"].is_sufficient is True
+    assert result["supervisor"].is_sufficient is True
     assert result["supervisor_next"] == "writer"
     context = [str(message.content) for message in result["supervisor_messages"]]
     assert any("研究委托" in message for message in context)
@@ -413,7 +413,7 @@ def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceilin
 
     # 去重确实发生：只执行了一个方向，且未判充分、走部分报告。
     assert len(result["task_results"]) == 1
-    assert result["research"].is_sufficient is False
+    assert result["supervisor"].is_sufficient is False
     # 终态归属真正的终止者：模型调用天花板压过去重瞬时信号。
     assert "模型调用预算已耗尽" in result["writer"].feedback
 
@@ -453,7 +453,7 @@ def test_supervisor_rejects_completion_without_evidence():
         )
     )
 
-    assert result["research"].is_sufficient is False
+    assert result["supervisor"].is_sufficient is False
     assert result["supervisor_next"] == "render_final_report"
     assert "ResearchComplete 拒绝" in result["writer"].feedback
 
@@ -526,8 +526,8 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
     )
 
     assert result["working_set_revision"] == 1
-    assert result["research"].is_sufficient is False
-    assert result["research"].generation_mode == "partial"
+    assert result["supervisor"].is_sufficient is False
+    assert result["supervisor"].generation_mode == "partial"
     assert result["supervisor_next"] == "writer"
     assert result["report_brief"] is not None
     assert "ResearchComplete 拒绝" in result["writer"].feedback
@@ -544,9 +544,9 @@ def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
         supervisor.run({"query": "研究问题", "clarified_query": "研究问题", "evidences": []})
     )
 
-    assert result["research"].is_sufficient is False
-    assert result["research"].status == "incomplete"
-    assert result["research"].generation_mode == "partial"
+    assert result["supervisor"].is_sufficient is False
+    assert result["supervisor"].status == "incomplete"
+    assert result["supervisor"].generation_mode == "partial"
     assert result["supervisor_next"] == "writer"
     assert result["run"].phase == "writing"
     assert result["report_brief"] is not None
@@ -590,17 +590,18 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
             "decision_rationale": "轮次触顶前的最新状态。",
         },
     }
-    working = WorkingState(
+    loop_state = SupervisorLoopState(
         state,
+        current_round=0,
         dedup_key=supervisor._task_deduplication_key,
         active_evidence_limit=30,
     )
-    working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
+    loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
 
-    result = supervisor._final_update(state, working)
+    result = supervisor._final_update(state, loop_state)
 
     assert result.run.phase == "writing"
-    assert result.research.generation_mode == "partial"
+    assert result.supervisor.generation_mode == "partial"
     assert result.research_synthesis is not None
     assert result.research_synthesis.revision == 1
     assert result.report_brief is not None
@@ -654,7 +655,7 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
         )
     )
 
-    assert result["research"].is_sufficient is True
+    assert result["supervisor"].is_sufficient is True
     assert result["supervisor_next"] == "writer"
     assert len(result["task_results"]) == 1
     assert result["task_results"][0].question == "补充方向"
@@ -730,7 +731,7 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
         )
     )
 
-    assert result["research"].is_sufficient is True
+    assert result["supervisor"].is_sufficient is True
     assert result["supervisor_next"] == "writer"
     assert result["task_results"] == []
     assert "审阅回流" in "\n".join(
@@ -896,7 +897,7 @@ def test_supervisor_round_limit_blocks_delegation_and_model_can_finish():
                 "query": "研究问题",
                 "clarified_query": "研究问题",
                 "evidences": [existing],
-                "research": {"status": "incomplete", "current_round": 1},
+                "supervisor": {"status": "incomplete", "current_round": 1},
             }
         )
     )
@@ -906,7 +907,7 @@ def test_supervisor_round_limit_blocks_delegation_and_model_can_finish():
     assert "round_budget_exhausted" in "\n".join(
         str(message.content) for message in result["supervisor_messages"]
     )
-    assert result["research"].is_sufficient is True
+    assert result["supervisor"].is_sufficient is True
     assert result["supervisor_next"] == "writer"
 
 
@@ -996,25 +997,29 @@ def test_stop_reason_rank_is_a_declared_total_order():
     assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank
 
 
-def test_working_state_set_stop_reason_adopts_by_rank():
+def test_loop_state_set_stop_reason_adopts_by_rank():
     """低权威度不覆盖高权威度；None 直接采纳；天花板覆盖瞬时去重信号（回归）。"""
     from deepresearcher.state import ResearchState
 
     state: ResearchState = {}
-    working = WorkingState(state, dedup_key=lambda q: q, active_evidence_limit=30)
+    loop_state = SupervisorLoopState(
+        state, current_round=4, dedup_key=lambda q: q, active_evidence_limit=30
+    )
+    # current_round 由构造参数单一来源注入，不再从持久化 section 自读。
+    assert loop_state.current_round == 4
 
-    assert working.stop_reason is None
-    working.set_stop_reason(StopReason.NO_NEW_TASKS)
-    assert working.stop_reason == StopReason.NO_NEW_TASKS
+    assert loop_state.stop_reason is None
+    loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
+    assert loop_state.stop_reason == StopReason.NO_NEW_TASKS
 
     # bug 场景：撞去重留下 NO_NEW_TASKS 后命中天花板 → 应升级为 MODEL_CALL_LIMIT。
-    working.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
-    assert working.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
+    loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
+    assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
     # 更弱的瞬时信号不得回退覆盖已采纳的更强终止原因。
-    working.set_stop_reason(StopReason.NO_NEW_TASKS)
-    assert working.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
+    loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
+    assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
     # 模型的显式收尾决定压过一切基础设施信号。
-    working.set_stop_reason(StopReason.SUFFICIENT)
-    assert working.stop_reason == StopReason.SUFFICIENT
+    loop_state.set_stop_reason(StopReason.SUFFICIENT)
+    assert loop_state.stop_reason == StopReason.SUFFICIENT

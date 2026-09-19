@@ -10,7 +10,7 @@ from typing import cast
 from urllib.parse import urlsplit
 
 from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INLINE_CODE
-from deepresearcher.schemas import Citation, ResearchDirectionResult, ResearchProgress, RunError
+from deepresearcher.schemas import Citation, ResearchDirectionResult, RunError, SupervisorProgress
 from deepresearcher.state import ResearchState, section
 
 # Writer 提示词禁止自写来源列表，但违令必须程序兜底：整段剥除（连同其中
@@ -138,7 +138,7 @@ def render_incomplete_report(state: ResearchState, reasons: list[str]) -> str:
     """研究未完成/写作失败路径的兜底报告；不补写任何研究结论。"""
     evidences = state.get("evidences", [])
     task_results = state.get("task_results", [])
-    research = section(state, "research", ResearchProgress)
+    research = section(state, "supervisor", SupervisorProgress)
     evidence_count = len(evidences)
     source_count = len({item.source_url for item in evidences if item.source_url})
     lines = [
