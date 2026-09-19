@@ -237,7 +237,6 @@ class SupervisorStateUpdate(BaseModel):
     evidences: list[Evidence] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     task_results: list[ResearchDirectionResult] = Field(default_factory=list)
-    attempted_source_urls: list[str] = Field(default_factory=list)
     active_evidence_ids: list[str] = Field(default_factory=list)
     working_set_revision: int = Field(default=0, ge=0)
     research_synthesis: ResearchSynthesis | None = None
@@ -258,7 +257,6 @@ class SupervisorStateUpdate(BaseModel):
             "evidences": self.evidences,
             "source_refs": self.source_refs,
             "task_results": self.task_results,
-            "attempted_source_urls": self.attempted_source_urls,
             "active_evidence_ids": self.active_evidence_ids,
             "working_set_revision": self.working_set_revision,
             "research_synthesis": self.research_synthesis,

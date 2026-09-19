@@ -123,9 +123,6 @@ class ResearchState(TypedDict, total=False):
     evidences: Annotated[list[Evidence], merge_evidences]
     # 已读取来源的快照引用（URL），不作为报告正文内容使用。
     source_refs: Annotated[list[str], merge_unique]
-    # 当前研究 run 已尝试的规范化 URL；用于跨 Supervisor 回流维持去重，
-    # 但不会共享到其他 session。
-    attempted_source_urls: Annotated[list[str], merge_unique]
     # Supervisor 当前工作集；完整 Evidence 档案仍保存在 evidences 中。
     active_evidence_ids: list[str]
     working_set_revision: int

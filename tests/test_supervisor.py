@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from deepresearcher.agents.supervisor import ResearchSupervisor
 from deepresearcher.agents.supervisor.state import (
-    RunUrlReservations,
     WorkingState,
     evidence_card,
     synthesis_snapshot,
@@ -253,7 +252,7 @@ class SupervisorLLM:
 
 
 class FixedResearchAgent:
-    async def run(self, task, *, claim_url, on_url_already_attempted=None):
+    async def run(self, task):
         item = evidence(task["id"], task_id=task["id"])
         return ResearchAgentResult(
             evidences=[item],
@@ -374,60 +373,9 @@ def test_supervisor_requires_research_agent_at_construction():
         )
 
 
-def test_supervisor_url_deduplication_is_scoped_to_each_research_state():
-    class UrlRecordingAgent:
-        def __init__(self):
-            self.claim_results: list[bool] = []
-
-        async def run(self, task, *, claim_url, on_url_already_attempted=None):
-            url = "https://example.com/shared#fragment"
-            claimed = await claim_url(url)
-            self.claim_results.append(claimed)
-            if not claimed and on_url_already_attempted:
-                on_url_already_attempted(url)
-            return {
-                "evidences": [],
-                "source_refs": [],
-                "task_result": {
-                    "task_id": task["id"],
-                    "round": 1,
-                    "question": task["question"],
-                    "research_direction": task["question"],
-                    "execution_status": "completed",
-                    "coverage_status": "insufficient",
-                    "task_index": 1,
-                    "evidence_count": 0,
-                    "source_count": 0,
-                    "stop_reason": "no_evidence",
-                },
-            }
-
-    agent = UrlRecordingAgent()
-    supervisor = ResearchSupervisor(
-        SupervisorLLM(
-            delegate_topics=["验证共享来源"],
-            complete_args=None,
-        ),
-        AgentConfig(max_research_rounds=1, max_parallel_workers=2),
-        research_agent=agent,
-    )
-
-    async def run_two_sessions():
-        return await asyncio.gather(
-            supervisor.run({"query": "问题 A", "clarified_query": "问题 A", "evidences": []}),
-            supervisor.run({"query": "问题 B", "clarified_query": "问题 B", "evidences": []}),
-        )
-
-    first, second = asyncio.run(run_two_sessions())
-
-    assert agent.claim_results == [True, True]
-    assert first["attempted_source_urls"] == ["https://example.com/shared"]
-    assert second["attempted_source_urls"] == ["https://example.com/shared"]
-
-
 def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceiling():
     class EmptyAgent:
-        async def run(self, task, *, claim_url, on_url_already_attempted=None):
+        async def run(self, task):
             return {
                 "evidences": [],
                 "source_refs": [],
@@ -472,7 +420,7 @@ def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceilin
 
 def test_supervisor_rejects_completion_without_evidence():
     class EmptyAgent:
-        async def run(self, task, *, claim_url, on_url_already_attempted=None):
+        async def run(self, task):
             return {
                 "evidences": [],
                 "source_refs": [],
@@ -649,11 +597,7 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     )
     working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
 
-    result = supervisor._final_update(
-        state,
-        working,
-        RunUrlReservations([], normalize_url=supervisor._normalize_source_url),
-    )
+    result = supervisor._final_update(state, working)
 
     assert result.run.phase == "writing"
     assert result.research.generation_mode == "partial"
@@ -828,7 +772,7 @@ class _OneEvidenceAgent:
     def __init__(self):
         self.run_count = 0
 
-    async def run(self, task, *, claim_url, on_url_already_attempted=None):
+    async def run(self, task):
         self.run_count += 1
         item = evidence(f"t{self.run_count}", task_id=task["id"])
         return {

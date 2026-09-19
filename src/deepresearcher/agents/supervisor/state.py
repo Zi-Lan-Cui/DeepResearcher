@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from langchain_core.messages import ToolMessage
@@ -59,42 +59,9 @@ class SupervisorRuntimeContext:
 
     scope: AgentExecutionScope
     working: "WorkingState"
-    url_reservations: "RunUrlReservations"
     delegate_research: Callable[[str], Awaitable[dict[str, object]]]
     round_no: int = 0
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
-class RunUrlReservations:
-    """当前研究 run 内的 URL 预留表；不在 Supervisor 实例之间共享。"""
-
-    def __init__(
-        self,
-        attempted_urls: Iterable[str],
-        *,
-        normalize_url: Callable[[str], str],
-    ):
-        self._normalize_url = normalize_url
-        self._attempted = {
-            normalized for url in attempted_urls if (normalized := normalize_url(url))
-        }
-        self._newly_attempted: list[str] = []
-        self._lock = asyncio.Lock()
-
-    async def reserve(self, url: str) -> bool:
-        normalized_url = self._normalize_url(url)
-        if not normalized_url:
-            return False
-        async with self._lock:
-            if normalized_url in self._attempted:
-                return False
-            self._attempted.add(normalized_url)
-            self._newly_attempted.append(normalized_url)
-            return True
-
-    @property
-    def newly_attempted(self) -> list[str]:
-        return self._newly_attempted
 
 
 @dataclass

@@ -90,7 +90,7 @@ def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
         reader,
     )
 
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
 
     task_result = result.task_result
     assert task_result.execution_status == "completed"
@@ -121,7 +121,7 @@ def test_research_agent_records_context_observations_and_tool_results():
         ],
     )
 
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
     assert result.evidences == []
     assert result.task_result.stop_reason == "blocked_without_evidence"
     contents = [
@@ -270,7 +270,7 @@ def test_research_agent_can_inspect_and_forget_its_working_set():
         ],
     )
     # 该测试只验证工具协议和观察回流；ID 不匹配时 ReleaseEvidence 应安全返回 unknown。
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
     assert result.task_result.execution_status == "completed"
     assert any(
         "工作集" in str(message.content)
@@ -291,7 +291,7 @@ def test_research_agent_can_stop_a_direction_without_unnecessary_search():
         ],
     )
 
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
 
     assert result.task_result.execution_status == "completed"
     assert result.task_result.stop_reason == "blocked_without_evidence"
@@ -310,7 +310,7 @@ def test_research_agent_converts_completion_without_evidence_to_blocked_result()
         ],
     )
 
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
 
     task_result = result.task_result
     assert task_result.execution_status == "completed"
@@ -372,7 +372,7 @@ def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidenc
         ],
     )
 
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
 
     assert result.evidences == []
     assert result.task_result.execution_status == "completed"
@@ -407,7 +407,7 @@ def test_research_agent_replans_duplicate_queries_instead_of_mislabeling_budget_
         ],
     )
 
-    result = asyncio.run(agent.run(TASK, claim_url=lambda _url: _true()))
+    result = asyncio.run(agent.run(TASK))
 
     assert result.task_result.stop_reason == "blocked_without_evidence"
     assert result.task_result.queries == ["稳定术语 定义"]
@@ -743,10 +743,6 @@ def test_source_reader_caps_search_summary_document_at_partial_support():
     ref = asyncio.run(store.get(result.documents[0].document_id))
     assert ref.retrieval_method == "search_summary"
     assert ref.support_ceiling == "partial"
-
-
-async def _true() -> bool:
-    return True
 
 
 def test_direction_evidence_pool_releases_slots_without_deleting_archive():
