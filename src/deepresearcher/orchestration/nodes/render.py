@@ -1,14 +1,14 @@
 """最终报告渲染节点。"""
 
 from deepresearcher.reporting import render_final_report, render_incomplete_report
-from deepresearcher.schemas import ResearchProgress, ReviewProgress, RunStatus, WriterProgress
+from deepresearcher.schemas import ReviewProgress, RunStatus, SupervisorProgress, WriterProgress
 from deepresearcher.state import ResearchState, section
 
 
 async def render_final_report_node(state: ResearchState):
     """流水线终点：统一处理成功、澄清和各类失败路径。"""
     run = section(state, "run", RunStatus)
-    research = section(state, "research", ResearchProgress)
+    research = section(state, "supervisor", SupervisorProgress)
     writer = section(state, "writer", WriterProgress)
     review = section(state, "review", ReviewProgress)
     report = state.get("report", "")

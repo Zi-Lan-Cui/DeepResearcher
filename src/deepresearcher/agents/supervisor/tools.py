@@ -9,8 +9,8 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 from deepresearcher.agents.supervisor.state import (
-    SupervisorRuntimeContext,
-    WorkingState,
+    SupervisorLoopContext,
+    SupervisorLoopState,
     evidence_card,
     synthesis_snapshot,
 )
@@ -33,28 +33,28 @@ def _result(payload: object) -> str:
     )
 
 
-def _working_set_snapshot(working: WorkingState) -> dict[str, object]:
+def _working_set_snapshot(loop_state: SupervisorLoopState) -> dict[str, object]:
     """返回 Supervisor 当前活跃 Evidence 的轻量目录。"""
-    active = working.active_evidences()
+    active = loop_state.active_evidences()
     active_ids = {item.evidence_id for item in active}
-    reserve = [item for item in working.evidences if item.evidence_id not in active_ids]
+    reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
     return {
-        "working_set_revision": working.working_set_revision,
+        "working_set_revision": loop_state.working_set_revision,
         "active_evidence": [evidence_card(item) for item in active],
         "active_evidence_count": len(active),
-        "active_evidence_limit": working.active_evidence_limit,
+        "active_evidence_limit": loop_state.active_evidence_limit,
         "reserve_evidence": [evidence_card(item) for item in reserve],
         "reserve_evidence_count": len(reserve),
     }
 
 
 def build_supervisor_tools() -> list[BaseTool]:
-    """创建绑定到 SupervisorRuntimeContext 的工具集合。"""
+    """创建绑定到 SupervisorLoopContext 的工具集合。"""
 
     @tool("ResearchDelegate", args_schema=ResearchDelegate)
     async def research_delegate(
         research_topic: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
+        runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """派发一个具体、可验证且与历史互补的研究方向。"""
         return _result(await runtime.context.delegate_research(research_topic))
@@ -65,20 +65,20 @@ def build_supervisor_tools() -> list[BaseTool]:
     async def research_complete(
         synthesis_revision: int,
         reason: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
+        runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
         """冻结最新且未过期的研究综合稿，并终止研究阶段。"""
-        working = runtime.context.working
-        synthesis = working.research_synthesis
+        loop_state = runtime.context.loop_state
+        synthesis = loop_state.research_synthesis
         accepted = bool(
             synthesis is not None
             and synthesis.revision == synthesis_revision
-            and working.synthesis_is_fresh(synthesis)
+            and loop_state.synthesis_is_fresh(synthesis)
             and synthesis.selected_evidence_ids
         )
         if accepted:
             assert synthesis is not None  # accepted 已包含该条件，供静态类型收窄。
-            working.sufficient = (
+            loop_state.sufficient = (
                 all(
                     not aspect.required or aspect.status == "covered"
                     for aspect in synthesis.aspects
@@ -86,12 +86,12 @@ def build_supervisor_tools() -> list[BaseTool]:
                 and not synthesis.open_gaps
                 and not synthesis.conflicts
             )
-            working.completed_synthesis = synthesis
-            working.set_stop_reason(
-                StopReason.SUFFICIENT if working.sufficient else StopReason.SUBMITTED_WITH_GAPS
+            loop_state.completed_synthesis = synthesis
+            loop_state.set_stop_reason(
+                StopReason.SUFFICIENT if loop_state.sufficient else StopReason.SUBMITTED_WITH_GAPS
             )
         else:
-            working.coverage_gaps.append(
+            loop_state.coverage_gaps.append(
                 "ResearchComplete 拒绝了过期、缺失或未绑定 Evidence 的研究综合稿。"
             )
         return Command(
@@ -105,7 +105,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                                 "status": "accepted" if accepted else "rejected",
                                 "reason": reason,
                                 "requested_revision": synthesis_revision,
-                                "current_working_set_revision": working.working_set_revision,
+                                "current_working_set_revision": loop_state.working_set_revision,
                                 **synthesis_snapshot(synthesis),
                             }
                         ),
@@ -127,7 +127,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         conflicts: list[str],
         next_actions: list[str],
         decision_rationale: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
+        runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """用最新方向结果修订当前唯一的研究综合稿；不会结束研究。
 
@@ -137,20 +137,20 @@ def build_supervisor_tools() -> list[BaseTool]:
         evidence_ids 稳定推导总选择集。调用 ResearchComplete 前必须先让本综合稿
         对齐最新 working_set_revision。
         """
-        working = runtime.context.working
-        current_revision = working.research_synthesis.revision if working.research_synthesis else 0
+        loop_state = runtime.context.loop_state
+        current_revision = loop_state.research_synthesis.revision if loop_state.research_synthesis else 0
         if (
             expected_revision != current_revision
-            or expected_working_set_revision != working.working_set_revision
+            or expected_working_set_revision != loop_state.working_set_revision
         ):
             return _result(
                 {
                     "status": "stale",
                     "expected_revision": current_revision,
-                    "expected_working_set_revision": working.working_set_revision,
+                    "expected_working_set_revision": loop_state.working_set_revision,
                 }
             )
-        active_ids = set(working.active_evidence_ids)
+        active_ids = set(loop_state.active_evidence_ids)
         referenced_ids = {evidence_id for aspect in aspects for evidence_id in aspect.evidence_ids}
         unknown_ids = sorted(referenced_ids - active_ids)
         if unknown_ids:
@@ -159,13 +159,13 @@ def build_supervisor_tools() -> list[BaseTool]:
                     "status": "rejected",
                     "reason": "研究综合稿只能引用当前活跃 Evidence。",
                     "invalid_evidence_ids": unknown_ids,
-                    **_working_set_snapshot(working),
+                    **_working_set_snapshot(loop_state),
                 }
             )
         try:
             synthesis = ResearchSynthesis(
                 revision=current_revision + 1,
-                based_on_working_set_revision=working.working_set_revision,
+                based_on_working_set_revision=loop_state.working_set_revision,
                 answer_goal=answer_goal,
                 overall_summary=overall_summary,
                 aspects=aspects,
@@ -187,10 +187,10 @@ def build_supervisor_tools() -> list[BaseTool]:
                     "status": "rejected",
                     "reason": "研究综合稿不满足提交契约，请按 issues 修正后重试。",
                     "issues": issues,
-                    **_working_set_snapshot(working),
+                    **_working_set_snapshot(loop_state),
                 }
             )
-        working.research_synthesis = synthesis
+        loop_state.research_synthesis = synthesis
         assigned_ids = set(synthesis.selected_evidence_ids)
         return _result(
             {
@@ -198,7 +198,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                 **synthesis_snapshot(synthesis),
                 "unassigned_active_evidence_ids": [
                     item.evidence_id
-                    for item in working.active_evidences()
+                    for item in loop_state.active_evidences()
                     if item.evidence_id not in assigned_ids
                 ],
             }
@@ -207,27 +207,27 @@ def build_supervisor_tools() -> list[BaseTool]:
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
     async def read_working_set(
         reason: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
+        runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """查看当前活跃 Evidence 的轻量摘要。"""
         del reason
-        return _result(_working_set_snapshot(runtime.context.working))
+        return _result(_working_set_snapshot(runtime.context.loop_state))
 
     @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
     async def release_evidence(
         evidence_ids: list[str],
         reason: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
+        runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """释放当前工作集中的 Evidence，但不删除全局 Evidence。"""
         del reason
-        working = runtime.context.working
-        released = working.release_evidence(evidence_ids)
+        loop_state = runtime.context.loop_state
+        released = loop_state.release_evidence(evidence_ids)
         return _result(
             {
                 "released_evidence_ids": released,
                 "unknown_evidence_ids": [item for item in evidence_ids if item not in released],
-                **_working_set_snapshot(working),
+                **_working_set_snapshot(loop_state),
             }
         )
 
@@ -235,19 +235,19 @@ def build_supervisor_tools() -> list[BaseTool]:
     async def restore_evidence(
         evidence_ids: list[str],
         reason: str,
-        runtime: ToolRuntime[SupervisorRuntimeContext],
+        runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """从全局 Evidence 档案恢复候选，不超过活跃工作集上限。"""
         del reason
-        working = runtime.context.working
-        restored = working.restore_evidence(evidence_ids)
+        loop_state = runtime.context.loop_state
+        restored = loop_state.restore_evidence(evidence_ids)
         return _result(
             {
                 "restored_evidence_ids": restored,
                 "not_restored_evidence_ids": [
                     item for item in evidence_ids if item not in restored
                 ],
-                **_working_set_snapshot(working),
+                **_working_set_snapshot(loop_state),
             }
         )
 

@@ -19,9 +19,9 @@ from deepresearcher.agents.middleware import (
 )
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.supervisor.state import (
-    SupervisorRuntimeContext,
+    SupervisorLoopContext,
+    SupervisorLoopState,
     TaskExecution,
-    WorkingState,
     evidence_card,
     synthesis_snapshot,
 )
@@ -43,11 +43,11 @@ from deepresearcher.schemas import (
     ResearchAgentResult,
     ResearchAspect,
     ResearchDirectionResult,
-    ResearchProgress,
     ResearchSynthesis,
     ReviewProgress,
     RunStatus,
     StopReason,
+    SupervisorProgress,
     SupervisorStateUpdate,
     WriterDirective,
     WriterProgress,
@@ -98,7 +98,7 @@ class ResearchSupervisor:
             system_prompt=_SUPERVISOR_SYSTEM_PROMPT
             + "\n"
             + language_directive(config.output_language),
-            context_schema=SupervisorRuntimeContext,
+            context_schema=SupervisorLoopContext,
             middleware=cast(
                 Any,
                 build_agent_middleware(
@@ -170,7 +170,7 @@ class ResearchSupervisor:
                     run=RunStatus(
                         phase="rendering", terminal_reason="review_recovery_exhausted"
                     ),
-                    research=section(state, "research", ResearchProgress),
+                    supervisor=section(state, "supervisor", SupervisorProgress),
                     writer=section(state, "writer", WriterProgress),
                 )
                 return {**update.state_update(), "supervisor_messages": history[history_start:]}
@@ -184,25 +184,25 @@ class ResearchSupervisor:
         state: ResearchState,
         history: list[BaseMessage],
     ) -> SupervisorStateUpdate:
-        """运行 Supervisor 标准 Agent；工具通过运行时上下文修改 WorkingState。"""
-        working = WorkingState(
+        """运行 Supervisor 标准 Agent；工具通过 loop 上下文修改 SupervisorLoopState。"""
+        supervisor_progress = section(state, "supervisor", SupervisorProgress)
+        round_no = supervisor_progress.current_round + 1
+        loop_state = SupervisorLoopState(
             state,
+            current_round=round_no,
             dedup_key=self._task_deduplication_key,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
-        research = section(state, "research", ResearchProgress)
-        round_no = research.current_round + 1
-        working.current_round = round_no
         self._append_research_observation(
             history,
             {
                 "remaining_rounds": max(
-                    0, self.config.max_research_rounds - research.current_round
+                    0, self.config.max_research_rounds - supervisor_progress.current_round
                 ),
-                "working_set_revision": working.working_set_revision,
-                "working_set": self._working_set_snapshot(working),
+                "working_set_revision": loop_state.working_set_revision,
+                "working_set": self._working_set_snapshot(loop_state),
                 "research_synthesis": self._research_synthesis_observation(
-                    working.research_synthesis
+                    loop_state.research_synthesis
                 ),
             },
         )
@@ -225,7 +225,7 @@ class ResearchSupervisor:
 
             self._emit_audit_event("delegate_started", {"topic_chars": len(topic)})
             if round_no > self.config.max_research_rounds:
-                working.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
+                loop_state.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
                 return _reported(
                     {
                         "status": "blocked",
@@ -233,8 +233,8 @@ class ResearchSupervisor:
                         "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
                     }
                 )
-            async with runtime.tool_lock:
-                task_index = working.allocate_task_index()
+            async with loop_context.tool_lock:
+                task_index = loop_state.allocate_task_index()
                 task: SubTask = {
                     "id": f"task-{task_index:04d}",
                     "run_id": str(state.get("run_id") or ""),
@@ -249,11 +249,11 @@ class ResearchSupervisor:
                     "parent_task_id": "",
                     "operation_id": f"research-task-{task_index:04d}",
                 }
-                new_tasks = working.filter_new_tasks(
+                new_tasks = loop_state.filter_new_tasks(
                     [task], max_tasks=self.config.max_subtasks_per_round
                 )
             if not new_tasks:
-                working.set_stop_reason(StopReason.NO_NEW_TASKS)
+                loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
                 return _reported(
                     {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
                 )
@@ -261,8 +261,8 @@ class ResearchSupervisor:
                 new_tasks[0],
                 tool_call_id=f"delegate-{new_tasks[0]['id']}",
             )
-            async with runtime.tool_lock:
-                working.absorb(execution)
+            async with loop_context.tool_lock:
+                loop_state.absorb(execution)
             direction_report: dict[str, object] = {
                 "status": execution.task_result.execution_status,
                 "research_direction": execution.task_result.research_direction,
@@ -272,11 +272,11 @@ class ResearchSupervisor:
                 "remaining_gaps": execution.task_result.remaining_gaps,
                 "conclusion": execution.task_result.conclusion,
                 "failures": execution.task_result.failures,
-                "working_set_revision": working.working_set_revision,
+                "working_set_revision": loop_state.working_set_revision,
                 "evidence": [
                     evidence_card(item)
                     for item in execution.evidences
-                    if item.evidence_id in working.active_evidence_ids
+                    if item.evidence_id in loop_state.active_evidence_ids
                 ],
             }
             if execution.task_result.provider_exhausted:
@@ -289,42 +289,41 @@ class ResearchSupervisor:
                 )
             return _reported(direction_report)
 
-        runtime = SupervisorRuntimeContext(
+        loop_context = SupervisorLoopContext(
             scope=AgentExecutionScope(
                 run_id=str(state.get("run_id") or ""),
                 agent_name="Supervisor",
             ),
-            working=working,
+            loop_state=loop_state,
             delegate_research=delegate,
-            round_no=round_no,
         )
         prepared = history
         try:
             result = await cast(Any, self._agent_loop).ainvoke(
                 cast(Any, {"messages": prepared}),
-                context=runtime,
+                context=loop_context,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            working.set_stop_reason(StopReason.AGENT_FAILED)
-            working.coverage_gaps.append(str(exc)[: self.config.supervisor_preview_chars])
+            loop_state.set_stop_reason(StopReason.AGENT_FAILED)
+            loop_state.coverage_gaps.append(str(exc)[: self.config.supervisor_preview_chars])
         else:
             generated = result.get("messages", []) if isinstance(result, dict) else []
             history.extend(generated[len(prepared) :])
-            if not working.sufficient and _model_call_limit_hit(generated):
+            if not loop_state.sufficient and _model_call_limit_hit(generated):
                 # 真实终止原因是模型调用天花板；set_stop_reason 的声明式 rank 保证它压过
                 # 更弱的瞬时信号（如某条 delegate 撞去重留下的 NO_NEW_TASKS），
                 # 又不会盖过模型的显式收尾决定。
-                working.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
+                loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
         self._emit_round_completed(
             round_no,
-            len([item for item in working.task_results if item.round == round_no]),
-            working,
-            outcome=working.stop_reason or "agent_loop_completed",
+            len([item for item in loop_state.task_results if item.round == round_no]),
+            loop_state,
+            outcome=loop_state.stop_reason or "agent_loop_completed",
         )
-        return self._final_update(state, working)
+        return self._final_update(state, loop_state)
 
     def _append_review_rejection(self, state: ResearchState, history: list[BaseMessage]) -> None:
         """把审阅拒绝作为消息注入历史；如何响应留给工具循环里的模型。"""
@@ -431,13 +430,13 @@ class ResearchSupervisor:
                 ),
             )
 
-    def _emit_research_stopped(self, round_no: int, working: WorkingState) -> None:
+    def _emit_research_stopped(self, round_no: int, loop_state: SupervisorLoopState) -> None:
         self._emit_audit_event(
             "research_stopped",
             {
                 "round": round_no,
-                "reason": str(working.stop_reason or ""),
-                "evidence_count": len(working.evidences),
+                "reason": str(loop_state.stop_reason or ""),
+                "evidence_count": len(loop_state.evidences),
             },
         )
 
@@ -445,7 +444,7 @@ class ResearchSupervisor:
         self,
         round_no: int,
         task_count: int,
-        working: WorkingState,
+        loop_state: SupervisorLoopState,
         *,
         outcome: str,
     ) -> None:
@@ -457,37 +456,37 @@ class ResearchSupervisor:
                 "outcome": outcome,
                 "completed_tasks": sum(
                     item.execution_status == "completed"
-                    for item in working.task_results
+                    for item in loop_state.task_results
                     if item.round == round_no
                 ),
                 "failed_tasks": sum(
                     item.execution_status == "failed"
-                    for item in working.task_results
+                    for item in loop_state.task_results
                     if item.round == round_no
                 ),
                 "evidence_added": sum(
-                    item.evidence_count for item in working.task_results if item.round == round_no
+                    item.evidence_count for item in loop_state.task_results if item.round == round_no
                 ),
-                "total_evidence_count": len(working.evidences),
+                "total_evidence_count": len(loop_state.evidences),
             },
         )
 
     def _final_update(
         self,
         state: ResearchState,
-        working: WorkingState,
+        loop_state: SupervisorLoopState,
     ) -> SupervisorStateUpdate:
         """把工作状态转为 State 增量与路由决策。"""
         # 地板兜底,不是优先级判断:整轮没产生任何信号时才补一个默认终态。
         # 故意保持 `is None` + 直接赋值,不走 set_stop_reason——ROUND_BUDGET 的
         # rank 高于 NO_NEW_TASKS,若走 setter 会误盖掉"这轮全是重复 topic"的真信号。
-        if not working.sufficient and working.stop_reason is None:
-            working.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
-        full_synthesis = working.completed_synthesis
-        latest_synthesis = working.research_synthesis
+        if not loop_state.sufficient and loop_state.stop_reason is None:
+            loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
+        full_synthesis = loop_state.completed_synthesis
+        latest_synthesis = loop_state.research_synthesis
         partial_synthesis = (
-            self._partial_synthesis(working, latest_synthesis)
-            if working.stop_reason is not None and working.stop_reason.allows_partial_report
+            self._partial_synthesis(loop_state, latest_synthesis)
+            if loop_state.stop_reason is not None and loop_state.stop_reason.allows_partial_report
             else None
         )
         selected_synthesis = full_synthesis or partial_synthesis
@@ -498,42 +497,42 @@ class ResearchSupervisor:
             else None
         )
         writer_directive = (
-            self._build_writer_directive(state, working, selected_synthesis, report_brief)
+            self._build_writer_directive(state, loop_state, selected_synthesis, report_brief)
             if selected_synthesis is not None and report_brief is not None
             else None
         )
-        research_status = "completed" if working.sufficient else "incomplete"
-        generation_mode = "full" if working.sufficient else "partial" if can_write else "not_ready"
+        research_status = "completed" if loop_state.sufficient else "incomplete"
+        generation_mode = "full" if loop_state.sufficient else "partial" if can_write else "not_ready"
         can_continue_to_writer = can_write
         # evidences / source_refs / task_results 的 reducer 幂等(merge_evidences /
-        # merge_task_results / merge_unique),直接把 WorkingState 全量副本交给 channel;
+        # merge_task_results / merge_unique),直接把 SupervisorLoopState 全量副本交给 channel;
         # reducer 按 id 折回原样,等价于只发新增。
         return SupervisorStateUpdate(
-            evidences=cast(list[Evidence], working.evidences),
-            source_refs=cast(list[str], working.source_refs),
-            task_results=cast(list[ResearchDirectionResult], working.task_results),
-            working_set_revision=working.working_set_revision,
-            research_synthesis=working.research_synthesis,
+            evidences=cast(list[Evidence], loop_state.evidences),
+            source_refs=cast(list[str], loop_state.source_refs),
+            task_results=cast(list[ResearchDirectionResult], loop_state.task_results),
+            working_set_revision=loop_state.working_set_revision,
+            research_synthesis=loop_state.research_synthesis,
             report_brief=report_brief,
             writer_directive=writer_directive,
-            active_evidence_ids=sorted(working.active_evidence_ids),
+            active_evidence_ids=sorted(loop_state.active_evidence_ids),
             run=RunStatus(
                 phase="writing" if can_continue_to_writer else "rendering",
-                terminal_reason="" if can_continue_to_writer else str(working.stop_reason or ""),
+                terminal_reason="" if can_continue_to_writer else str(loop_state.stop_reason or ""),
             ),
-            research=ResearchProgress(
+            supervisor=SupervisorProgress(
                 status=research_status,
-                current_round=working.current_round,
-                coverage_gaps=working.coverage_gaps,
+                current_round=loop_state.current_round,
+                coverage_gaps=loop_state.coverage_gaps,
                 generation_mode=generation_mode,
-                is_sufficient=working.sufficient,
+                is_sufficient=loop_state.sufficient,
             ),
             writer=WriterProgress(
                 status="not_started",
                 feedback=(
                     ""
-                    if working.sufficient
-                    else self._describe_research_stop(working.stop_reason, working.coverage_gaps)
+                    if loop_state.sufficient
+                    else self._describe_research_stop(loop_state.stop_reason, loop_state.coverage_gaps)
                 ),
             ),
             supervisor_next=NodeName.WRITER if can_write else NodeName.RENDER_FINAL_REPORT,
@@ -541,15 +540,15 @@ class ResearchSupervisor:
 
     def _partial_synthesis(
         self,
-        working: WorkingState,
+        loop_state: SupervisorLoopState,
         latest: ResearchSynthesis | None,
     ) -> ResearchSynthesis | None:
         """选择可部分交付的最新综合稿；无综合稿时生成最小固定版。"""
-        active_ids = set(working.active_evidence_ids)
+        active_ids = set(loop_state.active_evidence_ids)
         if latest is not None and latest.selected_evidence_ids:
             if set(latest.selected_evidence_ids).issubset(active_ids):
                 return latest
-        evidences = working.active_evidences()
+        evidences = loop_state.active_evidences()
         if not evidences:
             return None
         selected_ids = [item.evidence_id for item in evidences]
@@ -561,8 +560,8 @@ class ResearchSupervisor:
         gap = "研究未达到完整标准；报告只能陈述已验证材料及其适用边界。"
         return ResearchSynthesis(
             revision=(latest.revision + 1 if latest is not None else 1),
-            based_on_working_set_revision=working.working_set_revision,
-            answer_goal=working.research_query or "回答用户的研究问题",
+            based_on_working_set_revision=loop_state.working_set_revision,
+            answer_goal=loop_state.research_query or "回答用户的研究问题",
             overall_summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
             aspects=[
                 ResearchAspect(
@@ -585,7 +584,7 @@ class ResearchSupervisor:
     def _build_writer_directive(
         self,
         state: ResearchState,
-        working: WorkingState,
+        loop_state: SupervisorLoopState,
         synthesis: ResearchSynthesis,
         report_brief: ReportBrief,
     ) -> WriterDirective:
@@ -613,8 +612,8 @@ class ResearchSupervisor:
         return WriterDirective(
             query=str(state.get("clarified_query") or state.get("query") or ""),
             report_brief=report_brief,
-            research_status="completed" if working.sufficient else "incomplete",
-            generation_mode="full" if working.sufficient else "partial",
+            research_status="completed" if loop_state.sufficient else "incomplete",
+            generation_mode="full" if loop_state.sufficient else "partial",
             evidence_ids=evidence_ids,
             known_gaps=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
                 : self.config.report_max_caveats
@@ -624,9 +623,9 @@ class ResearchSupervisor:
         )
 
     @staticmethod
-    def _working_set_snapshot(working: WorkingState) -> dict[str, object]:
+    def _working_set_snapshot(loop_state: SupervisorLoopState) -> dict[str, object]:
         """构造 Supervisor 工作集摘要，不把完整 quote 重复注入上下文。"""
-        active = working.active_evidences()
+        active = loop_state.active_evidences()
         return {
             "active_evidence": [evidence_card(item) for item in active],
             "active_evidence_count": len(active),

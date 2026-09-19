@@ -189,7 +189,7 @@ def test_render_final_report_node_routes_failure_paths():
                 "clarified_query": "A 的性能",
                 "run": {"phase": "rendering", "terminal_reason": "review_recovery_exhausted"},
                 "review": {"status": "rejected", "attempts": 2, "feedback": "仍有缺口"},
-                "research": {"status": "incomplete", "current_round": 1},
+                "supervisor": {"status": "incomplete", "current_round": 1},
                 "report_draft": "## 结论\n\nA 的平均延迟为 20ms。[[cite:e1]]",
                 "citations": [
                     Citation(
