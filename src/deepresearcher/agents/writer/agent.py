@@ -33,7 +33,7 @@ from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import json_data_section, load_prompt
+from deepresearcher.prompts import load_prompt, render_data_section
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import (
     ReportBrief,
@@ -353,9 +353,9 @@ class ReportWriter:
         return [
             HumanMessage(
                 content=(
-                    json_data_section("运行时环境", get_runtime_environment().payload())
+                    render_data_section("运行时环境", get_runtime_environment().payload())
                     + "\n\n---\n\n"
-                    + json_data_section("报告任务与约束", report_context)
+                    + render_data_section("报告任务与约束", report_context)
                     + "\n\n---\n\n## 可选 Evidence 目录\n\n"
                     + "<evidence_catalogue>\n"
                     + evidence_catalogue

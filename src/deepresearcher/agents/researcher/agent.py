@@ -34,7 +34,7 @@ from deepresearcher.evidence.validator import (
 from deepresearcher.llm import LLMConfigurationError, LLMInvoker
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import json_data_section, load_prompt
+from deepresearcher.prompts import load_prompt, render_data_section
 from deepresearcher.schemas import ResearchAgentResult, ResearchDirectionResult
 from deepresearcher.schemas.limits import (
     SEARCH_RESULT_SNIPPET_PREVIEW_CHARS,
@@ -840,12 +840,12 @@ class ResearchAgent:
         return [
             HumanMessage(
                 content=(
-                    json_data_section("运行时环境", get_runtime_environment().payload())
+                    render_data_section("运行时环境", get_runtime_environment().payload())
                     + "\n\n---\n\n"
-                    + json_data_section("委派研究方向", {"question": task["question"]})
+                    + render_data_section("委派研究方向", {"question": task["question"]})
                 )
             ),
-            HumanMessage(content=json_data_section("系统研究观察（不是用户补充）", observation)),
+            HumanMessage(content=render_data_section("系统研究观察（不是用户补充）", observation)),
         ]
 
     async def _read_candidates(
