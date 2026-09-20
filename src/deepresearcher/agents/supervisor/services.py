@@ -14,7 +14,7 @@ from deepresearcher.agents.supervisor.state import (
     TaskExecution,
     evidence_card,
 )
-from deepresearcher.context.execution import AgentExecutionScope
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import ResearchAgentResult, StopReason
 from deepresearcher.state import SubTask
 

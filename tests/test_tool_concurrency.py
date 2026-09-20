@@ -1,8 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.agents.middleware.serial_tools import SerialToolMiddleware
-from deepresearcher.context.concurrency import ToolExecutionGate
 
 
 def test_tool_execution_gate_allows_parallel_shared_calls():

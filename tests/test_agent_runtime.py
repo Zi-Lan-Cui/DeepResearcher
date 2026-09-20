@@ -1,4 +1,4 @@
-from deepresearcher.context.execution import AgentExecutionScope
+from deepresearcher.observability.execution import AgentExecutionScope
 
 
 def test_execution_scope_builds_stable_task_identity():

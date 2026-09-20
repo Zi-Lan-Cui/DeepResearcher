@@ -11,7 +11,7 @@ from deepresearcher.agents.researcher.state import (
     ResearcherLoopState,
 )
 from deepresearcher.config import AgentConfig
-from deepresearcher.context.execution import AgentExecutionScope
+from deepresearcher.observability.execution import AgentExecutionScope
 
 
 def _real_researcher_context() -> ResearcherLoopContext:

@@ -20,8 +20,8 @@ from deepresearcher.agents.middleware.factory import (
 )
 from deepresearcher.agents.middleware.profile import MiddlewareProfile
 from deepresearcher.config import AgentConfig, language_directive
-from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.llm import LLMConfigurationError
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.prompts import load_prompt
 
 _SYSTEM_PROMPT = load_prompt("clarifier")

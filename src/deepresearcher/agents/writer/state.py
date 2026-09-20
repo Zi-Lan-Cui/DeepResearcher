@@ -3,8 +3,8 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import Citation, ParagraphBinding
 from deepresearcher.schemas.sources import source_domain
 

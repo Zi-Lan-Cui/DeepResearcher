@@ -11,7 +11,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepresearcher.context.execution import AgentExecutionScope
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.usage_runtime import enforce_usage_budget
 

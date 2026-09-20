@@ -25,12 +25,12 @@ from deepresearcher.agents.researcher.state import (
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig, language_directive
-from deepresearcher.context.execution import AgentExecutionScope
-from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import load_prompt, render_data_section
+from deepresearcher.prompts.runtime import get_runtime_environment
 from deepresearcher.schemas import ResearchAgentResult, ResearchDirectionResult
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
