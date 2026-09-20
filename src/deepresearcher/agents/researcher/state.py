@@ -29,12 +29,12 @@ def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[s
 
 
 @dataclass
-class ResearchRuntimeContext:
+class ResearcherLoopContext:
     """不进入 State 的 ResearchAgent 运行时依赖。"""
 
     task: SubTask
     scope: AgentExecutionScope
-    run_state: "DirectionRunState"
+    loop_state: "ResearcherLoopState"
     search_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
     list_search_results: Callable[[str, int, int, str], Awaitable[dict[str, object]]]
     read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
@@ -48,7 +48,7 @@ class ResearchRuntimeContext:
 
 
 @dataclass
-class DirectionRunState:
+class ResearcherLoopState:
     # evidences 是有界完整候选档案；active_evidence_ids 才是模型当前工作集。
     evidences: list[Evidence] = field(default_factory=list)
     active_evidence_ids: set[str] = field(default_factory=set)
