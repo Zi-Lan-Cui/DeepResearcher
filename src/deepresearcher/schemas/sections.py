@@ -87,6 +87,7 @@ _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
     StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过天花板）。",
+    StopReason.AGENT_FAILED: "Supervisor 本轮执行失败，未能完成研究。",
 }
 
 

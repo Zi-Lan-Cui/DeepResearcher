@@ -743,6 +743,41 @@ def test_revise_synthesis_rejects_evidence_outside_active_working_set():
     assert result["supervisor_next"] == "render_final_report"
 
 
+def test_supervisor_agent_failure_routes_exception_to_failure_details():
+    """agent loop 抛异常：异常文本走执行诊断与内部事件，不得伪装成"未闭合缺口"进报告。
+
+    模型调用异常会被 ModelRetryMiddleware 软化成引导文本，到不了 loop 级 except；
+    这里整体替换 _agent_loop，模拟图级故障（递归天花板、checkpointer 等）。
+    """
+
+    class ExplodingLoop:
+        async def ainvoke(self, _input, **_kwargs):
+            raise RuntimeError("模拟基础设施异常 secret-detail")
+
+    supervisor = ResearchSupervisor(
+        SupervisorLLM(delegate_topics=[], complete_args=None),
+        AgentConfig(),
+        research_agent=FixedResearchAgent(),
+    )
+    supervisor._agent_loop = ExplodingLoop()
+    result = asyncio.run(
+        supervisor.run(
+            {
+                "query": "研究问题",
+                "clarified_query": "研究问题",
+                "evidences": [],
+            }
+        )
+    )
+
+    assert result["run"].terminal_reason == "supervisor_agent_failed"
+    assert result["supervisor_next"] == "render_final_report"
+    # 内容通道（研究缺口）保持干净，执行细节只出现在诊断文案里。
+    assert all("secret-detail" not in gap for gap in result["supervisor"].coverage_gaps)
+    assert "执行失败" in result["writer"].feedback
+    assert "secret-detail" in result["writer"].feedback
+
+
 def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["一个局部方向"], ready=True),

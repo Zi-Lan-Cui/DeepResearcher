@@ -151,8 +151,8 @@ class SupervisorLoopState:
 
     从顶层 ResearchState 载入初始数据，仅在本次 loop 内修改，不直接进入 LangGraph
     State；loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。职责：Evidence
-    聚合、active 工作集、task result、问题去重、coverage gaps、research synthesis、
-    working_set_revision、stop reason、当前轮次。
+    聚合、active 工作集、task result、问题去重、coverage gaps、failure details、
+    research synthesis、working_set_revision、stop reason、当前轮次。
 
     节点结束时把整份副本交给幂等 reducer 合并（merge_evidences / merge_task_results /
     merge_unique），reducer 按 id 折回原样。曾用 `_snapshot`+`deltas()` 手搓增量切片,
@@ -184,6 +184,9 @@ class SupervisorLoopState:
         persisted = section(state, "supervisor", SupervisorProgress)
         self.current_round: int = current_round
         self.coverage_gaps = list(persisted.coverage_gaps)
+        # 执行失败详情（截断异常文本等）。coverage_gaps 只装研究内容缺口，会渲染进
+        # 用户报告的"未闭合缺口"；两者可见面与恢复策略不同，不得混用一个字段。
+        self.failure_details: list[str] = []
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
         self.seen_questions = {
             dedup_key(item.question) for item in self.task_results if item.question
