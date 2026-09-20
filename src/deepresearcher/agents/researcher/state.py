@@ -1,15 +1,16 @@
 """ResearchAgent 的方向级运行状态和工具执行上下文。"""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from deepresearcher.context.concurrency import ToolExecutionGate
-from deepresearcher.context.execution import AgentExecutionScope
+from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
+from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.web.documents import DocumentRef
+from deepresearcher.tools.web.materials import ResearchMaterialStore
 from deepresearcher.tools.web.search.models import SearchCandidate
 
 
@@ -28,23 +29,32 @@ def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[s
     }
 
 
+@dataclass(frozen=True)
+class ResearcherDeps:
+    """ResearchAgent 构造期的稳定零件；跨并发 run 共享、只读(frozen 是纪律载体)。"""
+
+    config: AgentConfig
+    search_tool: SearchTool
+    reader_tool: SourceReaderTool
+    material_store: ResearchMaterialStore | None
+    emit: Callable[[str, dict[str, object]], None]
+
+
 @dataclass
 class ResearcherLoopContext:
-    """不进入 State 的 ResearchAgent 运行时依赖。"""
+    """ResearchAgent 一次 run 的注入载荷:全部名词,没有动词。
 
+    deps 为共享零件;task/loop_state/event_context/commit_lock 属本轮 run。
+    实现住在 services.py 的纯函数里,tools.py 从本对象转交参数;本清单之外,
+    工具对 agent 内部一无所知。
+    """
+
+    deps: ResearcherDeps
     task: SubTask
-    scope: AgentExecutionScope
     loop_state: "ResearcherLoopState"
-    search_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
-    list_search_results: Callable[[str, int, int, str], Awaitable[dict[str, object]]]
-    read_sources: Callable[[list[str], str], Awaitable[dict[str, object]]]
-    grep_document: Callable[[str, str, int, int, str], Awaitable[dict[str, object]]]
-    read_document: Callable[[str, list[tuple[int, int]], str], Awaitable[dict[str, object]]]
-    add_evidence: Callable[[list[dict[str, object]], str], Awaitable[dict[str, object]]]
     event_context: dict[str, object] = field(default_factory=dict)
+    commit_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
-    evidence_commit_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass

@@ -1,27 +1,21 @@
 """Supervisor 的运行态辅助对象。"""
 
 import asyncio
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-from langchain_core.messages import ToolMessage
-
+from deepresearcher.agents.researcher import ResearchAgent
+from deepresearcher.config import AgentConfig
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
     ResearchDirectionResult,
     ResearchSynthesis,
-    ResearchToolResult,
     StopReason,
     SupervisorProgress,
 )
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import ResearchState, SubTask, section
-
-if TYPE_CHECKING:
-    from deepresearcher.agents.supervisor.agent import ResearchSupervisor
 
 
 def evidence_card(evidence: Evidence) -> dict[str, object]:
@@ -57,41 +51,50 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
     }
 
 
+@dataclass(frozen=True)
+class SupervisorDeps:
+    """ResearchSupervisor 构造期的稳定零件；跨并发 loop 共享、只读(frozen 是纪律载体)。"""
+
+    config: AgentConfig
+    research_agent: ResearchAgent
+    worker_limit: asyncio.Semaphore
+    emit: Callable[..., None]
+
+
 @dataclass
 class SupervisorLoopContext:
-    """Supervisor 单次工具循环的执行上下文。
+    """Supervisor 一次工具 loop 的注入载荷:全部名词,没有动词。
 
-    承载本轮循环的业务可变状态（loop_state）、执行依赖、研究委托回调与并发锁；
-    仅活在一次 loop 内，不作为 LangGraph 顶层 State 持久化。当前轮次唯一来源是
-    ``loop_state.current_round``，此处不再重复保存 round_no。
+    deps 是共享零件;loop_state 是本轮业务工作副本;scope 供观测归属;
+    tool_lock 保护并发簿记。仅活在一次 loop 内,不作为 LangGraph 顶层 State
+    持久化。当前轮次唯一来源是 ``loop_state.current_round``。
+    实现住在 services.py,tools.py 从本对象转交参数;本清单之外,工具对
+    supervisor 内部一无所知。
     """
 
     scope: AgentExecutionScope
-    supervisor: "ResearchSupervisor"
+    deps: SupervisorDeps
     loop_state: "SupervisorLoopState"
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass
 class TaskExecution:
-    """一次方向研究执行的完整产物：结果模型、聚合载荷与注入历史的工具消息。"""
+    """一次方向研究执行的完整产物：结果模型与 absorb 所需的 Evidence/来源清单。
+
+    曾额外携带手工构造的 ToolMessage（_result_message）注入历史；该消息全库
+    零消费者——模型看到的方向报告由 delegate_research 返回值经 tools.py 协议层
+    打包,故删除,tool_call_id 参数链随之消失。
+    """
 
     task_result: ResearchDirectionResult
     evidences: list[Evidence]
     selected_evidence_ids: list[str]
     source_refs: list[str]
-    message: ToolMessage
 
     @classmethod
-    def failed_for(
-        cls,
-        task: SubTask,
-        round_no: int,
-        error: str,
-        *,
-        tool_call_id: str,
-    ) -> "TaskExecution":
-        """构造 worker 异常降级的 failed 结果；失败同样注入历史让模型可见。"""
+    def failed_for(cls, task: SubTask, round_no: int, error: str) -> "TaskExecution":
+        """构造 worker 异常降级的 failed 结果；失败经方向报告让模型可见。"""
         task_result = ResearchDirectionResult(
             task_id=task["id"],
             round=round_no,
@@ -111,38 +114,6 @@ class TaskExecution:
             evidences=[],
             selected_evidence_ids=[],
             source_refs=[],
-            message=cls._result_message(task, task_result, [], tool_call_id=tool_call_id),
-        )
-
-    @staticmethod
-    def _result_message(
-        task: SubTask,
-        task_result: ResearchDirectionResult,
-        evidences: list[Evidence],
-        *,
-        tool_call_id: str,
-    ) -> ToolMessage:
-        """方向结果以 JSON 载荷注入 Supervisor 上下文。
-
-        携带方向结论与带回的 Evidence claim，每条 claim 只在所属方向的
-        工具结果中出现一次；quote 留给 Writer 与引用审计，不进上下文。
-        """
-        tool_result = ResearchToolResult.from_direction_result(task_result)
-        payload = {
-            "research_direction": tool_result.question,
-            "execution_status": tool_result.execution_status,
-            "coverage_status": tool_result.coverage_status,
-            "stop_reason": tool_result.stop_reason,
-            "conclusion": tool_result.conclusion,
-            "remaining_gaps": tool_result.remaining_gaps,
-            "failures": tool_result.failures,
-            "evidence": [evidence_card(item) for item in evidences],
-        }
-        return ToolMessage(
-            content=json.dumps(payload, ensure_ascii=False),
-            name="ResearchDelegate",
-            tool_call_id=tool_call_id,
-            artifact=task_result,
         )
 
 

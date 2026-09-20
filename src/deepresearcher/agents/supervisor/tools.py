@@ -8,6 +8,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 from pydantic import ValidationError
 
+from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
     SupervisorLoopContext,
     SupervisorLoopState,
@@ -57,9 +58,9 @@ def build_supervisor_tools() -> list[BaseTool]:
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """派发一个具体、可验证且与历史互补的研究方向。"""
-        context = runtime.context
-        result = await context.supervisor._delegate_research(
-            context, research_topic, tool_call_id=runtime.tool_call_id
+        ctx = runtime.context
+        result = await services.delegate_research(
+            ctx.deps, ctx.loop_state, ctx.scope, ctx.tool_lock, research_topic
         )
         return _result(result)
 

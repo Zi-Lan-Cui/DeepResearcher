@@ -19,9 +19,9 @@ from deepresearcher.agents.middleware import (
 )
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.supervisor.state import (
+    SupervisorDeps,
     SupervisorLoopContext,
     SupervisorLoopState,
-    TaskExecution,
     evidence_card,
     synthesis_snapshot,
 )
@@ -40,7 +40,6 @@ from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
     ReportBrief,
-    ResearchAgentResult,
     ResearchAspect,
     ResearchDirectionResult,
     ResearchSynthesis,
@@ -56,7 +55,7 @@ from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
     STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
 )
-from deepresearcher.state import ResearchState, SubTask, section
+from deepresearcher.state import ResearchState, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 _FALLBACK_SUMMARY_CLAIM_LIMIT = 6
@@ -92,6 +91,13 @@ class ResearchSupervisor:
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.agents.supervisor")
         self._worker_limit = asyncio.Semaphore(config.max_parallel_workers)
+        # 构造期定稿的稳定零件；跨并发 loop 共享只读，loop 期不再新增任何依赖。
+        self._deps = SupervisorDeps(
+            config=self.config,
+            research_agent=self.research_agent,
+            worker_limit=self._worker_limit,
+            emit=self._emit_audit_event,
+        )
         self._agent_loop = create_agent(
             model=cast(Any, llm),
             tools=build_supervisor_tools(),
@@ -210,7 +216,7 @@ class ResearchSupervisor:
                 run_id=str(state.get("run_id") or ""),
                 agent_name="Supervisor",
             ),
-            supervisor=self,
+            deps=self._deps,
             loop_state=loop_state,
         )
         prepared = history
@@ -273,176 +279,6 @@ class ResearchSupervisor:
     ) -> None:
         """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
         history.append(HumanMessage(content=render_data_section("研究管理观察", payload)))
-
-    async def _delegate_research(
-        self,
-        context: SupervisorLoopContext,
-        topic: str,
-        *,
-        tool_call_id: str | None = None,
-    ) -> dict[str, object]:
-        """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号/去重、
-        派发 ResearchAgent、吸收结果、向模型返回完整方向报告。
-
-        由 tools.py 的 research_delegate 经 runtime.context.supervisor 调用;
-        业务逻辑集中在此,工具层只做协议与转发。并发簿记受 context.tool_lock 保护,
-        实际子 Agent 并发受 self._worker_limit 限制(见 _execute_research_task)。
-        """
-        loop_state = context.loop_state
-        round_no = loop_state.current_round
-
-        def reported(result: dict[str, object]) -> dict[str, object]:
-            # 规划器的工具调用若被静默消化（blocked/skipped），事件流里只会
-            # 看到连续两个 model_turn——delegate_started/completed 让“空轮次”可解释。
-            self._emit_audit_event(
-                "delegate_completed",
-                {
-                    "status": str(result.get("status", "")),
-                    "reason": str(result.get("reason", "")),
-                    "topic_chars": len(topic),
-                    "evidence_count": result.get("evidence_count"),
-                    "source_count": result.get("source_count"),
-                },
-            )
-            return result
-
-        self._emit_audit_event("delegate_started", {"topic_chars": len(topic)})
-        if round_no > self.config.max_research_rounds:
-            loop_state.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
-            return reported(
-                {
-                    "status": "blocked",
-                    "reason": "round_budget_exhausted",
-                    "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
-                }
-            )
-        async with context.tool_lock:
-            task_index = loop_state.allocate_task_index()
-            task: SubTask = {
-                "id": f"task-{task_index:04d}",
-                "run_id": context.scope.run_id,
-                "question": topic,
-                "round": round_no,
-                "sequence": task_index,
-                "type": "search",
-                "status": "pending",
-                "assigned_agent": "research_agent",
-                "worker_id": f"research-agent-{task_index:04d}",
-                "worker_index": task_index,
-                "parent_task_id": "",
-                "operation_id": f"research-task-{task_index:04d}",
-            }
-            new_tasks = loop_state.filter_new_tasks(
-                [task], max_tasks=self.config.max_subtasks_per_round
-            )
-        if not new_tasks:
-            loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
-            return reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
-        execution = await self._execute_research_task(
-            new_tasks[0],
-            tool_call_id=tool_call_id or f"delegate-{new_tasks[0]['id']}",
-        )
-        async with context.tool_lock:
-            loop_state.absorb(execution)
-        direction_report: dict[str, object] = {
-            "status": execution.task_result.execution_status,
-            "research_direction": execution.task_result.research_direction,
-            "coverage_status": execution.task_result.coverage_status,
-            "evidence_count": execution.task_result.evidence_count,
-            "source_count": execution.task_result.source_count,
-            "remaining_gaps": execution.task_result.remaining_gaps,
-            "conclusion": execution.task_result.conclusion,
-            "failures": execution.task_result.failures,
-            "working_set_revision": loop_state.working_set_revision,
-            "evidence": [
-                evidence_card(item)
-                for item in execution.evidences
-                if item.evidence_id in loop_state.active_evidence_ids
-            ],
-        }
-        if execution.task_result.provider_exhausted:
-            # 数据提示（无分支控制流）：让 Supervisor 模型读到系统性不可用后自然停止派发、收尾。
-            direction_report["provider_exhausted"] = True
-            direction_report["instruction"] = (
-                "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
-                "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后 "
-                "ResearchComplete（足以成文）或 ResearchReady（保存部分报告）收尾。"
-            )
-        return reported(direction_report)
-
-    async def _execute_research_task(
-        self,
-        task: SubTask,
-        *,
-        tool_call_id: str,
-    ) -> TaskExecution:
-        """执行单个方向研究；worker 异常降级为 failed 结果，不中断整轮。"""
-        round_no = int(task.get("round", 1))
-        task_context = {
-            "task_id": task["id"],
-            "worker_id": task.get("worker_id", task["id"]),
-            "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
-            "parent_task_id": task.get("parent_task_id", ""),
-            "operation_id": task.get("operation_id", task["id"]),
-            "concurrency_limit": self.config.max_parallel_workers,
-        }
-        async with self._worker_limit:
-            self._emit_audit_event(
-                "research_task_started",
-                {
-                    **task_context,
-                    "task_index": int(task.get("sequence", 0)),
-                    "component": "research_agent",
-                    "question": task["question"][: self.config.supervisor_preview_chars],
-                    "type": task["type"],
-                },
-            )
-            try:
-                result = await self.research_agent.run(task)
-                # 研究员是子 Agent 边界：在写入审计事件或 State 前先验证结果契约；
-                # 同 run 内已是模型时零开销，防御性恢复覆盖跨进程 checkpoint。
-                agent_result = (
-                    result
-                    if isinstance(result, ResearchAgentResult)
-                    else ResearchAgentResult.model_validate(result)
-                )
-                task_result = agent_result.task_result
-                evidences = list(agent_result.evidences)
-                selected_ids = list(agent_result.selected_evidence_ids)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                execution = TaskExecution.failed_for(
-                    task,
-                    round_no,
-                    str(exc)[: self.config.supervisor_preview_chars],
-                    tool_call_id=tool_call_id,
-                )
-                self._emit_audit_event(
-                    "research_task_failed",
-                    {**task_context, **execution.task_result.model_dump()},
-                    component="research_agent",
-                )
-                return execution
-            self._emit_audit_event(
-                "research_task_completed",
-                {**task_context, **task_result.model_dump()},
-                component="research_agent",
-            )
-            selected_set = set(selected_ids)
-            selected_evidences = [item for item in evidences if item.evidence_id in selected_set]
-            return TaskExecution(
-                task_result=task_result,
-                evidences=evidences,
-                selected_evidence_ids=selected_ids,
-                source_refs=list(agent_result.source_refs),
-                message=TaskExecution._result_message(
-                    task,
-                    task_result,
-                    selected_evidences,
-                    tool_call_id=tool_call_id,
-                ),
-            )
 
     def _emit_research_stopped(self, round_no: int, loop_state: SupervisorLoopState) -> None:
         self._emit_audit_event(

@@ -5,6 +5,7 @@ import json
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
+from deepresearcher.agents.researcher import services
 from deepresearcher.agents.researcher.state import ResearcherLoopContext, ResearcherLoopState
 from deepresearcher.schemas import (
     AddEvidence,
@@ -59,7 +60,10 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """发现当前研究方向的候选来源；不会自动读取网页。"""
-        result = await runtime.context.search_sources(queries, reason)
+        ctx = runtime.context
+        result = await services.search_sources(
+            ctx.deps, ctx.task, ctx.loop_state, ctx.event_context, queries, reason
+        )
         return _tool_result(result)
 
     @tool("ReadSources", args_schema=ReadSources)
@@ -69,7 +73,10 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """抓取模型选中的来源；短文内联，长文返回可按行读取的句柄。"""
-        result = await runtime.context.read_sources(candidate_ids, reason)
+        ctx = runtime.context
+        result = await services.read_sources(
+            ctx.deps, ctx.task, ctx.loop_state, ctx.event_context, candidate_ids, reason
+        )
         return _tool_result(result)
 
     @tool("ListSearchResults", args_schema=ListSearchResults)
@@ -81,7 +88,10 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """分页查看 SearchSources 已落盘的完整候选目录。"""
-        result = await runtime.context.list_search_results(search_id, offset, limit, reason)
+        ctx = runtime.context
+        result = await services.list_search_results(
+            ctx.deps, ctx.task, ctx.loop_state, search_id, offset, limit, reason
+        )
         return _tool_result(result)
 
     @tool("GrepDocument", args_schema=GrepDocument)
@@ -94,8 +104,9 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """在当前方向已登记的长文中定位单个关键词；多词请并发起多个调用，翻页用 offset。"""
-        result = await runtime.context.grep_document(
-            document_id, query, context_lines, offset, reason
+        ctx = runtime.context
+        result = await services.grep_document(
+            ctx.deps, ctx.loop_state, document_id, query, context_lines, offset, reason
         )
         return _tool_result(result)
 
@@ -107,7 +118,10 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """按行号批量读取当前方向已经登记的文档窗口。"""
-        result = await runtime.context.read_document(
+        ctx = runtime.context
+        result = await services.read_document(
+            ctx.deps,
+            ctx.loop_state,
             document_id,
             [(item.start_line, item.end_line) for item in ranges],
             reason,
@@ -121,7 +135,13 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """批量提交 Evidence；只有能在已登记原文中复算的引用才会入池。"""
-        result = await runtime.context.add_evidence(
+        ctx = runtime.context
+        result = await services.add_evidence(
+            ctx.deps,
+            ctx.task,
+            ctx.loop_state,
+            ctx.event_context,
+            ctx.commit_lock,
             [
                 item.model_dump(mode="json") if isinstance(item, EvidenceSubmission) else dict(item)
                 for item in evidences
