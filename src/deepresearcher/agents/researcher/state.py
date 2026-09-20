@@ -5,6 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from deepresearcher.config import AgentConfig
+from deepresearcher.context.concurrency import ToolExecutionGate
+from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
@@ -47,14 +49,22 @@ class ResearcherLoopContext:
     deps 为共享零件;task/loop_state/event_context/commit_lock 属本轮 run。
     实现住在 services.py 的纯函数里,tools.py 从本对象转交参数;本清单之外,
     工具对 agent 内部一无所知。
+
+    读者不只是 tools.py——中间件以鸭子方式(getattr)消费以下字段,删改前必须
+    先查 agents/middleware/:
+      scope     → observability._event_context:模型回合/工具事件归因(run_id 等)
+      tool_gate → serial_tools:全库唯一的调度栅栏(serial 工具 exclusive,
+                  其余 shared 可并发但被 pending exclusive 挡)。业务锁另名另责:
+                  本 agent 的 commit_lock 只护证据入池,与调度无关。
     """
 
     deps: ResearcherDeps
+    scope: AgentExecutionScope
     task: SubTask
     loop_state: "ResearcherLoopState"
     event_context: dict[str, object] = field(default_factory=dict)
     commit_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
 
 
 @dataclass

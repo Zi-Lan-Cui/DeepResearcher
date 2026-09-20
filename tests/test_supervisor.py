@@ -1324,7 +1324,7 @@ def _delegate(context, topic: str) -> dict:
     """测试转发:与生产 tools.py 同一入口,参数全部来自 context 名词字段。"""
     return asyncio.run(
         services.delegate_research(
-            context.deps, context.loop_state, context.scope, context.tool_lock, topic
+            context.deps, context.loop_state, context.scope, context.bookkeeping_lock, topic
         )
     )
 

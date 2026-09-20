@@ -52,8 +52,11 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return int(state.get("run_model_call_count", 0) or 0)
 
     def _event_context(self, runtime: Any) -> dict[str, object]:
+        # context 契约(鸭子读,删改 LoopContext 字段前先 grep 本文件):
+        #   scope: AgentExecutionScope | None —— 所有 agent 的 LoopContext 必须携带,
+        #   模型回合/工具事件的 run_id/task_id/operation_id 归因全靠它;缺席是静默降级。
         context = getattr(runtime, "context", None)
-        scope = getattr(context, "scope", None)
+        scope: AgentExecutionScope | None = getattr(context, "scope", None)
         fields = scope.event_fields() if isinstance(scope, AgentExecutionScope) else {}
         fields["agent"] = self.agent_name
         return fields

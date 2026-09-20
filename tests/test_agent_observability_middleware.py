@@ -5,7 +5,69 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from deepresearcher.agents.middleware import AgentObservabilityMiddleware
+from deepresearcher.agents.researcher.state import (
+    ResearcherDeps,
+    ResearcherLoopContext,
+    ResearcherLoopState,
+)
+from deepresearcher.config import AgentConfig
 from deepresearcher.context.execution import AgentExecutionScope
+
+
+def _real_researcher_context() -> ResearcherLoopContext:
+    """生产形状的真实 ResearcherLoopContext:中间件契约字段(scope/tool_gate)必须在场。
+
+    上方 SimpleNamespace 假件测的是中间件"如何对待有 scope 的对象";本函数测
+    "真 context 是否提供中间件所需字段"——两个方向都有守卫,才不会再出现
+    删字段后 CI 全绿、事件静默失去归因的漂移。
+    """
+    task = {
+        "id": "task-0001",
+        "run_id": "run-1",
+        "question": "Redis 恢复",
+        "type": "search",
+        "status": "pending",
+        "assigned_agent": "research_agent",
+    }
+    return ResearcherLoopContext(
+        deps=ResearcherDeps(
+            config=AgentConfig(),
+            search_tool=object(),  # 中间件不触碰业务零件
+            reader_tool=object(),
+            material_store=None,
+            emit=lambda *_: None,
+        ),
+        scope=AgentExecutionScope.from_task(task, agent_name="ResearchAgent"),
+        task=task,  # type: ignore[typeddict-item]
+        loop_state=ResearcherLoopState(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_researcher_context_carries_middleware_attribution_fields():
+    events: list[tuple[str, dict[str, object]]] = []
+    middleware = AgentObservabilityMiddleware(
+        "ResearchAgent",
+        run_limit=5,
+        emit=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    request = SimpleNamespace(
+        tool_call={"name": "ReadSources", "id": "call-9", "args": {"candidate_ids": ["c-1"]}},
+        state={"run_model_call_count": 1},
+        runtime=SimpleNamespace(context=_real_researcher_context()),
+    )
+
+    async def handler(_request):
+        return ToolMessage(content="ok", tool_call_id="call-9")
+
+    await middleware.awrap_tool_call(request, handler)
+
+    started = events[0][1]
+    assert started["run_id"] == "run-1"
+    assert started["task_id"] == "task-0001"
+    assert started["operation_id"] == "task-0001"
+    # serial_tools 的栅栏读者同样在场(缺席则该工具失去与 Complete 的互斥)。
+    assert getattr(request.runtime.context, "tool_gate", None) is not None
 
 
 def _request() -> SimpleNamespace:

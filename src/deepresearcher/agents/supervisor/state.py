@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.config import AgentConfig
+from deepresearcher.context.concurrency import ToolExecutionGate
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
@@ -65,17 +66,23 @@ class SupervisorDeps:
 class SupervisorLoopContext:
     """Supervisor 一次工具 loop 的注入载荷:全部名词,没有动词。
 
-    deps 是共享零件;loop_state 是本轮业务工作副本;scope 供观测归属;
-    tool_lock 保护并发簿记。仅活在一次 loop 内,不作为 LangGraph 顶层 State
-    持久化。当前轮次唯一来源是 ``loop_state.current_round``。
-    实现住在 services.py,tools.py 从本对象转交参数;本清单之外,工具对
-    supervisor 内部一无所知。
+    deps 是共享零件;loop_state 是本轮业务工作副本;scope 供观测归属。
+    仅活在一次 loop 内,不作为 LangGraph 顶层 State 持久化。当前轮次唯一
+    来源是 ``loop_state.current_round``。实现住在 services.py,tools.py 从
+    本对象转交参数;本清单之外,工具对 supervisor 内部一无所知。
+
+    读者含中间件(删改字段前先 grep agents/middleware/):
+      scope        → observability:事件归因
+      tool_gate    → serial_tools:读写栅栏(Revise/Complete 等 exclusive,
+                     与在飞 ResearchDelegate 互斥——消灭"完结后状态仍变"竞态)
+      bookkeeping_lock → 业务锁:services.delegate_research 的编号/去重/absorb 临界区
     """
 
     scope: AgentExecutionScope
     deps: SupervisorDeps
     loop_state: "SupervisorLoopState"
-    tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    bookkeeping_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
 
 
 @dataclass
@@ -200,7 +207,7 @@ class SupervisorLoopState:
     def allocate_task_index(self) -> int:
         """分配独立的任务序号，不把研究轮次编码进任务 ID。
 
-        序号必须在**分配时刻**（runtime.tool_lock 内）消费掉：从已完成结果反推的
+        序号必须在**分配时刻**（runtime.bookkeeping_lock 内）消费掉：从已完成结果反推的
         派生值会被并行 delegate 的双方读到同一个 max+1，撞出的 task_id 让
         merge_task_results 按 id 去重时静默吞掉一个方向的研究结果。
         max(计数器, 已完成最大值)+1 同时兼容恢复执行时从快照重建的场景。
