@@ -71,18 +71,6 @@ def _project_path_env(name: str, default: Path) -> Path:
 
 
 @dataclass(frozen=True)
-class LLMRetryConfig:
-    """LLM 调用策略；传输重试和结构化修复是两种不同的预算。"""
-
-    transport_attempts: int = 3
-    initial_seconds: float = 1.0
-    max_seconds: float = 20.0
-    exp_base: float = 2.0
-    jitter: float = 1.0
-    structured_repair_attempts: int = 1
-
-
-@dataclass(frozen=True)
 class LLMConfig:
     api_key: str = ""
     base_url: str = ""
@@ -103,7 +91,9 @@ class LLMConfig:
     output_usd_per_million: float = 0.0
     cached_input_usd_per_million: float = 0.0
     price_version: str = "unpriced"
-    retry: LLMRetryConfig = LLMRetryConfig()
+    # 内容级修复预算：结构化输出不合规时回炉几次。传输级重试由 openai SDK 内建
+    # 消化、循环级由 ModelRetryMiddleware 用自带参数处理，本字段只管回炉这一层。
+    structured_repair_attempts: int = 1
 
     @property
     def configured(self) -> bool:
@@ -312,14 +302,7 @@ def _llm_config() -> LLMConfig:
         output_usd_per_million=max(0.0, _float_env("LLM_OUTPUT_USD_PER_MILLION", 0.0)),
         cached_input_usd_per_million=max(0.0, _float_env("LLM_CACHED_INPUT_USD_PER_MILLION", 0.0)),
         price_version=_env("LLM_PRICE_VERSION", "unpriced") or "unpriced",
-        retry=LLMRetryConfig(
-            transport_attempts=max(1, _int_env("LLM_RETRY_ATTEMPTS", 3)),
-            initial_seconds=max(0.0, _float_env("LLM_RETRY_INITIAL_SECONDS", 1.0)),
-            max_seconds=max(0.0, _float_env("LLM_RETRY_MAX_SECONDS", 20.0)),
-            exp_base=max(1.0, _float_env("LLM_RETRY_EXP_BASE", 2.0)),
-            jitter=max(0.0, _float_env("LLM_RETRY_JITTER", 1.0)),
-            structured_repair_attempts=max(0, _int_env("LLM_STRUCTURED_REPAIR_ATTEMPTS", 1)),
-        ),
+        structured_repair_attempts=max(0, _int_env("LLM_STRUCTURED_REPAIR_ATTEMPTS", 1)),
     )
 
 

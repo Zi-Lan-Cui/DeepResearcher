@@ -42,7 +42,7 @@ from deepresearcher.tools.errors import ToolRequestError
 
 
 class TextLLM:
-    async def ainvoke_text(self, _messages, **_kwargs):
+    async def ainvoke(self, _messages, **_kwargs):
         return type("Response", (), {"content": "这是显式注入的即时回答。"})()
 
     def bind_tools(self, _tools, **_kwargs):
@@ -195,8 +195,12 @@ def test_quick_answer_route_produces_uncited_answer():
 
 def test_router_delegates_research_classification_to_llm():
     class RoutingLLM:
-        async def ainvoke_structured(self, _schema, _messages, **_kwargs):
-            return RouteDecision(route="quick_answer", reason="模型判断为单一问题")
+        def with_structured_output(self, _schema, **_kwargs):
+            class _Decision:
+                async def ainvoke(self, _messages, **_kw):
+                    return RouteDecision(route="quick_answer", reason="模型判断为单一问题")
+
+            return _Decision()
 
     result = asyncio.run(nodes.router({"query": "哪些 galgame 具有广泛的影响力"}, RoutingLLM()))
     assert result["route"] == "quick_answer"
@@ -205,8 +209,12 @@ def test_router_delegates_research_classification_to_llm():
 
 def test_router_model_failure_fails_closed_to_deep_research():
     class FailingLLM:
-        async def ainvoke_structured(self, *_args, **_kwargs):
-            raise TimeoutError("offline")
+        def with_structured_output(self, _schema, **_kwargs):
+            class _Boom:
+                async def ainvoke(self, _messages, **_kw):
+                    raise TimeoutError("offline")
+
+            return _Boom()
 
     result = asyncio.run(nodes.router({"query": "单一事实问题"}, FailingLLM()))
     assert result["route"] == "deep_research"

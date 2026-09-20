@@ -1,5 +1,6 @@
 """LangGraph 拓扑和节点装配。"""
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -8,7 +9,7 @@ from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.supervisor import ResearchSupervisor
 from deepresearcher.agents.writer.graph import build_writer_graph
 from deepresearcher.config import Settings, get_settings
-from deepresearcher.llm import LLMInvoker, build_llm
+from deepresearcher.llm import build_llm
 from deepresearcher.observability.instrumentation import instrument_node
 from deepresearcher.observability.tracing.recorder import TraceRecorder
 from deepresearcher.orchestration import nodes
@@ -83,7 +84,7 @@ def _routed_node(
 def build_graph(
     settings: Settings | None = None,
     *,
-    llm: LLMInvoker | None = None,
+    llm: BaseChatModel | None = None,
     event_sink=None,
     trace_recorder: TraceRecorder | None = None,
     http_client: HttpClient | None = None,
