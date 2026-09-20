@@ -24,12 +24,17 @@ from deepresearcher.agents.researcher.state import (
     ResearcherLoopState,
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
-from deepresearcher.config import AgentConfig, language_directive
+from deepresearcher.config import AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
+from deepresearcher.prompts import (
+    get_runtime_environment,
+    language_directive,
+    load_prompt,
+    render_data_section,
+)
 from deepresearcher.schemas import ResearchAgentResult, ResearchDirectionResult
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
@@ -165,11 +170,13 @@ class ResearchAgent:
             loop_state.failures.append(f"direction_agent_failed: {exc}")
             loop_state.stop_reason = "direction_agent_failed"
             loop_state.stop_detail = str(exc)
+        # 凡未正常收尾的,一律套用最小保守结果保住已验证证据、补降级标注。
+        # 它只改写**交付**语义(conclusion/gaps);执行真相由 status/stop_reason
+        # 如实穿透——崩溃的方向就是 failed,不借"completed+fallback"粉饰。
         if status != "cancelled" and loop_state.stop_reason not in {
             "complete",
             "blocked_without_evidence",
         }:
-            status = "completed"
             self._apply_minimum_result(loop_state)
         return self._result(
             task,
@@ -179,7 +186,11 @@ class ResearchAgent:
 
     @staticmethod
     def _apply_minimum_result(loop_state: ResearcherLoopState) -> None:
-        """不调用模型的最终保险：保留现有证据，明确标注自动收束与缺口。"""
+        """不调用模型的最终保险：保留现有证据，明确标注自动收束与缺口。
+
+        stop_reason 只在"本无收尾原因"时补写(回合耗尽→fallback/blocked);
+        direction_agent_failed 是真因,保留,不得被交付层的名字覆写。
+        """
         if not loop_state.active_evidence_ids and loop_state.evidences:
             loop_state.active_evidence_ids.update(
                 item.evidence_id
@@ -192,7 +203,8 @@ class ResearchAgent:
             loop_state.remaining_gaps = list(
                 dict.fromkeys([*loop_state.remaining_gaps, fallback_gap, "未获得可用 Evidence。"])
             )
-            loop_state.stop_reason = "blocked_without_evidence"
+            if loop_state.stop_reason != "direction_agent_failed":
+                loop_state.stop_reason = "blocked_without_evidence"
         else:
             loop_state.conclusion = (
                 "本方向未完成模型综合；仅交付已选中的可验证 Evidence，"
@@ -201,8 +213,10 @@ class ResearchAgent:
             loop_state.remaining_gaps = list(
                 dict.fromkeys([*loop_state.remaining_gaps, fallback_gap])
             )
-            loop_state.stop_reason = "fallback_complete"
-        loop_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
+            if loop_state.stop_reason != "direction_agent_failed":
+                loop_state.stop_reason = "fallback_complete"
+        if loop_state.stop_reason != "direction_agent_failed":
+            loop_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
 
     def _emit(
         self,
