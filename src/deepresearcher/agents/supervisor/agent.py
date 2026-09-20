@@ -22,8 +22,8 @@ from deepresearcher.agents.supervisor.state import (
     SupervisorDeps,
     SupervisorLoopContext,
     SupervisorLoopState,
-    evidence_card,
     synthesis_snapshot,
+    working_set_snapshot,
 )
 from deepresearcher.agents.supervisor.tools import (
     build_supervisor_tools,
@@ -113,7 +113,8 @@ class ResearchSupervisor:
                         model=getattr(self.llm, "chat_model", None),
                         # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
                         # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
-                        # 轮次配额由 remaining_rounds 提示 + delegate() 的本地 hard check 执行。
+                        # 轮次配额由 remaining_rounds 提示 + services.delegate_research
+                        # 的本地 hard check 执行。
                         max_turns=config.max_subtasks_per_round + 10,
                         context_window_tokens=context_window_tokens,
                         retry_tools=[(["ResearchDelegate"], "ResearchDelegate")],
@@ -204,7 +205,7 @@ class ResearchSupervisor:
                     0, self.config.max_research_rounds - supervisor_progress.current_round
                 ),
                 "working_set_revision": loop_state.working_set_revision,
-                "working_set": self._working_set_snapshot(loop_state),
+                "working_set": working_set_snapshot(loop_state, include_reserve=False),
                 "research_synthesis": self._research_synthesis_observation(
                     loop_state.research_synthesis
                 ),
@@ -279,16 +280,6 @@ class ResearchSupervisor:
     ) -> None:
         """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
         history.append(HumanMessage(content=render_data_section("研究管理观察", payload)))
-
-    def _emit_research_stopped(self, round_no: int, loop_state: SupervisorLoopState) -> None:
-        self._emit_audit_event(
-            "research_stopped",
-            {
-                "round": round_no,
-                "reason": str(loop_state.stop_reason or ""),
-                "evidence_count": len(loop_state.evidences),
-            },
-        )
 
     def _emit_round_completed(
         self,
@@ -480,14 +471,6 @@ class ResearchSupervisor:
         )
 
     @staticmethod
-    def _working_set_snapshot(loop_state: SupervisorLoopState) -> dict[str, object]:
-        """构造 Supervisor 工作集摘要，不把完整 quote 重复注入上下文。"""
-        active = loop_state.active_evidences()
-        return {
-            "active_evidence": [evidence_card(item) for item in active],
-            "active_evidence_count": len(active),
-        }
-
     @staticmethod
     def _research_synthesis_observation(
         synthesis: ResearchSynthesis | None,

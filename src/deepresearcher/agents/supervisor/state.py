@@ -9,6 +9,7 @@ from deepresearcher.config import AgentConfig
 from deepresearcher.context.concurrency import ToolExecutionGate
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
+from deepresearcher.observability.events import AgentEmit
 from deepresearcher.schemas import (
     ResearchDirectionResult,
     ResearchSynthesis,
@@ -59,7 +60,7 @@ class SupervisorDeps:
     config: AgentConfig
     research_agent: ResearchAgent
     worker_limit: asyncio.Semaphore
-    emit: Callable[..., None]
+    emit: AgentEmit
 
 
 @dataclass
@@ -281,3 +282,27 @@ class SupervisorLoopState:
     def active_evidences(self) -> list[Evidence]:
         """返回当前工作集中的 Evidence。"""
         return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
+
+
+def working_set_snapshot(
+    loop_state: "SupervisorLoopState", *, include_reserve: bool = True
+) -> dict[str, object]:
+    """Supervisor 工作集目录的唯一构造处。
+
+    tools.py 的 ReadWorkingSet/拒绝回执用全量(include_reserve=True);
+    轮次观察只取 active(省 token)。两处共用同一卡片形状与 revision 字段,
+    不会再各自演化出子集分叉。
+    """
+    active = loop_state.active_evidences()
+    snapshot: dict[str, object] = {
+        "working_set_revision": loop_state.working_set_revision,
+        "active_evidence": [evidence_card(item) for item in active],
+        "active_evidence_count": len(active),
+        "active_evidence_limit": loop_state.active_evidence_limit,
+    }
+    if include_reserve:
+        active_ids = {item.evidence_id for item in active}
+        reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
+        snapshot["reserve_evidence"] = [evidence_card(item) for item in reserve]
+        snapshot["reserve_evidence_count"] = len(reserve)
+    return snapshot

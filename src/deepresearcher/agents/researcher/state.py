@@ -1,13 +1,13 @@
 """ResearchAgent 的方向级运行状态和工具执行上下文。"""
 
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from deepresearcher.config import AgentConfig
 from deepresearcher.context.concurrency import ToolExecutionGate
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
+from deepresearcher.observability.events import AgentEmit
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
@@ -39,7 +39,7 @@ class ResearcherDeps:
     search_tool: SearchTool
     reader_tool: SourceReaderTool
     material_store: ResearchMaterialStore | None
-    emit: Callable[[str, dict[str, object]], None]
+    emit: AgentEmit
 
 
 @dataclass

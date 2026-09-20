@@ -17,7 +17,6 @@ from deepresearcher.schemas.limits import (
     STRUCTURED_TEXT_HARD_LIMIT_CHARS,
 )
 from deepresearcher.schemas.reporting import ResearchAspect
-from deepresearcher.schemas.sections import ResearchDirectionResult
 
 
 class SearchSources(BaseModel):
@@ -196,27 +195,3 @@ class ReviseResearchSynthesis(BaseModel):
         max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
         description="只解释当前证据选择、覆盖判断、缺口与冲突；不得引入未经 Evidence 支持的新事实。",
     )
-
-
-class ResearchToolResult(BaseModel):
-    """ResearchAgent 完成方向后的结果，作为 ToolMessage 注入 Supervisor 上下文。"""
-
-    question: str
-    execution_status: Literal["completed", "failed", "cancelled"]
-    coverage_status: Literal["sufficient", "partial", "insufficient"]
-    round: int = Field(ge=1)
-    task_index: int = Field(default=0, ge=0)
-    evidence_count: int = Field(ge=0)
-    source_count: int = Field(ge=0)
-    conclusion: str = ""
-    remaining_gaps: list[str] = Field(default_factory=list)
-    queries: list[str] = Field(default_factory=list)
-    read_urls: list[str] = Field(default_factory=list)
-    skip_reasons: list[str] = Field(default_factory=list)
-    failures: list[str] = Field(default_factory=list)
-    stop_reason: str
-    stop_detail: str = ""
-
-    @classmethod
-    def from_direction_result(cls, result: ResearchDirectionResult) -> "ResearchToolResult":
-        return cls(**result.model_dump())
