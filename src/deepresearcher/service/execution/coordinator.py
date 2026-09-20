@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from deepresearcher.config import Settings
-from deepresearcher.orchestration.graph import build_graph
+from deepresearcher.graph import build_graph
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore

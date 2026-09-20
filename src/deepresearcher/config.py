@@ -106,7 +106,7 @@ class AgentConfig:
     finalization_attempts: int = 2
     # Supervisor 的研究轮次上限；一轮包含一次评估、派发和汇总。
     max_research_rounds: int = 3
-    # Reflection 判定 fatal 后，Supervisor 允许组织的修复循环次数。
+    # Reviewer 判定 fatal 后，Supervisor 允许组织的修复循环次数。
     max_post_review_recovery_cycles: int = 1
     # Writer 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     writer_max_turns: int = 8
@@ -117,9 +117,9 @@ class AgentConfig:
     # 引用总条数不设上限——writer_max_selected_evidence 已移除：它制造过两次
     # 提交死循环，而聚焦度实际由"只能引用已读"+审阅把关，与条数无关。
     writer_read_batch_size: int = 30
-    # reflection 对内容审查抖动/坏 JSON 的额外重试次数（传输重试另有其层）。
-    reflection_retry_attempts: int = 1
-    reflection_retry_initial_seconds: float = 2.0
+    # reviewer 对内容审查抖动/坏 JSON 的额外重试次数（传输级重试由 openai SDK 内建消化）。
+    reviewer_retry_attempts: int = 1
+    reviewer_retry_initial_seconds: float = 2.0
     max_subtasks_per_round: int = 12
     max_parallel_workers: int = 3
     # Supervisor 当前可激活并交给研究综合稿选择的 Evidence 上限。
@@ -325,9 +325,9 @@ def _agent_config() -> AgentConfig:
         ),
         writer_max_markdown_chars=max(1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)),
         writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
-        reflection_retry_attempts=max(0, _int_env("AGENT_REFLECTION_RETRY_ATTEMPTS", 1)),
-        reflection_retry_initial_seconds=max(
-            0.0, _float_env("AGENT_REFLECTION_RETRY_INITIAL_SECONDS", 2.0)
+        reviewer_retry_attempts=max(0, _int_env("AGENT_REVIEWER_RETRY_ATTEMPTS", 1)),
+        reviewer_retry_initial_seconds=max(
+            0.0, _float_env("AGENT_REVIEWER_RETRY_INITIAL_SECONDS", 2.0)
         ),
         max_subtasks_per_round=max(1, _int_env("AGENT_MAX_SUBTASKS_PER_ROUND", 12)),
         max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),

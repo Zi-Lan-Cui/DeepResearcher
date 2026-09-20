@@ -10,7 +10,7 @@ ALL_PROMPTS = (
     "writer",
     "router",
     "quick_answer",
-    "reflection",
+    "reviewer",
     "language",
 )
 
@@ -30,7 +30,7 @@ def test_language_directive_matches_template_byte_for_byte():
 def test_role_prompts_keep_identity_markers():
     assert "# 角色" in load_prompt("researcher")
     assert "Supervisor" in load_prompt("supervisor")
-    assert "整体审阅者" in load_prompt("reflection")
+    assert "整体审阅者" in load_prompt("reviewer")
     # writer 保留语言占位符（由调用点 .replace 填充）
     assert "__LANG__" in load_prompt("writer")
 
@@ -52,7 +52,7 @@ def test_prompts_keep_markdown_section_snapshot():
         "researcher": ("# 角色", "## 职责边界", "## 检索与读取", "## 完成契约"),
         "supervisor": ("# 角色", "## 职责边界", "## 工具", "## 预算与完成契约"),
         "writer": ("# 角色与边界", "## 交付原则", "## 写作质量", "## 完成契约"),
-        "reflection": ("# 角色", "## 审阅目标", "## 问题分级", "## 输出边界"),
+        "reviewer": ("# 角色", "## 审阅目标", "## 问题分级", "## 输出边界"),
     }
     for prompt_name, sections in expected_sections.items():
         prompt = load_prompt(prompt_name)

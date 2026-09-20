@@ -13,8 +13,8 @@ from typing import Any
 from sqlalchemy import text
 
 from deepresearcher.config import Settings, get_settings
+from deepresearcher.graph import build_graph
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.orchestration.graph import build_graph
 from deepresearcher.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.publisher import RunEventPublisher

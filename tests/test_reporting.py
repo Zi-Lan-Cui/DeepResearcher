@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from deepresearcher.orchestration.nodes import (
+from deepresearcher.nodes import (
     render_final_report_node,
 )
 from deepresearcher.reporting import (

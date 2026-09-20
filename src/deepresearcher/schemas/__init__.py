@@ -10,8 +10,8 @@
 """
 
 from deepresearcher.schemas.decisions import (
-    ReflectionDecision,
     ResearchDirectionDecision,
+    ReviewDecision,
     RouteDecision,
 )
 from deepresearcher.schemas.reporting import (
@@ -70,7 +70,7 @@ __all__ = [
     "ReadSources",
     "ReadDocument",
     "ReadWorkingSet",
-    "ReflectionDecision",
+    "ReviewDecision",
     "ReportBrief",
     "ResearchAspect",
     "ResearchAgentResult",

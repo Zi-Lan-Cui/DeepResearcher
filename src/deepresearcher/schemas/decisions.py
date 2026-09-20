@@ -54,7 +54,7 @@ class ResearchDirectionDecision(BaseModel):
         return self
 
 
-class ReflectionDecision(BaseModel):
+class ReviewDecision(BaseModel):
     """整体审阅只报告问题；流程根据 fatal 问题决定是否退回。"""
 
     feedback: str

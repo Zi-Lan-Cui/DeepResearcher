@@ -5,6 +5,7 @@ import pytest
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 
+from deepresearcher import graph, nodes
 from deepresearcher.agents.clarifier.state import ClarifierAgentState
 from deepresearcher.agents.writer import ReportWriter
 from deepresearcher.config import (
@@ -15,14 +16,13 @@ from deepresearcher.config import (
     SearchConfig,
     Settings,
 )
+from deepresearcher.execution_boundary import execute_node
+from deepresearcher.graph import build_graph
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events.models import NodeEvent
-from deepresearcher.orchestration import graph, nodes
-from deepresearcher.orchestration.execution_boundary import execute_node
-from deepresearcher.orchestration.graph import build_graph
 from deepresearcher.routing import (
     NodeName,
-    route_after_reflection,
+    route_after_reviewer,
     route_after_supervisor,
     route_after_writer,
 )
@@ -412,16 +412,16 @@ def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypa
     assert "writer boom" not in result["report"]
 
 
-def test_compiled_graph_reflection_failure_renders_failure_report(tmp_path, monkeypatch):
+def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
     monkeypatch.setattr(graph, "ResearchSupervisor", _CompleteSupervisor)
     monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
 
-    async def fail_reflection(_state, _llm):
+    async def fail_reviewer(_state, _llm):
         raise RuntimeError("reflection boom")
 
-    monkeypatch.setattr(graph.nodes, "reflection", fail_reflection)
+    monkeypatch.setattr(graph.nodes, "reviewer", fail_reviewer)
 
     result = asyncio.run(
         build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
@@ -461,11 +461,9 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
     assert type(caught.value).__name__ != "RunError"
 
 
-def test_approved_reflection_bypasses_supervisor_and_renders_final_report():
-    assert (
-        route_after_reflection({"review": {"status": "approved"}}) == NodeName.RENDER_FINAL_REPORT
-    )
-    assert route_after_reflection({"review": {"status": "rejected"}}) == NodeName.SUPERVISOR
+def test_approved_reviewer_bypasses_supervisor_and_renders_final_report():
+    assert route_after_reviewer({"review": {"status": "approved"}}) == NodeName.RENDER_FINAL_REPORT
+    assert route_after_reviewer({"review": {"status": "rejected"}}) == NodeName.SUPERVISOR
 
 
 def test_terminal_phase_trunk_overrides_every_business_handoff():
@@ -477,10 +475,10 @@ def test_terminal_phase_trunk_overrides_every_business_handoff():
     assert route_after_writer(exhausted_writer) == NodeName.RENDER_FINAL_REPORT
     assert route_after_writer(
         {"run": {"phase": "reviewing"}, "writer": {"status": "completed"}}
-    ) == (NodeName.REFLECTION)
+    ) == (NodeName.REVIEWER)
     # 审阅还在等回流，但 Supervisor 宣告终止 → 仍然去渲染
     assert (
-        route_after_reflection({"run": {"phase": "rendering"}, "review": {"status": "rejected"}})
+        route_after_reviewer({"run": {"phase": "rendering"}, "review": {"status": "rejected"}})
         == NodeName.RENDER_FINAL_REPORT
     )
     # supervisor_next 的业务交接在正常态生效
