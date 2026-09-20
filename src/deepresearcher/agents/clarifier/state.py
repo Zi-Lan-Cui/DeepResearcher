@@ -13,7 +13,7 @@ from deepresearcher.schemas import RunStatus
 
 
 @dataclass
-class ClarifierRuntimeContext:
+class ClarifierLoopContext:
     """不进入 checkpoint 的 Clarifier 工具执行上下文。"""
 
     scope: AgentExecutionScope

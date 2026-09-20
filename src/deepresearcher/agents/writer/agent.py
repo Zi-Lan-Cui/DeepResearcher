@@ -20,7 +20,7 @@ from deepresearcher.agents.middleware import (
 from deepresearcher.agents.writer.state import (
     PreparedEvidence,
     ValidatedDraft,
-    WriterRuntimeContext,
+    WriterLoopContext,
     evidence_index_card,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
@@ -90,7 +90,7 @@ class ReportWriter:
             system_prompt=_WRITER_SYSTEM_PROMPT.replace("__LANG__", config.output_language)
             + "\n"
             + language_directive(config.output_language),
-            context_schema=WriterRuntimeContext,
+            context_schema=WriterLoopContext,
             middleware=cast(
                 Any,
                 build_agent_middleware(
@@ -136,7 +136,7 @@ class ReportWriter:
         if not prepared.by_id:
             return self._render_insufficient_evidence(state, evidences)
 
-        runtime = self._writer_runtime_context(
+        loop_context = self._build_loop_context(
             prepared.by_id,
             run_id=str(state.get("run_id") or ""),
         )
@@ -148,42 +148,44 @@ class ReportWriter:
         try:
             result = await self._agent_loop.ainvoke(
                 cast(Any, {"messages": messages}),
-                context=runtime,
+                context=loop_context,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
         except GraphRecursionError:
             result = {"messages": []}
-            runtime.last_error = runtime.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
-        if runtime.validated_draft is None:
-            self._recover_inline_draft(runtime, result.get("messages", []))
-        if runtime.validated_draft is None:
+            loop_context.last_error = (
+                loop_context.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
+            )
+        if loop_context.validated_draft is None:
+            self._recover_inline_draft(loop_context, result.get("messages", []))
+        if loop_context.validated_draft is None:
             return self._render_exhausted_result(
                 state,
-                last_markdown=runtime.last_markdown
+                last_markdown=loop_context.last_markdown
                 or self._last_submitted_markdown(result.get("messages", [])),
-                error=runtime.last_error or "Writer 未提交有效报告。",
+                error=loop_context.last_error or "Writer 未提交有效报告。",
             )
         self._emit(
             "writer_draft_validated",
             {
-                "read_evidence_ids": sorted(runtime.read_evidence_ids),
-                "selected_evidence_ids": runtime.validated_draft.selected_evidence_ids,
-                "normalized_markdown": runtime.validated_draft.body,
+                "read_evidence_ids": sorted(loop_context.read_evidence_ids),
+                "selected_evidence_ids": loop_context.validated_draft.selected_evidence_ids,
+                "normalized_markdown": loop_context.validated_draft.body,
             },
         )
         return self._render_ready_result(
             state=state,
-            draft=runtime.validated_draft,
+            draft=loop_context.validated_draft,
             evidence_count=len(prepared.by_id),
         )
 
-    def _writer_runtime_context(
+    def _build_loop_context(
         self,
         evidence_by_id: dict[str, Evidence],
         *,
         run_id: str,
-    ) -> WriterRuntimeContext:
-        return WriterRuntimeContext(
+    ) -> WriterLoopContext:
+        return WriterLoopContext(
             scope=AgentExecutionScope(run_id=run_id, agent_name="Writer"),
             evidence_by_id=evidence_by_id,
             emit=self._emit,
@@ -203,7 +205,7 @@ class ReportWriter:
         return ""
 
     def _recover_inline_draft(
-        self, runtime: WriterRuntimeContext, messages: Sequence[BaseMessage]
+        self, loop_context: WriterLoopContext, messages: Sequence[BaseMessage]
     ) -> None:
         """救回跳过 CompleteReport、把报告直接写成收尾正文的草稿。
 
@@ -216,35 +218,37 @@ class ReportWriter:
             text = str(message.text or "")
             if len(text) < _INLINE_DRAFT_MIN_CHARS or "[[cite:" not in text.lower():
                 continue
-            runtime.last_markdown = text
-            if len(text) > runtime.max_markdown_chars:
-                runtime.last_error = (
-                    f"模型直接输出的正文超过上限 {runtime.max_markdown_chars} 字符，未予救回。"
+            loop_context.last_markdown = text
+            if len(text) > loop_context.max_markdown_chars:
+                loop_context.last_error = (
+                    f"模型直接输出的正文超过上限 {loop_context.max_markdown_chars} 字符，未予救回。"
                 )
-                self._emit("writer_inline_draft_rejected", {"error": runtime.last_error})
+                self._emit("writer_inline_draft_rejected", {"error": loop_context.last_error})
                 return
             try:
                 body, bindings, citations = validate_and_bind(
                     text,
                     {
-                        item: runtime.evidence_by_id[item]
-                        for item in runtime.read_evidence_ids
-                        if item in runtime.evidence_by_id
+                        item: loop_context.evidence_by_id[item]
+                        for item in loop_context.read_evidence_ids
+                        if item in loop_context.evidence_by_id
                     },
                 )
             except ValueError as exc:
-                runtime.last_error = f"模型直接输出正文而未提交，本地引用校验亦未通过：{exc}"
+                loop_context.last_error = f"模型直接输出正文而未提交，本地引用校验亦未通过：{exc}"
                 self._emit("writer_inline_draft_rejected", {"error": str(exc), "markdown": text})
                 return
             cited = extract_cite_ids(text)
             selected = [
-                item for item in dict.fromkeys(sorted(cited)) if item in runtime.read_evidence_ids
+                item
+                for item in dict.fromkeys(sorted(cited))
+                if item in loop_context.read_evidence_ids
             ]
             if not selected:
-                runtime.last_error = "模型直接输出的正文未引用任何已读取 Evidence。"
-                self._emit("writer_inline_draft_rejected", {"error": runtime.last_error})
+                loop_context.last_error = "模型直接输出的正文未引用任何已读取 Evidence。"
+                self._emit("writer_inline_draft_rejected", {"error": loop_context.last_error})
                 return
-            runtime.validated_draft = ValidatedDraft(body, bindings, citations, selected)
+            loop_context.validated_draft = ValidatedDraft(body, bindings, citations, selected)
             self._emit(
                 "writer_inline_draft_recovered",
                 {
