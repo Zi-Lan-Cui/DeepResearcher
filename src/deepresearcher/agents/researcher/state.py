@@ -3,9 +3,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TypedDict
-
-from langchain_core.messages import BaseMessage
 
 from deepresearcher.context.concurrency import ToolExecutionGate
 from deepresearcher.context.execution import AgentExecutionScope
@@ -14,24 +11,6 @@ from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
 from deepresearcher.tools.web.documents import DocumentRef
 from deepresearcher.tools.web.search.models import SearchCandidate
-
-
-class ResearchAgentState(TypedDict, total=False):
-    """ResearchAgent 子图可保存、可恢复的业务状态。"""
-
-    messages: list[BaseMessage]
-    task: SubTask
-    candidates: dict[str, SearchCandidate]
-    evidences: list[Evidence]
-    source_refs: list[str]
-    queries: list[str]
-    read_urls: list[str]
-    skipped: list[str]
-    failures: list[str]
-    remaining_gaps: list[str]
-    conclusion: str
-    status: str
-    stop_reason: str
 
 
 def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[str, object]:
