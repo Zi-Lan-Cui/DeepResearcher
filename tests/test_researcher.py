@@ -749,3 +749,25 @@ def test_direction_evidence_pool_releases_slots_without_deleting_archive():
     pool.release_evidence(["e2"])
     assert pool.restore_evidence(["e1"]) == ["e1"]
     assert pool.active_evidence_ids == {"e1", "e3"}
+
+
+def test_researcher_agent_crash_passes_through_as_failed_not_dressed_up():
+    """执行真相穿透:图级崩溃必须记 execution_status=failed/direction_agent_failed,
+    最小保守结果只改交付(conclusion/gaps),不得把炸过的方向粉饰成 completed。"""
+    agent = researcher_agent(AgentConfig(), decisions=[])
+
+    class ExplodingLoop:
+        async def ainvoke(self, *_args, **_kwargs):
+            raise RuntimeError("graph exploded")
+
+    agent._agent_loop = ExplodingLoop()
+    result = asyncio.run(agent.run(TASK))
+
+    task_result = result.task_result
+    assert task_result.execution_status == "failed"
+    assert task_result.stop_reason == "direction_agent_failed"
+    assert task_result.stop_detail == "graph exploded"
+    assert task_result.coverage_status == "insufficient"
+    assert any("direction_agent_failed" in item for item in task_result.failures)
+    # 交付层仍拿到降级说明与缺口标注(证据为零时的兜底文案不变)
+    assert "未获得可用 Evidence。" in task_result.remaining_gaps
