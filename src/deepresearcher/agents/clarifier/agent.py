@@ -3,6 +3,7 @@
 from typing import Any, cast
 
 from langchain.agents import create_agent
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
@@ -20,7 +21,7 @@ from deepresearcher.agents.middleware.factory import (
 from deepresearcher.agents.middleware.profile import MiddlewareProfile
 from deepresearcher.config import AgentConfig, language_directive
 from deepresearcher.context.execution import AgentExecutionScope
-from deepresearcher.llm import LLMConfigurationError, LLMInvoker
+from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.prompts import load_prompt
 
 _SYSTEM_PROMPT = load_prompt("clarifier")
@@ -29,15 +30,15 @@ _SYSTEM_PROMPT = load_prompt("clarifier")
 class Clarifier:
     def __init__(
         self,
-        llm: LLMInvoker,
+        llm: BaseChatModel,
         config: AgentConfig,
         *,
         context_window_tokens: int = 32_768,
     ):
         if llm is None:
-            raise LLMConfigurationError("Clarifier 需要已装配的 LLMInvoker。")
+            raise LLMConfigurationError("Clarifier 需要已装配的模型。")
         self.graph = create_agent(
-            model=cast(Any, llm),
+            model=llm,
             tools=build_clarifier_tools(),
             system_prompt=_SYSTEM_PROMPT + "\n" + language_directive(config.output_language),
             state_schema=ClarifierAgentState,
@@ -47,7 +48,7 @@ class Clarifier:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="Clarifier",
-                        model=getattr(llm, "chat_model", None),
+                        model=llm,
                         max_turns=MAX_CLARIFICATION_ROUNDS + 4,
                         context_window_tokens=context_window_tokens,
                         serial_tools={"AskClarification", "ClarificationComplete"},

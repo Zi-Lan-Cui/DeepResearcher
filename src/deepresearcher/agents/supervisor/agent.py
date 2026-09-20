@@ -9,6 +9,7 @@ import asyncio
 from typing import Any, cast
 
 from langchain.agents import create_agent
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from deepresearcher.agents.middleware import (
@@ -32,7 +33,7 @@ from deepresearcher.config import AgentConfig, language_directive
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.llm import LLMConfigurationError, LLMInvoker
+from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import load_prompt, render_data_section
@@ -74,7 +75,7 @@ class ResearchSupervisor:
 
     def __init__(
         self,
-        llm: LLMInvoker,
+        llm: BaseChatModel,
         config: AgentConfig,
         *,
         research_agent: ResearchAgent,
@@ -82,7 +83,7 @@ class ResearchSupervisor:
         context_window_tokens: int = 32_768,
     ):
         if llm is None:
-            raise LLMConfigurationError("ResearchSupervisor 需要已装配的 LLMInvoker。")
+            raise LLMConfigurationError("ResearchSupervisor 需要已装配的模型。")
         if research_agent is None:
             raise ValueError("ResearchSupervisor 需要 ResearchAgent。")
         self.llm = llm
@@ -99,7 +100,7 @@ class ResearchSupervisor:
             emit=self._emit_audit_event,
         )
         self._agent_loop = create_agent(
-            model=cast(Any, llm),
+            model=llm,
             tools=build_supervisor_tools(),
             system_prompt=_SUPERVISOR_SYSTEM_PROMPT
             + "\n"
@@ -110,7 +111,7 @@ class ResearchSupervisor:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="Supervisor",
-                        model=getattr(self.llm, "chat_model", None),
+                        model=self.llm,
                         # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
                         # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
                         # 轮次配额由 remaining_rounds 提示 + services.delegate_research

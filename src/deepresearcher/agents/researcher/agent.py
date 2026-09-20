@@ -8,6 +8,7 @@ import asyncio
 from typing import Any, Literal, cast
 
 from langchain.agents import create_agent
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
 
@@ -26,7 +27,7 @@ from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig, language_directive
 from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.context.runtime import get_runtime_environment
-from deepresearcher.llm import LLMConfigurationError, LLMInvoker
+from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import load_prompt, render_data_section
@@ -43,7 +44,7 @@ class ResearchAgent:
 
     def __init__(
         self,
-        llm: LLMInvoker,
+        llm: BaseChatModel,
         config: AgentConfig,
         *,
         search_tool: SearchTool,
@@ -53,7 +54,7 @@ class ResearchAgent:
         material_store: ResearchMaterialStore | None = None,
     ):
         if llm is None:
-            raise LLMConfigurationError("ResearchAgent 需要已装配的 LLMInvoker。")
+            raise LLMConfigurationError("ResearchAgent 需要已装配的模型。")
         if search_tool is None or reader_tool is None:
             raise ValueError("ResearchAgent 需要 SearchTool 和 SourceReaderTool。")
         self.llm = llm
@@ -72,7 +73,7 @@ class ResearchAgent:
             emit=self._emit,
         )
         self._agent_loop = create_agent(
-            model=cast(Any, self.llm),
+            model=self.llm,
             tools=build_researcher_tools(),
             system_prompt=_RESEARCHER_SYSTEM_PROMPT
             + "\n"
@@ -83,7 +84,7 @@ class ResearchAgent:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="ResearchAgent",
-                        model=getattr(self.llm, "chat_model", None),
+                        model=self.llm,
                         max_turns=self.config.research_agent_max_turns + 1,
                         context_window_tokens=context_window_tokens,
                         retry_tools=[

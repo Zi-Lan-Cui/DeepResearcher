@@ -1,6 +1,6 @@
 """测试共享 fake 与类型收口助手。
 
-生产构造器的 ``llm`` / ``state`` 参数是具体类型（LLMInvoker / ResearchState）；
+生产构造器的 ``llm`` / ``state`` 参数是具体类型（BaseChatModel / ResearchState）；
 结构化兼容的测试替身经由 ``as_llm`` / ``as_state`` 单点收口，
 把 ``cast`` 集中在这一处，而不是散落到每个调用点。
 """
@@ -11,13 +11,13 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.writer import CompleteReport, ReadEvidence, ReportWriter
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.llm import LLMInvoker
 from deepresearcher.schemas import (
     Citation,
     MarkdownReportDraft,
@@ -35,9 +35,9 @@ from deepresearcher.state import ResearchState, SubTask
 from deepresearcher.tools import SearchTool
 
 
-def as_llm(fake: Any) -> LLMInvoker:
-    """把结构化兼容的 fake LLM 收口为 LLMInvoker 类型。"""
-    return cast(LLMInvoker, fake)
+def as_llm(fake: Any) -> BaseChatModel:
+    """把结构化兼容的 fake LLM 收口为 BaseChatModel 类型。"""
+    return cast(BaseChatModel, fake)
 
 
 def as_state(partial: dict[str, Any]) -> ResearchState:
@@ -107,23 +107,6 @@ REPORT_BRIEF = {
     "required_points": ["给出有来源的结论"],
     "caveats": [],
 }
-
-
-class TextLLM:
-    """即时回答假模型：只有文本接口与 bind_tools。"""
-
-    async def ainvoke_text(self, _messages, **_kwargs):
-        return type("Response", (), {"content": "这是显式注入的即时回答。"})()
-
-    def bind_tools(self, _tools, **_kwargs):
-        return self
-
-
-class GraphLLM:
-    """只测试图装配和路由时使用的最小工具绑定假模型。"""
-
-    def bind_tools(self, _tools, tool_choice="any", **_kwargs):
-        return self
 
 
 class _WriterToolRunnable:

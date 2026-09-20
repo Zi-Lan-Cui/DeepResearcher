@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import update
 
 from deepresearcher.config import Settings
-from deepresearcher.llm.errors import LLMUnavailableError, classify_llm_error
+from deepresearcher.llm import LLMUnavailableError, classify_llm_error
 from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
 from deepresearcher.orchestration.graph import build_graph

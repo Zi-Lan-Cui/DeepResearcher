@@ -10,6 +10,7 @@ from langchain.agents.middleware import (
     SummarizationMiddleware,
     ToolCallLimitMiddleware,
 )
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
 from deepresearcher.agents.middleware.profile import MiddlewareProfile
@@ -43,7 +44,9 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
             token_counter=count_message_tokens,
         )
     ]
-    if profile.model is not None:
+    # 压缩中间件会向模型要真实 BaseChatModel 能力(with_retry 等)；None 与测试
+    # 窄假模型都按"未配置压缩模型"处理——生产恒为 ChatOpenAI,始终启用压缩。
+    if isinstance(profile.model, BaseChatModel):
         middleware.insert(
             0,
             SummarizationMiddleware(

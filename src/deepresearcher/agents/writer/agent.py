@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from langchain.agents import create_agent
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
 
@@ -29,7 +30,7 @@ from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.errors import WriterGenerationError
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.llm import LLMConfigurationError, LLMInvoker
+from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.logger import get_logger
@@ -65,7 +66,7 @@ class ReportWriter:
 
     def __init__(
         self,
-        llm: LLMInvoker,
+        llm: BaseChatModel,
         config: AgentConfig,
         *,
         render_incomplete: Callable[[ResearchState], str],
@@ -74,7 +75,7 @@ class ReportWriter:
         context_window_tokens: int = 32_768,
     ):
         if llm is None:
-            raise LLMConfigurationError("ReportWriter 需要已装配的 LLMInvoker。")
+            raise LLMConfigurationError("ReportWriter 需要已装配的模型。")
         self.llm = llm
         self.config = config
         self._render_incomplete = render_incomplete
@@ -82,7 +83,7 @@ class ReportWriter:
         self._artifact_max_text_chars = artifact_max_text_chars
         self._logger = get_logger("deepresearcher.agents.writer")
         self._agent_loop = create_agent(
-            model=cast(Any, self.llm),
+            model=self.llm,
             tools=build_writer_tools(
                 turn_budget=config.writer_max_turns,
                 read_batch=config.writer_read_batch_size,
@@ -96,7 +97,7 @@ class ReportWriter:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="Writer",
-                        model=getattr(self.llm, "chat_model", None),
+                        model=self.llm,
                         max_turns=self.config.writer_max_turns,
                         context_window_tokens=context_window_tokens,
                         # 提交前输出纯文本不算结束：踢回重试，耗尽后由 _recover_inline_draft 兜底。

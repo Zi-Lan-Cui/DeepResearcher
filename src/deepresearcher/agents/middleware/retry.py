@@ -7,7 +7,7 @@ from typing import cast
 from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddleware
 from langchain_core.tools import BaseTool
 
-from deepresearcher.llm.errors import LLMConfigurationError
+from deepresearcher.llm import LLMConfigurationError
 
 
 def retry_on(error: Exception) -> bool:
