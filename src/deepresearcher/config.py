@@ -198,15 +198,6 @@ class AgentConfig:
             )
 
 
-def language_directive(language: str) -> str:
-    """生成注入各 agent/node system prompt 的语言纪律行（模板见 prompts/language.md）。"""
-    from deepresearcher.prompts import (
-        load_prompt,  # 延迟导入，避免 config 被 prompts 反向依赖时成环
-    )
-
-    return load_prompt("language").format(language=language)
-
-
 @dataclass(frozen=True)
 class SearchConfig:
     baidu_api_key: str = ""

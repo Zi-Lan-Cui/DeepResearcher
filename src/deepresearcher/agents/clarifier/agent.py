@@ -19,10 +19,10 @@ from deepresearcher.agents.middleware.factory import (
     build_agent_middleware,
 )
 from deepresearcher.agents.middleware.profile import MiddlewareProfile
-from deepresearcher.config import AgentConfig, language_directive
+from deepresearcher.config import AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.prompts import load_prompt
+from deepresearcher.prompts import language_directive, load_prompt
 
 _SYSTEM_PROMPT = load_prompt("clarifier")
 

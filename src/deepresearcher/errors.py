@@ -19,15 +19,3 @@ class AgentError(RuntimeError):
         self.code = code or type(self).code
         self.retryable = type(self).retryable if retryable is None else retryable
         self.detail = detail
-
-
-class WriterError(AgentError):
-    """研究报告无法生成可审阅、可追溯的段落草稿。"""
-
-    code = "writer_error"
-
-
-class WriterGenerationError(WriterError):
-    """LLM 或结构化输出层无法生成报告草稿，不能由改稿流程安全修复。"""
-
-    code = "writer_generation"

@@ -11,19 +11,26 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 
-from deepresearcher.agents.middleware.budget import MessageBudget, message_text
 from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
 from deepresearcher.agents.middleware.profile import MiddlewareProfile
 from deepresearcher.agents.middleware.retry import model_retry, tool_retry
+from deepresearcher.evidence.tokens import get_token_estimator
 
-_MESSAGE_BUDGET = MessageBudget()
+_TOKEN_ESTIMATOR = get_token_estimator()
 AGENT_RECURSION_LIMIT = 1_000
+
+
+def _message_text(message: BaseMessage) -> str:
+    """把消息中用于计数的内容规范化为字符串。"""
+    content = message.content
+    return content if isinstance(content, str) else str(content)
 
 
 def count_message_tokens(messages) -> int:
     """使用项目 tokenizer 估算 LangChain 消息总量。"""
-    return sum(_MESSAGE_BUDGET.estimator.count(message_text(message)) for message in messages)
+    return sum(_TOKEN_ESTIMATOR.count(_message_text(message)) for message in messages)
 
 
 def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:

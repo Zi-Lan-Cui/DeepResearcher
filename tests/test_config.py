@@ -13,7 +13,7 @@ def test_settings_are_cached_and_grouped():
 
 
 def test_output_language_default_and_directive():
-    from deepresearcher.config import language_directive
+    from deepresearcher.prompts import language_directive
 
     assert AgentConfig().output_language == "中文"
     directive = language_directive("English")
