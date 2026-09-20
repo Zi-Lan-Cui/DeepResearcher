@@ -4,7 +4,7 @@ import hashlib
 import pytest
 from langchain_core.messages import AIMessage
 
-from deepresearcher.agents.researcher import ResearchAgent
+from deepresearcher.agents.researcher import ResearchAgent, services
 from deepresearcher.agents.researcher.state import ResearcherLoopState
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
@@ -166,13 +166,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     )
     loop_state = ResearcherLoopState()
     first = asyncio.run(
-        agent._search_sources(
-            TASK,
-            ["分页测试"],
-            "发现候选",
-            loop_state=loop_state,
-            event_context={},
-        )
+        services.search_sources(agent._deps, TASK, loop_state, {}, ["分页测试"], "发现候选")
     )
 
     assert first["result_count"] == 12
@@ -183,13 +177,8 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     assert first["next_offset"] == SEARCH_RESULTS_PREVIEW_COUNT  # 预览消费 0..N-1 → 下一页从 N
 
     page = asyncio.run(
-        agent._list_search_results(
-            TASK,
-            first["search_id"],
-            5,
-            3,
-            "查看下一页",
-            loop_state=loop_state,
+        services.list_search_results(
+            agent._deps, TASK, loop_state, first["search_id"], 5, 3, "查看下一页"
         )
     )
 
@@ -237,13 +226,8 @@ def test_source_reader_reuses_document_from_material_store():
 def test_list_search_results_rejects_another_direction_handle():
     agent = researcher_agent(AgentConfig(), [])
     result = asyncio.run(
-        agent._list_search_results(
-            TASK,
-            "search-not-owned",
-            0,
-            5,
-            "越权查看",
-            loop_state=ResearcherLoopState(),
+        services.list_search_results(
+            agent._deps, TASK, ResearcherLoopState(), "search-not-owned", 0, 5, "越权查看"
         )
     )
 
@@ -503,26 +487,20 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
     loop_state.documents[document.document_id] = document
 
     grep = asyncio.run(
-        agent._grep_document(
-            document.document_id,
-            "延迟",
-            1,
-            0,
-            "定位数据",
-            loop_state=loop_state,
+        services.grep_document(
+            agent._deps, loop_state, document.document_id, "延迟", 1, 0, "定位数据"
         )
     )
     read = asyncio.run(
-        agent._read_document(
-            document.document_id,
-            [(2, 3)],
-            "读取数据",
-            loop_state=loop_state,
-        )
+        services.read_document(agent._deps, loop_state, document.document_id, [(2, 3)], "读取数据")
     )
     added = asyncio.run(
-        agent._add_evidence(
+        services.add_evidence(
+            agent._deps,
             TASK,
+            loop_state,
+            {},
+            asyncio.Lock(),
             [
                 {
                     "document_id": document.document_id,
@@ -540,9 +518,6 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
                 },
             ],
             "批量提交",
-            loop_state=loop_state,
-            event_context={},
-            commit_lock=asyncio.Lock(),
         )
     )
 
@@ -573,8 +548,12 @@ def test_add_evidence_validates_before_ranking_by_confidence():
     loop_state.documents[document.document_id] = document
 
     result = asyncio.run(
-        agent._add_evidence(
+        services.add_evidence(
+            agent._deps,
             TASK,
+            loop_state,
+            {},
+            asyncio.Lock(),
             [
                 {
                     "document_id": document.document_id,
@@ -596,9 +575,6 @@ def test_add_evidence_validates_before_ranking_by_confidence():
                 },
             ],
             "验证后排序",
-            loop_state=loop_state,
-            event_context={},
-            commit_lock=asyncio.Lock(),
         )
     )
 
@@ -631,8 +607,12 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
     commit_lock = asyncio.Lock()
 
     async def submit(claim: str, quote: str):
-        return await agent._add_evidence(
+        return await services.add_evidence(
+            agent._deps,
             TASK,
+            loop_state,
+            {},
+            commit_lock,
             [
                 {
                     "document_id": document.document_id,
@@ -642,9 +622,6 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
                 }
             ],
             "并发提交",
-            loop_state=loop_state,
-            event_context={},
-            commit_lock=commit_lock,
         )
 
     async def submit_both():

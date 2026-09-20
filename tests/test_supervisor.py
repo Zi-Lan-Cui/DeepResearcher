@@ -5,7 +5,7 @@ import re
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepresearcher.agents.supervisor import ResearchSupervisor
+from deepresearcher.agents.supervisor import ResearchSupervisor, services
 from deepresearcher.agents.supervisor.state import (
     SupervisorLoopState,
     evidence_card,
@@ -1314,17 +1314,26 @@ def _delegate_context(run_id: str, current_round: int, agent, *, max_rounds: int
     )
     context = SupervisorLoopContext(
         scope=AgentExecutionScope(run_id=run_id, agent_name="Supervisor"),
-        supervisor=supervisor,
+        deps=supervisor._deps,
         loop_state=loop_state,
     )
     return supervisor, context
+
+
+def _delegate(context, topic: str) -> dict:
+    """测试转发:与生产 tools.py 同一入口,参数全部来自 context 名词字段。"""
+    return asyncio.run(
+        services.delegate_research(
+            context.deps, context.loop_state, context.scope, context.tool_lock, topic
+        )
+    )
 
 
 def test_delegate_research_blocks_when_round_budget_exhausted():
     """轮次超过 max_research_rounds → 返回 blocked 且绝不派发子 Agent。"""
     agent = _RecordingDelegateAgent()
     supervisor, context = _delegate_context("run-x", current_round=5, agent=agent, max_rounds=3)
-    result = asyncio.run(supervisor._delegate_research(context, "一个方向"))
+    result = _delegate(context, "一个方向")
     assert result["status"] == "blocked"
     assert result["reason"] == "round_budget_exhausted"
     assert agent.task_run_ids == []
@@ -1334,13 +1343,13 @@ def test_delegate_research_dedups_topics_and_scopes_run_id():
     """同 topic 第二次 skipped；任务 run_id 取自各自 context.scope.run_id，无跨 run 泄漏。"""
     agent_a = _RecordingDelegateAgent()
     sup_a, ctx_a = _delegate_context("run-a", current_round=1, agent=agent_a)
-    first = asyncio.run(sup_a._delegate_research(ctx_a, "重复主题"))
-    second = asyncio.run(sup_a._delegate_research(ctx_a, "重复主题"))
+    first = _delegate(ctx_a, "重复主题")
+    second = _delegate(ctx_a, "重复主题")
     assert first["status"] == "completed"
     assert second["status"] == "skipped" and second["reason"] == "duplicate_or_budget"
     assert agent_a.task_run_ids == ["run-a"]
 
     agent_b = _RecordingDelegateAgent()
     sup_b, ctx_b = _delegate_context("run-b", current_round=1, agent=agent_b)
-    asyncio.run(sup_b._delegate_research(ctx_b, "重复主题"))
+    _delegate(ctx_b, "重复主题")
     assert agent_b.task_run_ids == ["run-b"]
