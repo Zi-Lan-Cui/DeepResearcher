@@ -224,7 +224,9 @@ class ResearchSupervisor:
             raise
         except Exception as exc:
             loop_state.set_stop_reason(StopReason.AGENT_FAILED)
-            loop_state.coverage_gaps.append(str(exc)[: self.config.supervisor_preview_chars])
+            # 异常文本进 failure_details 而非 coverage_gaps：后者会被渲染为用户报告的
+            # "未闭合缺口"，执行故障不得伪装成研究缺口；原文上限走截断配置。
+            loop_state.failure_details.append(str(exc)[: self.config.supervisor_preview_chars])
         else:
             generated = result.get("messages", []) if isinstance(result, dict) else []
             history.extend(generated[len(prepared) :])
@@ -466,6 +468,8 @@ class ResearchSupervisor:
                 "round": round_no,
                 "task_count": task_count,
                 "outcome": outcome,
+                # 内部事件允许携带截断后的异常详情；用户报告通道不放。
+                "failure_details": list(loop_state.failure_details),
                 "completed_tasks": sum(
                     item.execution_status == "completed"
                     for item in loop_state.task_results
@@ -549,7 +553,9 @@ class ResearchSupervisor:
                     ""
                     if loop_state.sufficient
                     else self._describe_research_stop(
-                        loop_state.stop_reason, loop_state.coverage_gaps
+                        loop_state.stop_reason,
+                        loop_state.coverage_gaps,
+                        loop_state.failure_details,
                     )
                 ),
             ),
@@ -680,12 +686,23 @@ class ResearchSupervisor:
         )
 
     @staticmethod
-    def _describe_research_stop(stop_reason: StopReason | None, coverage_gaps: list[str]) -> str:
+    def _describe_research_stop(
+        stop_reason: StopReason | None,
+        coverage_gaps: list[str],
+        failure_details: list[str],
+    ) -> str:
         """把研究无法继续的原因保留给最终不完整报告与事件诊断。
 
         文案单一来源在 ``StopReason.description``；这里只补充逐次运行的
-        具体缺口细节（coverage_gaps），不再各自维护字符串清单。
+        具体细节，不再各自维护字符串清单。执行失败（AGENT_FAILED）取
+        failure_details，其余取 coverage_gaps——两条通道不互串内容。
         """
+        if stop_reason is StopReason.AGENT_FAILED:
+            detail = next(
+                (item for item in reversed(failure_details) if item.strip()),
+                "未记录到异常详情，详见运行事件流。",
+            )
+            return f"{stop_reason.description} {detail}"
         detail = next(
             (gap for gap in reversed(coverage_gaps) if gap.strip()), "未形成可验证的完整覆盖。"
         )
