@@ -5,7 +5,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from deepresearcher.agents.researcher import ResearchAgent
-from deepresearcher.agents.researcher.state import DirectionRunState
+from deepresearcher.agents.researcher.state import ResearcherLoopState
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
@@ -164,13 +164,13 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
         reader_tool=FakeReader(),
         material_store=materials,
     )
-    run_state = DirectionRunState()
+    loop_state = ResearcherLoopState()
     first = asyncio.run(
         agent._search_sources(
             TASK,
             ["分页测试"],
             "发现候选",
-            run_state=run_state,
+            loop_state=loop_state,
             event_context={},
         )
     )
@@ -189,7 +189,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
             5,
             3,
             "查看下一页",
-            run_state=run_state,
+            loop_state=loop_state,
         )
     )
 
@@ -243,7 +243,7 @@ def test_list_search_results_rejects_another_direction_handle():
             0,
             5,
             "越权查看",
-            run_state=DirectionRunState(),
+            loop_state=ResearcherLoopState(),
         )
     )
 
@@ -321,8 +321,8 @@ def test_research_agent_converts_completion_without_evidence_to_blocked_result()
 
 
 def test_researcher_builds_minimum_result_when_finalization_never_submits():
-    run_state = DirectionRunState(active_evidence_limit=2)
-    run_state.add_evidences(
+    loop_state = ResearcherLoopState(active_evidence_limit=2)
+    loop_state.add_evidences(
         [
             Evidence(
                 evidence_id="e1",
@@ -336,21 +336,21 @@ def test_researcher_builds_minimum_result_when_finalization_never_submits():
         ]
     )
 
-    ResearchAgent._apply_minimum_result(run_state)
+    ResearchAgent._apply_minimum_result(loop_state)
 
-    assert run_state.stop_reason == "fallback_complete"
-    assert run_state.conclusion.startswith("本方向未完成模型综合")
-    assert run_state.remaining_gaps
+    assert loop_state.stop_reason == "fallback_complete"
+    assert loop_state.conclusion.startswith("本方向未完成模型综合")
+    assert loop_state.remaining_gaps
 
 
 def test_researcher_builds_blocked_minimum_result_without_evidence():
-    run_state = DirectionRunState()
+    loop_state = ResearcherLoopState()
 
-    ResearchAgent._apply_minimum_result(run_state)
+    ResearchAgent._apply_minimum_result(loop_state)
 
-    assert run_state.stop_reason == "blocked_without_evidence"
-    assert run_state.conclusion == ""
-    assert "未获得可用 Evidence。" in run_state.remaining_gaps
+    assert loop_state.stop_reason == "blocked_without_evidence"
+    assert loop_state.conclusion == ""
+    assert "未获得可用 Evidence。" in loop_state.remaining_gaps
 
 
 def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidence():
@@ -499,8 +499,8 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
         reader_tool=FakeReader(),
         material_store=store,
     )
-    run_state = DirectionRunState(active_evidence_limit=4, evidence_archive_limit=8)
-    run_state.documents[document.document_id] = document
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=8)
+    loop_state.documents[document.document_id] = document
 
     grep = asyncio.run(
         agent._grep_document(
@@ -509,7 +509,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
             1,
             0,
             "定位数据",
-            run_state=run_state,
+            loop_state=loop_state,
         )
     )
     read = asyncio.run(
@@ -517,7 +517,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
             document.document_id,
             [(2, 3)],
             "读取数据",
-            run_state=run_state,
+            loop_state=loop_state,
         )
     )
     added = asyncio.run(
@@ -540,7 +540,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
                 },
             ],
             "批量提交",
-            run_state=run_state,
+            loop_state=loop_state,
             event_context={},
             commit_lock=asyncio.Lock(),
         )
@@ -550,7 +550,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
     assert "L2:" in read["ranges"][0]["content"]
     assert len(added["accepted"]) == 1
     assert len(added["rejected"]) == 1
-    assert run_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
+    assert loop_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
 
 
 def test_add_evidence_validates_before_ranking_by_confidence():
@@ -569,8 +569,8 @@ def test_add_evidence_validates_before_ranking_by_confidence():
         reader_tool=FakeReader(),
         material_store=store,
     )
-    run_state = DirectionRunState(active_evidence_limit=2, evidence_archive_limit=2)
-    run_state.documents[document.document_id] = document
+    loop_state = ResearcherLoopState(active_evidence_limit=2, evidence_archive_limit=2)
+    loop_state.documents[document.document_id] = document
 
     result = asyncio.run(
         agent._add_evidence(
@@ -596,14 +596,14 @@ def test_add_evidence_validates_before_ranking_by_confidence():
                 },
             ],
             "验证后排序",
-            run_state=run_state,
+            loop_state=loop_state,
             event_context={},
             commit_lock=asyncio.Lock(),
         )
     )
 
     assert len(result["accepted"]) == 1
-    assert run_state.evidences[0].claim == "较高优先级"
+    assert loop_state.evidences[0].claim == "较高优先级"
     assert result["truncated_submission_count"] == 1
     assert any(
         item["reason"] == "quote_paraphrase" for item in result["rejected"]
@@ -626,8 +626,8 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
         reader_tool=FakeReader(),
         material_store=store,
     )
-    run_state = DirectionRunState(active_evidence_limit=4, evidence_archive_limit=4)
-    run_state.documents[document.document_id] = document
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
+    loop_state.documents[document.document_id] = document
     commit_lock = asyncio.Lock()
 
     async def submit(claim: str, quote: str):
@@ -642,7 +642,7 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
                 }
             ],
             "并发提交",
-            run_state=run_state,
+            loop_state=loop_state,
             event_context={},
             commit_lock=commit_lock,
         )
@@ -653,7 +653,7 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
     results = asyncio.run(submit_both())
 
     assert sum(len(result["accepted"]) for result in results) == 1
-    assert len(run_state.evidences) == 1
+    assert len(loop_state.evidences) == 1
     assert any(
         item["reason"] == "source_evidence_limit_reached"
         for result in results
@@ -746,7 +746,7 @@ def test_source_reader_caps_search_summary_document_at_partial_support():
 
 
 def test_direction_evidence_pool_releases_slots_without_deleting_archive():
-    pool = DirectionRunState(active_evidence_limit=2, evidence_archive_limit=4)
+    pool = ResearcherLoopState(active_evidence_limit=2, evidence_archive_limit=4)
     first = [
         Evidence(
             evidence_id=f"e{index}",
