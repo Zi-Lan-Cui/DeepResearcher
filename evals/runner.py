@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from deepresearcher.checkpoint_serde import build_checkpointer_serde
@@ -90,11 +91,14 @@ class RunHarness:
             return []
         values = tuple_.checkpoint.get("channel_values", {})
         raw = values.get("evidences", []) if isinstance(values, dict) else []
-        return [
-            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
-            for item in raw
-            if isinstance(item, dict) or hasattr(item, "model_dump")
-        ]
+        items = raw if isinstance(raw, list) else []
+        evidences: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, BaseModel):
+                evidences.append(item.model_dump(mode="json"))
+            elif isinstance(item, dict):
+                evidences.append(dict(item))
+        return evidences
 
     # ---- 用户旅程（API） ----
 
@@ -213,8 +217,7 @@ class RunHarness:
                 artifacts.append(await self._drive_once(case, client))
         for index, artifact in enumerate(artifacts, start=1):
             artifact.attempt = index + (attempt - 1) * (2 if case.fault == "rerun_cache" else 1)
-        if self.out_dir is not None:
-            self._persist(case, attempt, artifacts)
+        self._persist(case, attempt, artifacts)
         return artifacts
 
     async def capture(self, case: EvalCase, run_id: str, attempt: int) -> Artifact:
@@ -240,11 +243,13 @@ class RunHarness:
             run_row=run_row,
             evidences=evidences,
         )
-        if self.out_dir is not None:
-            self._persist(case, attempt, [artifact])
+        self._persist(case, attempt, [artifact])
         return artifact
 
     def _persist(self, case: EvalCase, attempt: int, artifacts: list[Artifact]) -> None:
+        """out_dir 未配置时静默跳过；守卫收敛在这里，调用点不再各自判空。"""
+        if self.out_dir is None:
+            return
         target = self.out_dir / case.case_id
         target.mkdir(parents=True, exist_ok=True)
         payload = [
