@@ -453,7 +453,7 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "Clarifier", _CancellingClarifier)
 
     # LangGraph 会把节点主动抛出的 CancelledError 包装成自己的取消异常；
-    # 关键契约是它不会被执行边界转换成 RunError 并渲染成失败报告。
+    # 关键契约是它不会被 node_runner 转换成 RunError 并渲染成失败报告。
     with pytest.raises(BaseException) as caught:
         asyncio.run(
             build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})

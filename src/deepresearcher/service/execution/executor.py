@@ -16,7 +16,7 @@ from sqlalchemy import update
 
 from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
-from deepresearcher.llm import LLMUnavailableError, classify_llm_error
+from deepresearcher.llm import classify_llm_error
 from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
@@ -181,10 +181,6 @@ class RunExecutor:
                 error_message="本次研究已达用量上限，请调整配额后重试。",
                 claim=claim,
             )
-            if claim is not None and not persisted:
-                self.mark_lease_lost(run_id)
-        except LLMUnavailableError as exc:
-            persisted = await self._fail_llm_unavailable(run_id, exc.user_code, claim)
             if claim is not None and not persisted:
                 self.mark_lease_lost(run_id)
         except Exception as exc:  # noqa: BLE001 - 后台执行必须自收口

@@ -29,13 +29,18 @@ from deepresearcher.agents.supervisor.state import (
 from deepresearcher.agents.supervisor.tools import (
     build_supervisor_tools,
 )
-from deepresearcher.config import AgentConfig, language_directive
+from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
+from deepresearcher.prompts import (
+    get_runtime_environment,
+    language_directive,
+    load_prompt,
+    render_data_section,
+)
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
@@ -471,7 +476,6 @@ class ResearchSupervisor:
         )
 
     @staticmethod
-    @staticmethod
     def _research_synthesis_observation(
         synthesis: ResearchSynthesis | None,
     ) -> dict[str, object] | None:
@@ -519,8 +523,11 @@ class ResearchSupervisor:
                 "未记录到异常详情，详见运行事件流。",
             )
             return f"{stop_reason.description} {detail}"
+        # 诊断优先取研究内容缺口;无缺口可报时退回执行/协议尾注——failure_details
+        # 只进诊断文案,不进报告"未闭合缺口"清单,两通道规矩不变。
         detail = next(
-            (gap for gap in reversed(coverage_gaps) if gap.strip()), "未形成可验证的完整覆盖。"
+            (item for item in reversed([*coverage_gaps, *failure_details]) if item.strip()),
+            "未形成可验证的完整覆盖。",
         )
         prefix = (
             stop_reason.description

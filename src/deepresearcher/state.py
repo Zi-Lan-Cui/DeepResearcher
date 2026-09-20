@@ -1,9 +1,12 @@
 """LangGraph 顶层状态:跨节点交接物的类型与合并语义。
 
 字段按所有权分组;channel 直接存 Pydantic 模型,节点不再在 dict 与
-模型之间手工往返。合并 reducer 是防御性恢复的唯一入口:同一 run 内
-LangGraph 保持模型对象,跨进程 checkpoint 恢复时 incoming 可能是 dict,
-在 reducer 内恢复一次,消费节点拿到的永远是模型。
+模型之间手工往返。同一 run 内 LangGraph 保持模型对象;跨进程 checkpoint
+恢复时 incoming 可能是 dict,dict→模型的防御性恢复分三个入口、各管一片:
+list 通道由幂等 reducer(merge_evidences / merge_task_results / merge_unique)
+按 id 折回并顺带恢复;scalar 通道(run / supervisor / writer / review /
+writer_directive / research_synthesis)由 node_runner 在每节点入口调用
+restore_state_models 统一恢复;section() 是读侧最后一道兜底。
 """
 
 from collections.abc import MutableMapping

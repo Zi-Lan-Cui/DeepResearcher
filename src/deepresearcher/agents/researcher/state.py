@@ -50,12 +50,14 @@ class ResearcherLoopContext:
     实现住在 services.py 的纯函数里,tools.py 从本对象转交参数;本清单之外,
     工具对 agent 内部一无所知。
 
-    读者不只是 tools.py——中间件以鸭子方式(getattr)消费以下字段,删改前必须
-    先查 agents/middleware/:
-      scope     → observability._event_context:模型回合/工具事件归因(run_id 等)
-      tool_gate → serial_tools:全库唯一的调度栅栏(serial 工具 exclusive,
-                  其余 shared 可并发但被 pending exclusive 挡)。业务锁另名另责:
-                  本 agent 的 commit_lock 只护证据入池,与调度无关。
+    读者不只是 tools.py——中间件消费以下字段,删改前必须先查 agents/middleware/
+    (注意两种读法、缺席后果不同):
+      scope     → observability._event_context 以 getattr 鸭子读:模型回合/工具事件
+                  归因(run_id 等);缺席不崩,但事件静默失去归属。
+      tool_gate → serial_tools 直接属性读:全库唯一的调度栅栏(serial 工具 exclusive,
+                  其余 shared 可并发但被 pending exclusive 挡);缺席当场
+                  AttributeError。业务锁另名另责:本 agent 的 commit_lock
+                  只护证据入池,与调度无关。
     """
 
     deps: ResearcherDeps

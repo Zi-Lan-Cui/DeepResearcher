@@ -7,12 +7,20 @@ from typing import cast
 from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddleware
 from langchain_core.tools import BaseTool
 
-from deepresearcher.llm import LLMConfigurationError
+from deepresearcher.llm import LLMConfigurationError, classify_llm_error
+from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 
 
 def retry_on(error: Exception) -> bool:
-    """只重试可恢复的模型调用异常。"""
-    if isinstance(error, (asyncio.CancelledError, LLMConfigurationError)):
+    """只重试可恢复的模型调用异常。
+
+    配置错误、预算耗尽与账户级不可用(key/余额/硬限流)是 fail-fast 语义:
+    必须冒泡到 node_runner / executor 的既有收口。在此软化它们,只会让
+    agent 带着已耗尽的额度继续空烧请求,并把 terminal_reason 伪装成研究语义。
+    """
+    if isinstance(error, (asyncio.CancelledError, LLMConfigurationError, UsageBudgetExceeded)):
+        return False
+    if classify_llm_error(error) is not None:
         return False
     return True
 

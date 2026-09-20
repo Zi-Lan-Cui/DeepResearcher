@@ -80,7 +80,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                 StopReason.SUFFICIENT if loop_state.sufficient else StopReason.SUBMITTED_WITH_GAPS
             )
         else:
-            loop_state.coverage_gaps.append(
+            loop_state.failure_details.append(
                 "ResearchComplete 拒绝了过期、缺失或未绑定 Evidence 的研究综合稿。"
             )
         return Command(
