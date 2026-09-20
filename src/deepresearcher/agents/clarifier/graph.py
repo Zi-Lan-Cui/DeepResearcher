@@ -8,8 +8,7 @@ from langgraph.types import interrupt
 
 from deepresearcher.agents.clarifier.constants import CLARIFICATION_OPTION_COUNT
 from deepresearcher.agents.clarifier.state import ClarifierGraphState
-from deepresearcher.prompts import render_data_section
-from deepresearcher.prompts.runtime import get_runtime_environment
+from deepresearcher.prompts import get_runtime_environment, render_data_section
 from deepresearcher.schemas import RunStatus
 
 ClarifierAgentNode = Callable[[ClarifierGraphState], Awaitable[dict[str, object]]]
