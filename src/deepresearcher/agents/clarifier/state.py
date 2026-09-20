@@ -7,8 +7,8 @@ from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-from deepresearcher.context.concurrency import ToolExecutionGate
-from deepresearcher.context.execution import AgentExecutionScope
+from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import RunStatus
 
 

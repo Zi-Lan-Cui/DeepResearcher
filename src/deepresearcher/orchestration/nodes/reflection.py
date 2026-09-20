@@ -8,10 +8,10 @@ from openai import ContentFilterFinishReasonError
 from pydantic import ValidationError
 
 from deepresearcher.config import get_settings, language_directive
-from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.llm import ainvoke_structured
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import load_prompt, render_data_section
+from deepresearcher.prompts.runtime import get_runtime_environment
 from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,

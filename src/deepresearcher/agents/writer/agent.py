@@ -26,15 +26,15 @@ from deepresearcher.agents.writer.state import (
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import AgentConfig, language_directive
-from deepresearcher.context.execution import AgentExecutionScope
-from deepresearcher.context.runtime import get_runtime_environment
 from deepresearcher.errors import WriterGenerationError
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.sink import JsonlSink
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import load_prompt, render_data_section
+from deepresearcher.prompts.runtime import get_runtime_environment
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import (
     ReportBrief,

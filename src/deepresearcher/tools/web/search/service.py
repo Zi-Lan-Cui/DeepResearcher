@@ -4,8 +4,8 @@ import asyncio
 import time
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
-from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.observability.events import JsonlSink, make_tool_event
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
 from deepresearcher.observability.tracing.recorder import TraceRecorder

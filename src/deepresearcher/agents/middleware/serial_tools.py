@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from langchain.agents.middleware import AgentMiddleware
 
-from deepresearcher.context.concurrency import ToolExecutionGate
+from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 
 
 class SerialToolMiddleware(AgentMiddleware):

@@ -1297,7 +1297,7 @@ class _RecordingDelegateAgent:
 
 def _delegate_context(run_id: str, current_round: int, agent, *, max_rounds: int = 3):
     from deepresearcher.agents.supervisor.state import SupervisorLoopContext, SupervisorLoopState
-    from deepresearcher.context.execution import AgentExecutionScope
+    from deepresearcher.observability.execution import AgentExecutionScope
     from deepresearcher.state import ResearchState
 
     supervisor = ResearchSupervisor(

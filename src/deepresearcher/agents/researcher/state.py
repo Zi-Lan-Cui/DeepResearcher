@@ -3,11 +3,11 @@
 import asyncio
 from dataclasses import dataclass, field
 
+from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.config import AgentConfig
-from deepresearcher.context.concurrency import ToolExecutionGate
-from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool

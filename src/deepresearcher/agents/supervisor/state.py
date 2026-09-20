@@ -4,12 +4,12 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.config import AgentConfig
-from deepresearcher.context.concurrency import ToolExecutionGate
-from deepresearcher.context.execution import AgentExecutionScope
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
+from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import (
     ResearchDirectionResult,
     ResearchSynthesis,

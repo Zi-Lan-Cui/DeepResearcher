@@ -12,10 +12,10 @@ from langchain.agents.middleware import (
 )
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from deepresearcher.agents.middleware.budget import MessageBudget, message_text
 from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
 from deepresearcher.agents.middleware.profile import MiddlewareProfile
 from deepresearcher.agents.middleware.retry import model_retry, tool_retry
-from deepresearcher.context.budget import MessageBudget, message_text
 
 _MESSAGE_BUDGET = MessageBudget()
 AGENT_RECURSION_LIMIT = 1_000
