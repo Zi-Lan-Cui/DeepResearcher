@@ -4,8 +4,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from deepresearcher.llm import ainvoke_text
 from deepresearcher.nodes.common import content_text
-from deepresearcher.prompts import load_prompt, render_data_section
-from deepresearcher.prompts.runtime import get_runtime_environment
+from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
 from deepresearcher.schemas import RunStatus, SupervisorProgress
 
 

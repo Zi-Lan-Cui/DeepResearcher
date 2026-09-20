@@ -35,8 +35,7 @@ from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import load_prompt, render_data_section
-from deepresearcher.prompts.runtime import get_runtime_environment
+from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
