@@ -29,6 +29,11 @@ def load_prompt(name: str) -> str:
     return (resources.files(__package__) / f"{name}.md").read_text("utf-8")
 
 
+def language_directive(language: str) -> str:
+    """生成注入各 agent/node system prompt 的语言纪律行（模板见 `language.md`）。"""
+    return load_prompt("language").format(language=language)
+
+
 def render_data_section(title: str, payload: Any) -> str:
     """将运行时数据渲染为明确的 Markdown JSON 分区。"""
     rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)

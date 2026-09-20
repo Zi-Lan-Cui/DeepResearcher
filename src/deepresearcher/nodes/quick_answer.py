@@ -3,14 +3,19 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from deepresearcher.llm import ainvoke_text
-from deepresearcher.nodes.common import content_text
 from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
 from deepresearcher.schemas import RunStatus, SupervisorProgress
 
 
+def _content_text(response: object) -> str:
+    """将 ChatModel 响应内容稳定转换为文本。"""
+    content = getattr(response, "content", response)
+    return content if isinstance(content, str) else str(content)
+
+
 async def quick_answer(state, llm):
     query = state["query"].strip()
-    answer = content_text(
+    answer = _content_text(
         await ainvoke_text(
             llm,
             [

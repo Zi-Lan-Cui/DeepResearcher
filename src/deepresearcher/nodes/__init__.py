@@ -1,5 +1,7 @@
 """LangGraph 普通节点，按职责拆分并统一导出。"""
 
+# ainvoke_structured 在此转交是节点测试的 monkeypatch 接缝
+# (tests patch deepresearcher.nodes.ainvoke_structured)——非本包公共出口,不进 __all__。
 from deepresearcher.llm import ainvoke_structured
 from deepresearcher.nodes.quick_answer import quick_answer
 from deepresearcher.nodes.render import render_final_report_node
@@ -16,7 +18,6 @@ async def reviewer(state, llm):
 
 
 __all__ = [
-    "ainvoke_structured",
     "quick_answer",
     "reviewer",
     "render_final_report_node",

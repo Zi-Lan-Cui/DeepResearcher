@@ -1,7 +1,6 @@
 """提示词外置层的守卫：每个运行时 prompt 都能加载且保留关键结构。"""
 
-from deepresearcher.config import language_directive
-from deepresearcher.prompts import load_prompt, render_data_section
+from deepresearcher.prompts import language_directive, load_prompt, render_data_section
 
 ALL_PROMPTS = (
     "researcher",

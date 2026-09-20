@@ -7,10 +7,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from openai import ContentFilterFinishReasonError
 from pydantic import ValidationError
 
-from deepresearcher.config import get_settings, language_directive
+from deepresearcher.config import get_settings
 from deepresearcher.llm import ainvoke_structured
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
+from deepresearcher.prompts import (
+    get_runtime_environment,
+    language_directive,
+    load_prompt,
+    render_data_section,
+)
 from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,

@@ -25,15 +25,20 @@ from deepresearcher.agents.writer.state import (
     evidence_index_card,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
-from deepresearcher.config import AgentConfig, language_directive
-from deepresearcher.errors import WriterGenerationError
+from deepresearcher.config import AgentConfig
+from deepresearcher.errors import AgentError
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
-from deepresearcher.prompts import get_runtime_environment, load_prompt, render_data_section
+from deepresearcher.prompts import (
+    get_runtime_environment,
+    language_directive,
+    load_prompt,
+    render_data_section,
+)
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import (
     ReportBrief,
@@ -53,6 +58,18 @@ _INLINE_DRAFT_MIN_CHARS = 300
 
 
 _WRITER_SYSTEM_PROMPT = load_prompt("writer")
+
+
+class WriterError(AgentError):
+    """研究报告无法生成可审阅、可追溯的段落草稿。"""
+
+    code = "writer_error"
+
+
+class WriterGenerationError(WriterError):
+    """LLM 或结构化输出层无法生成报告草稿，不能由改稿流程安全修复。"""
+
+    code = "writer_generation"
 
 
 class ReportWriter:
