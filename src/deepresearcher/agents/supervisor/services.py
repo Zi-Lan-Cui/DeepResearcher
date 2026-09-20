@@ -3,7 +3,7 @@
 delegate_research 执行一次 ResearchDelegate 工具请求:预算 hard check、任务
 编号/去重、派发 ResearchAgent、吸收结果,返回给模型的完整方向报告 dict;
 工具回执与消息配对留在协议层(tools.py),本模块不认识 ToolMessage。
-簿记并发由 tool_lock 保护,实际子 Agent 并发受 deps.worker_limit 限制。
+簿记并发由 bookkeeping_lock 保护,实际子 Agent 并发受 deps.worker_limit 限制。
 """
 
 import asyncio
@@ -23,7 +23,7 @@ async def delegate_research(
     deps: SupervisorDeps,
     loop_state: SupervisorLoopState,
     scope: AgentExecutionScope,
-    tool_lock: asyncio.Lock,
+    bookkeeping_lock: asyncio.Lock,
     topic: str,
 ) -> dict[str, object]:
     """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号/去重、
@@ -56,7 +56,7 @@ async def delegate_research(
                 "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
             }
         )
-    async with tool_lock:
+    async with bookkeeping_lock:
         task_index = loop_state.allocate_task_index()
         task: SubTask = {
             "id": f"task-{task_index:04d}",
@@ -79,7 +79,7 @@ async def delegate_research(
         loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
         return reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
     execution = await execute_research_task(deps, new_tasks[0])
-    async with tool_lock:
+    async with bookkeeping_lock:
         loop_state.absorb(execution)
     direction_report: dict[str, object] = {
         "status": execution.task_result.execution_status,

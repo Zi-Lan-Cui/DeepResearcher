@@ -134,6 +134,7 @@ class ResearchAgent:
         scope = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
         loop_context = ResearcherLoopContext(
             deps=self._deps,
+            scope=scope,
             task=task,
             loop_state=loop_state,
             event_context={

@@ -111,7 +111,7 @@ def test_clarifier_run_injects_serial_tool_context():
     assert result["clarification_completed"] is True
     assert isinstance(captured["context"], ClarifierLoopContext)
     assert captured["context"].scope.run_id == "run-clarify"
-    assert captured["context"].tool_lock is not None
+    assert captured["context"].tool_gate is not None
     assert captured["config"]["recursion_limit"] > 0
 
 

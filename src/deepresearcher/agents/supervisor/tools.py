@@ -60,7 +60,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         """派发一个具体、可验证且与历史互补的研究方向。"""
         ctx = runtime.context
         result = await services.delegate_research(
-            ctx.deps, ctx.loop_state, ctx.scope, ctx.tool_lock, research_topic
+            ctx.deps, ctx.loop_state, ctx.scope, ctx.bookkeeping_lock, research_topic
         )
         return _result(result)
 
