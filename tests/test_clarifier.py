@@ -9,7 +9,7 @@ from deepresearcher.agents.clarifier import Clarifier
 from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
-    ClarifierRuntimeContext,
+    ClarifierLoopContext,
 )
 from deepresearcher.agents.clarifier.tools import (
     AskClarificationArgs,
@@ -109,7 +109,7 @@ def test_clarifier_run_injects_serial_tool_context():
     result = asyncio.run(clarifier.run({"run_id": "run-clarify", "query": "测试"}))
 
     assert result["clarification_completed"] is True
-    assert isinstance(captured["context"], ClarifierRuntimeContext)
+    assert isinstance(captured["context"], ClarifierLoopContext)
     assert captured["context"].scope.run_id == "run-clarify"
     assert captured["context"].tool_lock is not None
     assert captured["config"]["recursion_limit"] > 0

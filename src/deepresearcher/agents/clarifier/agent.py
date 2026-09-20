@@ -7,7 +7,7 @@ from langchain.agents import create_agent
 from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
     ClarifierGraphState,
-    ClarifierRuntimeContext,
+    ClarifierLoopContext,
 )
 from deepresearcher.agents.clarifier.tools import (
     MAX_CLARIFICATION_ROUNDS,
@@ -41,7 +41,7 @@ class Clarifier:
             tools=build_clarifier_tools(),
             system_prompt=_SYSTEM_PROMPT + "\n" + language_directive(config.output_language),
             state_schema=ClarifierAgentState,
-            context_schema=ClarifierRuntimeContext,
+            context_schema=ClarifierLoopContext,
             middleware=cast(
                 Any,
                 build_agent_middleware(
@@ -61,7 +61,7 @@ class Clarifier:
         """为每次 Agent 决策注入独立工具锁；上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
-            context=ClarifierRuntimeContext(
+            context=ClarifierLoopContext(
                 scope=AgentExecutionScope(
                     run_id=str(state.get("run_id") or ""),
                     agent_name="Clarifier",

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from deepresearcher.agents.writer.state import (
     ValidatedDraft,
-    WriterRuntimeContext,
+    WriterLoopContext,
     evidence_detail_card,
 )
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
@@ -62,7 +62,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
     async def read_evidence(
         evidence_ids: list[str],
         reason: str,
-        runtime: ToolRuntime[WriterRuntimeContext],
+        runtime: ToolRuntime[WriterLoopContext],
     ) -> str:
         """返回指定 Evidence 的引用视图，并将其加入本次 Writer 的已读工作集。"""
         del reason
@@ -133,7 +133,7 @@ def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
     async def complete_report(
         selected_evidence_ids: list[str],
         markdown: str,
-        runtime: ToolRuntime[WriterRuntimeContext],
+        runtime: ToolRuntime[WriterLoopContext],
     ) -> str:
         """校验并提交报告草稿；校验失败时返回可供下一轮修正的错误。"""
         context = runtime.context

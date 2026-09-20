@@ -38,7 +38,7 @@ def evidence_detail_card(evidence: Evidence) -> dict[str, object]:
 
 
 @dataclass
-class WriterRuntimeContext:
+class WriterLoopContext:
     """不进入 State 的 Writer 运行时依赖。"""
 
     scope: AgentExecutionScope
