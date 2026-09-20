@@ -636,6 +636,9 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
     assert result["research_synthesis"] is None
     assert result["working_set_revision"] == 1
     assert "ResearchComplete 拒绝" in result["writer"].feedback
+    # 通道规矩:协议拒绝是执行事件,只进诊断(failure_details→feedback),
+    # 不得混入用户报告的"未闭合缺口"清单(coverage_gaps)。
+    assert not any("ResearchComplete" in gap for gap in result["supervisor"].coverage_gaps)
 
 
 def test_revise_synthesis_rejects_evidence_outside_active_working_set():

@@ -24,7 +24,7 @@ import httpx
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from deepresearcher.checkpoint_serde import build_checkpointer_serde
+from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.service.persistence.database import make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunEvent
 from deepresearcher.service.settings import checkpoint_dsn

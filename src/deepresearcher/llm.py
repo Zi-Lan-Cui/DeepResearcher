@@ -4,7 +4,8 @@
 - 传输级(超时/断连)：openai SDK 内建 max_retries 指数退避，覆盖一切经 ChatOpenAI
   发出的请求,agent 循环与节点单次调用同蒙其荫;
 - 循环级：ModelRetryMiddleware(agents/middleware/retry.py)把最终失败的模型调用
-  软化为指引文本,agent 得以继续;
+  软化为指引文本,agent 得以继续;但预算耗尽与账户级不可用是例外,
+  retry_on 对它们豁免、让其冒泡到既有 fail-fast 收口;
 - 内容级：本文件的 repair 循环——JSON 不合规时回炉,langchain 不提供。
 曾有第四层"runnable 传输重试"(llm/retry.py),其谓词是内置 TimeoutError/ConnectionError,
 而 langchain-openai 真实抛出的是 openai.*Error(不 subclass 之),实测永不命中,已删;
@@ -41,21 +42,10 @@ class LLMConfigurationError(LLMError):
     code = "llm_configuration"
 
 
-class LLMUnavailableError(LLMError):
-    """LLM 网关**账户级不可用**：key 无效 / 无余额 / 硬限流。
-
-    连模型都调不动 → 无法"提醒 agent 收尾"，必须快速失败并把 user_code 透到前端。
-    """
-
-    code = "llm_unavailable"
-    retryable = False
-
-    def __init__(self, user_code: str, message: str):
-        super().__init__(message)
-        self.user_code = user_code  # invalid_key / forbidden / insufficient_credit / rate_limited
-
-
-# openai 等 SDK 的 APIStatusError 带 .status_code；映射为稳定 user_code（不可自愈的那类）。
+# 账户级不可用（key 无效/无余额/硬限流）不包装成自定义异常：模型调不动时
+# 浮出的是 SDK 原始异常，由 executor 用本函数归类为稳定 user_code 收口到前端
+# （invalid_key / forbidden / insufficient_credit / rate_limited）。
+# openai 等 SDK 的 APIStatusError 带 .status_code。
 _LLM_FATAL_STATUS = {401: "invalid_key", 402: "insufficient_credit", 403: "forbidden"}
 
 
@@ -104,15 +94,13 @@ async def ainvoke_structured(
     messages: Sequence[BaseMessage],
     *,
     request_kwargs: dict[str, Any] | None = None,
-    repair_attempts: int | None = None,
 ) -> SchemaT:
     """只在已收到不合规 JSON 时 repair；传输抖动由 openai SDK 内建重试消化。
 
-    repair_attempts 缺省读配置(LLM_STRUCTURED_REPAIR_ATTEMPTS)；保留为显式参数
-    是节点测试的注入缝——同 ainvoke_structured 一直是模块函数而非方法的原因。
+    修复预算只从配置读(LLM_STRUCTURED_REPAIR_ATTEMPTS)；节点测试的注入缝是
+    各节点的 ``invoke_structured=`` 关键字，本函数不设第二道假缝。
     """
-    if repair_attempts is None:
-        repair_attempts = get_settings().llm.structured_repair_attempts
+    repair_attempts = get_settings().llm.structured_repair_attempts
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
     contract = SystemMessage(
         content=(

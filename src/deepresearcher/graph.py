@@ -40,7 +40,7 @@ from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 
 
 def _guarded_node(name, node, *, event_sink=None, trace_recorder=None, max_text_chars=1_000):
-    """组合观测层与执行边界，保持两者职责独立。"""
+    """组合观测层与节点运行器（node_runner），保持两者职责独立。"""
     observed = instrument_node(
         name,
         node,
