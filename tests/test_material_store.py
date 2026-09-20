@@ -78,9 +78,7 @@ async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windo
     # 字符预算触顶:第二个窗口装不下 → 整窗跳过(has_more 保留),首窗仍完整未截半行。
     # 每行原文 "L{n} match"，grep 再加 "L{n}: " 前缀；首窗 (context_lines=2, 命中第1行)
     # = "L1: L1 match\nL2: L2 match\nL3: L3 match" 共 38 字符;max_chars=40 容首窗拒次窗。
-    tight = await store.grep(
-        ref.document_id, "match", context_lines=2, max_matches=3, max_chars=40
-    )
+    tight = await store.grep(ref.document_id, "match", context_lines=2, max_matches=3, max_chars=40)
     assert len(tight.matches) == 1
     assert tight.matches[0].content == "L1: L1 match\nL2: L2 match\nL3: L3 match"  # 完整,非截半
     assert tight.has_more and tight.next_offset == 1
@@ -170,7 +168,9 @@ async def test_search_cache_hit_records_saved_external_request(monkeypatch):
         redis, key_prefix="t", search_ttl_seconds=60, document_ttl_seconds=60
     )
     await store.put_search_results(
-        SearchResultSet(search_id="s1", run_id="r1", queries=["q"], results=[{"url": "https://e.com"}])
+        SearchResultSet(
+            search_id="s1", run_id="r1", queries=["q"], results=[{"url": "https://e.com"}]
+        )
     )
     events.clear()  # 去掉 put 的 write 事件
 
