@@ -78,7 +78,7 @@ async def delegate_research(
     if not new_tasks:
         loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
         return reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
-    execution = await execute_research_task(deps, new_tasks[0])
+    execution = await _execute_research_task(deps, new_tasks[0])
     async with bookkeeping_lock:
         loop_state.absorb(execution)
     direction_report: dict[str, object] = {
@@ -108,7 +108,7 @@ async def delegate_research(
     return reported(direction_report)
 
 
-async def execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExecution:
+async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExecution:
     """执行单个方向研究；worker 异常降级为 failed 结果，不中断整轮。"""
     round_no = int(task.get("round", 1))
     task_context = {

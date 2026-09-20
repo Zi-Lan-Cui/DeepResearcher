@@ -11,9 +11,8 @@ from pydantic import ValidationError
 from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
     SupervisorLoopContext,
-    SupervisorLoopState,
-    evidence_card,
     synthesis_snapshot,
+    working_set_snapshot,
 )
 from deepresearcher.schemas import (
     ReadWorkingSet,
@@ -32,21 +31,6 @@ def _result(payload: object) -> str:
     return "【系统工具执行结果；不是用户补充】\n" + (
         payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     )
-
-
-def _working_set_snapshot(loop_state: SupervisorLoopState) -> dict[str, object]:
-    """返回 Supervisor 当前活跃 Evidence 的轻量目录。"""
-    active = loop_state.active_evidences()
-    active_ids = {item.evidence_id for item in active}
-    reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
-    return {
-        "working_set_revision": loop_state.working_set_revision,
-        "active_evidence": [evidence_card(item) for item in active],
-        "active_evidence_count": len(active),
-        "active_evidence_limit": loop_state.active_evidence_limit,
-        "reserve_evidence": [evidence_card(item) for item in reserve],
-        "reserve_evidence_count": len(reserve),
-    }
 
 
 def build_supervisor_tools() -> list[BaseTool]:
@@ -166,7 +150,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                     "status": "rejected",
                     "reason": "研究综合稿只能引用当前活跃 Evidence。",
                     "invalid_evidence_ids": unknown_ids,
-                    **_working_set_snapshot(loop_state),
+                    **working_set_snapshot(loop_state),
                 }
             )
         try:
@@ -194,7 +178,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                     "status": "rejected",
                     "reason": "研究综合稿不满足提交契约，请按 issues 修正后重试。",
                     "issues": issues,
-                    **_working_set_snapshot(loop_state),
+                    **working_set_snapshot(loop_state),
                 }
             )
         loop_state.research_synthesis = synthesis
@@ -218,7 +202,7 @@ def build_supervisor_tools() -> list[BaseTool]:
     ) -> str:
         """查看当前活跃 Evidence 的轻量摘要。"""
         del reason
-        return _result(_working_set_snapshot(runtime.context.loop_state))
+        return _result(working_set_snapshot(runtime.context.loop_state))
 
     @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
     async def release_evidence(
@@ -234,7 +218,7 @@ def build_supervisor_tools() -> list[BaseTool]:
             {
                 "released_evidence_ids": released,
                 "unknown_evidence_ids": [item for item in evidence_ids if item not in released],
-                **_working_set_snapshot(loop_state),
+                **working_set_snapshot(loop_state),
             }
         )
 
@@ -254,7 +238,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                 "not_restored_evidence_ids": [
                     item for item in evidence_ids if item not in restored
                 ],
-                **_working_set_snapshot(loop_state),
+                **working_set_snapshot(loop_state),
             }
         )
 

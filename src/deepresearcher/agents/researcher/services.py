@@ -365,6 +365,8 @@ async def add_evidence(
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
     accepted_via_normalization = 0  # 逐字被连字符/ligature 编码差异卡住、靠归一救回的条数
+    # 批内 memo：同文档多条引用只取一次原文(Redis 后端下省 N-1 次全量 GET)。
+    source_texts: dict[str, str] = {}
     for index, raw in enumerate(submissions):
         document_id = str(raw.get("document_id", ""))
         document = loop_state.documents.get(document_id)
@@ -373,11 +375,14 @@ async def add_evidence(
             continue
         claim = str(raw.get("claim", "")).strip()
         quote = str(raw.get("quote", "")).strip()
-        try:
-            source_text = await deps.material_store.text(document_id)
-        except (FileNotFoundError, KeyError) as exc:
-            rejected.append({"index": index, "reason": str(exc)})
-            continue
+        source_text = source_texts.get(document_id)
+        if source_text is None:
+            try:
+                source_text = await deps.material_store.text(document_id)
+            except (FileNotFoundError, KeyError) as exc:
+                rejected.append({"index": index, "reason": str(exc)})
+                continue
+            source_texts[document_id] = source_text
         # 入池不变式：quote 逐字（忽略空白 + 连字符/ligature 编码差异）出现在该来源正文里。
         # 宽松仍不过时再分一档：只差异标点/引号/破折号（词序列一致）→ quote_format_variant；
         # 词都不同 → quote_paraphrase。这样能真正区分"格式误杀"与"模型改述"。

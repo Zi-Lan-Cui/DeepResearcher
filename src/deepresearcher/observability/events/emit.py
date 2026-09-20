@@ -6,12 +6,30 @@
 
 import logging
 from collections.abc import Mapping
+from typing import Protocol
 
 from deepresearcher.observability.events.models import make_audit_event
 from deepresearcher.observability.events.sink import JsonlSink
 
 # 默认视为"完整正文"的 payload 键：只保留长度与受限预览进入事件流。
 DEFAULT_CONTENT_KEYS = ("markdown", "normalized_markdown", "report")
+
+
+class AgentEmit(Protocol):
+    """各 Agent Deps 携带的事件发射回调的统一契约。
+
+    绑定自 ``_emit``/``_emit_audit_event``；``component`` 关键字允许领域事件
+    改写归属(如 supervisor 派发链发 research_agent 组件的事件),默认值由
+    绑定方自带。Deps 用它替代宽松的 Callable,两个 agent 的 emit 从此同契约。
+    """
+
+    def __call__(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        component: str = ...,
+    ) -> None: ...
 
 
 def bounded_content(

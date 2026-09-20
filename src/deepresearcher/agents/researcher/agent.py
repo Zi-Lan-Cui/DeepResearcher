@@ -204,14 +204,20 @@ class ResearchAgent:
             loop_state.stop_reason = "fallback_complete"
         loop_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
 
-    def _emit(self, event_type: str, payload: dict[str, object]) -> None:
+    def _emit(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        component: str = "research_agent",
+    ) -> None:
         """写入方向级 Agent 事件；事件只包含诊断元数据，不包含完整正文。"""
         emit_agent_event(
             self.event_sink,
             self.logger,
             event_type,
             payload,
-            component="research_agent",
+            component=component,
             node_fallback="research_agent",
         )
 
