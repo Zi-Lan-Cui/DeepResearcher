@@ -15,10 +15,10 @@ from typing import Any
 from sqlalchemy import update
 
 from deepresearcher.config import Settings
+from deepresearcher.graph import build_graph
 from deepresearcher.llm import LLMUnavailableError, classify_llm_error
 from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
-from deepresearcher.orchestration.graph import build_graph
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore

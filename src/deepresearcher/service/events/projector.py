@@ -42,7 +42,7 @@ _STAGE_TITLES: dict[str, str] = {
     NodeName.QUICK_ANSWER: "即时回答",
     NodeName.SUPERVISOR: "研究规划 · Supervisor",
     NodeName.WRITER: "撰写报告 · Writer",
-    NodeName.REFLECTION: "审阅报告 · Reviewer",
+    NodeName.REVIEWER: "审阅报告 · Reviewer",
     NodeName.RENDER_FINAL_REPORT: "生成最终报告",
 }
 
@@ -90,7 +90,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == "node_failed":
         # 只说哪个阶段失败：内部异常文本永远不出网关（完整信息在 RunEvent/日志）。
         # 已知节点必须用 failed 的 stage_done 关框——否则阶段框停在"运行中"
-        # 的绿点上永远呼吸（reflection 内容审查事故实锤），未知节点退回全局错误行。
+        # 的绿点上永远呼吸（reviewer 内容审查事故实锤），未知节点退回全局错误行。
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
                 "stage_done",
@@ -161,7 +161,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == "text_delta":
         # 生产者是 RunExecutor 对官方 astream(subgraphs=True) messages 的 ns 路由；
         # 这里仍做第二道闸：只放行 supervisor。writer 正文走工具参数、
-        # reflection 是结构化调用——两者只应看到最终聚合结果。
+        # reviewer 是结构化调用——两者只应看到最终聚合结果。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)
         if channel != "supervisor" or not text:
@@ -229,7 +229,7 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
             "exhausted": "写作未正常收束",
             "failed": "写作失败",
         }.get(str(payload.get("writer_status", "")), "")
-    if node == NodeName.REFLECTION:
+    if node == NodeName.REVIEWER:
         label = {"approved": "审阅通过", "rejected": "审阅要求修改"}.get(
             str(payload.get("review_status", "")), ""
         )

@@ -363,7 +363,7 @@ def test_writer_repairs_selection_from_valid_cites_without_regeneration():
     assert result["writer"].selected_evidence_ids == ["e1", "e2"]
 
 
-def test_writer_preserves_uncited_conclusion_for_reflection():
+def test_writer_preserves_uncited_conclusion_for_reviewer():
     async def draft_output(llm, schema, messages, **kwargs):
         return MarkdownReportDraft(
             selected_evidence_ids=["e1"],

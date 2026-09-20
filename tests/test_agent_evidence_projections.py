@@ -4,7 +4,7 @@ from deepresearcher.agents.researcher.state import evidence_observation_card
 from deepresearcher.agents.supervisor.state import evidence_card as supervisor_evidence_card
 from deepresearcher.agents.writer.state import evidence_detail_card, evidence_index_card
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.orchestration.nodes.reflection import reflection_evidence_card
+from deepresearcher.nodes.reviewer import reviewer_evidence_card
 from deepresearcher.reporting.validation import validate_and_bind
 from deepresearcher.schemas import Citation, SourceProfile
 
@@ -101,7 +101,7 @@ def test_writer_evidence_projection_contracts() -> None:
     )
 
 
-def test_reflection_evidence_projection_contract() -> None:
+def test_reviewer_evidence_projection_contract() -> None:
     citation = Citation(
         id="ev-1",
         url="https://research.example.org/paper",
@@ -112,7 +112,7 @@ def test_reflection_evidence_projection_contract() -> None:
         published_at="2026-08-01",
         source_profile=SourceProfile(source_type="academic", authority_tier="primary"),
     )
-    card = reflection_evidence_card(citation)
+    card = reviewer_evidence_card(citation)
 
     assert set(card) == {
         "id",

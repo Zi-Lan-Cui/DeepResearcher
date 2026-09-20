@@ -29,7 +29,7 @@ def instrument_node(
     max_text_chars: int = 1_000,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """统一记录节点 Log、Event 和 Span。"""
-    log = logger or get_logger("deepresearcher.orchestration")
+    log = logger or get_logger("deepresearcher.graph")
 
     async def wrapped(state: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()

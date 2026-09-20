@@ -15,14 +15,14 @@ from deepresearcher.prompts.runtime import get_runtime_environment
 from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,
-    ReflectionDecision,
+    ReviewDecision,
     ReviewProgress,
     WriterDirective,
 )
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import section
 
-_logger = get_logger("deepresearcher.orchestration.reflection")
+_logger = get_logger("deepresearcher.nodes.reviewer")
 
 # 只重试"同一请求重发可能改天换日"的失败：网关内容审查有随机抖动
 # （content_filter 事故实锤），JSON 解析/schema 校验失败同理。
@@ -34,8 +34,8 @@ _RETRYABLE_REVIEW_ERRORS = (
 )
 
 
-def reflection_evidence_card(citation: Citation) -> dict[str, object]:
-    """Reflection 视图：保留核验原文，并补充紧凑的支撑强度与来源背景。"""
+def reviewer_evidence_card(citation: Citation) -> dict[str, object]:
+    """Reviewer 视图：保留核验原文，并补充紧凑的支撑强度与来源背景。"""
     return {
         "id": citation.id,
         "fact": citation.claim,
@@ -49,7 +49,7 @@ def reflection_evidence_card(citation: Citation) -> dict[str, object]:
     }
 
 
-async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
+async def reviewer(state, llm, *, invoke_structured=ainvoke_structured):
     """审阅草稿并把结论交还 Supervisor，不自行调度 Writer 或研究员。"""
     review = section(state, "review", ReviewProgress)
     attempt = review.attempts + 1
@@ -67,7 +67,7 @@ async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
             "paragraph": item.text,
             "kind": item.kind,
             "evidence": [
-                reflection_evidence_card(citations[source_id])
+                reviewer_evidence_card(citations[source_id])
                 for source_id in item.evidence_ids
                 if source_id in citations
             ],
@@ -80,7 +80,7 @@ async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
     messages = [
         SystemMessage(
             content=(
-                load_prompt("reflection")
+                load_prompt("reviewer")
                 + "\n"
                 + language_directive(get_settings().agent.output_language)
             )
@@ -103,22 +103,22 @@ async def reflection(state, llm, *, invoke_structured=ainvoke_structured):
 
     retry_config = get_settings().agent
     decision = None
-    for retry_index in range(retry_config.reflection_retry_attempts + 1):
+    for retry_index in range(retry_config.reviewer_retry_attempts + 1):
         try:
-            decision = await invoke_structured(llm, ReflectionDecision, messages)
+            decision = await invoke_structured(llm, ReviewDecision, messages)
             break
         except asyncio.CancelledError:
             raise
         except _RETRYABLE_REVIEW_ERRORS as exc:
-            if retry_index >= retry_config.reflection_retry_attempts:
+            if retry_index >= retry_config.reviewer_retry_attempts:
                 raise
             _logger.warning(
-                "reflection_retry attempt=%d/%d error=%s",
+                "reviewer_retry attempt=%d/%d error=%s",
                 retry_index + 1,
-                retry_config.reflection_retry_attempts,
+                retry_config.reviewer_retry_attempts,
                 type(exc).__name__,
             )
-            await asyncio.sleep(retry_config.reflection_retry_initial_seconds * (retry_index + 1))
+            await asyncio.sleep(retry_config.reviewer_retry_initial_seconds * (retry_index + 1))
     assert decision is not None  # 循环不变量：break 或 raise
 
     status = (

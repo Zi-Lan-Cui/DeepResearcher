@@ -1,12 +1,12 @@
 import asyncio
 
-from deepresearcher.orchestration.nodes import (
-    reflection,
+from deepresearcher.nodes import (
+    reviewer,
 )
-from deepresearcher.orchestration.nodes.reflection import reflection as reflection_core
+from deepresearcher.nodes.reviewer import reviewer as reviewer_core
 from deepresearcher.schemas import (
-    ReflectionDecision,
     ReportBrief,
+    ReviewDecision,
     ReviewIssue,
     WriterDirective,
 )
@@ -25,21 +25,21 @@ def _review_directive(query: str = "q") -> WriterDirective:
     )
 
 
-def test_reflection_rejects_with_structured_evidence_feedback(monkeypatch):
+def test_reviewer_rejects_with_structured_evidence_feedback(monkeypatch):
     captured = {}
 
     async def review_output(llm, schema, messages):
-        assert schema is ReflectionDecision
+        assert schema is ReviewDecision
         captured["context"] = messages[-1].content
-        return ReflectionDecision(
+        return ReviewDecision(
             feedback="需要能直接支持文学性评价的评论来源。",
             gaps=["缺少具体作品的文学性评价依据"],
             issues=[ReviewIssue(severity="fatal", reason="核心文学性结论缺少直接来源。")],
         )
 
-    monkeypatch.setattr("deepresearcher.orchestration.nodes.ainvoke_structured", review_output)
+    monkeypatch.setattr("deepresearcher.nodes.ainvoke_structured", review_output)
     result = asyncio.run(
-        reflection(
+        reviewer(
             {
                 "clarified_query": "哪些作品文学性高",
                 "writer_directive": _review_directive("哪些作品文学性高"),
@@ -58,18 +58,18 @@ def test_reflection_rejects_with_structured_evidence_feedback(monkeypatch):
     assert '"source_domain": ""' in captured["context"]
 
 
-def test_reflection_requests_rewrite_when_evidence_is_sufficient(monkeypatch):
+def test_reviewer_requests_rewrite_when_evidence_is_sufficient(monkeypatch):
     async def review_output(llm, schema, messages):
-        assert schema is ReflectionDecision
-        return ReflectionDecision(
+        assert schema is ReviewDecision
+        return ReviewDecision(
             feedback="将‘证明文学性’收窄为‘可作为获得认可的线索’。",
             gaps=[],
             issues=[ReviewIssue(severity="fatal", reason="核心结论把提名误写为文学性证明。")],
         )
 
-    monkeypatch.setattr("deepresearcher.orchestration.nodes.ainvoke_structured", review_output)
+    monkeypatch.setattr("deepresearcher.nodes.ainvoke_structured", review_output)
     result = asyncio.run(
-        reflection(
+        reviewer(
             {
                 "clarified_query": "哪些作品文学性高",
                 "review_attempts": 0,
@@ -84,9 +84,9 @@ def test_reflection_requests_rewrite_when_evidence_is_sufficient(monkeypatch):
     assert result["review"].gaps == []
 
 
-def test_reflection_allows_warnings_without_rejecting_report(monkeypatch):
+def test_reviewer_allows_warnings_without_rejecting_report(monkeypatch):
     async def review_output(llm, schema, messages):
-        return ReflectionDecision(
+        return ReviewDecision(
             feedback="核心结论可交付；可选地收窄一处措辞。",
             issues=[
                 ReviewIssue(
@@ -98,9 +98,9 @@ def test_reflection_allows_warnings_without_rejecting_report(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr("deepresearcher.orchestration.nodes.ainvoke_structured", review_output)
+    monkeypatch.setattr("deepresearcher.nodes.ainvoke_structured", review_output)
     result = asyncio.run(
-        reflection(
+        reviewer(
             {
                 "clarified_query": "A 有何体验特点",
                 "paragraph_bindings": [_binding("A 可能增强沉浸感。", ["e1"], kind="synthesis")],
@@ -115,7 +115,7 @@ def test_reflection_allows_warnings_without_rejecting_report(monkeypatch):
 
 
 def _decision():
-    return ReflectionDecision(feedback="通过", gaps=[], issues=[])
+    return ReviewDecision(feedback="通过", gaps=[], issues=[])
 
 
 def _review_state():
@@ -128,7 +128,7 @@ def _review_state():
     }
 
 
-def test_reflection_retries_content_filter_then_succeeds(monkeypatch):
+def test_reviewer_retries_content_filter_then_succeeds(monkeypatch):
     from openai import ContentFilterFinishReasonError
 
     monkeypatch.setattr("asyncio.sleep", _no_sleep)
@@ -140,12 +140,12 @@ def test_reflection_retries_content_filter_then_succeeds(monkeypatch):
             raise ContentFilterFinishReasonError()
         return _decision()
 
-    result = asyncio.run(reflection_core(_review_state(), object(), invoke_structured=flaky))
+    result = asyncio.run(reviewer_core(_review_state(), object(), invoke_structured=flaky))
     assert result["review"].status == "approved"
     assert calls["n"] == 2  # 首次被内容审查拦截，重试一次成功
 
 
-def test_reflection_exhausts_retries_and_reraises(monkeypatch):
+def test_reviewer_exhausts_retries_and_reraises(monkeypatch):
     from openai import ContentFilterFinishReasonError
 
     monkeypatch.setattr("asyncio.sleep", _no_sleep)
@@ -156,14 +156,14 @@ def test_reflection_exhausts_retries_and_reraises(monkeypatch):
         raise ContentFilterFinishReasonError()
 
     try:
-        asyncio.run(reflection_core(_review_state(), object(), invoke_structured=always_filtered))
+        asyncio.run(reviewer_core(_review_state(), object(), invoke_structured=always_filtered))
         assert False, "应当抛出"
     except ContentFilterFinishReasonError:
         pass
     # attempts=1 → 共 2 次尝试后放弃
     from deepresearcher.config import get_settings
 
-    assert calls["n"] == get_settings().agent.reflection_retry_attempts + 1
+    assert calls["n"] == get_settings().agent.reviewer_retry_attempts + 1
 
 
 async def _no_sleep(_seconds):

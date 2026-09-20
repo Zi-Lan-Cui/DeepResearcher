@@ -4,22 +4,22 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from deepresearcher import nodes
 from deepresearcher.agents import Clarifier, ReportWriter, ResearchAgent
 from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.supervisor import ResearchSupervisor
 from deepresearcher.agents.writer.graph import build_writer_graph
 from deepresearcher.config import Settings, get_settings
+from deepresearcher.execution_boundary import execute_node
 from deepresearcher.llm import build_llm
 from deepresearcher.observability.instrumentation import instrument_node
 from deepresearcher.observability.tracing.recorder import TraceRecorder
-from deepresearcher.orchestration import nodes
-from deepresearcher.orchestration.execution_boundary import execute_node
 from deepresearcher.reporting import no_evidence_blockers, render_incomplete_report
 from deepresearcher.routing import (
     NodeName,
     route_after_clarify,
     route_after_quick_answer,
-    route_after_reflection,
+    route_after_reviewer,
     route_after_router,
     route_after_supervisor,
     route_after_writer,
@@ -265,14 +265,14 @@ def build_graph(
             trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
-        destinations=(NodeName.REFLECTION, NodeName.RENDER_FINAL_REPORT),
+        destinations=(NodeName.REVIEWER, NodeName.RENDER_FINAL_REPORT),
     )
     graph.add_node(
-        NodeName.REFLECTION,
+        NodeName.REVIEWER,
         _routed_node(
-            NodeName.REFLECTION,
-            lambda state: nodes.reflection(state, llm),
-            route_after_reflection,
+            NodeName.REVIEWER,
+            lambda state: nodes.reviewer(state, llm),
+            route_after_reviewer,
             event_sink=event_sink,
             trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,

@@ -1,8 +1,8 @@
 """图节点命名与路由决策的单一来源。
 
-节点名是跨模块契约：编排层用它挂边，执行边界与 Supervisor 把
-``supervisor_next`` 写进 State。因此常量必须放在 ``orchestration/``
-之外的中性模块，否则叶子 Agent 又要反向 import 编排层。
+节点名是跨模块契约：graph.py 用它挂边，执行边界与 Supervisor 把
+``supervisor_next`` 写进 State。因此常量必须放在 ``nodes/`` 与
+``graph.py`` 之外的中性模块，否则叶子 Agent 又要反向 import 装配层。
 
 路由规则只有一条主干（``route_after``）：节点一旦声明 terminal phase，
 无条件收束到渲染终点；否则跟随该节点写下的业务交接。各节点的出口
@@ -19,7 +19,7 @@ class NodeName(StrEnum):
     QUICK_ANSWER = "quick_answer"
     SUPERVISOR = "supervisor"
     WRITER = "writer"
-    REFLECTION = "reflection"
+    REVIEWER = "reflection"
     RENDER_FINAL_REPORT = "render_final_report"
 
 
@@ -74,10 +74,10 @@ def route_after_supervisor(state: Mapping[str, object]) -> str:
 def route_after_writer(state: Mapping[str, object]) -> str:
     # Writer 的所有非成功路径（快速回答/证据不足/耗尽）都会把 phase 置为
     # rendering，由主干收束；这里只需要声明“成功草稿去审阅”。
-    return route_after(state, NodeName.REFLECTION)
+    return route_after(state, NodeName.REVIEWER)
 
 
-def route_after_reflection(state: Mapping[str, object]) -> str:
+def route_after_reviewer(state: Mapping[str, object]) -> str:
     return route_after(
         state,
         NodeName.RENDER_FINAL_REPORT
