@@ -16,9 +16,9 @@ from deepresearcher.config import (
     SearchConfig,
     Settings,
 )
-from deepresearcher.execution_boundary import execute_node
 from deepresearcher.graph import build_graph
 from deepresearcher.llm import LLMConfigurationError
+from deepresearcher.node_runner import execute_node
 from deepresearcher.observability.events.models import NodeEvent
 from deepresearcher.routing import (
     NodeName,
@@ -249,7 +249,7 @@ def test_usage_budget_exhaustion_degrades_to_incomplete_report():
     assert "run_token_budget_exhausted" not in result["report"]
 
 
-def test_execution_boundary_never_converts_graph_interrupt_to_failure():
+def test_node_runner_never_converts_graph_interrupt_to_failure():
     async def paused(_state):
         raise GraphInterrupt()
 
@@ -307,7 +307,7 @@ def test_typed_agent_error_preserves_code_and_retryability():
     assert result["run"].error.retryable is True
 
 
-def test_execution_boundary_restores_checkpoint_models_before_node():
+def test_node_runner_restores_checkpoint_models_before_node():
     async def inspect_state(state):
         assert isinstance(state["run"].error, RunError)
         assert isinstance(state["review"].issues[0], ReviewIssue)

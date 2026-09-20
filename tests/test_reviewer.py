@@ -16,7 +16,7 @@ from fakes import make_citation as _cite
 
 
 def _review_directive(query: str = "q") -> WriterDirective:
-    """生产里任务书只经 writer_directive 交接（execution boundary 已恢复为模型）。"""
+    """生产里任务书只经 writer_directive 交接（node_runner 已恢复为模型）。"""
     return WriterDirective(
         query=query,
         report_brief=ReportBrief.model_validate(REPORT_BRIEF),

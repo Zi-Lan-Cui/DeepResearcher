@@ -1,5 +1,5 @@
-from deepresearcher.checkpoint_serde import build_checkpointer_serde, project_state_types
 from deepresearcher.schemas import ResearchDirectionResult
+from deepresearcher.service.checkpoint_serde import build_checkpointer_serde, project_state_types
 
 
 def test_allowlist_covers_our_state_types():

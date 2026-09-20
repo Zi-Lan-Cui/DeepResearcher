@@ -74,7 +74,7 @@ async def reviewer(state, llm, *, invoke_structured=ainvoke_structured):
         }
         for item in bindings
     ]
-    # 报告任务书只随 writer_directive 交接（execution boundary 已恢复为模型）。
+    # 报告任务书只随 writer_directive 交接（node_runner 已恢复为模型）。
     directive = state.get("writer_directive")
     report_brief = directive.report_brief if isinstance(directive, WriterDirective) else {}
     messages = [

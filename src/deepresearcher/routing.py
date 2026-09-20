@@ -1,6 +1,6 @@
 """图节点命名与路由决策的单一来源。
 
-节点名是跨模块契约：graph.py 用它挂边，执行边界与 Supervisor 把
+节点名是跨模块契约：graph.py 用它挂边，node_runner 与 Supervisor 把
 ``supervisor_next`` 写进 State。因此常量必须放在 ``nodes/`` 与
 ``graph.py`` 之外的中性模块，否则叶子 Agent 又要反向 import 装配层。
 
@@ -23,7 +23,7 @@ class NodeName(StrEnum):
     RENDER_FINAL_REPORT = "render_final_report"
 
 
-# failed：执行边界接管；rendering：节点自行宣告的提前终止（预算耗尽、
+# failed：node_runner 接管；rendering：节点自行宣告的提前终止（预算耗尽、
 # 即时回答、证据不足、写作失败）；completed：防御性收束。
 TERMINAL_PHASES = frozenset({"failed", "rendering", "completed"})
 

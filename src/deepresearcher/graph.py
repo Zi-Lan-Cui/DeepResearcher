@@ -10,8 +10,8 @@ from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.supervisor import ResearchSupervisor
 from deepresearcher.agents.writer.graph import build_writer_graph
 from deepresearcher.config import Settings, get_settings
-from deepresearcher.execution_boundary import execute_node
 from deepresearcher.llm import build_llm
+from deepresearcher.node_runner import execute_node
 from deepresearcher.observability.instrumentation import instrument_node
 from deepresearcher.observability.tracing.recorder import TraceRecorder
 from deepresearcher.reporting import no_evidence_blockers, render_incomplete_report
