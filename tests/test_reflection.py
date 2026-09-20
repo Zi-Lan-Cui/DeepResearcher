@@ -6,11 +6,23 @@ from deepresearcher.orchestration.nodes import (
 from deepresearcher.orchestration.nodes.reflection import reflection as reflection_core
 from deepresearcher.schemas import (
     ReflectionDecision,
+    ReportBrief,
     ReviewIssue,
+    WriterDirective,
 )
 from fakes import REPORT_BRIEF
 from fakes import make_binding as _binding
 from fakes import make_citation as _cite
+
+
+def _review_directive(query: str = "q") -> WriterDirective:
+    """生产里任务书只经 writer_directive 交接（execution boundary 已恢复为模型）。"""
+    return WriterDirective(
+        query=query,
+        report_brief=ReportBrief.model_validate(REPORT_BRIEF),
+        research_status="completed",
+        generation_mode="full",
+    )
 
 
 def test_reflection_rejects_with_structured_evidence_feedback(monkeypatch):
@@ -30,7 +42,7 @@ def test_reflection_rejects_with_structured_evidence_feedback(monkeypatch):
         reflection(
             {
                 "clarified_query": "哪些作品文学性高",
-                "report_brief": REPORT_BRIEF,
+                "writer_directive": _review_directive("哪些作品文学性高"),
                 "review_attempts": 0,
                 "paragraph_bindings": [_binding("A 文学性高", ["e1"], kind="evidence")],
                 "citations": [_cite("e1", claim="A 有复杂叙事", quote="A 有复杂叙事。")],
@@ -109,7 +121,7 @@ def _decision():
 def _review_state():
     return {
         "clarified_query": "q",
-        "report_brief": REPORT_BRIEF,
+        "writer_directive": _review_directive(),
         "review_attempts": 0,
         "paragraph_bindings": [_binding("A 文学性高", ["e1"], kind="evidence")],
         "citations": [_cite("e1", claim="A 有复杂叙事", quote="A 有复杂叙事。")],

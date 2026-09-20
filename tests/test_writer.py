@@ -108,7 +108,6 @@ def test_writer_catalogue_preserves_topic_assignments_and_deduplicates_cards() -
 def test_writer_filters_evidence_by_configured_minimum_support():
     state = {
         "clarified_query": "测试问题",
-        "report_brief": REPORT_BRIEF,
         "writer_directive": WriterDirective(
             query="测试问题",
             report_brief=ReportBrief.model_validate(REPORT_BRIEF),
@@ -193,7 +192,6 @@ def test_writer_preserves_review_attempts_when_draft_is_ready():
         ).run(
             {
                 "clarified_query": "测试问题",
-                "report_brief": REPORT_BRIEF,
                 "writer_directive": WriterDirective(
                     query="测试问题",
                     report_brief=ReportBrief.model_validate(REPORT_BRIEF),
@@ -235,7 +233,6 @@ def test_writer_binds_markdown_cite_to_explicit_evidence():
         draft_output,
         {
             "clarified_query": "A 的性能",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev(
                     "e1",
@@ -279,7 +276,6 @@ def test_writer_audit_events_keep_generated_draft(tmp_path):
         agent.run(
             {
                 "clarified_query": "A 的性能",
-                "report_brief": REPORT_BRIEF,
                 "writer_directive": WriterDirective(
                     query="A 的性能",
                     report_brief=ReportBrief.model_validate(REPORT_BRIEF),
@@ -323,7 +319,6 @@ def test_writer_uses_deduplicated_evidence_index_without_raw_quote():
         draft_output,
         {
             "clarified_query": "A 的性能",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev(
                     "r1-1-ev-1",
@@ -357,7 +352,6 @@ def test_writer_repairs_selection_from_valid_cites_without_regeneration():
         draft_output,
         {
             "clarified_query": "测试选择集合",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev("e1", "事实一", quote="原文一", url="https://example.com/one"),
                 _ev("e2", "事实二", quote="原文二", url="https://example.com/two"),
@@ -384,7 +378,6 @@ def test_writer_preserves_uncited_conclusion_for_reflection():
         draft_output,
         {
             "clarified_query": "A 的性能",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev(
                     "e1",
@@ -413,7 +406,6 @@ def test_writer_surfaces_last_cite_validation_diagnostic():
         draft_output,
         {
             "clarified_query": "A 的性能",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev(
                     "e1",
@@ -442,7 +434,6 @@ def test_writer_does_not_decide_to_restart_research():
         draft_output,
         {
             "clarified_query": "A 与 B 有何差异",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev("e1", "A 是一种类型", quote="A 是一种类型。", url="https://example.com/a")
             ],
@@ -464,7 +455,6 @@ def test_writer_accepts_chinese_source_separators():
         draft_output,
         {
             "clarified_query": "测试问题",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev("e1", "第一条事实", quote="第一条证据", url="https://one.test"),
                 _ev("e2", "第二条事实", quote="第二条证据", url="https://two.test"),
@@ -497,7 +487,6 @@ def test_writer_retries_invalid_evidence_binding_instead_of_falling_back():
         draft_output,
         {
             "clarified_query": "A 的性能",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev(
                     "e1",
@@ -525,7 +514,6 @@ def test_writer_rejects_manual_reference_section_and_numbering():
         draft_output,
         {
             "clarified_query": "A 的性能",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev(
                     "e1",
@@ -557,7 +545,6 @@ def test_writer_does_not_parse_cite_markers_inside_fenced_or_inline_code():
         draft_output,
         {
             "clarified_query": "测试代码隔离",
-            "report_brief": REPORT_BRIEF,
             "evidences": [
                 _ev("e1", "第一条", quote="第一条。", url="https://example.com/one"),
                 _ev("e2", "第二条", quote="第二条。", url="https://example.com/two"),

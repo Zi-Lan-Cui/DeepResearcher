@@ -541,7 +541,7 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
     assert result["supervisor"].is_sufficient is False
     assert result["supervisor"].generation_mode == "partial"
     assert result["supervisor_next"] == "writer"
-    assert result["report_brief"] is not None
+    assert result["writer_directive"].report_brief is not None
     assert "ResearchComplete 拒绝" in result["writer"].feedback
 
 
@@ -794,7 +794,7 @@ def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
     assert result["supervisor"].generation_mode == "partial"
     assert result["supervisor_next"] == "writer"
     assert result["run"].phase == "writing"
-    assert result["report_brief"] is not None
+    assert result["writer_directive"].report_brief is not None
 
 
 def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached():
@@ -849,9 +849,8 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     assert result.supervisor.generation_mode == "partial"
     assert result.research_synthesis is not None
     assert result.research_synthesis.revision == 1
-    assert result.report_brief is not None
-    assert result.report_brief.covered_topics[0].evidence_ids == [item.evidence_id]
     assert result.writer_directive is not None
+    assert result.writer_directive.report_brief.covered_topics[0].evidence_ids == [item.evidence_id]
     assert result.writer_directive.evidence_ids == [item.evidence_id]
 
 

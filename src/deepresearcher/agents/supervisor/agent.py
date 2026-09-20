@@ -509,14 +509,9 @@ class ResearchSupervisor:
         )
         selected_synthesis = full_synthesis or partial_synthesis
         can_write = selected_synthesis is not None
-        report_brief = (
-            self._report_brief_from_synthesis(selected_synthesis)
-            if selected_synthesis is not None
-            else None
-        )
         writer_directive = (
-            self._build_writer_directive(state, loop_state, selected_synthesis, report_brief)
-            if selected_synthesis is not None and report_brief is not None
+            self._build_writer_directive(state, loop_state, selected_synthesis)
+            if selected_synthesis is not None
             else None
         )
         research_status = "completed" if loop_state.sufficient else "incomplete"
@@ -533,7 +528,6 @@ class ResearchSupervisor:
             task_results=cast(list[ResearchDirectionResult], loop_state.task_results),
             working_set_revision=loop_state.working_set_revision,
             research_synthesis=loop_state.research_synthesis,
-            report_brief=report_brief,
             writer_directive=writer_directive,
             active_evidence_ids=sorted(loop_state.active_evidence_ids),
             run=RunStatus(
@@ -610,9 +604,12 @@ class ResearchSupervisor:
         state: ResearchState,
         loop_state: SupervisorLoopState,
         synthesis: ResearchSynthesis,
-        report_brief: ReportBrief,
     ) -> WriterDirective:
-        """从冻结综合版本派生 Writer 唯一可见的写作指令。"""
+        """从冻结综合版本派生 Writer 唯一可见的写作指令。
+
+        ReportBrief 在指令内部构造、随指令一起交接；State 顶层不再有平行的第二副本。
+        """
+        report_brief = self._report_brief_from_synthesis(synthesis)
         review = section(state, "review", ReviewProgress)
         previous_draft = str(state.get("report_draft") or state.get("writer_draft") or "")
         revision_instructions = (
