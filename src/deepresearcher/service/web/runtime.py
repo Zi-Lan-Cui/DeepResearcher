@@ -74,7 +74,7 @@ def make_lifespan(
         if dsn is not None:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-            from deepresearcher.checkpoint_serde import build_checkpointer_serde
+            from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
 
             checkpoint_cm = AsyncPostgresSaver.from_conn_string(
                 dsn, serde=build_checkpointer_serde()

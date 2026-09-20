@@ -16,7 +16,7 @@ ENGINE_ROOTS = (
 ENGINE_FILES = (
     Path("src/deepresearcher/llm.py"),
     Path("src/deepresearcher/graph.py"),
-    Path("src/deepresearcher/execution_boundary.py"),
+    Path("src/deepresearcher/node_runner.py"),
 )
 SERVICE_PREFIX = "deepresearcher.service"
 EXECUTION_PREFIX = "deepresearcher.service.execution"
