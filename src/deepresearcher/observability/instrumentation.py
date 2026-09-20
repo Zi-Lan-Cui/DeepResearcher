@@ -168,8 +168,9 @@ def _node_result_summary(result: dict[str, Any], *, max_text_chars: int = 1_000)
         text = str(result["report"])
         summary["report_chars"] = len(text)
         summary["report_preview"] = text[:max_text_chars]
-    if "report_brief" in result:
-        summary["report_brief"] = str(result["report_brief"])[:max_text_chars]
+    directive_brief = getattr(result.get("writer_directive"), "report_brief", None)
+    if directive_brief is not None:
+        summary["report_brief"] = str(directive_brief)[:max_text_chars]
     research = result.get("supervisor")
     coverage_gaps = getattr(research, "coverage_gaps", None) if research is not None else None
     if coverage_gaps:

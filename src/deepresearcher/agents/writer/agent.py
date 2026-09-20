@@ -58,9 +58,9 @@ _WRITER_SYSTEM_PROMPT = load_prompt("writer")
 class ReportWriter:
     """生成报告草稿，并只重试 Writer 自身可修复的引用协议错误。
 
-    Supervisor 决定研究是否结束并提供 ``report_brief``；Writer 只负责基于
-    给定 Evidence 组织文章。引用协议校验由 reporting 层提供，编号渲染
-    发生在审阅通过后的终检渲染节点。
+    Supervisor 决定研究是否结束并交接 ``writer_directive``（含 report_brief）；
+    Writer 只负责基于给定 Evidence 组织文章。引用协议校验由 reporting 层提供，
+    编号渲染发生在审阅通过后的终检渲染节点。
     """
 
     def __init__(

@@ -20,7 +20,6 @@ from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,
-    ReportBrief,
     ResearchDirectionResult,
     ResearchSynthesis,
     ReviewProgress,
@@ -127,7 +126,7 @@ class ResearchState(TypedDict, total=False):
     active_evidence_ids: list[str]
     working_set_revision: int
     research_synthesis: ResearchSynthesis | None
-    report_brief: ReportBrief | None
+    # 报告任务书唯一事实源在 writer_directive.report_brief，不再平行存顶层字段。
     writer_directive: WriterDirective | None
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
     supervisor_next: NodeName
@@ -153,18 +152,13 @@ def restore_state_models(state: dict[str, object]) -> None:
         ("supervisor", SupervisorProgress),
         ("writer", WriterProgress),
         ("review", ReviewProgress),
-        ("report_brief", ReportBrief),
         ("writer_directive", WriterDirective),
         ("research_synthesis", ResearchSynthesis),
     )
     for key, model_cls in scalar_models:
         value = state.get(key)
         if value is None:
-            if key in {
-                "report_brief",
-                "writer_directive",
-                "research_synthesis",
-            }:
+            if key in {"writer_directive", "research_synthesis"}:
                 continue
             state[key] = model_cls()  # type: ignore[call-arg]
         elif not isinstance(value, model_cls):

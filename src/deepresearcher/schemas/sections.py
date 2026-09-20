@@ -18,7 +18,6 @@ from deepresearcher.routing import NodeName
 from deepresearcher.schemas.reporting import (
     Citation,
     ParagraphBinding,
-    ReportBrief,
     ResearchSynthesis,
     WriterDirective,
 )
@@ -241,7 +240,6 @@ class SupervisorStateUpdate(BaseModel):
     active_evidence_ids: list[str] = Field(default_factory=list)
     working_set_revision: int = Field(default=0, ge=0)
     research_synthesis: ResearchSynthesis | None = None
-    report_brief: ReportBrief | None = None
     writer_directive: WriterDirective | None = None
     run: RunStatus
     supervisor: SupervisorProgress
@@ -261,7 +259,6 @@ class SupervisorStateUpdate(BaseModel):
             "active_evidence_ids": self.active_evidence_ids,
             "working_set_revision": self.working_set_revision,
             "research_synthesis": self.research_synthesis,
-            "report_brief": self.report_brief,
             "writer_directive": self.writer_directive,
         }
 
