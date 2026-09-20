@@ -147,7 +147,9 @@ class SearchTool:
                             "cache_hit_count": len(cached_queries),
                             "candidates": [
                                 {
-                                    "title": item.get("title", "")[:SEARCH_RESULT_TITLE_PREVIEW_CHARS],
+                                    "title": item.get("title", "")[
+                                        :SEARCH_RESULT_TITLE_PREVIEW_CHARS
+                                    ],
                                     "url": item.get("url", ""),
                                     "score": item.get("score", 0.0),
                                 }

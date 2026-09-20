@@ -167,9 +167,7 @@ class ResearchSupervisor:
         if review.status == "rejected":
             if review.attempts > self.config.max_post_review_recovery_cycles:
                 update = SupervisorStateUpdate(
-                    run=RunStatus(
-                        phase="rendering", terminal_reason="review_recovery_exhausted"
-                    ),
+                    run=RunStatus(phase="rendering", terminal_reason="review_recovery_exhausted"),
                     supervisor=section(state, "supervisor", SupervisorProgress),
                     writer=section(state, "writer", WriterProgress),
                 )
@@ -337,9 +335,7 @@ class ResearchSupervisor:
             )
         if not new_tasks:
             loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
-            return reported(
-                {"status": "skipped", "reason": "duplicate_or_budget", "topic": topic}
-            )
+            return reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
         execution = await self._execute_research_task(
             new_tasks[0],
             tool_call_id=tool_call_id or f"delegate-{new_tasks[0]['id']}",
@@ -481,7 +477,9 @@ class ResearchSupervisor:
                     if item.round == round_no
                 ),
                 "evidence_added": sum(
-                    item.evidence_count for item in loop_state.task_results if item.round == round_no
+                    item.evidence_count
+                    for item in loop_state.task_results
+                    if item.round == round_no
                 ),
                 "total_evidence_count": len(loop_state.evidences),
             },
@@ -518,7 +516,9 @@ class ResearchSupervisor:
             else None
         )
         research_status = "completed" if loop_state.sufficient else "incomplete"
-        generation_mode = "full" if loop_state.sufficient else "partial" if can_write else "not_ready"
+        generation_mode = (
+            "full" if loop_state.sufficient else "partial" if can_write else "not_ready"
+        )
         can_continue_to_writer = can_write
         # evidences / source_refs / task_results 的 reducer 幂等(merge_evidences /
         # merge_task_results / merge_unique),直接把 SupervisorLoopState 全量副本交给 channel;
@@ -548,7 +548,9 @@ class ResearchSupervisor:
                 feedback=(
                     ""
                     if loop_state.sufficient
-                    else self._describe_research_stop(loop_state.stop_reason, loop_state.coverage_gaps)
+                    else self._describe_research_stop(
+                        loop_state.stop_reason, loop_state.coverage_gaps
+                    )
                 ),
             ),
             supervisor_next=NodeName.WRITER if can_write else NodeName.RENDER_FINAL_REPORT,

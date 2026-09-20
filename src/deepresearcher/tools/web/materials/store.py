@@ -158,7 +158,9 @@ def grep_lines(
         # 整窗预算;仅在"已发出至少一个窗口"时因字符预算停手,保证至少前进一格、不死循环。
         if matches and used_chars + len(content) > max_chars:
             break
-        matches.append(DocumentGrepMatch(query=query, start_line=start, end_line=end, content=content))
+        matches.append(
+            DocumentGrepMatch(query=query, start_line=start, end_line=end, content=content)
+        )
         used_chars += len(content)
 
     consumed = offset + len(matches)

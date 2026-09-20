@@ -142,7 +142,9 @@ def build_supervisor_tools() -> list[BaseTool]:
         对齐最新 working_set_revision。
         """
         loop_state = runtime.context.loop_state
-        current_revision = loop_state.research_synthesis.revision if loop_state.research_synthesis else 0
+        current_revision = (
+            loop_state.research_synthesis.revision if loop_state.research_synthesis else 0
+        )
         if (
             expected_revision != current_revision
             or expected_working_set_revision != loop_state.working_set_revision
