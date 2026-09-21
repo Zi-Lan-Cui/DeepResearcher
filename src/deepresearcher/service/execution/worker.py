@@ -11,7 +11,11 @@ from langgraph.types import Command
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.execution.executor import RunExecutor
-from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
+from deepresearcher.service.runs.queue import (
+    ClaimCapacitySaturated,
+    PostgresRunQueue,
+    RunWork,
+)
 
 logger = get_logger("deepresearcher.service.execution.worker")
 
@@ -103,6 +107,13 @@ class RunWorker:
                     lease_seconds=self._lease_seconds,
                     preferred=preferred,
                 )
+                if isinstance(work, ClaimCapacitySaturated):
+                    # 容量满 ≠ preferred 过期:弹出的显式任务放回队首、结束本轮,
+                    # 等下一次信号/轮询/收割唤醒;静默丢弃会让 resume 行沉没。
+                    if preferred is not None:
+                        self._explicit.appendleft(preferred)
+                        self._explicit_ids.add(preferred.run_id)
+                    return
                 if work is None:
                     # A stale explicit entry must not prevent ordinary queued work.
                     if preferred is not None:
@@ -130,7 +141,12 @@ class RunWorker:
         try:
             while True:
                 await asyncio.sleep(self._poll_seconds)
-                await self.wake()
+                try:
+                    await self.wake()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - 恢复路径自身不能再有单点:瞬断下轮重扫
+                    logger.warning("queue_poll_db_error", exc_info=True)
         except asyncio.CancelledError:
             return
 
@@ -205,16 +221,22 @@ class RunWorker:
         try:
             while True:
                 await asyncio.sleep(self._heartbeat_seconds)
-                for expired in await self._queue.reap_expired():
-                    recovered = (
-                        await self._recover_expired(expired)
-                        if self._recover_expired is not None
-                        else None
-                    )
-                    if recovered is not None:
-                        await self.submit(recovered)
-                if self._after_reap is not None:
-                    await self._after_reap()
+                try:
+                    for expired in await self._queue.reap_expired():
+                        recovered = (
+                            await self._recover_expired(expired)
+                            if self._recover_expired is not None
+                            else None
+                        )
+                        if recovered is not None:
+                            await self.submit(recovered)
+                    if self._after_reap is not None:
+                        await self._after_reap()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - 收割是整个状态机最后的兜底,自己绝不能死
+                    # 半途失败不补扫:reap_expired 每轮全量重扫,幂等吞掉瞬断即可。
+                    logger.warning("lease_reap_db_error", exc_info=True)
         except asyncio.CancelledError:
             return
 

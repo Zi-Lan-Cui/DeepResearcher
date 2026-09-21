@@ -1102,3 +1102,74 @@ async def test_heartbeat_escalates_persistent_db_errors_to_lease_lost():
         await worker._heartbeat(work, None)  # noqa: SLF001
 
     assert executor.lease_lost == ["r1"]  # 预算耗尽必须降级,不许静默退场
+
+
+class _ScriptedClaimQueue:
+    """claim 按剧本逐次抛错/返回的最小桩;剧本耗尽后恒返回 None。"""
+
+    def __init__(self, outcomes: list[object]) -> None:
+        self._outcomes = list(outcomes)
+        self.claims: list[object] = []
+
+    async def claim(self, **kwargs):
+        self.claims.append(kwargs.get("preferred"))
+        if not self._outcomes:
+            return None
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def reap_expired(self):
+        return []
+
+
+def _scripted_worker(queue, *, poll_seconds: float, heartbeat_seconds: float = 600):
+    from deepresearcher.service.execution.worker import RunWorker
+
+    class _NoDispatchExecutor:
+        """桩路径不派发任何 run;shutdown 只用到 mark_shutdown 空集合上报。"""
+
+        def mark_shutdown(self, _run_ids):
+            return None
+
+    return RunWorker(
+        queue=queue,
+        executor=_NoDispatchExecutor(),
+        max_running=1,
+        lease_seconds=600,
+        heartbeat_seconds=heartbeat_seconds,
+        poll_seconds=poll_seconds,
+    )
+
+
+async def test_poll_loop_survives_transient_claim_error():
+    """恢复路径自身不能再有单点:claim 瞬断后 poll 必须继续起跳,否则过期租约永无人收。"""
+    queue = _ScriptedClaimQueue([ConnectionError("pool hiccup"), None])
+    worker = _scripted_worker(queue, poll_seconds=0.01)
+    poll = asyncio.create_task(worker._poll_loop())  # noqa: SLF001
+    try:
+        async with asyncio.timeout(3):
+            while len(queue.claims) < 2:
+                await asyncio.sleep(0.01)
+        assert not poll.done()  # 瞬断没有杀死循环,第二跳已发生
+    finally:
+        poll.cancel()
+        await worker.shutdown()
+
+
+async def test_wake_requeues_preferred_when_capacity_saturated():
+    """容量满 ≠ preferred 过期:显式 resume 任务弹回队首等下轮,而非被静默吞掉。"""
+    from deepresearcher.service.runs.queue import ClaimCapacitySaturated, RunWork
+
+    work = RunWork(run_id="run-resume-saturated", user_id=1, query="q", resume=True)
+    queue = _ScriptedClaimQueue([ClaimCapacitySaturated(), ClaimCapacitySaturated()])
+    worker = _scripted_worker(queue, poll_seconds=600)
+
+    await worker.submit(work)
+    assert list(worker._explicit) == [work]  # noqa: SLF001 - 饱和回弹,未丢弃
+    assert "run-resume-saturated" in worker._explicit_ids  # noqa: SLF001
+
+    await worker.wake()
+    assert queue.claims == [work, work]  # 下轮唤醒重新弹出同一个 preferred,直到容量腾出
+    await worker.shutdown()

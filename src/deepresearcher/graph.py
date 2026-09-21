@@ -2,7 +2,7 @@
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 
 from deepresearcher import nodes
 from deepresearcher.agents import Clarifier, ReportWriter, ResearchAgent
@@ -24,7 +24,7 @@ from deepresearcher.routing import (
     route_after_supervisor,
     route_after_writer,
 )
-from deepresearcher.state import ResearchState
+from deepresearcher.state import ADD_REDUCER_KEYS, ResearchState
 from deepresearcher.tools import (
     AliyunFetchProvider,
     DirectHttpFetchProvider,
@@ -76,6 +76,41 @@ def _routed_node(
     async def routed(state):
         update = await guarded(state)
         target = route({**state, **update})
+        return Command(update=update, goto=target)
+
+    return routed
+
+
+def _subgraph_routed_node(
+    name,
+    subgraph,
+    route,
+    *,
+    event_sink=None,
+    trace_recorder=None,
+    max_text_chars: int,
+):
+    """编译子图以普通节点挂进主图的适配。
+
+    子图 ainvoke 返回的是全通道终态(输入被逐通道播种);直接作为主图
+    update,operator.add 通道会把主图已有的整段历史再 fold 一遍、每访问
+    翻倍。故在观测层补记 node_events 之后、回写之前,把 ADD_REDUCER_KEYS
+    覆写成 Overwrite(子图终态即全量,语义正确)。merge_* 通道幂等,
+    无需适配;普通通道 last-write-wins,回写同值亦无副作用。
+    """
+    guarded = _guarded_node(
+        name,
+        subgraph.ainvoke,
+        event_sink=event_sink,
+        trace_recorder=trace_recorder,
+        max_text_chars=max_text_chars,
+    )
+
+    async def routed(state):
+        update = await guarded(state)
+        target = route({**state, **update})
+        for key in ADD_REDUCER_KEYS & update.keys():
+            update[key] = Overwrite(update[key])
         return Command(update=update, goto=target)
 
     return routed
@@ -257,9 +292,9 @@ def build_graph(
     )
     graph.add_node(
         NodeName.WRITER,
-        _routed_node(
+        _subgraph_routed_node(
             NodeName.WRITER,
-            writer_graph.ainvoke,
+            writer_graph,
             route_after_writer,
             event_sink=event_sink,
             trace_recorder=trace_recorder,

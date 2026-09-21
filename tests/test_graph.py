@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 
@@ -30,6 +31,7 @@ from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,
     ReviewIssue,
+    ReviewProgress,
     RouteDecision,
     RunError,
     RunStatus,
@@ -465,6 +467,57 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
             build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
         )
     assert type(caught.value).__name__ != "RunError"
+
+
+def test_writer_revisit_overwrites_add_channels_instead_of_folding(tmp_path, monkeypatch):
+    """子图全量回写的回归：add-reducer 通道若不覆写，每次进 Writer 会把已有历史再 fold 一遍。
+
+    脚本：supervisor→writer→reviewer(退回)→supervisor→writer→reviewer(通过)→render，
+    两次访问 WRITER 子图；supervisor_messages 与 node_events 必须按真实回合线性增长。
+    """
+
+    class _TwiceSupervisor:
+        round = 0
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _state):
+            _TwiceSupervisor.round += 1
+            return {
+                "run": RunStatus(phase="writing"),
+                "supervisor": SupervisorProgress(
+                    status="completed",
+                    current_round=_TwiceSupervisor.round,
+                    is_sufficient=True,
+                    generation_mode="full",
+                ),
+                "supervisor_next": "writer",
+                "supervisor_messages": [AIMessage(content=f"第{_TwiceSupervisor.round}轮综合")],
+            }
+
+    async def _reject_then_approve(_state, _llm, **_kwargs):
+        _reject_then_approve.calls = getattr(_reject_then_approve, "calls", 0) + 1
+        status = "approved" if _reject_then_approve.calls >= 2 else "rejected"
+        return {"review": ReviewProgress(status=status)}
+
+    monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
+    monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
+    monkeypatch.setattr(graph, "ResearchSupervisor", _TwiceSupervisor)
+    monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
+    monkeypatch.setattr(graph.nodes, "reviewer", _reject_then_approve)
+
+    result = asyncio.run(
+        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+    )
+
+    assert [message.content for message in result["supervisor_messages"]] == [
+        "第1轮综合",
+        "第2轮综合",
+    ]
+    assert [event.node for event in result["node_events"]].count("writer") == 2
+    assert len(result["node_events"]) == len({event.event_id for event in result["node_events"]})
+    assert result["run"].phase == "completed"
 
 
 def test_approved_reviewer_bypasses_supervisor_and_renders_final_report():
