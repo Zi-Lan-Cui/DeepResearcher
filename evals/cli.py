@@ -195,6 +195,11 @@ async def cmd_judge(args: argparse.Namespace) -> None:
             print(f"judged {case_id} attempt={artifact.attempt}")
     out = RESULTS_DIR / "judge.jsonl"
     merged = merge_results(out, results, evaluated)
+    (RESULTS_DIR / "judge_meta.json").write_text(
+        json.dumps(invoker.identity, ensure_ascii=False) + "\n", "utf-8"
+    )
+    if invoker.self_judging:
+        print("⚠ 本轮为自评（judge=被测同模型），分数仅供调试，勿对外引用")
     print(f"本次 judge 判定 {len(results)} 条，累计 {len(merged)} 条 → {out}")
 
 
@@ -275,6 +280,14 @@ def cmd_report(args: argparse.Namespace) -> None:
         "gate_failures": sorted({f for s in scores for f in s.gate_failures}),
         "efficiency": aggregate.summarize_metrics(_all_round_metrics()),
     }
+    judge_meta_file = RESULTS_DIR / "judge_meta.json"
+    if judge_file.is_file():
+        # 无 meta 的旧轮次如实标 unknown，而非假装异构。
+        summary["judge"] = (
+            json.loads(judge_meta_file.read_text("utf-8"))
+            if judge_meta_file.is_file()
+            else {"model": "unknown", "self_judging": None}
+        )
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     (RESULTS_DIR / "summary.json").write_text(
         json.dumps({"summary": summary, "per_case": metrics}, ensure_ascii=False, indent=1) + "\n",

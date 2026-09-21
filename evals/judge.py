@@ -93,7 +93,13 @@ async def judge_case(
 
 
 class OpenAICompatJudge:
-    """生产用 invoker：复用引擎同一 LLM 网关配置，可用 EVAL_JUDGE_* 覆盖。"""
+    """生产 invoker：judge 身份取自评测侧 env，不回写也不依赖引擎配置。
+
+    与被测同模型自评为已知测量污染(self-preference)，因此回落同模型不再无声
+    生效：必须 EVAL_SELF_JUDGE=1 显式认领，且 judge_meta 落盘、报表打水印，
+    自评分数只能用于调试。异构 judge 用 EVAL_JUDGE_MODEL(+可选
+    EVAL_JUDGE_BASE_URL/EVAL_JUDGE_API_KEY) 指向另一家族即可。
+    """
 
     def __init__(self) -> None:
         from openai import AsyncOpenAI
@@ -101,17 +107,31 @@ class OpenAICompatJudge:
         from deepresearcher.config import get_settings
 
         llm = get_settings().llm
-        if not llm.configured:
-            raise RuntimeError("LLM_API_KEY/LLM_BASE_URL/LLM_MODEL_ID 未配置，无法构造 judge")
+        model = os.environ.get("EVAL_JUDGE_MODEL", "").strip() or llm.model
+        base_url = os.environ.get("EVAL_JUDGE_BASE_URL", "").strip() or llm.base_url
+        api_key = os.environ.get("EVAL_JUDGE_API_KEY", "").strip() or llm.api_key
+        if not (api_key and base_url and model):
+            raise RuntimeError("judge 未配置：设 EVAL_JUDGE_* 或配好引擎 LLM_* 供回落")
+        self._model = model
+        self.self_judging = model == llm.model
+        if self.self_judging and os.environ.get("EVAL_SELF_JUDGE", "").strip() != "1":
+            raise RuntimeError(
+                f"judge 与被测同模型({model})：self-preference 会虚高 Report Quality。"
+                "换 EVAL_JUDGE_MODEL 指向异构家族；确要自评调试再设 EVAL_SELF_JUDGE=1。"
+            )
         timeout_seconds = float(os.environ.get("EVAL_JUDGE_TIMEOUT_SECONDS", "120"))
         self._client = AsyncOpenAI(
-            api_key=llm.api_key,
-            base_url=llm.base_url,
+            api_key=api_key,
+            base_url=base_url,
             timeout=timeout_seconds,
             max_retries=1,
         )
-        self._model = os.environ.get("EVAL_JUDGE_MODEL", "").strip() or llm.model
         self._max_tokens = int(os.environ.get("EVAL_JUDGE_MAX_TOKENS", "16"))
+
+    @property
+    def identity(self) -> dict[str, object]:
+        """落进 judge_meta.json 的评审身份——报表水印的数据源。"""
+        return {"model": self._model, "self_judging": self.self_judging}
 
     async def complete(self, system: str, user: str) -> str:
         response = await self._client.chat.completions.create(

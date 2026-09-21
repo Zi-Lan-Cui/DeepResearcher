@@ -546,3 +546,40 @@ def test_cohen_kappa_basic():
         abs(aggregate._cohen_kappa(["yes", "no", "yes", "no"], ["no", "yes", "no", "yes"])) - 1.0
         < 1e-9
     )
+
+
+# ---- judge identity (self-preference guard) ----
+
+
+def _fake_llm_settings(monkeypatch, model: str = "mimo-v2.5"):
+    from types import SimpleNamespace
+
+    import deepresearcher.config as config_module
+    from deepresearcher.config import LLMConfig
+
+    settings = SimpleNamespace(llm=LLMConfig(api_key="k", base_url="https://gw/v1", model=model))
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+
+
+def test_judge_falling_back_to_engine_model_requires_explicit_optin(monkeypatch):
+    from evals.judge import OpenAICompatJudge
+
+    _fake_llm_settings(monkeypatch)
+    monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
+    monkeypatch.delenv("EVAL_SELF_JUDGE", raising=False)
+    with pytest.raises(RuntimeError, match="EVAL_JUDGE_MODEL"):
+        OpenAICompatJudge()  # 自评不得静默生效
+
+    monkeypatch.setenv("EVAL_SELF_JUDGE", "1")
+    judge = OpenAICompatJudge()
+    assert judge.identity == {"model": "mimo-v2.5", "self_judging": True}
+
+
+def test_judge_heterogeneous_model_needs_no_optin(monkeypatch):
+    from evals.judge import OpenAICompatJudge
+
+    _fake_llm_settings(monkeypatch)
+    monkeypatch.delenv("EVAL_SELF_JUDGE", raising=False)
+    monkeypatch.setenv("EVAL_JUDGE_MODEL", "another-family-70b")
+    judge = OpenAICompatJudge()
+    assert judge.identity == {"model": "another-family-70b", "self_judging": False}
