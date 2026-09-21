@@ -144,3 +144,49 @@ async def test_composite_sink_isolates_member_failures():
     collector = Collect()
     CompositeSink(Boom(), collector).write({"run_id": "r", "event_type": "x"})
     assert collector.records == [{"run_id": "r", "event_type": "x"}]
+
+
+async def test_publisher_flush_requeues_batch_when_store_fails():
+    """排水失败必须回插队首:done 帧整批丢失会让全部 SSE 靠兜底才收敛。"""
+
+    class FlakyStore:
+        def __init__(self):
+            self.batches = []
+            self.fail_first = True
+
+        async def append(self, run_id, records):
+            if self.fail_first:
+                self.fail_first = False
+                raise ConnectionError("db blip")
+            self.batches.append(list(records))
+
+        async def after(self, run_id, seq):
+            return []
+
+    sink = FanoutSink(asyncio.get_running_loop())
+    sink.open("r1")
+    store = FlakyStore()
+    from deepresearcher.service.events.publisher import RunEventPublisher
+
+    publisher = RunEventPublisher(
+        session_factory=lambda: None,
+        fanout=sink,
+        event_store=store,
+    )
+    sink.write({"run_id": "r1", "event_type": "engine_0", "payload": {}})
+    sink.write({"run_id": "r1", "event_type": "run_done", "payload": {"status": "completed"}})
+
+    await publisher.flush("r1")
+    assert store.batches == []  # 首批失败:一帧未持久化
+    assert [r["event_type"] for r in sink._pending["r1"]] == [  # noqa: SLF001
+        "engine_0",
+        "run_done",
+    ]  # 原样回队首且保序
+
+    sink.write({"run_id": "r1", "event_type": "engine_1", "payload": {}})
+    await publisher.flush("r1")
+    assert [r["event_type"] for r in store.batches[0]] == [
+        "engine_0",
+        "run_done",
+        "engine_1",
+    ]  # 回插批次在新事件之前,seq 分配顺序不乱

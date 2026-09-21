@@ -95,6 +95,22 @@ class RunManager:
         async with self._session_factory() as session:
             return await session.get(Run, run_id)
 
+    async def terminal_state(self, run_id: str) -> dict[str, Any] | None:
+        """SSE 兜底终止用:run 已终态则返回 done 帧载荷要素,否则 None。
+
+        done 帧可能在失败批次中丢失(flush 已尽力回插,close 竞态仍可能截尾),
+        事件的权威副本是行状态——查到这里即该收尾,不让客户端永挂。
+        """
+        async with self._session_factory() as session:
+            run = await session.get(Run, run_id)
+        if run is None or run.status not in TERMINAL_STATUSES:
+            return None
+        return {
+            "status": run.status,
+            "answer_mode": run.answer_mode or "",
+            "report_available": bool(run.report_markdown),
+        }
+
     async def _has_checkpoint(self, run_id: str) -> bool:
         if self._checkpointer is None:
             return False
