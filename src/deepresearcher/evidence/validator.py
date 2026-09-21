@@ -18,7 +18,7 @@ import unicodedata
 _SOFT_HYPHENS = "­‐‑"  # soft hyphen / hyphen / no-break hyphen
 
 
-def normalize_text(text: str) -> str:
+def collapse_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 

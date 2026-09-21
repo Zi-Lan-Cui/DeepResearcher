@@ -1,5 +1,5 @@
 from deepresearcher.evidence.validator import (
-    normalize_text,
+    collapse_whitespace,
     quote_in_source,
     quote_matches_ignoring_punctuation,
     quote_verbatim_strict,
@@ -53,4 +53,4 @@ def test_quote_in_source_is_immune_to_duplicate_and_paginated_lines():
     # 旧实现按行号定位，遇 \f 换页 / \r\n / 重复句会错位；纯子串判定不受影响。
     source = "同一句结论。\f同一句结论。\r\n正文其他内容。"
     assert quote_in_source(source, "同一句结论。")
-    assert normalize_text("A  \n B") == "a b"
+    assert collapse_whitespace("A  \n B") == "a b"

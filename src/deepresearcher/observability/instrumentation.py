@@ -26,7 +26,7 @@ def instrument_node(
     logger=None,
     event_sink: JsonlSink | None = None,
     trace_recorder: TraceRecorder | None = None,
-    max_text_chars: int = 1_000,
+    max_text_chars: int,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """统一记录节点 Log、Event 和 Span。"""
     log = logger or get_logger("deepresearcher.graph")
@@ -118,7 +118,7 @@ def instrument_node(
     return wrapped
 
 
-def _node_result_summary(result: dict[str, Any], *, max_text_chars: int = 1_000) -> dict[str, Any]:
+def _node_result_summary(result: dict[str, Any], *, max_text_chars: int) -> dict[str, Any]:
     """记录运行元数据和有界预览；完整正文不进入事件流或普通日志。"""
     summary: dict[str, Any] = {"updated_fields": sorted(result.keys())}
     for key in (

@@ -23,7 +23,7 @@ from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.events.stream import CompositeSink, FanoutSink
-from deepresearcher.service.persistence.models import Run
+from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
 from deepresearcher.service.runs.queue import RunWork
 from deepresearcher.service.settings import ServiceConfig
@@ -41,7 +41,6 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 logger = logging.getLogger("deepresearcher.service.execution.executor")
 
-TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 _FLUSH_INTERVAL_SECONDS = 2.0
 
 # 账户级 LLM 不可用 → 面向用户的安全文案（不泄露内部错误串）。

@@ -39,7 +39,7 @@ from deepresearcher.tools.web.aliyun import create_aliyun_dts_client
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 
 
-def _guarded_node(name, node, *, event_sink=None, trace_recorder=None, max_text_chars=1_000):
+def _guarded_node(name, node, *, event_sink=None, trace_recorder=None, max_text_chars: int):
     """组合观测层与节点运行器（node_runner），保持两者职责独立。"""
     observed = instrument_node(
         name,
@@ -62,7 +62,7 @@ def _routed_node(
     *,
     event_sink=None,
     trace_recorder=None,
-    max_text_chars=1_000,
+    max_text_chars: int,
 ):
     """执行节点后用 Command 动态跳转，避免条件边的隐式 fan-in 等待。"""
     guarded = _guarded_node(

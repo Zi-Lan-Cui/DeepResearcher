@@ -18,6 +18,7 @@ from deepresearcher.tools.web.parsing import (
     parse_pdf,
     parse_text_blocks,
 )
+from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
 _CHALLENGE_TITLE_MARKERS = ("验证码", "安全验证", "访问验证", "just a moment", "security check")
 _LOGIN_TITLE_MARKERS = ("登录", "sign in", "log in")
@@ -93,7 +94,7 @@ class DirectHttpFetchProvider:
                 "raw_bytes": len(data),
                 "status_code": response.status_code,
                 "content_hash": hashlib.sha256(data).hexdigest(),
-                "retrieval_method": "origin_fetch",
+                "retrieval_method": RETRIEVAL_ORIGIN_FETCH,
                 "fetch_duration_ms": fetch_duration_ms,
                 "parse_duration_ms": parse_duration_ms,
             }

@@ -19,7 +19,7 @@ from deepresearcher.agents.middleware import (
     MiddlewareProfile,
     build_agent_middleware,
 )
-from deepresearcher.config import AgentConfig
+from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.prompts import language_directive, load_prompt
@@ -33,7 +33,7 @@ class Clarifier:
         llm: BaseChatModel,
         config: AgentConfig,
         *,
-        context_window_tokens: int = 32_768,
+        context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     ):
         if llm is None:
             raise LLMConfigurationError("Clarifier 需要已装配的模型。")

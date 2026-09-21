@@ -103,7 +103,7 @@ def build_clarifier_tools():
         Clarifier 判断是否已经足够；它不是提交研究任务或输出最终答案的工具。
         """
         choices = list(dict.fromkeys(item.strip() for item in options if item.strip()))
-        if len(choices) != 3:
+        if len(choices) != CLARIFICATION_OPTION_COUNT:
             return json.dumps(
                 {"status": "rejected", "error": "必须给出恰好三个不重复选项。"},
                 ensure_ascii=False,
