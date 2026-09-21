@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -195,3 +196,14 @@ class ReviseResearchSynthesis(BaseModel):
         max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
         description="只解释当前证据选择、覆盖判断、缺口与冲突；不得引入未经 Evidence 支持的新事实。",
     )
+
+
+# 工具回执前缀:模型靠它区分工具结果与用户补充;observability 剥同一前缀
+# 提取计数指标。三处共用,单一来源在此。
+TOOL_RECEIPT_PREFIX = "【系统工具执行结果"
+
+
+def format_tool_receipt(payload: object) -> str:
+    """统一工具回执格式:前缀行 + JSON 串(或原样字符串)。"""
+    body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    return f"{TOOL_RECEIPT_PREFIX}；不是用户补充】\n{body}"

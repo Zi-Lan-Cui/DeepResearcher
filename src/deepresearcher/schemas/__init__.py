@@ -39,6 +39,7 @@ from deepresearcher.schemas.sections import (
 )
 from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.schemas.tool_args import (
+    TOOL_RECEIPT_PREFIX,
     AddEvidence,
     DocumentLineRange,
     EvidenceSubmission,
@@ -54,10 +55,13 @@ from deepresearcher.schemas.tool_args import (
     RestoreEvidence,
     ReviseResearchSynthesis,
     SearchSources,
+    format_tool_receipt,
 )
 
 __all__ = [
     "AddEvidence",
+    "format_tool_receipt",
+    "TOOL_RECEIPT_PREFIX",
     "Citation",
     "CoveredTopic",
     "DocumentLineRange",

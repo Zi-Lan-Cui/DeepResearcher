@@ -57,15 +57,21 @@ def emit_agent_event(
     component: str,
     node_fallback: str | None = None,
 ) -> None:
-    """记录 Agent 生命周期事件：先入日志，再按需写 JSONL sink。"""
-    logger.info("%s payload=%s", event_type, payload)
-    if event_sink is None:
-        return
-    event_sink.write(
-        make_audit_event(
-            event_type,
-            component=component,
-            node_id_fallback=node_fallback,
-            payload=payload,
-        )
-    )
+    """记录 Agent 生命周期事件：先入日志，再按需写 JSONL sink。
+
+    可观测性是旁路：日志 handler 或 sink 落盘异常一律在此吞掉转错误日志,
+    不得阻断、重试或改写宿主执行——保护住在这一层,各调用点不再各自设防。
+    """
+    try:
+        logger.info("%s payload=%s", event_type, payload)
+        if event_sink is not None:
+            event_sink.write(
+                make_audit_event(
+                    event_type,
+                    component=component,
+                    node_id_fallback=node_fallback,
+                    payload=payload,
+                )
+            )
+    except Exception:
+        logger.exception("%s emission failed", event_type)
