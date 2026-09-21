@@ -120,6 +120,7 @@ class ResearchSupervisor:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="Supervisor",
+                        event_slug="supervisor",
                         model=self.llm,
                         # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
                         # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。

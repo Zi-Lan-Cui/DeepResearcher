@@ -113,6 +113,7 @@ class ReportWriter:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="Writer",
+                        event_slug="writer",
                         model=self.llm,
                         max_turns=self.config.writer_max_turns,
                         context_window_tokens=context_window_tokens,
@@ -520,13 +521,19 @@ class ReportWriter:
             "必须使用 [[cite:evidence_id]] 句末标记。"
         )
 
-    def _emit(self, event_type: str, payload: dict[str, object]) -> None:
+    def _emit(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        component: str = "writer",
+    ) -> None:
         """记录 Writer 生命周期元数据，并为长文本保留受限预览。"""
         emit_agent_event(
             self._event_sink,
             self._logger,
             event_type,
             bounded_content(payload, max_text_chars=self._artifact_max_text_chars),
-            component="writer",
+            component=component,
             node_fallback="writer",
         )

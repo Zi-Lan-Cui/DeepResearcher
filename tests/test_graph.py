@@ -202,7 +202,11 @@ def test_router_delegates_research_classification_to_llm():
 
             return _Decision()
 
-    result = asyncio.run(nodes.router({"query": "哪些 galgame 具有广泛的影响力"}, RoutingLLM(), agent_config=AgentConfig()))
+    result = asyncio.run(
+        nodes.router(
+            {"query": "哪些 galgame 具有广泛的影响力"}, RoutingLLM(), agent_config=AgentConfig()
+        )
+    )
     assert result["route"] == "quick_answer"
     assert result["route_reason"] == "模型判断为单一问题"
 
@@ -216,7 +220,9 @@ def test_router_model_failure_fails_closed_to_deep_research():
 
             return _Boom()
 
-    result = asyncio.run(nodes.router({"query": "单一事实问题"}, FailingLLM(), agent_config=AgentConfig()))
+    result = asyncio.run(
+        nodes.router({"query": "单一事实问题"}, FailingLLM(), agent_config=AgentConfig())
+    )
     assert result["route"] == "deep_research"
     assert "调用失败" in result["route_reason"]
 

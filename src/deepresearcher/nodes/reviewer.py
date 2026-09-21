@@ -84,9 +84,7 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured=a
     messages = [
         SystemMessage(
             content=(
-                load_prompt("reviewer")
-                + "\n"
-                + language_directive(agent_config.output_language)
+                load_prompt("reviewer") + "\n" + language_directive(agent_config.output_language)
             )
         ),
         HumanMessage(

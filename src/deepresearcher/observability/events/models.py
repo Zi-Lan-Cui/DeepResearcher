@@ -116,7 +116,6 @@ def make_tool_event(
     component = component or {
         "search": "search_tool",
         "fetch": "source_reader",
-        "evidence_extract": "source_reader",
     }.get(tool)
     event = make_node_event(
         tool,

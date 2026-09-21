@@ -125,6 +125,7 @@ _RETRY_BACKOFF: dict[str, float] = {"backoff_factor": 2.0, "initial_delay": 1.0,
 def model_retry(
     agent: str,
     *,
+    event_slug: str | None = None,
     max_retries: int = _RETRY_MAX_RETRIES,
     backoff_factor: float = _RETRY_BACKOFF["backoff_factor"],
     initial_delay: float = _RETRY_BACKOFF["initial_delay"],
@@ -140,7 +141,7 @@ def model_retry(
     def on_failure(error: Exception) -> str:
         if emit is not None:
             emit(
-                f"{agent.lower()}_model_retry_exhausted",
+                f"{(event_slug or agent.lower())}_model_retry_exhausted",
                 {"agent": agent, "error_type": type(error).__name__, "max_retries": max_retries},
             )
         return _failure_message(agent)(error)

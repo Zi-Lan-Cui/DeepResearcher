@@ -47,9 +47,11 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
         reminder_message: str = "",
         reminder_turns: int = 0,
         emit: Callable[[str, dict[str, object]], None] | None = None,
+        event_slug: str | None = None,
     ):
         super().__init__()
         self.agent_name = agent_name
+        self._slug = event_slug or agent_name.lower()
         self.nudge_message = nudge_message
         self.submitted_probe = submitted_probe
         self.max_nudges = max_nudges
@@ -81,11 +83,9 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
             "run_limit": self.run_limit,
         }
         if self._emit is not None:
-            self._emit(f"{self.agent_name.lower()}_finalization_reminded", payload)
+            self._emit(f"{self._slug}_finalization_reminded", payload)
         else:
-            self._logger.info(
-                "%s_finalization_reminded payload=%s", self.agent_name.lower(), payload
-            )
+            self._logger.info("%s_finalization_reminded payload=%s", self._slug, payload)
         return {"messages": [HumanMessage(content=content)]}
 
     @hook_config(can_jump_to=["model"])
@@ -110,9 +110,9 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
             "content_chars": len(last.text or ""),
         }
         if self._emit is not None:
-            self._emit(f"{self.agent_name.lower()}_tool_loop_nudged", payload)
+            self._emit(f"{self._slug}_tool_loop_nudged", payload)
         else:
-            self._logger.info("%s_tool_loop_nudged payload=%s", self.agent_name.lower(), payload)
+            self._logger.info("%s_tool_loop_nudged payload=%s", self._slug, payload)
         return {
             "messages": [HumanMessage(content=self.nudge_message)],
             "jump_to": "model",

@@ -92,6 +92,7 @@ class ResearchAgent:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="ResearchAgent",
+                        event_slug="researcher",
                         model=self.llm,
                         max_turns=self.config.research_agent_max_turns + 1,
                         context_window_tokens=context_window_tokens,
@@ -110,7 +111,10 @@ class ResearchAgent:
                             ),
                             submitted_probe=lambda ctx: (
                                 getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
-                                in {DirectionStopReason.COMPLETE, DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE}
+                                in {
+                                    DirectionStopReason.COMPLETE,
+                                    DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+                                }
                             ),
                             max_nudges=self.config.finalization_attempts,
                             reminder_turns=4,
