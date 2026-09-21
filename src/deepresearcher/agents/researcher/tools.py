@@ -1,7 +1,5 @@
 """ResearchAgent 的标准工具注册表。"""
 
-import json
-
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
@@ -20,14 +18,8 @@ from deepresearcher.schemas import (
     ResearchDirectionComplete,
     RestoreEvidence,
     SearchSources,
+    format_tool_receipt,
 )
-
-
-def _tool_result(payload: object) -> str:
-    """保留统一的工具回执前缀，便于模型区分工具结果和用户输入。"""
-    return "【系统工具执行结果；不是用户补充】\n" + (
-        payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    )
 
 
 def _working_set_snapshot(loop_state: ResearcherLoopState) -> dict[str, object]:
@@ -64,7 +56,7 @@ def build_researcher_tools() -> list[BaseTool]:
         result = await services.search_sources(
             ctx.deps, ctx.task, ctx.loop_state, ctx.event_context, queries, reason
         )
-        return _tool_result(result)
+        return format_tool_receipt(result)
 
     @tool("ReadSources", args_schema=ReadSources)
     async def read_sources(
@@ -77,7 +69,7 @@ def build_researcher_tools() -> list[BaseTool]:
         result = await services.read_sources(
             ctx.deps, ctx.task, ctx.loop_state, ctx.event_context, candidate_ids, reason
         )
-        return _tool_result(result)
+        return format_tool_receipt(result)
 
     @tool("ListSearchResults", args_schema=ListSearchResults)
     async def list_search_results(
@@ -92,7 +84,7 @@ def build_researcher_tools() -> list[BaseTool]:
         result = await services.list_search_results(
             ctx.deps, ctx.task, ctx.loop_state, search_id, offset, limit, reason
         )
-        return _tool_result(result)
+        return format_tool_receipt(result)
 
     @tool("GrepDocument", args_schema=GrepDocument)
     async def grep_document(
@@ -108,7 +100,7 @@ def build_researcher_tools() -> list[BaseTool]:
         result = await services.grep_document(
             ctx.deps, ctx.loop_state, document_id, query, context_lines, offset, reason
         )
-        return _tool_result(result)
+        return format_tool_receipt(result)
 
     @tool("ReadDocument", args_schema=ReadDocument)
     async def read_document(
@@ -126,7 +118,7 @@ def build_researcher_tools() -> list[BaseTool]:
             [(item.start_line, item.end_line) for item in ranges],
             reason,
         )
-        return _tool_result(result)
+        return format_tool_receipt(result)
 
     @tool("AddEvidence", args_schema=AddEvidence)
     async def add_evidence(
@@ -148,7 +140,7 @@ def build_researcher_tools() -> list[BaseTool]:
             ],
             reason,
         )
-        return _tool_result(result)
+        return format_tool_receipt(result)
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
     async def read_working_set(
@@ -157,7 +149,7 @@ def build_researcher_tools() -> list[BaseTool]:
     ) -> str:
         """查看当前方向工作集的轻量摘要。"""
         del reason
-        return _tool_result(_working_set_snapshot(runtime.context.loop_state))
+        return format_tool_receipt(_working_set_snapshot(runtime.context.loop_state))
 
     @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
     async def release_evidence(
@@ -171,7 +163,7 @@ def build_researcher_tools() -> list[BaseTool]:
         requested = list(dict.fromkeys(evidence_ids))
         existing = set(loop_state.active_evidence_ids)
         released = loop_state.release_evidence(requested)
-        return _tool_result(
+        return format_tool_receipt(
             {
                 "released_evidence_ids": released,
                 "unknown_evidence_ids": [item for item in requested if item not in existing],
@@ -191,7 +183,7 @@ def build_researcher_tools() -> list[BaseTool]:
         requested = list(dict.fromkeys(evidence_ids))
         archived = {item.evidence_id for item in loop_state.evidences}
         restored = loop_state.restore_evidence(requested)
-        return _tool_result(
+        return format_tool_receipt(
             {
                 "restored_evidence_ids": restored,
                 "not_restored_evidence_ids": [item for item in requested if item not in restored],
@@ -215,7 +207,7 @@ def build_researcher_tools() -> list[BaseTool]:
         invalid = [item for item in requested if item not in active]
         if invalid:
             loop_state.failures.append("completion_unknown_evidence_ids: " + ", ".join(invalid))
-            return _tool_result({"status": "rejected", "invalid_evidence_ids": invalid})
+            return format_tool_receipt({"status": "rejected", "invalid_evidence_ids": invalid})
         if requested:
             loop_state.active_evidence_ids = set(requested)
         active_evidences = loop_state.active_evidences()
@@ -231,7 +223,7 @@ def build_researcher_tools() -> list[BaseTool]:
             if not loop_state.remaining_gaps:
                 loop_state.remaining_gaps = [reason]
         loop_state.stop_detail = reason
-        return _tool_result(
+        return format_tool_receipt(
             {
                 "status": "accepted",
                 "stop_reason": loop_state.stop_reason,

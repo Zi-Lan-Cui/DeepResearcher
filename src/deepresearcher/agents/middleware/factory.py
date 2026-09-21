@@ -71,7 +71,7 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
                 token_counter=count_message_tokens,
             ),
         )
-    middleware.append(model_retry(profile.agent_name))
+    middleware.append(model_retry(profile.agent_name, emit=profile.emit))
     middleware.extend(tool_retry(names, label) for names, label in profile.retry_tools)
     if profile.serial_tools:
         middleware.append(SerialToolMiddleware(profile.serial_tools))

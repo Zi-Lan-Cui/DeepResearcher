@@ -1,7 +1,5 @@
 """Supervisor 的标准工具注册表。"""
 
-import json
-
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END
@@ -24,13 +22,8 @@ from deepresearcher.schemas import (
     RestoreEvidence,
     ReviseResearchSynthesis,
     StopReason,
+    format_tool_receipt,
 )
-
-
-def _result(payload: object) -> str:
-    return "【系统工具执行结果；不是用户补充】\n" + (
-        payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    )
 
 
 def build_supervisor_tools() -> list[BaseTool]:
@@ -46,7 +39,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         result = await services.delegate_research(
             ctx.deps, ctx.loop_state, ctx.scope, ctx.bookkeeping_lock, research_topic
         )
-        return _result(result)
+        return format_tool_receipt(result)
 
     # return_direct 才会让 Command(goto=END) 真正终止 Agent 循环；
     # 缺省时 langchain 仍会把消息送回模型，决策调用白白空转一整圈。
@@ -89,7 +82,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                 "messages": [
                     {
                         "role": "tool",
-                        "content": _result(
+                        "content": format_tool_receipt(
                             {
                                 "status": "accepted" if accepted else "rejected",
                                 "reason": reason,
@@ -134,7 +127,7 @@ def build_supervisor_tools() -> list[BaseTool]:
             expected_revision != current_revision
             or expected_working_set_revision != loop_state.working_set_revision
         ):
-            return _result(
+            return format_tool_receipt(
                 {
                     "status": "stale",
                     "expected_revision": current_revision,
@@ -145,7 +138,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         referenced_ids = {evidence_id for aspect in aspects for evidence_id in aspect.evidence_ids}
         unknown_ids = sorted(referenced_ids - active_ids)
         if unknown_ids:
-            return _result(
+            return format_tool_receipt(
                 {
                     "status": "rejected",
                     "reason": "研究综合稿只能引用当前活跃 Evidence。",
@@ -173,7 +166,7 @@ def build_supervisor_tools() -> list[BaseTool]:
                 }
                 for error in exc.errors(include_url=False, include_input=False)
             ]
-            return _result(
+            return format_tool_receipt(
                 {
                     "status": "rejected",
                     "reason": "研究综合稿不满足提交契约，请按 issues 修正后重试。",
@@ -183,7 +176,7 @@ def build_supervisor_tools() -> list[BaseTool]:
             )
         loop_state.research_synthesis = synthesis
         assigned_ids = set(synthesis.selected_evidence_ids)
-        return _result(
+        return format_tool_receipt(
             {
                 "status": "accepted",
                 **synthesis_snapshot(synthesis),
@@ -202,7 +195,7 @@ def build_supervisor_tools() -> list[BaseTool]:
     ) -> str:
         """查看当前活跃 Evidence 的轻量摘要。"""
         del reason
-        return _result(working_set_snapshot(runtime.context.loop_state))
+        return format_tool_receipt(working_set_snapshot(runtime.context.loop_state))
 
     @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
     async def release_evidence(
@@ -214,7 +207,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         del reason
         loop_state = runtime.context.loop_state
         released = loop_state.release_evidence(evidence_ids)
-        return _result(
+        return format_tool_receipt(
             {
                 "released_evidence_ids": released,
                 "unknown_evidence_ids": [item for item in evidence_ids if item not in released],
@@ -232,7 +225,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         del reason
         loop_state = runtime.context.loop_state
         restored = loop_state.restore_evidence(evidence_ids)
-        return _result(
+        return format_tool_receipt(
             {
                 "restored_evidence_ids": restored,
                 "not_restored_evidence_ids": [

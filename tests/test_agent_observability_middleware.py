@@ -242,19 +242,19 @@ async def test_document_tool_content_is_redacted_from_lifecycle_events():
 
 
 @pytest.mark.asyncio
-async def test_observability_sink_failure_does_not_block_tool():
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
-        run_limit=5,
-        emit=lambda _event_type, _payload: (_ for _ in ()).throw(OSError("sink down")),
-    )
-    expected = ToolMessage(content="ok", tool_call_id="call-1")
+async def test_sink_failure_does_not_block_host():
+    """旁路保护的单位是 emit_agent_event:sink 落盘异常一律吞掉转错误日志。"""
+    import logging
 
-    async def handler(request):
-        del request
-        return expected
+    from deepresearcher.observability.events.emit import emit_agent_event
 
-    assert await middleware.awrap_tool_call(_request(), handler) is expected
+    class ExplodingSink:
+        def write(self, _record):
+            raise OSError("sink down")
+
+    emit_agent_event(
+        ExplodingSink(), logging.getLogger("test"), "evt", {"a": 1}, component="c"
+    )  # 调用不抛 == 保护在此层
 
 
 def test_context_token_count_includes_tool_call_arguments():
@@ -271,3 +271,18 @@ def test_context_token_count_includes_tool_call_arguments():
         ],
     )
     assert count_message_tokens([with_draft]) > count_message_tokens([plain]) * 10
+
+
+def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
+    """canary:两个跨层字符串契约一旦上游改文案必须当场变红,而不是静默退化。"""
+    from langchain.agents.middleware.model_call_limit import _build_limit_exceeded_message
+
+    from deepresearcher.agents.middleware.observability import LIMIT_MESSAGE_MARKER
+    from deepresearcher.schemas import format_tool_receipt
+
+    message = _build_limit_exceeded_message(1, 9, None, 8)
+    assert LIMIT_MESSAGE_MARKER in message
+    # observability 剥前缀提指标:回执必须以其 startswith 认脸
+    receipt = format_tool_receipt({"evidence_count": 2})
+    assert receipt.startswith("【系统工具执行结果")
+    assert receipt.split("\n", 1)[-1] == '{"evidence_count": 2}'

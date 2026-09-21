@@ -97,12 +97,26 @@ def model_retry(
     backoff_factor: float = 2.0,
     initial_delay: float = 1.0,
     max_delay: float = 20.0,
+    emit: Callable[[str, dict[str, object]], None] | None = None,
 ) -> ModelRetryMiddleware:
-    """创建带有项目统一错误提示的模型重试中间件。"""
+    """创建带有项目统一错误提示的模型重试中间件。
+
+    逐次尝试由库内部循环、无处挂钩;可观测的锚点是耗尽这一确定时刻——
+    它意味着本回合白白烧掉 max_retries+1 次请求,事件流此前完全隐身。
+    """
+
+    def on_failure(error: Exception) -> str:
+        if emit is not None:
+            emit(
+                f"{agent.lower()}_model_retry_exhausted",
+                {"agent": agent, "error_type": type(error).__name__, "max_retries": max_retries},
+            )
+        return _failure_message(agent)(error)
+
     return ModelRetryMiddleware(
         max_retries=max_retries,
         retry_on=retry_on,
-        on_failure=_failure_message(agent),
+        on_failure=on_failure,
         backoff_factor=backoff_factor,
         initial_delay=initial_delay,
         max_delay=max_delay,

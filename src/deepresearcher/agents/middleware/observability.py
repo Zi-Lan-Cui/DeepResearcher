@@ -14,9 +14,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.usage_runtime import enforce_usage_budget
+from deepresearcher.schemas.tool_args import TOOL_RECEIPT_PREFIX
 
-_LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
-LIMIT_MESSAGE_MARKER = _LIMIT_MESSAGE_MARKER
+LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 _PREVIEW_CHARS = 800
 _ERROR_PREVIEW_CHARS = 400
 _TOOL_ARGUMENT_PREVIEW_CHARS = 2_000
@@ -148,7 +148,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         reason = "final_response"
         if isinstance(last, AIMessage):
             content = last.text or ""
-            if _LIMIT_MESSAGE_MARKER in content:
+            if LIMIT_MESSAGE_MARKER in content:
                 reason = "model_call_limit_exceeded"
             elif last.tool_calls:
                 reason = "ended_on_tool_call_turn"
@@ -188,7 +188,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     def _result_metrics(content: object, *, numeric_only: bool = False) -> dict[str, object]:
         if not isinstance(content, str):
             return {}
-        body = content.split("\n", 1)[-1] if content.startswith("【系统工具执行结果") else content
+        body = content.split("\n", 1)[-1] if content.startswith(TOOL_RECEIPT_PREFIX) else content
         try:
             parsed = json.loads(body)
         except (TypeError, ValueError):
@@ -213,11 +213,8 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return rendered[:_TOOL_ARGUMENT_PREVIEW_CHARS]
 
     def _log_event(self, event_type: str, payload: dict[str, object]) -> None:
-        try:
-            if self._emit is not None:
-                self._emit(event_type, payload)
-                return
-            self._logger.info("%s payload=%s", event_type, payload)
-        except Exception:
-            # 可观测性是旁路：sink 异常不得阻断、重试或改写工具执行。
-            self._logger.exception("%s emission failed", event_type)
+        # 旁路保护在 emit_agent_event 一层，此处不再各自设防。
+        if self._emit is not None:
+            self._emit(event_type, payload)
+            return
+        self._logger.info("%s payload=%s", event_type, payload)
