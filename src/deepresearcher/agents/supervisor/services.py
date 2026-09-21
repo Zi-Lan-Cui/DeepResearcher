@@ -29,8 +29,7 @@ async def delegate_research(
     """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号、
     派发 ResearchAgent、吸收结果、返回完整方向报告。
 
-    同主题重复不做程序化去重:逐字键拦不住改写、只会误伤重试;防重复靠
-    提示词纪律,浪费靠 max_subtasks/轮次预算封顶。
+    程序不做主题去重:防重复靠提示词纪律,浪费靠 max_subtasks/轮次预算封顶。
     """
     round_no = loop_state.current_round
 
