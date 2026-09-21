@@ -40,6 +40,7 @@ from deepresearcher.schemas import (
     WriterDirective,
     WriterProgress,
 )
+from deepresearcher.vocab import AnswerMode
 
 
 class StateInvariantError(AgentError):
@@ -119,13 +120,7 @@ class ResearchState(TypedDict, total=False):
     session_id: str
     route: str
     route_reason: str
-    answer_mode: Literal[
-        "quick_answer",
-        "deep_research",
-        "research_incomplete",
-        "review_limited",
-        "clarification_needed",
-    ]
+    answer_mode: AnswerMode
     research_brief: str
     clarification_question: str
     draft_answer: str

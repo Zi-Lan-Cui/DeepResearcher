@@ -22,6 +22,7 @@ from deepresearcher.schemas.reporting import (
     ResearchSynthesis,
     WriterDirective,
 )
+from deepresearcher.vocab import GenerationMode, ResearchStatus, WriterAnswerMode
 
 
 class StopReason(StrEnum):
@@ -153,10 +154,10 @@ class RunStatus(BaseModel):
 
 
 class SupervisorProgress(BaseModel):
-    status: Literal["not_started", "running", "completed", "incomplete", "failed"] = "not_started"
+    status: ResearchStatus = "not_started"
     current_round: int = Field(default=0, ge=0)
     coverage_gaps: list[str] = Field(default_factory=list)
-    generation_mode: Literal["not_ready", "partial", "full"] = "not_ready"
+    generation_mode: GenerationMode = "not_ready"
     is_sufficient: bool = False
 
 
@@ -269,9 +270,7 @@ class WriterResult(BaseModel):
     report: str | None = None
     citations: list[Citation] | None = None
     paragraph_bindings: list[ParagraphBinding] | None = None
-    answer_mode: (
-        Literal["quick_answer", "deep_research", "research_incomplete", "review_limited"] | None
-    ) = None
+    answer_mode: WriterAnswerMode | None = None
     current_round: int | None = Field(default=None, ge=0)
     evidence_count: int | None = Field(default=None, ge=0)
     source_count: int | None = Field(default=None, ge=0)

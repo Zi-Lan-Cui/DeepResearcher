@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from deepresearcher.schemas.sources import SourceProfile
+from deepresearcher.vocab import Support
 
 
 class Evidence(BaseModel):
@@ -21,7 +22,7 @@ class Evidence(BaseModel):
     retrieval_method: Literal[
         "origin_fetch", "aliyun_web_fetch", "tavily_raw_content", "search_summary"
     ] = "origin_fetch"
-    support: Literal["direct", "partial", "insufficient"] = "direct"
+    support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
     def agent_payload(self) -> dict[str, object]:

@@ -16,6 +16,7 @@ from deepresearcher.schemas.limits import (
     STRUCTURED_TEXT_HARD_LIMIT_CHARS,
 )
 from deepresearcher.schemas.sources import SourceProfile
+from deepresearcher.vocab import GenerationMode, ResearchStatus, Support
 
 
 class CoveredTopic(BaseModel):
@@ -119,8 +120,8 @@ class WriterDirective(BaseModel):
 
     query: str
     report_brief: ReportBrief
-    research_status: Literal["not_started", "running", "completed", "incomplete", "failed"]
-    generation_mode: Literal["not_ready", "partial", "full"]
+    research_status: ResearchStatus
+    generation_mode: GenerationMode
     evidence_ids: list[str] | None = None
     # 日常裁剪与 ReportBrief caveats 共用配置；这里仅防御异常膨胀。
     known_gaps: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
@@ -138,7 +139,7 @@ class Citation(BaseModel):
     title: str = ""
     quote: str = ""
     claim: str = ""
-    support: Literal["direct", "partial", "insufficient"] = "direct"
+    support: Support = "direct"
     published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
 
