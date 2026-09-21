@@ -1,14 +1,18 @@
 """Agent 模型调用的统一重试策略。"""
 
-import asyncio
 from collections.abc import Callable
 from typing import cast
 
-from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelRetryMiddleware,
+    ToolRetryMiddleware,
+)
 from langchain_core.tools import BaseTool
 
 from deepresearcher.llm import LLMConfigurationError, classify_llm_error
 from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
+from deepresearcher.tools.errors import ToolError
 
 
 def retry_on(error: Exception) -> bool:
@@ -17,12 +21,36 @@ def retry_on(error: Exception) -> bool:
     配置错误、预算耗尽与账户级不可用(key/余额/硬限流)是 fail-fast 语义:
     必须冒泡到 node_runner / executor 的既有收口。在此软化它们,只会让
     agent 带着已耗尽的额度继续空烧请求,并把 terminal_reason 伪装成研究语义。
+
+    取消不经此处:CancelledError 是 BaseException,库的重试循环只捕 Exception。
     """
-    if isinstance(error, (asyncio.CancelledError, LLMConfigurationError, UsageBudgetExceeded)):
+    if isinstance(error, (LLMConfigurationError, UsageBudgetExceeded)):
         return False
     if classify_llm_error(error) is not None:
         return False
     return True
+
+
+class ToolErrorNormalizerMiddleware(AgentMiddleware):
+    """工具异常边界归一:重试层的判据是构造期声明,不是异常类型猜测。
+
+    工具重试的唯一准入是 ToolError.retryable;未被标记的意外异常(bug 级)
+    包装成 retryable=False 上抛。观测中间件注册在本层之内,记录到的仍是
+    原始异常;归一只对重试语义生效。
+    """
+
+    name = "ToolErrorNormalizer"
+
+    async def awrap_tool_call(self, request, handler):  # type: ignore[override]
+        try:
+            return await handler(request)
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(
+                f"工具内部意外错误：{type(exc).__name__}: {exc}",
+                code="tool_unexpected",
+            ) from exc
 
 
 # 软化文本的指纹:ToolLoopGuard 据此区分"模型后端故障的引导"与"协议违规的
@@ -41,12 +69,13 @@ def _failure_message(agent: str) -> Callable[[Exception], str]:
 
 
 def tool_retry_on(error: Exception) -> bool:
-    """只重试工具明确标记为可恢复的错误。"""
-    if isinstance(error, asyncio.CancelledError):
-        return False
-    return bool(getattr(error, "retryable", False)) or isinstance(
-        error, (TimeoutError, ConnectionError)
-    )
+    """只重试工具在构造时自标可恢复的错误。
+
+    异常空间已由 ToolErrorNormalizerMiddleware 在边界闭合;此前追加的
+    isinstance(TimeoutError, ConnectionError) 臂与真实异常类型永不相交,
+    是一层假保险,已删。
+    """
+    return bool(getattr(error, "retryable", False))
 
 
 def _tool_failure_message(tool_label: str) -> Callable[[Exception], str]:
