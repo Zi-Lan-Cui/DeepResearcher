@@ -23,7 +23,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
 from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
-from deepresearcher.agents.middleware.retry import model_retry, tool_retry
+from deepresearcher.agents.middleware.retry import (
+    ToolErrorNormalizerMiddleware,
+    model_retry,
+    tool_retry,
+)
 from deepresearcher.evidence.tokens import get_token_estimator
 
 _TOKEN_ESTIMATOR = get_token_estimator()
@@ -115,6 +119,10 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     middleware.append(model_retry(profile.agent_name, emit=profile.emit))
     # 标签默认取工具名本身(retry_tools 只声明工具;展示名即协议名)。
     middleware.extend(tool_retry(names, names[0]) for names in profile.retry_tools)
+    if profile.retry_tools:
+        # 归一层必须注册在 tool_retry 之后(更内):retry 看到的是归一后的异常,
+        # observability(更更内)记录的仍是原始异常。
+        middleware.append(ToolErrorNormalizerMiddleware())
     if profile.serial_tools:
         middleware.append(SerialToolMiddleware(profile.serial_tools))
     for tool_name, tool_call_limit in profile.tool_call_limits:
