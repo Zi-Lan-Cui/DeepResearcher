@@ -99,32 +99,38 @@ async def run_events(
                     if settled:
                         state.fanout.close(run.id)
                         return
+                local_wait = asyncio.create_task(queue.get())
+                notify_wait = asyncio.create_task(notify_queue.get())
+                preview_wait = (
+                    asyncio.create_task(preview_subscription.queue.get())
+                    if preview_subscription is not None
+                    else None
+                )
+                waits = [t for t in (local_wait, notify_wait, preview_wait) if t is not None]
                 try:
-                    local_wait = asyncio.create_task(queue.get())
-                    notify_wait = asyncio.create_task(notify_queue.get())
-                    waits = [local_wait, notify_wait]
-                    preview_wait = None
-                    if preview_subscription is not None:
-                        preview_wait = asyncio.create_task(preview_subscription.queue.get())
-                        waits.append(preview_wait)
-                    done, pending = await asyncio.wait(
+                    done, _ = await asyncio.wait(
                         waits,
                         timeout=SSE_DB_POLL_SECONDS,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
-                    for waiter in pending:
+                finally:
+                    # 成功路径只回收未完成的挂起者;客户端断连时 asyncio.wait 不为
+                    # 子任务负责——两种结局都从这里统一收口,不给自己留泄漏窗口。
+                    for waiter in waits:
                         waiter.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    if not done:
-                        raise TimeoutError
-                    items = []
-                    if local_wait in done:
-                        items.append(local_wait.result())
-                    if preview_wait is not None and preview_wait in done:
-                        items.append(preview_wait.result())
-                    if notify_wait in done:
-                        notify_wait.result()
-                except TimeoutError:
+                    await asyncio.gather(*waits, return_exceptions=True)
+                if not done:
+                    raise TimeoutError
+                items = []
+                if local_wait in done:
+                    items.append(local_wait.result())
+                if preview_wait is not None and preview_wait in done:
+                    items.append(preview_wait.result())
+                if notify_wait in done:
+                    notify_wait.result()
+                if not items:
+                    # 无人叫醒(DB 轮询到点/仅 notify 唤醒):走一次心跳检查再回轮询头,
+                    # 等价于原 TimeoutError 分支;notify 唤醒多一次心跳无害。
                     now = asyncio.get_running_loop().time()
                     if now - last_ping >= SSE_HEARTBEAT_SECONDS:
                         last_ping = now
