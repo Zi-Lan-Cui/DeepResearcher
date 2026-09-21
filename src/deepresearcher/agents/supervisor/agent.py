@@ -122,7 +122,7 @@ class ResearchSupervisor:
                         # 的本地 hard check 执行。
                         max_turns=config.max_subtasks_per_round + 10,
                         context_window_tokens=context_window_tokens,
-                        retry_tools=[(["ResearchDelegate"], "ResearchDelegate")],
+                        retry_tools=[["ResearchDelegate"]],
                         serial_tools={
                             "ReadWorkingSet",
                             "ReleaseEvidence",

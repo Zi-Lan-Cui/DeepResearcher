@@ -11,7 +11,16 @@ restore_state_models 统一恢复;section() 是读侧最后一道兜底。
 
 from collections.abc import MutableMapping
 from operator import add
-from typing import Annotated, Literal, NotRequired, TypedDict, TypeVar, cast
+from typing import (
+    Annotated,
+    Literal,
+    NotRequired,
+    TypedDict,
+    TypeVar,
+    cast,
+    get_args,
+    get_type_hints,
+)
 
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
@@ -148,6 +157,13 @@ class ResearchState(TypedDict, total=False):
     node_events: Annotated[list[NodeEvent], add]
 
 
+# 允许为 None 的标量通道由注解派生,不再手工登记第二份:新增 Optional 通道
+# 若漏进 skip 集,带必填字段的模型 model_cls() 会在恢复当场炸。
+_OPTIONAL_SCALAR_KEYS = frozenset(
+    key for key, hint in get_type_hints(ResearchState).items() if type(None) in get_args(hint)
+)
+
+
 def restore_state_models(state: dict[str, object]) -> None:
     """恢复 JSON checkpoint 中被还原为 dict 的嵌套模型。"""
     scalar_models = (
@@ -161,7 +177,7 @@ def restore_state_models(state: dict[str, object]) -> None:
     for key, model_cls in scalar_models:
         value = state.get(key)
         if value is None:
-            if key in {"writer_directive", "research_synthesis"}:
+            if key in _OPTIONAL_SCALAR_KEYS:
                 continue
             state[key] = model_cls()  # type: ignore[call-arg]
         elif not isinstance(value, model_cls):

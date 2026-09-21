@@ -39,7 +39,7 @@ class MiddlewareProfile:
     max_turns: int
     context_window_tokens: int
     model: BaseChatModel | None = None
-    retry_tools: Sequence[tuple[list[str], str]] = ()
+    retry_tools: Sequence[list[str]] = ()
     serial_tools: set[str] | None = None
     tool_call_limits: Sequence[tuple[str, int]] = ()
     submission_guard: SubmissionGuard | None = None
