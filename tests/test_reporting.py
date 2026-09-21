@@ -320,3 +320,23 @@ def test_render_never_leaks_machine_terminal_reason_into_report():
     result = asyncio.run(render_final_report_node(state))
     assert "round_budget_exhausted" not in result["report"]
     assert "研究轮次预算已耗尽" in result["report"]
+
+
+def test_reference_table_survives_ghost_cite():
+    """正文引用无元数据的 id:降级为编号、不炸终检(此前 by_id[...] KeyError)。"""
+    from deepresearcher.reporting import render_final_report
+
+    report = render_final_report(
+        clarified_query="q",
+        current_round=1,
+        evidence_count=1,
+        body="事实一句。[[cite:e1]] 幽灵句。[[cite:ghost]]",
+        citations=[
+            Citation(
+                id="e1", url="https://example.com/a", quote="事实一句。", claim="事实一句"
+            )
+        ],
+    )
+    assert "参考来源" in report
+    assert "来源1" in report
+    assert "来源2" in report  # 幽灵仍占编号位

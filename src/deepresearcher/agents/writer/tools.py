@@ -38,7 +38,7 @@ class CompleteReport(BaseModel):
     markdown: str = Field(min_length=1)
 
 
-def build_writer_tools(turn_budget: int = 10, read_batch: int = 30):
+def build_writer_tools(*, turn_budget: int, read_batch: int):
     """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。
 
     引用总条数不设上限；约束只剩三条：cite 必须已读（本工具集）、

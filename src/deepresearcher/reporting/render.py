@@ -124,9 +124,9 @@ def _reference_list(
     """生成带可审计引文的参考来源表：每行编号 + 标题/URL + 逐字引文。"""
     lines = ["", "## 参考来源"]
     for source_id in display_order:
-        citation = by_id[source_id]
+        citation = by_id.get(source_id)
         if citation is None:
-            continue
+            continue  # 正文引用了无元数据的 id：降级为只有编号，不炸终检
         label = citation.title or urlsplit(citation.url).netloc or display[source_id]
         lines.append(f"- [{display[source_id]}] {label}: {citation.url}")
         if citation.quote:

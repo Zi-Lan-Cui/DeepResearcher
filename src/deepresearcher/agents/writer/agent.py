@@ -429,7 +429,7 @@ class ReportWriter:
             "writer_draft_ready",
             {
                 "selected_evidence_ids": draft.selected_evidence_ids,
-                "draft_markdown": draft.body,
+                "markdown": draft.body,
                 "citation_ids": [item.id for item in draft.citations],
             },
         )

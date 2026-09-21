@@ -129,7 +129,7 @@ def count_message_tokens(messages) -> int:
 def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     """按 Profile 组装所有 Agent 共用的模型、工具、上下文和轮次中间件。
 
-    Profile 语义约定见 :mod:`.profile`；注册顺序即行为契约：提交守卫
+    Profile 字段语义见本文件 ``MiddlewareProfile`` 的类/字段注释；注册顺序即行为契约：提交守卫
     先于 AgentObservability 注册（after-hook 逆序执行），保证回合日志完整记录
     被拦截的文本输出；ModelCallLimit 最后注册，其计数先于日志中间件递增。
     """
