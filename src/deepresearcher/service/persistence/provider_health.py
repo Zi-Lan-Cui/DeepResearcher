@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from deepresearcher.service.persistence.models import ProviderHealthRecord
 
@@ -38,25 +39,36 @@ class PostgresProviderHealth:
         return row.reason if until > _utcnow() else None
 
     async def trip(self, provider: str, reason: str, seconds: float) -> None:
-        now = _utcnow()
-        until = now + timedelta(seconds=seconds)
-        async with self._session_factory() as session:
-            row = await session.scalar(
-                select(ProviderHealthRecord).where(ProviderHealthRecord.provider == provider)
-            )
-            if row is None:
-                session.add(
-                    ProviderHealthRecord(
-                        provider=provider, reason=reason, open_until=until, updated_at=now
-                    )
+        # select-then-insert 在多 worker 并发首撞同一 key 时会让后提交方吃
+        # IntegrityError；调用点住在 except ProviderExhaustedError 分支内，
+        # 任熔断开闸当场替换原始业务异常类型。冲突即重走 update 分支重试。
+        for attempt in range(2):
+            async with self._session_factory() as session:
+                now = _utcnow()
+                until = now + timedelta(seconds=seconds)
+                row = await session.scalar(
+                    select(ProviderHealthRecord).where(ProviderHealthRecord.provider == provider)
                 )
-            else:
-                # 只延后、不缩短：并发多 worker 撞同一 key 时保留最大恢复窗口。
-                existing = row.open_until
-                if existing.tzinfo is None:
-                    existing = existing.replace(tzinfo=timezone.utc)
-                if until > existing:
-                    row.reason = reason
-                    row.open_until = until
-                    row.updated_at = now
-            await session.commit()
+                if row is None:
+                    session.add(
+                        ProviderHealthRecord(
+                            provider=provider, reason=reason, open_until=until, updated_at=now
+                        )
+                    )
+                else:
+                    # 只延后、不缩短：并发多 worker 撞同一 key 时保留最大恢复窗口。
+                    existing = row.open_until
+                    if existing.tzinfo is None:
+                        existing = existing.replace(tzinfo=timezone.utc)
+                    if until > existing:
+                        row.reason = reason
+                        row.open_until = until
+                        row.updated_at = now
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    if attempt == 1:
+                        raise
+                    continue
+                return

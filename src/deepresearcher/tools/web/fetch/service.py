@@ -1,4 +1,8 @@
-"""网页抓取编排：缓存、Provider 顺序和可恢复降级。"""
+"""网页抓取编排：Provider 顺序尝试与可恢复降级。
+
+正文级缓存不在本层——由 SourceReaderTool 经 ResearchMaterialStore.resolve_fetch
+命中/回写；material_fetch_key 只是把"可跨 Run 复用"的身份算给 reader 用。
+"""
 
 import asyncio
 
@@ -26,7 +30,7 @@ class FetchService:
         self.parser_version = parser_version
 
     def material_fetch_key(self, url: str) -> str:
-        """返回可跨 Run 复用的正文身份；与现有 ToolCache 版本语义一致。"""
+        """返回可跨 Run 复用的正文身份：URL 规范串 + provider 序列 + 策略/解析版本；任一版本变化即自然失效。"""
 
         normalized_url = canonical_url(url)
         if not normalized_url:
@@ -45,22 +49,7 @@ class FetchService:
         fetch_timeout: float | None = None,
         parse_timeout: float | None = None,
     ) -> SourceDocument:
-        normalized_url = canonical_url(url)
-        if not normalized_url or not normalized_url.startswith(("http://", "https://")):
-            return await self._fetch_uncached(
-                url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
-            )
-        return await self._fetch_uncached(
-            url, fetch_timeout=fetch_timeout, parse_timeout=parse_timeout
-        )
-
-    async def _fetch_uncached(
-        self,
-        url: str,
-        *,
-        fetch_timeout: float | None,
-        parse_timeout: float | None,
-    ) -> SourceDocument:
+        """按配置顺序尝试各 Provider：成功即归因 retrieval_method，全败保留原异常语义。"""
         last_error: Exception | None = None
         last_failure: SourceDocument | None = None
         for provider in self.providers:

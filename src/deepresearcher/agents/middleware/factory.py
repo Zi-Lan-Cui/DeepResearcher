@@ -107,6 +107,9 @@ class MiddlewareProfile:
     serial_tools: set[str] | None = None
     tool_call_limits: Sequence[tuple[str, int]] = ()
     submission_guard: SubmissionGuard | None = None
+    # 提交落盘后由 SubmittedExitMiddleware 在下一跳静默出环(Supervisor 的
+    # ResearchComplete 用它终结;工具本身不设 return_direct)。None = 不挂。
+    exit_probe: Callable[[Any], bool] | None = None
     emit: AgentEmit | None = None  # 契约见 observability.events.AgentEmit
 
 
@@ -136,7 +139,10 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     被拦截的文本输出；ModelCallLimit 最后注册，其计数先于日志中间件递增。
     """
     from deepresearcher.agents.middleware.serial_tools import SerialToolMiddleware
-    from deepresearcher.agents.middleware.tool_loop_guard import ToolLoopGuardMiddleware
+    from deepresearcher.agents.middleware.tool_loop_guard import (
+        SubmittedExitMiddleware,
+        ToolLoopGuardMiddleware,
+    )
 
     trigger = max(1_024, int(profile.context_window_tokens * 0.8))
     keep = max(1_024, int(profile.context_window_tokens * 0.25))
@@ -172,6 +178,8 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
         middleware.append(ToolErrorNormalizerMiddleware())
     if profile.serial_tools:
         middleware.append(SerialToolMiddleware(profile.serial_tools))
+    if profile.exit_probe is not None:
+        middleware.append(SubmittedExitMiddleware(profile.exit_probe))
     for tool_name, tool_call_limit in profile.tool_call_limits:
         middleware.append(
             cast(
