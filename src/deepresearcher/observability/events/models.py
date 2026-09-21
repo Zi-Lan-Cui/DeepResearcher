@@ -1,10 +1,13 @@
+"""状态内事件模型(NodeEvent 家族)与构造函数;failure_event_fields 是失败事件的单源。"""
+
 from datetime import datetime, timezone
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
+from deepresearcher.schemas.sections import RunError
 
 
 def _link_or(link: SpanContext | None) -> SpanContext:
@@ -132,6 +135,17 @@ def make_tool_event(
         component=component,
     )
     return event.model_copy(update={"event_type": event_name or "tool_" + status, "node": tool})
+
+
+def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str, Any]]:
+    """失败节点事件的公共字段单源:sink 侧(instrumentation)与状态侧(node_runner)
+    由同一 RunError 构造,error/code/retryable 不再两处各自演化;
+    link/duration 等场景专有字段由调用方自行补进 make_node_event。"""
+    error = RunError.from_exception(stage, exc)
+    return error, {
+        "error": error.message,
+        "payload": {"code": error.code, "retryable": error.retryable},
+    }
 
 
 def make_node_event(

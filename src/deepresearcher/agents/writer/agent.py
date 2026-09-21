@@ -32,7 +32,7 @@ from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.prompts import (
     get_runtime_environment,
     language_directive,
@@ -137,9 +137,9 @@ class ReportWriter:
         )
 
     async def run(self, state: ResearchState) -> dict[str, object]:
-        """按固定路径完成模式分流、草稿生成、校验和最终渲染。"""
+        """按固定路径完成模式分流、草稿生成、校验与状态收束;编号渲染不在本层。"""
         if state.get("answer_mode") == "quick_answer":
-            return self._render_quick_answer(state)
+            return self._state_update_for_quick_answer(state)
 
         # 同 run 内 State channel 已是模型；跨进程 checkpoint 恢复时可能是 dict。
         evidences = [
@@ -152,7 +152,7 @@ class ReportWriter:
             evidences = [item for item in evidences if item.evidence_id in allowed_ids]
         prepared = self._prepare_evidence(evidences, directive.report_brief)
         if not prepared.by_id:
-            return self._render_insufficient_evidence(state, evidences)
+            return self._state_update_for_insufficient_evidence(state, evidences)
 
         loop_context = self._build_loop_context(
             prepared.by_id,
@@ -177,7 +177,7 @@ class ReportWriter:
         if loop_context.validated_draft is None:
             self._recover_inline_draft(loop_context, result.get("messages", []))
         if loop_context.validated_draft is None:
-            return self._render_exhausted_result(
+            return self._state_update_for_exhausted_result(
                 state,
                 last_markdown=loop_context.last_markdown
                 or self._last_submitted_markdown(result.get("messages", [])),
@@ -191,7 +191,7 @@ class ReportWriter:
                 "normalized_markdown": loop_context.validated_draft.body,
             },
         )
-        return self._render_ready_result(
+        return self._state_update_for_ready_result(
             state=state,
             draft=loop_context.validated_draft,
             evidence_count=len(prepared.by_id),
@@ -276,7 +276,7 @@ class ReportWriter:
             )
             return
 
-    def _render_quick_answer(self, state: ResearchState) -> dict[str, object]:
+    def _state_update_for_quick_answer(self, state: ResearchState) -> dict[str, object]:
         return WriterResult(
             # 页面徽标已经表达“即时回答 / 未联网检索”；正文只保留答案，
             # 不重复问题、模式说明或行动号召。
@@ -305,7 +305,7 @@ class ReportWriter:
             catalogue=self._evidence_catalogue(by_id, report_brief),
         )
 
-    def _render_insufficient_evidence(
+    def _state_update_for_insufficient_evidence(
         self,
         state: ResearchState,
         evidences: list[Evidence],
@@ -386,7 +386,7 @@ class ReportWriter:
             )
         ]
 
-    def _render_exhausted_result(
+    def _state_update_for_exhausted_result(
         self,
         state: ResearchState,
         *,
@@ -418,7 +418,7 @@ class ReportWriter:
             review=ReviewProgress(status="pending", attempts=review_attempts),
         ).state_update()
 
-    def _render_ready_result(
+    def _state_update_for_ready_result(
         self,
         *,
         state: ResearchState,
@@ -511,15 +511,6 @@ class ReportWriter:
     def _meets_minimum_support(self, support: str) -> bool:
         minimum_rank = _SUPPORT_RANK.get(self.config.writer_minimum_support)
         return minimum_rank is not None and _SUPPORT_RANK.get(support, 0) >= minimum_rank
-
-    @staticmethod
-    def _citation_retry_note(error: str) -> str:
-        return (
-            f"\n上一稿 Markdown 引用校验失败：{error}。"
-            "如果提示 Evidence 尚未读取，必须先调用 ReadEvidence 获取它；"
-            "然后重新生成完整 Markdown 正文。不要复用旧的引用写法，"
-            "必须使用 [[cite:evidence_id]] 句末标记。"
-        )
 
     def _emit(
         self,

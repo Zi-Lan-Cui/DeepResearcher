@@ -1,3 +1,5 @@
+"""TraceRecorder:span 父子嵌套靠 ContextVar 传递;span() 可独立成 trace,trace() 是显式包装。"""
+
 import asyncio
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager

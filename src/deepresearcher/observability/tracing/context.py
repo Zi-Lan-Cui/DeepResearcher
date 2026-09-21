@@ -1,3 +1,5 @@
+"""Span 上下文的 ContextVar 载体:new_id 生成、current_span_context 读写、span() 嵌套。"""
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass

@@ -92,8 +92,6 @@ class HttpClient:
         for attempt in range(self.config.retry_attempts):
             retry_after: float | None = None
             try:
-                # curl_cffi 的类型存根只接受受限的字面量集合；项目边界允许
-                # 调用方继续使用通用的 HTTP 方法和 Mapping 类型。
                 started = time.monotonic()
                 semaphore = self._capacity.get(request_kind, self._capacity["fetch"])
                 async with semaphore:

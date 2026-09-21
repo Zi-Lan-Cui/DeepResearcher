@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.events.stream import FanoutSink
 from deepresearcher.service.persistence.models import Run

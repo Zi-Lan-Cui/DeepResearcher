@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -17,14 +16,11 @@ from deepresearcher.service.events.stream import FanoutSink
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.models import Run, RunEvent
+from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepresearcher.tools.web.materials import ResearchMaterialStore
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class WorkerCoordinator:

@@ -17,7 +17,7 @@ from langgraph.channels.untracked_value import UntrackedValue
 from typing_extensions import NotRequired
 
 from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 
 
 class ToolLoopGuardState(AgentState[Any]):

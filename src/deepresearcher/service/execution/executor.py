@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Iterable
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import update
@@ -24,6 +23,7 @@ from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.events.stream import CompositeSink, FanoutSink
 from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
+from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
 from deepresearcher.service.runs.queue import RunWork
 from deepresearcher.service.settings import ServiceConfig
@@ -50,10 +50,6 @@ _LLM_UNAVAILABLE_MESSAGE = {
     "forbidden": "模型服务拒绝访问（权限不足或模型不可用）。",
     "rate_limited": "模型服务当前限流，请稍后重试。",
 }
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class RunExecutor:

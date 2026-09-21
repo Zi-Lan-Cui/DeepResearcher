@@ -8,17 +8,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from deepresearcher.service.persistence.models import ProviderHealthRecord
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from deepresearcher.service.persistence.models import utcnow as _utcnow
 
 
 class PostgresProviderHealth:

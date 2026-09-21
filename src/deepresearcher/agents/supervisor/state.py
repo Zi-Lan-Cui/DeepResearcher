@@ -190,8 +190,8 @@ class SupervisorLoopState:
     def set_stop_reason(self, reason: StopReason) -> None:
         """按 `StopReason.rank` 采纳终止原因；低权威度不覆盖已采纳的高权威度。
 
-        取代过去"直接赋值 + 零散 is None 守卫"的隐式优先级：谁都能写、顺序说了算。
-        现在写点只需调用本方法并选对 reason，冲突由声明式 rank 裁决（见 StopReason.rank）。
+        写点只需调用本方法并选对 reason；冲突由声明式 rank 裁决（见 StopReason.rank），
+        与写入先后无关。
         """
         current = self.stop_reason
         if current is None or reason.rank >= current.rank:

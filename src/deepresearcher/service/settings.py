@@ -17,7 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from deepresearcher.config import project_path_env
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 
 # service/settings.py 位于 src/deepresearcher/service/ 下，比 config.py 深一层。
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]

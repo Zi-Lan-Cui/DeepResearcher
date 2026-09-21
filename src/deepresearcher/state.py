@@ -234,8 +234,7 @@ def validate_state_invariants(
     run = _coerce(RunStatus, run)
     if run.phase == "failed" and run.error is None:
         raise StateInvariantError("run.phase=failed 时必须提供 run.error。")
-    # ``rendering`` is a terminal preparation phase: research may have ended
-    # by budget exhaustion and the renderer still needs the reason to explain
-    # the incomplete result. It is therefore valid before ``completed``.
+    # rendering 是终局准备相:研究可能因预算耗尽收尾,渲染层仍需要 reason
+    # 解释为何不完整——因此它在 completed 之前即为合法。
     if run.phase not in {"rendering", "completed", "failed"} and run.terminal_reason:
         raise StateInvariantError(f"run.phase={run.phase} 时不能设置 terminal_reason。")

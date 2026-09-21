@@ -1,3 +1,9 @@
+"""节点级观测:instrument_node 记录生命周期(started/completed/failed/cancelled)并原样重抛。
+
+本模块只记录、不裁决——失败转 RunStatus 的收口归 node_runner.execute_node;
+两处失败事件的 error/code/retryable 口径共用 failure_event_fields。
+"""
+
 import asyncio
 import inspect
 import time
@@ -6,9 +12,9 @@ from typing import Any
 
 from langgraph.errors import GraphBubbleUp
 
-from deepresearcher.observability.events.models import make_node_event
+from deepresearcher.observability.events.models import failure_event_fields, make_node_event
 from deepresearcher.observability.events.sink import JsonlSink
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import (
     SpanContext,
     bind_context,
@@ -16,7 +22,6 @@ from deepresearcher.observability.tracing.context import (
     new_id,
 )
 from deepresearcher.observability.tracing.recorder import TraceRecorder
-from deepresearcher.schemas import RunError
 
 
 def instrument_node(
@@ -29,7 +34,7 @@ def instrument_node(
     max_text_chars: int,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """统一记录节点 Log、Event 和 Span。"""
-    log = logger or get_logger("deepresearcher.graph")
+    log = logger or get_logger("deepresearcher.observability.instrumentation")
 
     async def wrapped(state: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
@@ -98,18 +103,14 @@ def instrument_node(
             except Exception as exc:
                 duration_ms = (time.perf_counter() - started) * 1000
                 log.exception("node_failed duration_ms=%.2f", duration_ms, extra={"node": name})
-                run_error = RunError.from_exception(name, exc)
+                _, fields = failure_event_fields(name, exc)
                 event = make_node_event(
                     name,
                     "failed",
                     link=span_link,
                     node_id=name,
                     duration_ms=duration_ms,
-                    error=str(exc) or exc.__class__.__name__,
-                    payload={
-                        "code": run_error.code,
-                        "retryable": run_error.retryable,
-                    },
+                    **fields,
                 )
                 if event_sink is not None:
                     event_sink.write(event)

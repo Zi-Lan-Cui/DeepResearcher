@@ -48,12 +48,8 @@ class DocumentGrepMatch(BaseModel):
 class GrepResult(BaseModel):
     """单个查询词一次 grep 的结果:窗口 + 可续读的截断账。
 
-    一次调用只查一个词——批量由 agent 在同一回合并行发起多个 GrepDocument 实现
-    (该工具非 serial),因此不存在跨查询词的配额抢占/饿死,也无需 per-query 矩阵。
-    截断(受 max_matches / max_chars 约束)通过 `total_matches / has_more / next_offset`
-    显式回报:模型据此带 offset 翻页取回后续,或直接对返回的 start_line/end_line
-    调 ReadDocument 展开。把 ripgrep `--count` 与 Claude Code `head_limit`+`offset`
-    的思路落到 agent 工具上,而不是把内容腰斩。
+    截断/翻页/整窗不截半行的完整行为契约见 materials.store.grep_lines(实现所在);
+    本处只描述字段级语义。
     """
 
     query: str

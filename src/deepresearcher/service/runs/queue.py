@@ -5,17 +5,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import func, select, text, update
 
 from deepresearcher.service.coordination import RUN_CLAIM_CAPACITY_LOCK_ID
 from deepresearcher.service.persistence.models import Run
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from deepresearcher.service.persistence.models import utcnow as _utcnow
 
 
 @dataclass(frozen=True)
