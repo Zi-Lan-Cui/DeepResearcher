@@ -305,3 +305,18 @@ def test_rendered_report_preserves_auditable_quotes_in_reference_list():
     assert "「第二条原文。」" in report
     assert "来源一: https://one.test" in report
     assert "来源二: https://two.test" in report
+
+
+def test_render_never_leaks_machine_terminal_reason_into_report():
+    """回归锁:StopReason 值曾经原文直进用户报告(研究阶段未完成:round_...)。"""
+    from deepresearcher.nodes.render import render_final_report_node
+    from deepresearcher.schemas import RunStatus, SupervisorProgress
+
+    state = {
+        "query": "q",
+        "run": RunStatus(phase="rendering", terminal_reason="round_budget_exhausted"),
+        "supervisor": SupervisorProgress(status="incomplete"),
+    }
+    result = asyncio.run(render_final_report_node(state))
+    assert "round_budget_exhausted" not in result["report"]
+    assert "研究轮次预算已耗尽" in result["report"]

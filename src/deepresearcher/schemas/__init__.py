@@ -25,6 +25,7 @@ from deepresearcher.schemas.reporting import (
     WriterDirective,
 )
 from deepresearcher.schemas.sections import (
+    RenderOutcome,
     ResearchAgentResult,
     ResearchDirectionResult,
     ReviewIssue,
@@ -36,6 +37,7 @@ from deepresearcher.schemas.sections import (
     SupervisorStateUpdate,
     WriterProgress,
     WriterResult,
+    terminal_reason_text,
 )
 from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.schemas.tool_args import (
@@ -75,6 +77,7 @@ __all__ = [
     "ReadDocument",
     "ReadWorkingSet",
     "ReviewDecision",
+    "RenderOutcome",
     "ReportBrief",
     "ResearchAspect",
     "ResearchAgentResult",
@@ -94,6 +97,7 @@ __all__ = [
     "RunStatus",
     "SearchSources",
     "StopReason",
+    "terminal_reason_text",
     "SourceProfile",
     "SupervisorStateUpdate",
     "WriterDirective",

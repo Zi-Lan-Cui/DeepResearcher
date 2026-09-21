@@ -44,6 +44,7 @@ from deepresearcher.prompts import (
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
+    RenderOutcome,
     ReportBrief,
     ResearchAspect,
     ResearchDirectionResult,
@@ -179,7 +180,10 @@ class ResearchSupervisor:
         if review.status == "rejected":
             if review.attempts > self.config.max_post_review_recovery_cycles:
                 update = SupervisorStateUpdate(
-                    run=RunStatus(phase="rendering", terminal_reason="review_recovery_exhausted"),
+                    run=RunStatus(
+                        phase="rendering",
+                        terminal_reason=RenderOutcome.REVIEW_RECOVERY_EXHAUSTED,
+                    ),
                     supervisor=section(state, "supervisor", SupervisorProgress),
                     writer=section(state, "writer", WriterProgress),
                 )
