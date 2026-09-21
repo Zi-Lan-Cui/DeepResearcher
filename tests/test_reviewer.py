@@ -1,5 +1,7 @@
 import asyncio
 
+from deepresearcher.config import AgentConfig
+
 from deepresearcher.nodes import (
     reviewer,
 )
@@ -48,6 +50,7 @@ def test_reviewer_rejects_with_structured_evidence_feedback(monkeypatch):
                 "citations": [_cite("e1", claim="A 有复杂叙事", quote="A 有复杂叙事。")],
             },
             object(),
+            agent_config=AgentConfig(),
         )
     )
 
@@ -77,6 +80,7 @@ def test_reviewer_requests_rewrite_when_evidence_is_sufficient(monkeypatch):
                 "citations": [_cite("e1", claim="A 获得提名", quote="A 获得提名。")],
             },
             object(),
+            agent_config=AgentConfig(),
         )
     )
 
@@ -107,6 +111,7 @@ def test_reviewer_allows_warnings_without_rejecting_report(monkeypatch):
                 "citations": [_cite("e1", claim="A 支持 VR 漫游", quote="A 支持 VR 漫游。")],
             },
             object(),
+            agent_config=AgentConfig(),
         )
     )
 
@@ -140,7 +145,7 @@ def test_reviewer_retries_content_filter_then_succeeds(monkeypatch):
             raise ContentFilterFinishReasonError()
         return _decision()
 
-    result = asyncio.run(reviewer_core(_review_state(), object(), invoke_structured=flaky))
+    result = asyncio.run(reviewer_core(_review_state(), object(), agent_config=AgentConfig(), invoke_structured=flaky))
     assert result["review"].status == "approved"
     assert calls["n"] == 2  # 首次被内容审查拦截，重试一次成功
 
@@ -156,7 +161,7 @@ def test_reviewer_exhausts_retries_and_reraises(monkeypatch):
         raise ContentFilterFinishReasonError()
 
     try:
-        asyncio.run(reviewer_core(_review_state(), object(), invoke_structured=always_filtered))
+        asyncio.run(reviewer_core(_review_state(), object(), agent_config=AgentConfig(), invoke_structured=always_filtered))
         assert False, "应当抛出"
     except ContentFilterFinishReasonError:
         pass

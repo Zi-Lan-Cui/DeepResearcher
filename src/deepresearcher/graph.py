@@ -188,7 +188,7 @@ def build_graph(
         NodeName.ROUTER,
         _routed_node(
             NodeName.ROUTER,
-            lambda state: nodes.router(state, llm),
+            lambda state: nodes.router(state, llm, agent_config=settings.agent),
             route_after_router,
             event_sink=event_sink,
             trace_recorder=trace_recorder,
@@ -271,7 +271,7 @@ def build_graph(
         NodeName.REVIEWER,
         _routed_node(
             NodeName.REVIEWER,
-            lambda state: nodes.reviewer(state, llm),
+            lambda state: nodes.reviewer(state, llm, agent_config=settings.agent),
             route_after_reviewer,
             event_sink=event_sink,
             trace_recorder=trace_recorder,

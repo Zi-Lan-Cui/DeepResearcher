@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from openai import ContentFilterFinishReasonError
 from pydantic import ValidationError
 
-from deepresearcher.config import get_settings
+from deepresearcher.config import AgentConfig
 from deepresearcher.llm import ainvoke_structured
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import (
@@ -53,7 +53,7 @@ def reviewer_evidence_card(citation: Citation) -> dict[str, object]:
     }
 
 
-async def reviewer(state, llm, *, invoke_structured=ainvoke_structured):
+async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured=ainvoke_structured):
     """审阅草稿并把结论交还 Supervisor，不自行调度 Writer 或研究员。"""
     review = section(state, "review", ReviewProgress)
     attempt = review.attempts + 1
@@ -86,7 +86,7 @@ async def reviewer(state, llm, *, invoke_structured=ainvoke_structured):
             content=(
                 load_prompt("reviewer")
                 + "\n"
-                + language_directive(get_settings().agent.output_language)
+                + language_directive(agent_config.output_language)
             )
         ),
         HumanMessage(
@@ -105,7 +105,7 @@ async def reviewer(state, llm, *, invoke_structured=ainvoke_structured):
         ),
     ]
 
-    retry_config = get_settings().agent
+    retry_config = agent_config
     decision = None
     for retry_index in range(retry_config.reviewer_retry_attempts + 1):
         try:

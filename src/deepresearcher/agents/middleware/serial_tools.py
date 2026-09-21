@@ -16,6 +16,12 @@ class SerialToolMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(self, request, handler):
         # 唯一的调度机制:读写栅栏。context 契约(删改 LoopContext 字段前先 grep 本文件):
+        #   入栅栏名单的判据(按此决定新工具进不进 serial,别看名字看行为):
+        #     exclusive = 跨 await 的 check-then-act(如 Complete 读 revision 再冻结),
+        #                 或需要快照一致的多结构读(如 ReadWorkingSet);
+        #     shared    = 并行 IO 读+await 后的纯追加写(如 ReadSources 落 documents/
+        #                 source_refs——追加操作无跨结构一致性问题,串行化只损吞吐);
+        #     池级原子校验另走业务锁(commit_lock),那是"锁的名字说它护什么"的另一轨。
         #   tool_gate: ToolExecutionGate —— serial 工具取 exclusive(与一切互斥),
         #   其余取 shared(彼此可并发,但被 pending exclusive 挡住,写优先)。
         #   注册本中间件的 agent 其 LoopContext 必须携带 gate(下面直接属性读,
