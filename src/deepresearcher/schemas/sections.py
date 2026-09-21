@@ -97,6 +97,18 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
 }
 
 
+class DirectionStopReason(StrEnum):
+    """方向级 ResearchAgent 的终止原因:与 StopReason 分域,值即 wire。"""
+
+    COMPLETE = "complete"
+    STEP_BUDGET_EXHAUSTED = "step_budget_exhausted"
+    DIRECTION_AGENT_FAILED = "direction_agent_failed"
+    FALLBACK_COMPLETE = "fallback_complete"
+    BLOCKED_WITHOUT_EVIDENCE = "blocked_without_evidence"
+    WORKER_EXCEPTION = "worker_exception"
+    CANCELLED = "cancelled"
+
+
 class RunError(BaseModel):
     """顶层流程失败的稳定交接契约。"""
 
@@ -257,7 +269,7 @@ class ResearchDirectionResult(BaseModel):
     read_urls: list[str] = Field(default_factory=list)
     skip_reasons: list[str] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
-    stop_reason: str
+    stop_reason: DirectionStopReason
     stop_detail: str = ""
     # 数据信号（非控制流）：搜索服务账户级不可用时置真，供 Supervisor 模型读到后自然停止派发/收尾。
     provider_exhausted: bool = False

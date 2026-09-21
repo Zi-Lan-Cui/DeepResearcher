@@ -25,6 +25,7 @@ from deepresearcher.schemas.reporting import (
     WriterDirective,
 )
 from deepresearcher.schemas.sections import (
+    DirectionStopReason,
     RenderOutcome,
     ResearchAgentResult,
     ResearchDirectionResult,
@@ -96,6 +97,7 @@ __all__ = [
     "RunError",
     "RunStatus",
     "SearchSources",
+    "DirectionStopReason",
     "StopReason",
     "terminal_reason_text",
     "SourceProfile",
