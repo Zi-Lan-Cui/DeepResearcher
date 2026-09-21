@@ -433,3 +433,31 @@ async def test_concurrent_register_same_email_single_winner(client):
     assert codes == [201, 409], (first.status_code, second.status_code)
     ok = await client.post("/api/login", json=payload)
     assert ok.status_code == 200  # 恰有一个账号存在且可登录
+
+
+async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
+    """done 帧整批丢在失败 flush 里的场景:行状态才是终止权威,
+    SSE 必须靠兜底合成 done 收敛,而不是每秒轮询挂着不返回。"""
+    token = await register(client)
+    client.graphs.append(FakeGraph())
+    run_id = (
+        await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))
+    ).json()["run_id"]
+    await wait_status(client, token, run_id, {"completed"})
+
+    from sqlalchemy import delete
+
+    from deepresearcher.service.persistence.models import RunEvent
+
+    async with client.app.state.session_factory() as session:
+        await session.execute(
+            delete(RunEvent).where(
+                RunEvent.run_id == run_id, RunEvent.event_type == "run_done"
+            )
+        )
+        await session.commit()
+
+    frames = await read_sse(client, token, run_id, timeout=8.0)
+    events = [event for event, _ in frames]
+    assert events[-1] == "done"
+    assert frames[-1][1]["status"] == "completed"

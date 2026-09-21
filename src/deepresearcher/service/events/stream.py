@@ -134,6 +134,17 @@ class FanoutSink:
         with self._lock:
             return self._pending.pop(run_id, [])
 
+    def requeue_pending(self, run_id: str, records: Sequence[dict]) -> None:
+        """持久化排水失败时把批次放回队首等下轮 flush——排水不丢帧。
+
+        只在 run 仍 open 时回插;close 之后的迟到批次按既有契约丢弃,
+        客户端由 SSE 的 DB 终态兜底(而不是靠这里)收敛。
+        """
+        with self._lock:
+            if run_id not in self._open:
+                return
+            self._pending.setdefault(run_id, [])[:0] = records
+
     # ---- 内部 ----
 
     def _deliver_threadsafe(self, run_id: str, data: dict) -> None:
