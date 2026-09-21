@@ -39,9 +39,12 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         agent_name: str,
         run_limit: int,
         emit: Callable[[str, dict[str, object]], None] | None = None,
+        event_slug: str | None = None,
     ):
         super().__init__()
         self.agent_name = agent_name
+        # 事件名前缀走显式 slug,不再从显示名 lower() 派生("ResearchAgent"→驼峰假蛇形)。
+        self._slug = event_slug or agent_name.lower()
         self.run_limit = run_limit
         self._emit = emit
         self._logger = get_logger("deepresearcher.agents.middleware.observability")
@@ -75,7 +78,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         turn = self._call_count(state)
         content = last.text or ""
         self._log_event(
-            f"{self.agent_name.lower()}_model_turn",
+            f"{self._slug}_model_turn",
             {
                 **self._event_context(runtime),
                 "turn": turn,
@@ -107,12 +110,12 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             "arguments_redacted": tool_name in _SENSITIVE_TOOL_ARGUMENTS,
         }
         started_at = monotonic()
-        self._log_event(f"{self.agent_name.lower()}_tool_started", base)
+        self._log_event(f"{self._slug}_tool_started", base)
         try:
             result = await handler(request)
         except asyncio.CancelledError:
             self._log_event(
-                f"{self.agent_name.lower()}_tool_failed",
+                f"{self._slug}_tool_failed",
                 {
                     **base,
                     "duration_ms": self._duration_ms(started_at),
@@ -123,7 +126,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             raise
         except Exception as exc:
             self._log_event(
-                f"{self.agent_name.lower()}_tool_failed",
+                f"{self._slug}_tool_failed",
                 {
                     **base,
                     "duration_ms": self._duration_ms(started_at),
@@ -134,7 +137,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             )
             raise
         self._log_event(
-            f"{self.agent_name.lower()}_tool_completed",
+            f"{self._slug}_tool_completed",
             {
                 **base,
                 "duration_ms": self._duration_ms(started_at),
@@ -154,7 +157,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             elif last.tool_calls:
                 reason = "ended_on_tool_call_turn"
         self._log_event(
-            f"{self.agent_name.lower()}_agent_finished",
+            f"{self._slug}_agent_finished",
             {
                 **self._event_context(runtime),
                 "turns": self._call_count(state),

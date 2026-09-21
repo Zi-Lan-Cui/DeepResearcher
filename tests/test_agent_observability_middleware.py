@@ -48,6 +48,7 @@ async def test_real_researcher_context_carries_middleware_attribution_fields():
     events: list[tuple[str, dict[str, object]]] = []
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
+        event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
     )
@@ -95,6 +96,7 @@ async def test_tool_lifecycle_records_scope_and_preserves_result():
     events: list[tuple[str, dict[str, object]]] = []
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
+        event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
     )
@@ -108,8 +110,8 @@ async def test_tool_lifecycle_records_scope_and_preserves_result():
 
     assert result is expected
     assert [event_type for event_type, _ in events] == [
-        "researchagent_tool_started",
-        "researchagent_tool_completed",
+        "researcher_tool_started",
+        "researcher_tool_completed",
     ]
     started = events[0][1]
     assert started["run_id"] == "run-1"
@@ -133,6 +135,7 @@ async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
     events: list[tuple[str, dict[str, object]]] = []
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
+        event_slug="researcher",
         run_limit=9,
         emit=lambda event_type, payload: events.append((event_type, payload)),
     )
@@ -192,6 +195,7 @@ async def test_tool_failure_is_recorded_and_reraised():
     events: list[tuple[str, dict[str, object]]] = []
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
+        event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
     )
@@ -204,8 +208,8 @@ async def test_tool_failure_is_recorded_and_reraised():
         await middleware.awrap_tool_call(_request(), handler)
 
     assert [event_type for event_type, _ in events] == [
-        "researchagent_tool_started",
-        "researchagent_tool_failed",
+        "researcher_tool_started",
+        "researcher_tool_failed",
     ]
     failure = events[1][1]
     assert failure["error_type"] == "ValueError"
@@ -218,6 +222,7 @@ async def test_document_tool_content_is_redacted_from_lifecycle_events():
     events: list[tuple[str, dict[str, object]]] = []
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
+        event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
     )

@@ -29,6 +29,7 @@ from deepresearcher.agents.middleware.retry import (
     model_retry,
     tool_retry,
 )
+from deepresearcher.observability.events import AgentEmit
 from deepresearcher.tokens import get_token_estimator
 
 _TOKEN_ESTIMATOR = get_token_estimator()
@@ -98,6 +99,7 @@ class MiddlewareProfile:
     """
 
     agent_name: str
+    event_slug: str  # 事件名前缀(snake 归因域,如 "researcher");与显示名 agent_name 分家
     max_turns: int
     context_window_tokens: int
     model: BaseChatModel | None = None
@@ -105,7 +107,7 @@ class MiddlewareProfile:
     serial_tools: set[str] | None = None
     tool_call_limits: Sequence[tuple[str, int]] = ()
     submission_guard: SubmissionGuard | None = None
-    emit: Callable[[str, dict[str, object]], None] | None = None
+    emit: AgentEmit | None = None  # 契约见 observability.events.AgentEmit
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -159,7 +161,9 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
                 token_counter=count_message_tokens,
             ),
         )
-    middleware.append(model_retry(profile.agent_name, emit=profile.emit))
+    middleware.append(
+        model_retry(profile.agent_name, event_slug=profile.event_slug, emit=profile.emit)
+    )
     # 标签默认取工具名本身(retry_tools 只声明工具;展示名即协议名)。
     middleware.extend(tool_retry(names, names[0]) for names in profile.retry_tools)
     if profile.retry_tools:
@@ -181,6 +185,7 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
         middleware.append(
             ToolLoopGuardMiddleware(
                 agent_name=profile.agent_name,
+                event_slug=profile.event_slug,
                 nudge_message=profile.submission_guard.nudge_message,
                 submitted_probe=profile.submission_guard.submitted_probe,
                 max_nudges=profile.submission_guard.max_nudges,
@@ -192,7 +197,10 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
         )
     middleware.append(
         AgentObservabilityMiddleware(
-            agent_name=profile.agent_name, run_limit=profile.max_turns, emit=profile.emit
+            agent_name=profile.agent_name,
+            run_limit=profile.max_turns,
+            emit=profile.emit,
+            event_slug=profile.event_slug,
         )
     )
     middleware.append(

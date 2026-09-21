@@ -48,6 +48,7 @@ class Clarifier:
                 build_agent_middleware(
                     MiddlewareProfile(
                         agent_name="Clarifier",
+                        event_slug="clarifier",
                         model=llm,
                         max_turns=MAX_CLARIFICATION_ROUNDS + 4,
                         context_window_tokens=context_window_tokens,

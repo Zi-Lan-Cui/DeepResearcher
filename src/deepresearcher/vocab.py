@@ -37,3 +37,10 @@ RETRIEVAL_ORIGIN_FETCH = "origin_fetch"
 # support 阶梯的序(升序):writer 打分与 researcher 分档共用,不再各写形状。
 SUPPORT_ORDER: tuple[str, ...] = ("insufficient", "partial", "direct")
 SUPPORT_RANK: dict[str, int] = {value: index for index, value in enumerate(SUPPORT_ORDER)}
+
+# 审计事件 component 的归因域词表(谁产生的事件);工具名→归因的映射在
+# observability/events/models 的组件表。用量记账是另一词表(category:
+# search/fetch/llm,namespace: material_*),两域刻意不混——一边答"谁",一边答"花在哪"。
+AuditComponent = Literal[
+    "search_tool", "source_reader", "research_agent", "supervisor", "writer", "clarifier"
+]

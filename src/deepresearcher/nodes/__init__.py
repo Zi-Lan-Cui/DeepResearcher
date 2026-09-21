@@ -10,11 +10,15 @@ from deepresearcher.nodes.router import router as _router
 
 
 async def router(state, llm, *, agent_config):
-    return await _router(state, llm, agent_config=agent_config, invoke_structured=ainvoke_structured)
+    return await _router(
+        state, llm, agent_config=agent_config, invoke_structured=ainvoke_structured
+    )
 
 
 async def reviewer(state, llm, *, agent_config):
-    return await _reviewer(state, llm, agent_config=agent_config, invoke_structured=ainvoke_structured)
+    return await _reviewer(
+        state, llm, agent_config=agent_config, invoke_structured=ainvoke_structured
+    )
 
 
 __all__ = [
