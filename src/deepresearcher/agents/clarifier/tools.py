@@ -17,7 +17,7 @@ from deepresearcher.agents.clarifier.constants import (
     CLARIFICATION_QUESTION_MAX_CHARS,
     MAX_CLARIFICATION_ROUNDS,
 )
-from deepresearcher.agents.clarifier.state import ClarifierAgentState
+from deepresearcher.agents.clarifier.state import ClarifierAgentState, ClarifierLoopContext
 
 
 def _normalize_string_list(value: object) -> object:
@@ -92,7 +92,7 @@ def build_clarifier_tools():
     async def ask_clarification(
         question: str,
         options: list[str],
-        runtime: ToolRuntime[None, ClarifierAgentState],
+        runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
     ) -> Command | str:
         """暂停当前 Run 并向真人询问一个关键问题。
 
@@ -139,7 +139,7 @@ def build_clarifier_tools():
         intent_summary: str,
         research_focus: list[str],
         assumptions: list[str],
-        runtime: ToolRuntime[None, ClarifierAgentState],
+        runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
     ) -> Command:
         """确认用户意图与研究边界已经足以规划研究，并提交结构化研究简报。
 
