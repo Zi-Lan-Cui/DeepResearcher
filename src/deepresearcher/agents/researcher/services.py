@@ -428,7 +428,7 @@ async def add_evidence(
             source_title=document.title,
             published_at=document.published_at,
             source_profile=describe_source(document.source_url),
-            retrieval_method=cast(Any, document.retrieval_method),
+            retrieval_method=document.retrieval_method,
             support=cast(Any, support),
             confidence=confidence,
         )

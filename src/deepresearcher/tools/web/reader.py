@@ -29,7 +29,11 @@ from deepresearcher.tools.web.fetch.protocol import FetchProvider
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 from deepresearcher.tools.web.parsing.models import DocumentBlock
 from deepresearcher.tools.web.search.models import SearchResult
-from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
+from deepresearcher.vocab import (
+    RETRIEVAL_ORIGIN_FETCH,
+    RETRIEVAL_SEARCH_SUMMARY,
+    RETRIEVAL_TAVILY_RAW_CONTENT,
+)
 
 
 class SourceReaderTool:
@@ -253,9 +257,9 @@ class SourceReaderTool:
         raw_content = str(result.get("raw_content", "")).strip()
         snippet = str(result.get("snippet", "")).strip()
         if raw_content:
-            text, method, ceiling = raw_content, "tavily_raw_content", "direct"
+            text, method, ceiling = raw_content, RETRIEVAL_TAVILY_RAW_CONTENT, "direct"
         elif snippet:
-            text, method, ceiling = snippet, "search_summary", "partial"
+            text, method, ceiling = snippet, RETRIEVAL_SEARCH_SUMMARY, "partial"
         else:
             return None
         return {

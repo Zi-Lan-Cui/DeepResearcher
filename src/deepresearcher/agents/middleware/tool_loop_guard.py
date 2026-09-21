@@ -32,6 +32,26 @@ class ToolLoopGuardState(AgentState[Any]):
     nudge_count: NotRequired[Annotated[int, UntrackedValue, PrivateStateAttr]]
 
 
+class SubmittedExitMiddleware(AgentMiddleware):
+    """提交点落盘后,在回模型的下一跳静默出环——不再消费任何模型调用。
+
+    不用工具返回 Command(goto=...) 做循环控制:实测那会跳过中间件流水线
+    (天花板计数、观测钩子全部空转),反复拒绝时一路撞 recursion wall。
+    jump_to 是 langchain 环内唯一走完整流水线的出口通道;与 ToolLoopGuard
+    同族——一个把未提交踢回模型,一个把已提交放出循环。
+    """
+
+    def __init__(self, exit_probe: Callable[[Any], bool]):
+        super().__init__()
+        self._exit_probe = exit_probe
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        if self._exit_probe(getattr(runtime, "context", None)):
+            return {"jump_to": "end"}
+        return None
+
+
 class ToolLoopGuardMiddleware(AgentMiddleware):
     """“文本不算提交”的循环内守卫；submitted_probe 返回 True 后不再拦截。"""
 

@@ -31,8 +31,13 @@ AnswerMode = Literal[
     "clarification_needed",
 ]
 
-# Evidence 来源方法默认值的公开常量:Literal 默认/回退/拼接六处共用此一词。
+# retrieval_method 词表:默认/回退共用 origin_fetch,各来源路径一名一常量。
+# Evidence 字段是 str——fetch 编排层的 f"{provider.name}_fetch" 兜底允许产生
+# 词表外的新值,域核心不设枚举闸(供应商字符串不进 Evidence)。
 RETRIEVAL_ORIGIN_FETCH = "origin_fetch"
+RETRIEVAL_ALIYUN_WEB_FETCH = "aliyun_web_fetch"
+RETRIEVAL_TAVILY_RAW_CONTENT = "tavily_raw_content"
+RETRIEVAL_SEARCH_SUMMARY = "search_summary"
 
 # support 阶梯的序(升序):writer 打分与 researcher 分档共用,不再各写形状。
 SUPPORT_ORDER: tuple[str, ...] = ("insufficient", "partial", "direct")

@@ -1,7 +1,5 @@
 """Evidence 数据契约。"""
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 from deepresearcher.schemas.sources import SourceProfile
@@ -19,9 +17,9 @@ class Evidence(BaseModel):
     # 搜索提供方给出的发布时间，用于时效性判断；不属于 quote 原文。
     published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
-    retrieval_method: Literal[
-        "origin_fetch", "aliyun_web_fetch", "tavily_raw_content", "search_summary"
-    ] = RETRIEVAL_ORIGIN_FETCH
+    # 来源方法是自由字符串,当前词表在 vocab.RETRIEVAL_*;新 provider 经
+    # fetch 编排层拼接产生的新值必须在证据层原样存活(词表外的值不该炸构造)。
+    retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
     support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 

@@ -2,8 +2,6 @@
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
-from langgraph.graph import END
-from langgraph.types import Command
 from pydantic import ValidationError
 
 from deepresearcher.agents.supervisor import services
@@ -41,15 +39,16 @@ def build_supervisor_tools() -> list[BaseTool]:
         )
         return format_tool_receipt(result)
 
-    # return_direct 才会让 Command(goto=END) 真正终止 Agent 循环；
-    # 缺省时 langchain 仍会把消息送回模型，决策调用白白空转一整圈。
-    @tool("ResearchComplete", args_schema=ResearchComplete, return_direct=True)
+    # 不设 return_direct、不用 Command 做循环控制(实测 Command(goto) 会跳过中间件
+    # 流水线,反复拒绝时撞 recursion wall):两个分支都回 plain 回执,默认边天然
+    # 把拒绝送回模型自愈;接受后由 SubmittedExitMiddleware 的 jump_to 在下一跳出环。
+    @tool("ResearchComplete", args_schema=ResearchComplete)
     async def research_complete(
         synthesis_revision: int,
         reason: str,
         runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> Command:
-        """冻结最新且未过期的研究综合稿，并终止研究阶段。"""
+    ) -> str:
+        """冻结最新且未过期的研究综合稿；被拒则按回执修正后重提。"""
         loop_state = runtime.context.loop_state
         synthesis = loop_state.research_synthesis
         accepted = bool(
@@ -72,30 +71,18 @@ def build_supervisor_tools() -> list[BaseTool]:
             loop_state.set_stop_reason(
                 StopReason.SUFFICIENT if loop_state.sufficient else StopReason.SUBMITTED_WITH_GAPS
             )
-        else:
-            loop_state.failure_details.append(
-                "ResearchComplete 拒绝了过期、缺失或未绑定 Evidence 的研究综合稿。"
-            )
-        return Command(
-            goto=END,
-            update={
-                "messages": [
-                    {
-                        "role": "tool",
-                        "content": format_tool_receipt(
-                            {
-                                "status": "accepted" if accepted else "rejected",
-                                "reason": reason,
-                                "requested_revision": synthesis_revision,
-                                "current_working_set_revision": loop_state.working_set_revision,
-                                **synthesis_snapshot(synthesis),
-                            }
-                        ),
-                        "name": "ResearchComplete",
-                        "tool_call_id": runtime.tool_call_id,
-                    }
-                ]
-            },
+        # 拒绝回执自带 requested vs current 两个 revision 与综合稿快照,模型同回合
+        # 修正后重提即可;不写 failure_details——自愈的协议失误不是执行故障,
+        # 反复不成时终局归属模型调用天花板。接受时 completed_synthesis 已落盘,
+        # SubmittedExitMiddleware 在下一跳静默出环。
+        return format_tool_receipt(
+            {
+                "status": "accepted" if accepted else "rejected",
+                "reason": reason,
+                "requested_revision": synthesis_revision,
+                "current_working_set_revision": loop_state.working_set_revision,
+                **synthesis_snapshot(synthesis),
+            }
         )
 
     @tool("ReviseResearchSynthesis", args_schema=ReviseResearchSynthesis)

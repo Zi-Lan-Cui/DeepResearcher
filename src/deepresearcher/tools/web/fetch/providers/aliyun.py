@@ -15,6 +15,7 @@ from deepresearcher.tools.web.parsing import (
     parse_markdown,
     parse_text_blocks,
 )
+from deepresearcher.vocab import RETRIEVAL_ALIYUN_WEB_FETCH
 
 _CHALLENGE_TITLE_MARKERS = (
     "请求已被拦截",
@@ -95,7 +96,7 @@ class AliyunFetchProvider:
             "raw_bytes": len(data),
             "status_code": int(getattr(body, "http_status_code", 200) or 200),
             "content_hash": hashlib.sha256(data).hexdigest(),
-            "retrieval_method": "aliyun_web_fetch",
+            "retrieval_method": RETRIEVAL_ALIYUN_WEB_FETCH,
             "provider_request_id": str(getattr(body, "request_id", "") or ""),
             "url_type": str(getattr(body, "url_type", "") or ""),
             "fetch_duration_ms": fetch_duration_ms,

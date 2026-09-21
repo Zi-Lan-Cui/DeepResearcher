@@ -467,18 +467,30 @@ def test_supervisor_rejects_completion_without_evidence():
         )
     )
 
+    complete_receipts = [
+        message
+        for message in result["supervisor_messages"]
+        if isinstance(message, ToolMessage) and message.name == "ResearchComplete"
+    ]
+    # 拒绝不再是终态:回执留环,模型每一回合都能重提,直到真实终止者出现。
+    assert len(complete_receipts) >= 2
+    assert '"status": "rejected"' in str(complete_receipts[0].content)
     assert result["supervisor"].is_sufficient is False
     assert result["supervisor_next"] == "render_final_report"
-    assert "ResearchComplete 拒绝" in result["writer"].feedback
+    # 终态归属模型调用天花板，而非"ResearchComplete 拒绝"这类协议措辞。
+    assert "模型调用预算已耗尽" in result["writer"].feedback
 
 
-def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
-    class StaleCompleteLLM:
+def test_supervisor_stale_complete_rejection_recovers_inside_loop():
+    """被拒的 ResearchComplete 留在环内自愈:带 revision 的回执后，模型改对综合稿再提即成立。"""
+
+    class RejectThenRecoverLLM:
         def bind_tools(self, _tools, tool_choice="any"):
             return self
 
         async def ainvoke(self, messages):
             history = "\n".join(str(message.content) for message in messages)
+            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
             if "research_direction" not in history:
                 return AIMessage(
                     content="",
@@ -490,20 +502,77 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
                         }
                     ],
                 )
-            # 工作集已由 delegate 推进到 revision=1，但故意跳过综合稿修订。
+            if '"status": "rejected"' not in history:
+                # 工作集已由 delegate 推进到 revision=1，故意引用过期的综合稿。
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ResearchComplete",
+                            "args": {"synthesis_revision": 1, "reason": "错误使用旧版本"},
+                            "id": "call_complete_stale",
+                        }
+                    ],
+                )
+            accepted_revise = next(
+                (
+                    message
+                    for message in reversed(messages)
+                    if isinstance(message, ToolMessage)
+                    and message.name == "ReviseResearchSynthesis"
+                    and '"status": "accepted"' in str(message.content)
+                ),
+                None,
+            )
+            if accepted_revise is None:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ReviseResearchSynthesis",
+                            "args": {
+                                "expected_revision": 1,
+                                "expected_working_set_revision": 1,
+                                "answer_goal": "回答研究问题",
+                                "overall_summary": "新增方向已覆盖核心结论。",
+                                "aspects": [
+                                    {
+                                        "aspect_id": "core",
+                                        "topic": "核心结论",
+                                        "role": "主线",
+                                        "required": True,
+                                        "status": "covered",
+                                        "summary": "直接回答问题",
+                                        "evidence_ids": evidence_ids[:1],
+                                        "remaining_gap": "",
+                                    }
+                                ],
+                                "open_gaps": [],
+                                "conflicts": [],
+                                "next_actions": [],
+                                "decision_rationale": "按拒绝回执对齐最新工作集后重提。",
+                            },
+                            "id": "call_revise_fix",
+                        }
+                    ],
+                )
+            payload = json.loads(str(accepted_revise.content).split("\n", 1)[-1])
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "ResearchComplete",
-                        "args": {"synthesis_revision": 1, "reason": "错误使用旧版本"},
-                        "id": "call_complete",
+                        "args": {
+                            "synthesis_revision": payload["synthesis_revision"],
+                            "reason": "修正后完成研究。",
+                        },
+                        "id": "call_complete_fixed",
                     }
                 ],
             )
 
     supervisor = ResearchSupervisor(
-        StaleCompleteLLM(),
+        RejectThenRecoverLLM(),
         AgentConfig(max_research_rounds=1),
         research_agent=FixedResearchAgent(),
     )
@@ -539,12 +608,19 @@ def test_supervisor_rejects_stale_complete_but_delivers_evidence_as_partial():
         )
     )
 
+    complete_receipts = [
+        message
+        for message in result["supervisor_messages"]
+        if isinstance(message, ToolMessage) and message.name == "ResearchComplete"
+    ]
+    assert len(complete_receipts) == 2  # 先拒后收,同环完成自愈
+    assert '"status": "rejected"' in str(complete_receipts[0].content)
+    assert '"status": "accepted"' in str(complete_receipts[1].content)
     assert result["working_set_revision"] == 1
-    assert result["supervisor"].is_sufficient is False
-    assert result["supervisor"].generation_mode == "partial"
+    assert result["supervisor"].is_sufficient is True
+    assert result["supervisor"].generation_mode == "full"
     assert result["supervisor_next"] == "writer"
     assert result["writer_directive"].report_brief is not None
-    assert "ResearchComplete 拒绝" in result["writer"].feedback
 
 
 def _revise_tool_messages(result: dict) -> list[ToolMessage]:
@@ -637,9 +713,9 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
     assert '"status": "stale"' in str(revised[0].content)
     assert result["research_synthesis"] is None
     assert result["working_set_revision"] == 1
-    assert "ResearchComplete 拒绝" in result["writer"].feedback
-    # 通道规矩:协议拒绝是执行事件,只进诊断(failure_details→feedback),
-    # 不得混入用户报告的"未闭合缺口"清单(coverage_gaps)。
+    # 拒绝回执留环自愈;模型反复不成时终态归属真实终止者——模型调用天花板。
+    assert "模型调用预算已耗尽" in result["writer"].feedback
+    # 通道规矩:协议拒绝不得伪装成研究缺口,混进用户报告的 coverage_gaps 清单。
     assert not any("ResearchComplete" in gap for gap in result["supervisor"].coverage_gaps)
 
 

@@ -51,6 +51,24 @@ async def test_trip_only_extends_window(tmp_path):
     await engine.dispose()
 
 
+async def test_concurrent_first_trips_survive_pk_race(tmp_path):
+    """两 worker 同时首撞同一 provider:后提交方重试走 update 分支,不得把熔断开闸炸成主业务异常的替代品。"""
+    import asyncio
+
+    engine, factory = _factory(tmp_path)
+    await init_db(engine)
+    health = PostgresProviderHealth(factory)
+
+    await asyncio.gather(
+        health.trip("tavily", "quota_exhausted", 3600),
+        health.trip("tavily", "invalid_key", 10),
+    )
+
+    # 赢家写谁都可能，但只有一条记录、窗口取更长者、不抛异常。
+    assert await health.is_open("tavily") == "quota_exhausted"
+    await engine.dispose()
+
+
 async def test_searchclient_trips_shared_health_on_provider_exhausted(tmp_path):
     """撞一次账户级不可用 → 写共享健康位 → 下一次搜索在出网前就被短路（跨 worker 生效的机制）。"""
     engine, factory = _factory(tmp_path)
