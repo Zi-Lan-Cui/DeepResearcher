@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 
+from deepresearcher.service.events.projector import project_clarification
 from deepresearcher.service.persistence.models import Run, RunEvent, User
 from deepresearcher.service.runs.service import QuotaExceededError
 from deepresearcher.service.web.dependencies import app_state, current_user, owned_run
@@ -66,15 +67,8 @@ async def get_run(
         if row is not None:
             payload = row.record.get("payload", {})
             if isinstance(payload, dict):
-                raw_options = payload.get("options")
-                clarification = {
-                    "question": str(payload.get("question") or "")[:500],
-                    "options": (
-                        [str(item)[:120] for item in raw_options[:3]]
-                        if isinstance(raw_options, list)
-                        else []
-                    ),
-                }
+                # 与 SSE 共用投影:截断/白名单一处演化,REST 不再抄一份。
+                clarification = project_clarification(payload)
     return {
         **run_summary(run),
         "report_markdown": run.report_markdown,
