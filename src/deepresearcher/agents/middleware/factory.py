@@ -1,7 +1,15 @@
-"""Agent 中间件的统一装配入口。"""
+"""Agent 共享机器件之装配:中间件栈的声明(Profile)与组装(Builder)同文件。
+
+Profile 收拢 ``build_agent_middleware`` 的长参数列表:每个 Agent 用一份 Profile
+描述自己要的中间件栈,参数间的成对约束(如提交守卫的消息与探测)由结构本身
+保证,而不是靠两个可空参数之间的隐式约定——声明与唯一装配者住在一起,读栈
+的形状只需要这一个文件。
+"""
 
 import json
-from typing import cast
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, cast
 
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -15,12 +23,45 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
 from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
-from deepresearcher.agents.middleware.profile import MiddlewareProfile
 from deepresearcher.agents.middleware.retry import model_retry, tool_retry
 from deepresearcher.evidence.tokens import get_token_estimator
 
 _TOKEN_ESTIMATOR = get_token_estimator()
 AGENT_RECURSION_LIMIT = 1_000
+
+
+@dataclass(frozen=True)
+class SubmissionGuard:
+    """工具提交守卫配置：成对出现，杜绝只配一半。
+
+    模型在完成提交（``submitted_probe`` 返回 False）前输出纯文本时，
+    注入 ``nudge_message`` 并踢回重试；耗尽后放行给业务层兜底。
+    """
+
+    nudge_message: str
+    submitted_probe: Callable[[Any], bool]
+    max_nudges: int = 2
+    reminder_message: str = ""
+    reminder_turns: int = 0
+
+
+@dataclass(frozen=True)
+class MiddlewareProfile:
+    """一个 Agent 的中间件栈完整输入。
+
+    ``max_turns`` 只是防失控的模型调用天花板，不承担业务配额语义；
+    业务配额由 ``tool_call_limits``（单工具调用数）与业务层 hard check 表达。
+    """
+
+    agent_name: str
+    max_turns: int
+    context_window_tokens: int
+    model: BaseChatModel | None = None
+    retry_tools: Sequence[list[str]] = ()
+    serial_tools: set[str] | None = None
+    tool_call_limits: Sequence[tuple[str, int]] = ()
+    submission_guard: SubmissionGuard | None = None
+    emit: Callable[[str, dict[str, object]], None] | None = None
 
 
 def _message_text(message: BaseMessage) -> str:

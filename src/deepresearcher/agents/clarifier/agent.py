@@ -14,11 +14,11 @@ from deepresearcher.agents.clarifier.tools import (
     MAX_CLARIFICATION_ROUNDS,
     build_clarifier_tools,
 )
-from deepresearcher.agents.middleware.factory import (
+from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
+    MiddlewareProfile,
     build_agent_middleware,
 )
-from deepresearcher.agents.middleware.profile import MiddlewareProfile
 from deepresearcher.config import AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.execution import AgentExecutionScope
