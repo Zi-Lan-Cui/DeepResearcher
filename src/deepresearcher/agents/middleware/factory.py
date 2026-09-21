@@ -1,5 +1,6 @@
 """Agent 中间件的统一装配入口。"""
 
+import json
 from typing import cast
 
 from langchain.agents.middleware import (
@@ -23,9 +24,16 @@ AGENT_RECURSION_LIMIT = 1_000
 
 
 def _message_text(message: BaseMessage) -> str:
-    """把消息中用于计数的内容规范化为字符串。"""
-    content = message.content
-    return content if isinstance(content, str) else str(content)
+    """把消息中用于计数的内容规范化为字符串(含工具调用参数)。
+
+    tool_calls 的参数是真实载荷——Writer 草稿、AddEvidence 逐字引用都住在这里;
+    只数 content 会让两级压缩闸对最重的消息失明。
+    """
+    parts = [message.content if isinstance(message.content, str) else str(message.content)]
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        parts.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
+    return "\n".join(parts)
 
 
 def count_message_tokens(messages) -> int:

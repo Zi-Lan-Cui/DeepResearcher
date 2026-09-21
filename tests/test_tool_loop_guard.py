@@ -51,3 +51,52 @@ async def test_submission_guard_does_not_repeat_same_dynamic_reminder():
     )
 
     assert update is None
+
+
+@pytest.mark.asyncio
+async def test_nudge_budget_counts_from_private_state_channel_not_message_history():
+    """压缩会整表重建历史;历史匹配的计数会被静默清零、突破 max_nudges。"""
+    from langchain_core.messages import AIMessage
+
+    middleware = ToolLoopGuardMiddleware(
+        agent_name="Writer",
+        nudge_message="请提交",
+        submitted_probe=lambda _context: False,
+        max_nudges=2,
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace())
+
+    # 通道说已踢满:哪怕历史里一条 nudge 都没有,也绝不续命。
+    state = {"messages": [AIMessage(content="草稿直接写正文")], "nudge_count": 2}
+    assert await middleware.aafter_model(state, runtime) is None
+
+    update = await middleware.aafter_model({"messages": [AIMessage(content="x")]}, runtime)
+    assert update is not None
+    assert update["nudge_count"] == 1
+    assert update["jump_to"] == "model"
+
+
+@pytest.mark.asyncio
+async def test_softened_model_failure_text_is_not_nudged_as_protocol_violation():
+    from langchain_core.messages import AIMessage
+
+    from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
+
+    middleware = ToolLoopGuardMiddleware(
+        agent_name="Writer",
+        nudge_message="请提交",
+        submitted_probe=lambda _context: False,
+        max_nudges=2,
+    )
+    softened = AIMessage(
+        content=(
+            f"Writer {MODEL_FAILURE_MARKER}：APIConnectionError。"
+            "请基于当前上下文调整下一步行动；不要重复提交相同的无效调用。"
+        )
+    )
+    assert (
+        await middleware.aafter_model(
+            {"messages": [softened]}, SimpleNamespace(context=SimpleNamespace())
+        )
+        is None
+    )
