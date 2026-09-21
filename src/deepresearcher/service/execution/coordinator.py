@@ -82,6 +82,7 @@ class WorkerCoordinator:
             heartbeat_seconds=config.worker_heartbeat_seconds,
             poll_seconds=config.worker_poll_seconds,
             recover_expired=self._recover_expired,
+            after_reap=self._settle_cancellations,
         )
 
     @property
@@ -108,11 +109,24 @@ class WorkerCoordinator:
     async def shutdown(self) -> None:
         await self.worker.shutdown()
 
+    async def _settle_cancellations(self) -> None:
+        """带取消意图却停在 interrupted 的行:终态化 cancelled 并补 done 帧。
+
+        取消意图的落地不依赖 executor 活着——claim/reap 永远跳过带 flag 的行,
+        没有这一步,那些 run 会沉没到用户再点一次取消为止。
+        """
+        for settled in await self.queue.settle_cancellations():
+            self._fanout.open(settled.run_id)
+            await self.executor.publish_done(settled.run_id)
+            await self.executor.flush_events(settled.run_id)
+            self._fanout.close(settled.run_id)
+
     async def reconcile_startup(self) -> tuple[int, list[tuple[str, int, str]]]:
         """Classify queued/interrupted/orphaned runs before autonomous polling."""
         resumable: list[tuple[str, int, str]] = []
         killed = 0
         await self.queue.reap_expired()
+        await self._settle_cancellations()
         async with self._session_factory() as session:
             stale = (
                 await session.scalars(
@@ -170,8 +184,8 @@ class WorkerCoordinator:
     async def _recover_expired(self, work: RunWork) -> RunWork | None:
         self._fanout.open(work.run_id)
         if await self._has_checkpoint(work.run_id):
-            await self.executor.publish_status(work.run_id, "resuming")
-            await self.executor.flush_events(work.run_id)
+            # "resuming" 帧改由 worker 在 claim 成功后发:此处广播会给
+            # 被取消 flag 排除、或被他 worker 抢走的行留下幻影恢复提示。
             return RunWork(
                 run_id=work.run_id,
                 user_id=work.user_id,
@@ -191,9 +205,8 @@ class WorkerCoordinator:
 
     async def resume_runs(self, pending: list[tuple[str, int, str]]) -> int:
         for run_id, user_id, query in pending:
+            # 同 _recover_expired:恢复广播推迟到 claim 成功之后(worker 侧发)。
             self._fanout.open(run_id)
-            await self.executor.publish_status(run_id, "resuming")
-            await self.executor.flush_events(run_id)
             await self.worker.submit(
                 RunWork(run_id=run_id, user_id=user_id, query=query, resume=True)
             )

@@ -8,9 +8,12 @@ from collections.abc import Awaitable, Callable
 
 from langgraph.types import Command
 
+from deepresearcher.observability.logger import get_logger
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
+
+logger = get_logger("deepresearcher.service.execution.worker")
 
 
 class RunWorker:
@@ -27,6 +30,7 @@ class RunWorker:
         poll_seconds: float = 15.0,
         worker_id: str | None = None,
         recover_expired: Callable[[RunWork], Awaitable[RunWork | None]] | None = None,
+        after_reap: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._queue = queue
         self._executor = executor
@@ -36,7 +40,12 @@ class RunWorker:
         self._poll_seconds = max(0.05, poll_seconds)
         self._worker_id = worker_id or new_id("worker")
         self._recover_expired = recover_expired
+        self._after_reap = after_reap
+        # 瞬断容忍:连续 N 个心跳周期 renew 因 DB 错误失败才降级 lease_lost;
+        # 心跳间隔 ≤ lease/2,预算耗尽时租约本已过期,reap 的判定与我们一致。
+        self._heartbeat_failure_budget = 3
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._dispatch_tasks: set[asyncio.Task[None]] = set()
         self._claims: dict[str, RunWork] = {}
         self._explicit: deque[RunWork] = deque()
         self._explicit_ids: set[str] = set()
@@ -131,6 +140,11 @@ class RunWorker:
             self._heartbeat(work, owner_task), name=f"lease-heartbeat-{work.run_id}"
         )
         try:
+            if work.resume:
+                # claim 确实成功之后才广播恢复:被 cancel flag 排除或被他 worker
+                # 抢走的 preferred 行,不该留下"恢复中"的幻影帧。
+                await self._executor.publish_status(work.run_id, "resuming")
+                await self._executor.flush_events(work.run_id)
             await self._executor.execute(
                 work.run_id,
                 work.user_id,
@@ -148,16 +162,38 @@ class RunWorker:
             await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def _heartbeat(self, work: RunWork, owner_task: asyncio.Task[None] | None) -> None:
+        """续租义务不允许静默退出:每轮只有三种结局——续上、确认取消/丢租、瞬断容忍。
+
+        DB 抖动(renew 或取消检查抛错)只计失败数,预算耗尽才判 lease_lost;
+        真被抢占/清空的 CAS 失败是确定信号,立即取消 owner。
+        """
+        transient_failures = 0
         try:
             while True:
                 await asyncio.sleep(self._heartbeat_seconds)
-                if await self._queue.renew(work, lease_seconds=self._lease_seconds):
+                renewed = False
+                cancelled: bool | None = None
+                try:
+                    renewed = await self._queue.renew(work, lease_seconds=self._lease_seconds)
+                    if not renewed:
+                        cancelled = await self._queue.cancellation_requested(work)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - 基础设施瞬断不判健康执行的死刑
+                    logger.warning("lease_heartbeat_db_error run_id=%s", work.run_id, exc_info=True)
+                if renewed:
+                    transient_failures = 0
                     continue
-                if await self._queue.cancellation_requested(work):
+                if cancelled:
                     self._executor.mark_cancellation_requested(work.run_id)
                     if owner_task is not None:
                         owner_task.cancel()
                     return
+                transient_failures += 1
+                if cancelled is None and transient_failures < self._heartbeat_failure_budget:
+                    # 无法区分"真丢租"与"DB 瞬断"时按后者处理:真丢租另有
+                    # reap+settle 双保险,误杀却会让健康 run 白白重跑。
+                    continue
                 self._executor.mark_lease_lost(work.run_id)
                 if owner_task is not None:
                     owner_task.cancel()
@@ -177,6 +213,8 @@ class RunWorker:
                     )
                     if recovered is not None:
                         await self.submit(recovered)
+                if self._after_reap is not None:
+                    await self._after_reap()
         except asyncio.CancelledError:
             return
 
@@ -192,19 +230,27 @@ class RunWorker:
         self._tasks.pop(run_id, None)
         self._claims.pop(run_id, None)
         if not self._closed:
-            asyncio.create_task(self.wake(), name="embedded-worker-dispatch")
+            task = asyncio.create_task(self.wake(), name="embedded-worker-dispatch")
+            self._dispatch_tasks.add(task)
+            task.add_done_callback(self._dispatch_tasks.discard)
 
     async def shutdown(self) -> None:
         self._closed = True
         background = [task for task in (self._poll_task, self._reaper_task) if task is not None]
         for task in background:
             task.cancel()
-        await asyncio.gather(*background, return_exceptions=True)
-        live = [
-            (run_id, task, self._claims.get(run_id))
-            for run_id, task in self._tasks.items()
-            if not task.done()
-        ]
+        for task in list(self._dispatch_tasks):
+            task.cancel()
+        await asyncio.gather(*background, *self._dispatch_tasks, return_exceptions=True)
+        # 锁内快照:确保已穿过 _closed 检查、正等在 dispatch 锁上的 wake
+        # 全部落地后,再决定 release 范围——否则会出现"release 跑完才被领取"
+        # 的孤儿行(状态=running、进程已退出,只能等租约过期)。
+        async with self._dispatch_lock:
+            live = [
+                (run_id, task, self._claims.get(run_id))
+                for run_id, task in self._tasks.items()
+                if not task.done()
+            ]
         self._executor.mark_shutdown(run_id for run_id, _task, _work in live)
         for _run_id, task, _work in live:
             task.cancel()
