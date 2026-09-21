@@ -25,7 +25,7 @@ from deepresearcher.tools.web.fetch.models import (
     failed_read,
     skipped_read,
 )
-from deepresearcher.tools.web.fetch.protocol import FetchProvider
+from deepresearcher.tools.web.fetch.service import FetchService
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 from deepresearcher.tools.web.parsing.models import DocumentBlock
 from deepresearcher.tools.web.search.models import SearchResult
@@ -41,7 +41,7 @@ class SourceReaderTool:
 
     def __init__(
         self,
-        fetcher: FetchProvider,
+        fetcher: FetchService,
         *,
         trace_recorder: TraceRecorder | None = None,
         event_sink: JsonlSink | None = None,
@@ -50,8 +50,10 @@ class SourceReaderTool:
         material_store: ResearchMaterialStore,
         document_inline_max_tokens: int = 6_000,
     ):
+        # fetcher 是 FetchService(跑整条 provider 链、带 material_fetch_key),
+        # 不是单个原子 FetchProvider——两者同名协议曾让缓存契约在类型层隐形。
         if fetcher is None:
-            raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchProvider。")
+            raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchService。")
         self.fetcher = fetcher
         self.trace_recorder = trace_recorder
         self.event_sink = event_sink
@@ -249,6 +251,8 @@ class SourceReaderTool:
         )
 
     def _material_fetch_key(self, url: str) -> str:
+        # FetchService 提供 material_fetch_key;此处仍容错缺失,让无正文缓存需求的
+        # 轻量 fetcher(含测试替身)退回"不缓存"而非当场炸。
         key_builder = getattr(self.fetcher, "material_fetch_key", None)
         return str(key_builder(url)) if callable(key_builder) else ""
 
