@@ -68,7 +68,12 @@ uv run python -m evals.cli annotate --import-csv results/annotate.csv   # 人机
 uv run python -m evals.cli report                          # 记分表
 ```
 
-judge 模型默认复用 `LLM_MODEL_ID`，`EVAL_JUDGE_MODEL` 可覆盖。
+judge 身份取自评测侧 env：`EVAL_JUDGE_MODEL`（+可选 `EVAL_JUDGE_BASE_URL` /
+`EVAL_JUDGE_API_KEY`，可整体指向另一提供商）。不配则回落被测同模型——那是
+self-preference 污染，须显式 `EVAL_SELF_JUDGE=1` 认领，且 `judge_meta.json`
+落盘、report 的 `summary.judge` 带水印：自评分数只能调试用，勿对外引用。
+过渡期（引擎=mimo、暂用同家族评审）：`EVAL_SELF_JUDGE=1`；换异构 judge 只需
+设 `EVAL_JUDGE_MODEL`，无需改动其它。
 
 ## 判分纪律
 
