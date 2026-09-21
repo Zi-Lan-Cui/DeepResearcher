@@ -1,8 +1,9 @@
-"""Evidence 文本的 token 估算器。
+"""文本 token 估算：中间件压缩闸与来源读取窗口共用的本地尺子。
 
-Tokenizer 是进程级只读资源，使用工厂缓存，避免每个来源重复初始化。
-估算器只负责计数；正文仍使用原始字符串传递，保证 quote 可以逐字校验。
-"""
+与 observability.usage 的提供商真实计费是两套账——这里是估算(决定何时压缩/
+截窗),那里是实收(决定预算熔断),互不冒充。Tokenizer 是进程级只读资源,
+工厂缓存避免每个调用方重复初始化;估算器只负责计数,正文仍原样传递,
+保证 quote 可以逐字校验。"""
 
 from functools import lru_cache
 from typing import Protocol
