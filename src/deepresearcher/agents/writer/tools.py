@@ -1,7 +1,5 @@
 """Writer 的标准工具注册表。"""
 
-import json
-
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -12,11 +10,11 @@ from deepresearcher.agents.writer.state import (
     evidence_detail_card,
 )
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
+from deepresearcher.schemas import format_tool_receipt
 
 # 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
-# 决定，差额走 not_read_ids 显式排队。引用总条数没有上限（原
-# writer_max_selected_evidence 已移除：它贡献过两次 writer 事故却从未保护过
-# 任何质量属性；聚焦度由提示词引导、由已读闸与审阅把关）。
+# 决定，差额走 not_read_ids 显式排队。引用总条数刻意不设上限：聚焦度是写作
+# 质量问题，交给提示词引导、已读闸与审阅把关，硬上限只会催生凑数式选择。
 REQUEST_WINDOW_IDS = 50
 
 
@@ -64,7 +62,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         reason: str,
         runtime: ToolRuntime[WriterLoopContext],
     ) -> str:
-        """返回指定 Evidence 的引用视图，并将其加入本次 Writer 的已读工作集。"""
+        # 模型可见契约在上方 description=(args_schema 在场时 docstring 不进 prompt)。
         del reason
         context = runtime.context
         requested = list(dict.fromkeys(evidence_ids))
@@ -117,7 +115,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
                 "truncated_ids": not_read,
             },
         )
-        return json.dumps(payload, ensure_ascii=False)
+        return format_tool_receipt(payload)
 
     @tool(
         "CompleteReport",
@@ -135,7 +133,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         markdown: str,
         runtime: ToolRuntime[WriterLoopContext],
     ) -> str:
-        """校验并提交报告草稿；校验失败时返回可供下一轮修正的错误。"""
+        # 模型可见契约在上方 description=;校验失败文本即下一轮修正指令。
         context = runtime.context
         context.last_markdown = markdown
         try:

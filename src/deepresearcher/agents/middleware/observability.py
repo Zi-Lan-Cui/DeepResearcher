@@ -20,13 +20,14 @@ LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 _PREVIEW_CHARS = 800
 _ERROR_PREVIEW_CHARS = 400
 _TOOL_ARGUMENT_PREVIEW_CHARS = 2_000
-_SENSITIVE_TOOL_ARGUMENTS = {"AddEvidence"}
+_SENSITIVE_TOOL_ARGUMENTS = {"AddEvidence", "CompleteReport"}
 _SENSITIVE_TOOL_RESULTS = {
     "ListSearchResults",
     "ReadSources",
     "GrepDocument",
     "ReadDocument",
     "AddEvidence",
+    "ReadEvidence",
 }
 
 
