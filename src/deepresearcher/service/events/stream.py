@@ -29,15 +29,29 @@ CLOSE_STREAM: Any = object()
 
 _TRUNCATED_EVENT = "stream_truncated"
 
+#: open 条目上限(API/Worker 进程各自持有):每次 start/claim 都会 open,
+#: 终结路径有 close、但"从未被订阅也从未跑完"的 run 没有关闭者。超额按
+#: 插入序回收最旧——被回收条目降级为 DB tail 轮询(数据不丢、终态由行
+#: 权威收敛),与任何部署形态无关,不设模式分支。
+_OPEN_MAX = 2048
+
 
 class FanoutSink:
-    def __init__(self, loop: asyncio.AbstractEventLoop, *, queue_maxsize: int = 256):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        queue_maxsize: int = 256,
+        open_max: int = _OPEN_MAX,
+    ):
         self._loop = loop
         self._loop_thread = threading.get_ident()  # 构造必须发生在事件循环线程
         self._queue_maxsize = queue_maxsize
+        self._open_max = max(1, open_max)
         self._lock = threading.Lock()
         self._next_key = 1
-        self._open: set[str] = set()
+        # 键序即 open 的 FIFO 序(dict 保序),超限时 next(iter(..)) 就是最旧。
+        self._open: dict[str, None] = {}
         self._pending: dict[str, list[dict]] = {}
         self._subs: dict[str, dict[int, asyncio.Queue]] = {}
         self._dropped: dict[tuple[str, int], int] = {}
@@ -47,9 +61,20 @@ class FanoutSink:
 
     def open(self, run_id: str) -> None:
         with self._lock:
-            self._open.add(run_id)
+            if run_id not in self._open:
+                self._open[run_id] = None
             self._pending.setdefault(run_id, [])
             self._subs.setdefault(run_id, {})
+            while len(self._open) > self._open_max:
+                self._evict_oldest_locked()
+
+    def _evict_oldest_locked(self) -> None:
+        # 回收 ≠ 终结:不给在途订阅者发 CLOSE_STREAM(那会让前端误判 run 死了),
+        # 只是拆掉本地推送与缓冲;持久帧照旧经 DB tail 送达。
+        oldest = next(iter(self._open))
+        del self._open[oldest]
+        self._pending.pop(oldest, None)
+        self._subs.pop(oldest, None)
 
     def close(self, run_id: str) -> None:
         """终止该 run 的分发：迟到事件丢弃，订阅者收到 CLOSE_STREAM 哨兵。
@@ -58,7 +83,7 @@ class FanoutSink:
         （最后一次 flush）→ close，正常路径不会走到丢数据。
         """
         with self._lock:
-            self._open.discard(run_id)
+            self._open.pop(run_id, None)
             self._pending.pop(run_id, None)
             subscribers = list(self._subs.pop(run_id, {}).values())
         for queue in subscribers:

@@ -105,6 +105,22 @@ async def test_close_sentinels_subscribers_and_late_writes_drop(sink):
     assert await _get_message(queue2) is CLOSE_STREAM
 
 
+async def test_open_set_bounded_evicts_oldest_without_termination_sentinel():
+    """回收 ≠ 终结:最旧条目被逐出时不发 CLOSE_STREAM,在途订阅者只是降级为 DB tail。"""
+    sink = FanoutSink(asyncio.get_running_loop(), open_max=2)
+    sink.open("run-old")
+    _, old_queue = sink.subscribe("run-old")
+    sink.open("run-mid")
+    assert sink.is_open("run-old") and sink.is_open("run-mid")
+
+    sink.open("run-new")  # 超限:run-old 按插入序出局
+    assert not sink.is_open("run-old")
+    assert sink.is_open("run-mid") and sink.is_open("run-new")
+    assert old_queue.empty()  # 无哨兵——订阅者不被告知 run 已死
+    sink.write({"run_id": "run-old", "event_type": "late", "payload": {}})  # 静默丢弃不炸
+    assert sink.take_pending("run-old") == []
+
+
 async def test_write_from_worker_thread_reaches_queue(sink):
     sink.open("run-5")
     _, queue = sink.subscribe("run-5")
