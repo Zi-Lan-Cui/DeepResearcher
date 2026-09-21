@@ -21,6 +21,7 @@ from deepresearcher.tools.web.materials import (
 )
 from deepresearcher.tools.web.materials.models import build_stored_document
 from deepresearcher.tools.web.materials.store import grep_lines, read_lines
+from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
 logger = logging.getLogger("deepresearcher.service.persistence.redis_material_store")
 
@@ -90,7 +91,7 @@ class RedisResearchMaterialStore:
         title: str,
         source_url: str,
         published_at: str = "",
-        retrieval_method: str = "origin_fetch",
+        retrieval_method: str = RETRIEVAL_ORIGIN_FETCH,
         support_ceiling: str = "direct",
         token_count: int = 0,
         outline: list[DocumentOutlineItem] | None = None,

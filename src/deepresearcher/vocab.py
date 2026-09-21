@@ -30,3 +30,10 @@ AnswerMode = Literal[
     "review_limited",
     "clarification_needed",
 ]
+
+# Evidence 来源方法默认值的公开常量:Literal 默认/回退/拼接六处共用此一词。
+RETRIEVAL_ORIGIN_FETCH = "origin_fetch"
+
+# support 阶梯的序(升序):writer 打分与 researcher 分档共用,不再各写形状。
+SUPPORT_ORDER: tuple[str, ...] = ("insufficient", "partial", "direct")
+SUPPORT_RANK: dict[str, int] = {value: index for index, value in enumerate(SUPPORT_ORDER)}

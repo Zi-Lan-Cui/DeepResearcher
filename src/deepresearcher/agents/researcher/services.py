@@ -16,7 +16,7 @@ from deepresearcher.agents.researcher.state import (
 )
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.evidence.validator import (
-    normalize_text,
+    collapse_whitespace,
     quote_in_source,
     quote_matches_ignoring_punctuation,
     quote_verbatim_strict,
@@ -36,6 +36,7 @@ from deepresearcher.tools.web.search.models import (
     classify_source,
     describe_source,
 )
+from deepresearcher.vocab import SUPPORT_ORDER
 
 
 async def search_sources(
@@ -397,7 +398,7 @@ async def add_evidence(
         if not quote_verbatim_strict(source_text, quote):
             accepted_via_normalization += 1
         digest = hashlib.sha1(
-            f"{document_id}\0{normalize_text(quote)}".encode("utf-8")
+            f"{document_id}\0{collapse_whitespace(quote)}".encode("utf-8")
         ).hexdigest()[:16]
         evidence_id = f"{task['id']}-ev-{digest}"
         if evidence_id in pending_ids:
@@ -569,7 +570,7 @@ def _search_candidate_card(candidate: SearchCandidate) -> dict[str, object]:
 
 
 def _bounded_support(requested: str, ceiling: str) -> str:
-    levels = ("insufficient", "partial", "direct")
+    levels = SUPPORT_ORDER
     requested_index = levels.index(requested) if requested in levels else 0
     ceiling_index = levels.index(ceiling) if ceiling in levels else 0
     return levels[min(requested_index, ceiling_index)]

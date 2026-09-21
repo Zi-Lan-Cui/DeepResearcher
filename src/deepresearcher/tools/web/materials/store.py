@@ -10,6 +10,7 @@ from deepresearcher.tools.web.documents import (
     GrepResult,
 )
 from deepresearcher.tools.web.materials.models import SearchResultSet
+from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
 
 class ResearchMaterialStore(Protocol):
@@ -26,7 +27,7 @@ class ResearchMaterialStore(Protocol):
         title: str,
         source_url: str,
         published_at: str = "",
-        retrieval_method: str = "origin_fetch",
+        retrieval_method: str = RETRIEVAL_ORIGIN_FETCH,
         support_ceiling: str = "direct",
         token_count: int = 0,
         outline: list[DocumentOutlineItem] | None = None,

@@ -29,7 +29,7 @@ from deepresearcher.agents.supervisor.state import (
 from deepresearcher.agents.supervisor.tools import (
     build_supervisor_tools,
 )
-from deepresearcher.config import AgentConfig
+from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
@@ -67,11 +67,15 @@ _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 _FALLBACK_SUMMARY_CLAIM_LIMIT = 6
 
 
+# 天花板消息恒在会话尾部数条内;窗口留一小段冗余防 after-hook 顺序变化。
+_LIMIT_MESSAGE_SCAN_TAIL = 3
+
+
 def _model_call_limit_hit(messages: list[BaseMessage]) -> bool:
     """判断本次 Agent 运行是否被 ModelCallLimitMiddleware 掐断而非模型正常收尾。"""
     return any(
         isinstance(message, AIMessage) and LIMIT_MESSAGE_MARKER in str(message.content)
-        for message in messages[-3:]
+        for message in messages[-_LIMIT_MESSAGE_SCAN_TAIL:]
     )
 
 
@@ -85,7 +89,7 @@ class ResearchSupervisor:
         *,
         research_agent: ResearchAgent,
         event_sink: JsonlSink | None = None,
-        context_window_tokens: int = 32_768,
+        context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     ):
         if llm is None:
             raise LLMConfigurationError("ResearchSupervisor 需要已装配的模型。")

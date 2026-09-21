@@ -332,9 +332,7 @@ def test_reference_table_survives_ghost_cite():
         evidence_count=1,
         body="事实一句。[[cite:e1]] 幽灵句。[[cite:ghost]]",
         citations=[
-            Citation(
-                id="e1", url="https://example.com/a", quote="事实一句。", claim="事实一句"
-            )
+            Citation(id="e1", url="https://example.com/a", quote="事实一句。", claim="事实一句")
         ],
     )
     assert "参考来源" in report

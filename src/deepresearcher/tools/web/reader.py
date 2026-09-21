@@ -29,6 +29,7 @@ from deepresearcher.tools.web.fetch.protocol import FetchProvider
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 from deepresearcher.tools.web.parsing.models import DocumentBlock
 from deepresearcher.tools.web.search.models import SearchResult
+from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
 
 class SourceReaderTool:
@@ -181,7 +182,7 @@ class SourceReaderTool:
             "title": str(document.get("title") or result.get("title", "")),
             "source_url": str(document.get("final_url") or requested_url),
             "published_at": published_at,
-            "retrieval_method": str(document.get("retrieval_method", "origin_fetch")),
+            "retrieval_method": str(document.get("retrieval_method", RETRIEVAL_ORIGIN_FETCH)),
             "support_ceiling": str(document.get("support_ceiling", "direct")),
             "token_count": token_count,
             "outline": self._document_outline(

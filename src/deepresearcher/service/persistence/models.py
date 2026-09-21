@@ -14,6 +14,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # 运行状态取值。P0 用普通 str 而非枚举/CHECK 约束，便于增删而不触发 ALTER；
 # 该常量是 ORM 层的单一合法集合，控制面与执行面共用同一词汇。
+# run 终态的唯一合法集合(SSE 兜底、claim 排除、租约结算共用)。
+TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
 RUN_STATUSES = (
     "queued",
     "running",

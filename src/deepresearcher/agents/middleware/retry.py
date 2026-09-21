@@ -34,9 +34,10 @@ def retry_on(error: Exception) -> bool:
 class ToolErrorNormalizerMiddleware(AgentMiddleware):
     """工具异常边界归一:重试层的判据是构造期声明,不是异常类型猜测。
 
-    工具重试的唯一准入是 ToolError.retryable;未被标记的意外异常(bug 级)
-    包装成 retryable=False 上抛。观测中间件注册在本层之内,记录到的仍是
-    原始异常;归一只对重试语义生效。
+    工具重试的唯一准入是 ToolError.retryable;未被标记的意外异常在边界上
+    按性质声明:传输类(内置 TimeoutError/ConnectionError——direct fetch 就
+    显式抛这两个)可重试,其余 bug 级判不可重试。观测中间件注册在本层之内,
+    记录到的仍是原始异常;归一只对重试语义生效。
     """
 
     @property
@@ -52,6 +53,7 @@ class ToolErrorNormalizerMiddleware(AgentMiddleware):
             raise ToolError(
                 f"工具内部意外错误：{type(exc).__name__}: {exc}",
                 code="tool_unexpected",
+                retryable=isinstance(exc, (TimeoutError, ConnectionError)),
             ) from exc
 
 
@@ -71,12 +73,7 @@ def _failure_message(agent: str) -> Callable[[Exception], str]:
 
 
 def tool_retry_on(error: Exception) -> bool:
-    """只重试工具在构造时自标可恢复的错误。
-
-    异常空间已由 ToolErrorNormalizerMiddleware 在边界闭合;此前追加的
-    isinstance(TimeoutError, ConnectionError) 臂与真实异常类型永不相交,
-    是一层假保险,已删。
-    """
+    """只重试自标可恢复的错误;未标 ToolError 的意外异常由边界归一层补声明。"""
     return bool(getattr(error, "retryable", False))
 
 
@@ -84,7 +81,7 @@ def _tool_failure_message(tool_label: str) -> Callable[[Exception], str]:
     def format_failure(error: Exception) -> str:
         return (
             f"{tool_label} 暂时不可用，已重试仍失败：{type(error).__name__}。"
-            "请不要把该失败当作来源内容；可以更换检索式或候选来源。"
+            "请不要把该失败当作来源内容；可更换调用参数或改用其他工具。"
         )
 
     return format_failure
@@ -121,13 +118,17 @@ class _NamedToolRetryMiddleware(ToolRetryMiddleware):
         return self._middleware_name
 
 
+_RETRY_MAX_RETRIES: int = 2
+_RETRY_BACKOFF: dict[str, float] = {"backoff_factor": 2.0, "initial_delay": 1.0, "max_delay": 20.0}
+
+
 def model_retry(
     agent: str,
     *,
-    max_retries: int = 2,
-    backoff_factor: float = 2.0,
-    initial_delay: float = 1.0,
-    max_delay: float = 20.0,
+    max_retries: int = _RETRY_MAX_RETRIES,
+    backoff_factor: float = _RETRY_BACKOFF["backoff_factor"],
+    initial_delay: float = _RETRY_BACKOFF["initial_delay"],
+    max_delay: float = _RETRY_BACKOFF["max_delay"],
     emit: Callable[[str, dict[str, object]], None] | None = None,
 ) -> ModelRetryMiddleware:
     """创建带有项目统一错误提示的模型重试中间件。
@@ -158,10 +159,10 @@ def tool_retry(
     tool_names: list[str],
     tool_label: str,
     *,
-    max_retries: int = 2,
-    backoff_factor: float = 2.0,
-    initial_delay: float = 1.0,
-    max_delay: float = 20.0,
+    max_retries: int = _RETRY_MAX_RETRIES,
+    backoff_factor: float = _RETRY_BACKOFF["backoff_factor"],
+    initial_delay: float = _RETRY_BACKOFF["initial_delay"],
+    max_delay: float = _RETRY_BACKOFF["max_delay"],
 ) -> ToolRetryMiddleware:
     """创建只作用于指定外部工具的重试中间件。"""
     return _NamedToolRetryMiddleware(

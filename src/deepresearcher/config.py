@@ -17,9 +17,10 @@ from deepresearcher.schemas.limits import (
     REPORT_CAVEATS_HARD_LIMIT,
     REPORT_MARKDOWN_HARD_LIMIT_CHARS,
 )
+from deepresearcher.vocab import SUPPORT_ORDER, Support
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WriterSupportLevel = Literal["insufficient", "partial", "direct"]
+WriterSupportLevel = Support  # 同一阶梯,唯一来源 vocab.Support
 
 
 def _env(name: str, default: str = "") -> str:
@@ -70,6 +71,10 @@ def project_path_env(name: str, default: Path) -> Path:
     return path if path.is_absolute() else _PROJECT_ROOT / path
 
 
+# 模型上下文窗口兜底;生产由 graph 从 settings 显式传,构造默认只服务测试。
+DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
+
+
 @dataclass(frozen=True)
 class LLMConfig:
     api_key: str = ""
@@ -77,7 +82,7 @@ class LLMConfig:
     model: str = ""
     temperature: float = 0.0
     timeout: float = 60.0
-    context_window_tokens: int = 32_768
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
     max_concurrent_requests: int = 6
     provider_requests_per_minute: int = 0
     provider_tokens_per_minute: int = 0
@@ -279,7 +284,9 @@ def _llm_config() -> LLMConfig:
         model=_env("LLM_MODEL_ID"),
         temperature=_float_env("LLM_TEMPERATURE", 0.0),
         timeout=_float_env("LLM_TIMEOUT", 60.0),
-        context_window_tokens=max(4_096, _int_env("LLM_CONTEXT_WINDOW_TOKENS", 32_768)),
+        context_window_tokens=max(
+            4_096, _int_env("LLM_CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS)
+        ),
         max_concurrent_requests=max(1, _int_env("LLM_MAX_CONCURRENT_REQUESTS", 6)),
         provider_requests_per_minute=max(0, _int_env("LLM_PROVIDER_RPM", 0)),
         provider_tokens_per_minute=max(0, _int_env("LLM_PROVIDER_TPM", 0)),
@@ -311,7 +318,7 @@ def _agent_config() -> AgentConfig:
             _choice_env(
                 "AGENT_WRITER_MINIMUM_SUPPORT",
                 "direct",
-                {"insufficient", "partial", "direct"},
+                set(SUPPORT_ORDER),
             ),
         ),
         writer_max_markdown_chars=max(1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)),

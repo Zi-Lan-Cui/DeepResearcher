@@ -15,13 +15,11 @@ from sqlalchemy import select, update
 from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.events.stream import FanoutSink
-from deepresearcher.service.persistence.models import Run
+from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
 from deepresearcher.service.runs.service import QuotaExceededError as QuotaExceededError
 from deepresearcher.service.runs.service import RunService
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.signals import PostgresSignalBus
-
-TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 
 def _utcnow() -> datetime:

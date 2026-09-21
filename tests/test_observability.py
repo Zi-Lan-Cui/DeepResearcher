@@ -94,7 +94,8 @@ def test_clarifier_summary_survives_instrumentation_and_projection():
         {
             "clarified_query": "Redis 有什么作用？",
             "research_brief": "比较 Redis 在后端与 Agent 系统中的职责和知识要求",
-        }
+        },
+        max_text_chars=1_000,
     )
     frame = project(
         {

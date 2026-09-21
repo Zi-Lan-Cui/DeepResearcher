@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
+
 
 class DocumentOutlineItem(BaseModel):
     heading: str
@@ -15,7 +17,7 @@ class DocumentRef(BaseModel):
     title: str = ""
     source_url: str
     published_at: str = ""
-    retrieval_method: str = "origin_fetch"
+    retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
     support_ceiling: str = "direct"
     content_hash: str
     line_count: int = Field(ge=0)

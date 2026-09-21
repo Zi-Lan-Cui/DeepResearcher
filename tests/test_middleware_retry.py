@@ -50,6 +50,13 @@ async def test_normalizer_wraps_unexpected_and_passes_tool_errors():
     assert wrapped.value.retryable is False
     assert "KeyError" in str(wrapped.value)
 
+    async def flaky_timeout(_request):
+        raise TimeoutError("source_fetch_timeout")  # direct fetch 的真实形状
+
+    with pytest.raises(ToolError) as wrapped:
+        await normalizer.awrap_tool_call(_Request(), flaky_timeout)
+    assert wrapped.value.retryable is True  # 传输类瞬断仍归可重试
+
     declared = ToolRequestError("provider 抖动")
 
     async def declared_failure(_request):

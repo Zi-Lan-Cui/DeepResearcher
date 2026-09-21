@@ -25,7 +25,7 @@ from deepresearcher.agents.writer.state import (
     evidence_index_card,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
-from deepresearcher.config import AgentConfig
+from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
 from deepresearcher.errors import AgentError
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
@@ -50,8 +50,8 @@ from deepresearcher.schemas import (
     WriterResult,
 )
 from deepresearcher.state import ResearchState, section
+from deepresearcher.vocab import SUPPORT_RANK as _SUPPORT_RANK
 
-_SUPPORT_RANK = {"insufficient": 0, "partial": 1, "direct": 2}
 # 模型违反协议直接输出正文时的救回下限：短于该长度或没有 cite 标记的
 # 收尾文本按闲聊/致歉处理，不视为报告草稿。
 _INLINE_DRAFT_MIN_CHARS = 300
@@ -88,7 +88,7 @@ class ReportWriter:
         render_incomplete: Callable[[ResearchState], str],
         event_sink: JsonlSink | None = None,
         artifact_max_text_chars: int = 1_000,
-        context_window_tokens: int = 32_768,
+        context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     ):
         if llm is None:
             raise LLMConfigurationError("ReportWriter 需要已装配的模型。")
