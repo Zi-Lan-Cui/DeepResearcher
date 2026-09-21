@@ -440,9 +440,9 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
     SSE 必须靠兜底合成 done 收敛,而不是每秒轮询挂着不返回。"""
     token = await register(client)
     client.graphs.append(FakeGraph())
-    run_id = (
-        await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))
-    ).json()["run_id"]
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
     await wait_status(client, token, run_id, {"completed"})
 
     from sqlalchemy import delete
@@ -451,9 +451,7 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
 
     async with client.app.state.session_factory() as session:
         await session.execute(
-            delete(RunEvent).where(
-                RunEvent.run_id == run_id, RunEvent.event_type == "run_done"
-            )
+            delete(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
         )
         await session.commit()
 

@@ -25,10 +25,15 @@ def retry_on(error: Exception) -> bool:
     return True
 
 
+# 软化文本的指纹:ToolLoopGuard 据此区分"模型后端故障的引导"与"协议违规的
+# 纯文本"——前者踢回只会把一次故障放大成一整轮新的重试。
+MODEL_FAILURE_MARKER = "的模型调用在重试后仍未成功"
+
+
 def _failure_message(agent: str) -> Callable[[Exception], str]:
     def format_failure(error: Exception) -> str:
         return (
-            f"{agent} 的模型调用在重试后仍未成功：{type(error).__name__}。"
+            f"{agent} {MODEL_FAILURE_MARKER}：{type(error).__name__}。"
             "请基于当前上下文调整下一步行动；不要重复提交相同的无效调用。"
         )
 

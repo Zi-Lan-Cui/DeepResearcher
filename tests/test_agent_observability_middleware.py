@@ -255,3 +255,19 @@ async def test_observability_sink_failure_does_not_block_tool():
         return expected
 
     assert await middleware.awrap_tool_call(_request(), handler) is expected
+
+
+def test_context_token_count_includes_tool_call_arguments():
+    """工具参数里住着最重的载荷(草稿/逐字引用);只数 content 会让压缩闸失明。"""
+    from langchain_core.messages import AIMessage
+
+    from deepresearcher.agents.middleware.factory import count_message_tokens
+
+    plain = AIMessage(content="短文本")
+    with_draft = AIMessage(
+        content="短文本",
+        tool_calls=[
+            {"name": "CompleteReport", "args": {"markdown": "长文内容" * 1000}, "id": "call-1"}
+        ],
+    )
+    assert count_message_tokens([with_draft]) > count_message_tokens([plain]) * 10

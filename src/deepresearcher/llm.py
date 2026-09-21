@@ -6,7 +6,10 @@
 - 循环级：ModelRetryMiddleware(agents/middleware/retry.py)把最终失败的模型调用
   软化为指引文本,agent 得以继续;但预算耗尽与账户级不可用是例外,
   retry_on 对它们豁免、让其冒泡到既有 fail-fast 收口;
-- 内容级：本文件的 repair 循环——JSON 不合规时回炉,langchain 不提供。
+- 内容级：本文件的 repair 循环——JSON 不合规时回炉,langchain 不提供;
+- 压缩级(例外):SummarizationMiddleware 在 before_model 节点内直调模型做摘要,
+  不经过预算闸与循环级软化——库内无注入口。它只在上下文越限后发生,
+  每次压缩至多一笔有界调用,是本分层明示承认的第四出口。
 本模块不包装模型:create_agent 与中间件拿到的都是同一个裸实例,
 网络抖动的重试职责完全在 SDK,不在 runnable 层重复设闸。
 """

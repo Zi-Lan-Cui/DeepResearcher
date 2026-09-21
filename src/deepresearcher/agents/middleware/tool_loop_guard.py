@@ -8,20 +8,34 @@ HumanMessage 并 jump 回模型，最多 max_nudges 次；耗尽后放行，
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
+from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.channels.untracked_value import UntrackedValue
+from typing_extensions import NotRequired
 
+from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
 from deepresearcher.observability.logger import get_logger
 
 
-class ToolLoopGuardMiddleware(AgentMiddleware):
-    """“文本不算提交”的循环内守卫；submitted_probe 返回 True 后不再拦截。
+class ToolLoopGuardState(AgentState[Any]):
+    """本回合已踢回次数走私有 state 通道。
 
-    已踢回次数从本次运行的消息历史推导（匹配注入过的提示原文），
-    不放实例属性：中间件实例随编译图共享，跨运行计数会互相污染。
+    不放实例属性：中间件实例随编译图共享，跨运行互相污染；也不从消息历史
+    推导：Summarization 压缩会整表重建历史，基于历史的计数会被静默清零、
+    突破 max_nudges。UntrackedValue 与 run_model_call_count 同款——节点
+    重放时预算重新起算，语义一致。
     """
+
+    nudge_count: NotRequired[Annotated[int, UntrackedValue, PrivateStateAttr]]
+
+
+class ToolLoopGuardMiddleware(AgentMiddleware):
+    """“文本不算提交”的循环内守卫；submitted_probe 返回 True 后不再拦截。"""
+
+    state_schema = ToolLoopGuardState  # type: ignore[assignment]
 
     def __init__(
         self,
@@ -80,13 +94,13 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
         last = messages[-1] if messages else None
         if not isinstance(last, AIMessage) or last.tool_calls:
             return None
+        if MODEL_FAILURE_MARKER in (last.text or ""):
+            # ModelRetry 耗尽后软化的引导文本:这是后端故障,不是协议违规。
+            # 踢回会让每次故障膨胀成一整轮新的重试,交给业务层兜底收敛。
+            return None
         if self.submitted_probe(getattr(runtime, "context", None)):
             return None
-        nudges = sum(
-            1
-            for message in messages
-            if isinstance(message, HumanMessage) and message.content == self.nudge_message
-        )
+        nudges = int(state.get("nudge_count", 0) or 0) if isinstance(state, dict) else 0
         if nudges >= self.max_nudges:
             return None
         payload = {
@@ -99,4 +113,8 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
             self._emit(f"{self.agent_name.lower()}_tool_loop_nudged", payload)
         else:
             self._logger.info("%s_tool_loop_nudged payload=%s", self.agent_name.lower(), payload)
-        return {"messages": [HumanMessage(content=self.nudge_message)], "jump_to": "model"}
+        return {
+            "messages": [HumanMessage(content=self.nudge_message)],
+            "jump_to": "model",
+            "nudge_count": nudges + 1,
+        }
