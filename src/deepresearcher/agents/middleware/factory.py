@@ -20,7 +20,8 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
 from deepresearcher.agents.middleware.retry import (
@@ -32,6 +33,45 @@ from deepresearcher.evidence.tokens import get_token_estimator
 
 _TOKEN_ESTIMATOR = get_token_estimator()
 AGENT_RECURSION_LIMIT = 1_000
+
+
+class ObservableSummarizationMiddleware(SummarizationMiddleware):
+    """压缩发生时记一笔 context_compacted——纯观测,不改任何压缩决策。
+
+    这组数据是将来裁定 clear_tool_inputs(是否连工具入参一起清)的唯一
+    合法依据:先看真实长 run 触发几次、清完还剩多少,再谈调参。
+    """
+
+    def __init__(self, *, agent_name: str, emit: Any, trigger_tokens: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._agent_name = agent_name
+        self._emit = emit
+        self._trigger_tokens = trigger_tokens
+
+    async def abefore_model(self, state: Any, runtime: Any) -> Any:
+        update = await super().abefore_model(state, runtime)
+        messages = state.get("messages", []) if isinstance(state, dict) else []
+        if update and self._emit is not None:
+            removed = next(
+                (
+                    message
+                    for message in update.get("messages", [])
+                    if isinstance(message, RemoveMessage) and message.id == REMOVE_ALL_MESSAGES
+                ),
+                None,
+            )
+            if removed is not None:
+                kept = [message for message in update["messages"] if message is not removed]
+                self._emit(
+                    "context_compacted",
+                    {
+                        "agent": self._agent_name,
+                        "before_tokens": count_message_tokens(messages),
+                        "after_tokens": count_message_tokens(kept),
+                        "trigger_tokens": self._trigger_tokens,
+                    },
+                )
+        return update
 
 
 @dataclass(frozen=True)
@@ -109,7 +149,10 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     if isinstance(profile.model, BaseChatModel):
         middleware.insert(
             0,
-            SummarizationMiddleware(
+            ObservableSummarizationMiddleware(
+                agent_name=profile.agent_name,
+                emit=profile.emit,
+                trigger_tokens=trigger,
                 model=profile.model,
                 trigger=("tokens", trigger),
                 keep=("tokens", keep),

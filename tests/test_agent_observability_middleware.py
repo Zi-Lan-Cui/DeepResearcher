@@ -286,3 +286,41 @@ def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
     receipt = format_tool_receipt({"evidence_count": 2})
     assert receipt.startswith("【系统工具执行结果")
     assert receipt.split("\n", 1)[-1] == '{"evidence_count": 2}'
+
+
+@pytest.mark.asyncio
+async def test_observable_summarization_emits_compaction_metrics():
+    """压缩事件在整表重建那一刻带前后 token 数——为 clear_tool_inputs 决策积数据。"""
+    from langchain_core.messages import HumanMessage, RemoveMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    from deepresearcher.agents.middleware import factory as factory_module
+    from deepresearcher.agents.middleware.factory import ObservableSummarizationMiddleware
+
+    events: list[tuple[str, dict[str, object]]] = []
+    middleware = ObservableSummarizationMiddleware.__new__(ObservableSummarizationMiddleware)
+    middleware._agent_name = "Writer"  # noqa: SLF001
+    middleware._emit = lambda event_type, payload: events.append((event_type, payload))  # noqa: SLF001
+    middleware._trigger_tokens = 4000  # noqa: SLF001
+
+    original = HumanMessage(content="原始对话" * 20)
+    summary = HumanMessage(content="摘要")
+
+    async def fake_super(_self, _state, _runtime):
+        # 替掉真压缩,只观察本类自身逻辑;真实触发路径由集成测试覆盖。
+        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary]}
+
+    real_super = factory_module.SummarizationMiddleware.abefore_model
+    factory_module.SummarizationMiddleware.abefore_model = fake_super  # type: ignore[method-assign]
+    try:
+        update = await middleware.abefore_model({"messages": [original]}, None)
+    finally:
+        factory_module.SummarizationMiddleware.abefore_model = real_super  # type: ignore[method-assign]
+
+    assert len(update["messages"]) == 2  # 观测层不改写压缩产物
+    assert events, "压缩发生时必须发射 context_compacted"
+    event_type, payload = events[0]
+    assert event_type == "context_compacted"
+    assert payload["agent"] == "Writer"
+    assert payload["before_tokens"] > payload["after_tokens"] > 0
+    assert payload["trigger_tokens"] == 4000
