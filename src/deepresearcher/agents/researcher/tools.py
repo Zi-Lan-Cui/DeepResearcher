@@ -7,6 +7,7 @@ from deepresearcher.agents.researcher import services
 from deepresearcher.agents.researcher.state import ResearcherLoopContext, ResearcherLoopState
 from deepresearcher.schemas import (
     AddEvidence,
+    DirectionStopReason,
     DocumentLineRange,
     EvidenceSubmission,
     GrepDocument,
@@ -216,10 +217,10 @@ def build_researcher_tools() -> list[BaseTool]:
         )
         if active_evidences:
             loop_state.conclusion = conclusion.strip()
-            loop_state.stop_reason = "complete"
+            loop_state.stop_reason = DirectionStopReason.COMPLETE
         else:
             loop_state.conclusion = ""
-            loop_state.stop_reason = "blocked_without_evidence"
+            loop_state.stop_reason = DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE
             if not loop_state.remaining_gaps:
                 loop_state.remaining_gaps = [reason]
         loop_state.stop_detail = reason

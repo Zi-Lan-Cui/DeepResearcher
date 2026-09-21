@@ -8,6 +8,7 @@ from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
 from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.schemas import DirectionStopReason
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
@@ -87,7 +88,7 @@ class ResearcherLoopState:
     failures: list[str] = field(default_factory=list)
     remaining_gaps: list[str] = field(default_factory=list)
     conclusion: str = ""
-    stop_reason: str = "step_budget_exhausted"
+    stop_reason: DirectionStopReason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
     stop_detail: str = "方向级探索步数预算已耗尽。"
     # 搜索提供方账户级不可用（额度/鉴权）。仅作数据：让本方向与 Supervisor 的模型读到后
     # 自然收尾/停止派发，不引入控制流分支。

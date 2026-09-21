@@ -10,6 +10,7 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import (
+    DirectionStopReason,
     ResearchDirectionResult,
     ResearchSynthesis,
     StopReason,
@@ -119,7 +120,7 @@ class TaskExecution:
             evidence_count=0,
             source_count=0,
             failures=[error],
-            stop_reason="worker_exception",
+            stop_reason=DirectionStopReason.WORKER_EXCEPTION,
             stop_detail=error,
         )
         return cls(

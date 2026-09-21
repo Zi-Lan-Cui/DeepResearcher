@@ -403,7 +403,7 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
                     "task_index": 1,
                     "evidence_count": 0,
                     "source_count": 0,
-                    "stop_reason": "no_evidence",
+                    "stop_reason": "fallback_complete",
                 },
             }
 
@@ -448,7 +448,7 @@ def test_supervisor_rejects_completion_without_evidence():
                     "task_index": 1,
                     "evidence_count": 0,
                     "source_count": 0,
-                    "stop_reason": "no_evidence",
+                    "stop_reason": "fallback_complete",
                 },
             }
 
@@ -1294,7 +1294,7 @@ class _RecordingDelegateAgent:
                 "coverage_status": "insufficient",
                 "evidence_count": 0,
                 "source_count": 0,
-                "stop_reason": "no_evidence",
+                "stop_reason": "fallback_complete",
             },
         }
 

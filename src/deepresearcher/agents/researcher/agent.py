@@ -35,7 +35,11 @@ from deepresearcher.prompts import (
     load_prompt,
     render_data_section,
 )
-from deepresearcher.schemas import ResearchAgentResult, ResearchDirectionResult
+from deepresearcher.schemas import (
+    DirectionStopReason,
+    ResearchAgentResult,
+    ResearchDirectionResult,
+)
 from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.web.materials import ResearchMaterialStore
@@ -106,7 +110,7 @@ class ResearchAgent:
                             ),
                             submitted_probe=lambda ctx: (
                                 getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
-                                in {"complete", "blocked_without_evidence"}
+                                in {DirectionStopReason.COMPLETE, DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE}
                             ),
                             max_nudges=self.config.finalization_attempts,
                             reminder_turns=4,
@@ -155,24 +159,24 @@ class ResearchAgent:
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
         except GraphRecursionError:
-            loop_state.stop_reason = "step_budget_exhausted"
+            loop_state.stop_reason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
             loop_state.stop_detail = "方向级 Agent 回合预算已耗尽。"
         except asyncio.CancelledError:
             status = "cancelled"
-            loop_state.stop_reason = "cancelled"
+            loop_state.stop_reason = DirectionStopReason.CANCELLED
             loop_state.stop_detail = "方向级 Agent 被取消。"
             raise
         except Exception as exc:
             status = "failed"
             loop_state.failures.append(f"direction_agent_failed: {exc}")
-            loop_state.stop_reason = "direction_agent_failed"
+            loop_state.stop_reason = DirectionStopReason.DIRECTION_AGENT_FAILED
             loop_state.stop_detail = str(exc)
         # 凡未正常收尾的,一律套用最小保守结果保住已验证证据、补降级标注。
         # 它只改写**交付**语义(conclusion/gaps);执行真相由 status/stop_reason
         # 如实穿透——崩溃的方向就是 failed,不借"completed+fallback"粉饰。
         if status != "cancelled" and loop_state.stop_reason not in {
-            "complete",
-            "blocked_without_evidence",
+            DirectionStopReason.COMPLETE,
+            DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
         }:
             self._apply_minimum_result(loop_state)
         return self._result(
@@ -200,8 +204,8 @@ class ResearchAgent:
             loop_state.remaining_gaps = list(
                 dict.fromkeys([*loop_state.remaining_gaps, fallback_gap, "未获得可用 Evidence。"])
             )
-            if loop_state.stop_reason != "direction_agent_failed":
-                loop_state.stop_reason = "blocked_without_evidence"
+            if loop_state.stop_reason != DirectionStopReason.DIRECTION_AGENT_FAILED:
+                loop_state.stop_reason = DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE
         else:
             loop_state.conclusion = (
                 "本方向未完成模型综合；仅交付已选中的可验证 Evidence，"
@@ -210,9 +214,9 @@ class ResearchAgent:
             loop_state.remaining_gaps = list(
                 dict.fromkeys([*loop_state.remaining_gaps, fallback_gap])
             )
-            if loop_state.stop_reason != "direction_agent_failed":
-                loop_state.stop_reason = "fallback_complete"
-        if loop_state.stop_reason != "direction_agent_failed":
+            if loop_state.stop_reason != DirectionStopReason.DIRECTION_AGENT_FAILED:
+                loop_state.stop_reason = DirectionStopReason.FALLBACK_COMPLETE
+        if loop_state.stop_reason != DirectionStopReason.DIRECTION_AGENT_FAILED:
             loop_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
 
     def _emit(
@@ -275,7 +279,7 @@ class ResearchAgent:
             execution_status=status,
             coverage_status=(
                 "sufficient"
-                if loop_state.stop_reason == "complete" and active_evidences
+                if loop_state.stop_reason == DirectionStopReason.COMPLETE and active_evidences
                 else "partial"
                 if active_evidences
                 else "insufficient"
