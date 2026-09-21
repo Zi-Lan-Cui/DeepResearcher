@@ -385,7 +385,7 @@ def test_supervisor_requires_research_agent_at_construction():
         )
 
 
-def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceiling():
+def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
     class EmptyAgent:
         async def run(self, task):
             return {
@@ -405,9 +405,9 @@ def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceilin
                 },
             }
 
-    # complete_args=None 使 fake 每轮都重发同一批方向：首次执行、其余全部被问题级去重
-    # 拦下(留下 NO_NEW_TASKS)。fake 不会主动收尾，最终是模型调用天花板掐断循环——
-    # 声明式 rank 让更强的 MODEL_CALL_LIMIT_EXCEEDED 覆盖瞬时 NO_NEW_TASKS(rank 回归)。
+    # complete_args=None 使 fake 每轮重发同一批方向：程序化去重已删除，重复方向
+    # 每次都真实执行。fake 不会主动收尾，最终是模型调用天花板掐断循环——
+    # 声明式 rank 让更强的 MODEL_CALL_LIMIT_EXCEEDED 压过轮次预算(终态归属回归)。
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["重复方向"], complete_args=None),
         AgentConfig(max_research_rounds=3),
@@ -423,10 +423,10 @@ def test_supervisor_adopts_higher_rank_stop_reason_when_dedup_thrash_hits_ceilin
         )
     )
 
-    # 去重确实发生：只执行了一个方向，且未判充分、走部分报告。
-    assert len(result["task_results"]) == 1
+    # 重复方向每次都执行了（证明去重确实不存在），未判充分、走部分报告。
+    assert len(result["task_results"]) > 1
     assert result["supervisor"].is_sufficient is False
-    # 终态归属真正的终止者：模型调用天花板压过去重瞬时信号。
+    # 终态归属真正的终止者：模型调用天花板压过轮次预算。
     assert "模型调用预算已耗尽" in result["writer"].feedback
 
 
@@ -841,7 +841,6 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     loop_state = SupervisorLoopState(
         state,
         current_round=0,
-        dedup_key=supervisor._task_deduplication_key,
         active_evidence_limit=30,
     )
     loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
@@ -1220,7 +1219,6 @@ def test_stop_reason_vocabulary_single_source():
         StopReason.ROUND_BUDGET_EXHAUSTED,
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
         StopReason.MODEL_CALL_LIMIT_EXCEEDED,
-        StopReason.NO_NEW_TASKS,
         StopReason.SUBMITTED_WITH_GAPS,
     }
     # 描述文案保留原逐字内容（回归锁）：
@@ -1234,8 +1232,9 @@ def test_stop_reason_rank_is_a_declared_total_order():
 
     ranks = {reason: reason.rank for reason in StopReason}
     assert len(set(ranks.values())) == len(ranks)  # 无并列，全序确定
-    # 修 bug 的那条：模型调用天花板必须压过瞬时去重信号。
-    assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.NO_NEW_TASKS.rank
+    # 现存最弱信号是轮次预算；天花板必须压过它（原瞬时去重信号已随程序化去重删除）。
+    assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.ROUND_BUDGET_EXHAUSTED.rank
+    assert min(ranks.values()) == StopReason.ROUND_BUDGET_EXHAUSTED.rank
     # 模型的显式收尾决定是最高终态，压过基础设施失败。
     assert StopReason.SUFFICIENT.rank > StopReason.AGENT_FAILED.rank
     assert StopReason.SUBMITTED_WITH_GAPS.rank > StopReason.AGENT_FAILED.rank
@@ -1249,22 +1248,20 @@ def test_loop_state_set_stop_reason_adopts_by_rank():
     from deepresearcher.state import ResearchState
 
     state: ResearchState = {}
-    loop_state = SupervisorLoopState(
-        state, current_round=4, dedup_key=lambda q: q, active_evidence_limit=30
-    )
+    loop_state = SupervisorLoopState(state, current_round=4, active_evidence_limit=30)
     # current_round 由构造参数单一来源注入，不再从持久化 section 自读。
     assert loop_state.current_round == 4
 
     assert loop_state.stop_reason is None
-    loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
-    assert loop_state.stop_reason == StopReason.NO_NEW_TASKS
+    loop_state.set_stop_reason(StopReason.ROUND_BUDGET_EXHAUSTED)
+    assert loop_state.stop_reason == StopReason.ROUND_BUDGET_EXHAUSTED
 
-    # bug 场景：撞去重留下 NO_NEW_TASKS 后命中天花板 → 应升级为 MODEL_CALL_LIMIT。
+    # 先记录轮次预算、随后命中天花板 → 应升级为 MODEL_CALL_LIMIT。
     loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
     assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
-    # 更弱的瞬时信号不得回退覆盖已采纳的更强终止原因。
-    loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
+    # 更弱的信号不得回退覆盖已采纳的更强终止原因。
+    loop_state.set_stop_reason(StopReason.ROUND_BUDGET_EXHAUSTED)
     assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
     # 模型的显式收尾决定压过一切基础设施信号。
@@ -1312,7 +1309,6 @@ def _delegate_context(run_id: str, current_round: int, agent, *, max_rounds: int
     loop_state = SupervisorLoopState(
         state,
         current_round=current_round,
-        dedup_key=supervisor._task_deduplication_key,
         active_evidence_limit=10,
     )
     context = SupervisorLoopContext(
@@ -1342,15 +1338,16 @@ def test_delegate_research_blocks_when_round_budget_exhausted():
     assert agent.task_run_ids == []
 
 
-def test_delegate_research_dedups_topics_and_scopes_run_id():
-    """同 topic 第二次 skipped；任务 run_id 取自各自 context.scope.run_id，无跨 run 泄漏。"""
+def test_delegate_research_allows_repeat_topic_and_scopes_run_id():
+    """同 topic 重发即真实执行(无程序化去重,防重复靠提示词纪律+预算封顶)；
+    任务 run_id 取自各自 context.scope.run_id，无跨 run 泄漏。"""
     agent_a = _RecordingDelegateAgent()
     sup_a, ctx_a = _delegate_context("run-a", current_round=1, agent=agent_a)
     first = _delegate(ctx_a, "重复主题")
     second = _delegate(ctx_a, "重复主题")
     assert first["status"] == "completed"
-    assert second["status"] == "skipped" and second["reason"] == "duplicate_or_budget"
-    assert agent_a.task_run_ids == ["run-a"]
+    assert second["status"] == "completed"
+    assert agent_a.task_run_ids == ["run-a", "run-a"]
 
     agent_b = _RecordingDelegateAgent()
     sup_b, ctx_b = _delegate_context("run-b", current_round=1, agent=agent_b)

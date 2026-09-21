@@ -200,7 +200,6 @@ class ResearchSupervisor:
         loop_state = SupervisorLoopState(
             state,
             current_round=round_no,
-            dedup_key=self._task_deduplication_key,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
         self._append_research_observation(
@@ -244,8 +243,7 @@ class ResearchSupervisor:
             history.extend(generated[len(prepared) :])
             if not loop_state.sufficient and _model_call_limit_hit(generated):
                 # 真实终止原因是模型调用天花板；set_stop_reason 的声明式 rank 保证它压过
-                # 更弱的瞬时信号（如某条 delegate 撞去重留下的 NO_NEW_TASKS），
-                # 又不会盖过模型的显式收尾决定。
+                # 更弱的预算类信号，又不会盖过模型的显式收尾决定。
                 loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
         self._emit_round_completed(
             round_no,
@@ -328,8 +326,8 @@ class ResearchSupervisor:
     ) -> SupervisorStateUpdate:
         """把工作状态转为 State 增量与路由决策。"""
         # 地板兜底,不是优先级判断:整轮没产生任何信号时才补一个默认终态。
-        # 故意保持 `is None` + 直接赋值,不走 set_stop_reason——ROUND_BUDGET 的
-        # rank 高于 NO_NEW_TASKS,若走 setter 会误盖掉"这轮全是重复 topic"的真信号。
+        # 保持 `is None` + 直接赋值:地板不参与 rank 竞争,任何已采纳的终态
+        # (哪怕权威度更低)都不该被"预算耗尽"的猜测覆盖。
         if not loop_state.sufficient and loop_state.stop_reason is None:
             loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
         full_synthesis = loop_state.completed_synthesis
@@ -551,7 +549,3 @@ class ResearchSupervisor:
             component=component,
             node_fallback="supervisor",
         )
-
-    @staticmethod
-    def _task_deduplication_key(question: str) -> str:
-        return "".join(question.lower().split())

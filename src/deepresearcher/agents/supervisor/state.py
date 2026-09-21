@@ -1,7 +1,6 @@
 """Supervisor 的运行态辅助对象。"""
 
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
@@ -76,7 +75,7 @@ class SupervisorLoopContext:
       scope        → observability:事件归因
       tool_gate    → serial_tools:读写栅栏(Revise/Complete 等 exclusive,
                      与在飞 ResearchDelegate 互斥——消灭"完结后状态仍变"竞态)
-      bookkeeping_lock → 业务锁:services.delegate_research 的编号/去重/absorb 临界区
+      bookkeeping_lock → 业务锁:services.delegate_research 的编号/absorb 临界区
     """
 
     scope: AgentExecutionScope
@@ -130,8 +129,11 @@ class SupervisorLoopState:
 
     从顶层 ResearchState 载入初始数据，仅在本次 loop 内修改，不直接进入 LangGraph
     State；loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。职责：Evidence
-    聚合、active 工作集、task result、问题去重、coverage gaps、failure details、
+    聚合、active 工作集、task result、coverage gaps、failure details、
     research synthesis、working_set_revision、stop reason、当前轮次。
+
+    曾有问题级去重(seen_questions + 逐字归一键)：模型改写一词即漏拦、逐字命中时
+    反而把失败方向永久烧掉,防重复的实际职责在提示词纪律与轮次/子任务预算,故删除。
 
     节点结束时把整份副本交给幂等 reducer 合并（merge_evidences / merge_task_results /
     merge_unique），reducer 按 id 折回原样。曾用 `_snapshot`+`deltas()` 手搓增量切片,
@@ -143,10 +145,8 @@ class SupervisorLoopState:
         state: ResearchState,
         *,
         current_round: int,
-        dedup_key: Callable[[str], str],
         active_evidence_limit: int,
     ):
-        self._dedup_key = dedup_key
         self.evidences = list(state.get("evidences", []))
         active_ids = state.get("active_evidence_ids")
         self.active_evidence_ids = (
@@ -167,9 +167,6 @@ class SupervisorLoopState:
         # 用户报告的"未闭合缺口"；两者可见面与恢复策略不同，不得混用一个字段。
         self.failure_details: list[str] = []
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
-        self.seen_questions = {
-            dedup_key(item.question) for item in self.task_results if item.question
-        }
         self.sufficient = False
         self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
@@ -216,20 +213,6 @@ class SupervisorLoopState:
         completed_max = max((item.task_index for item in self.task_results), default=0)
         self._task_counter = max(self._task_counter, completed_max) + 1
         return self._task_counter
-
-    def filter_new_tasks(self, tasks: list[SubTask], *, max_tasks: int) -> list[SubTask]:
-        """问题级去重并截断；task_id 冲突（恢复执行）同样跳过。"""
-        existing_ids = {item.task_id for item in self.task_results}
-        kept: list[SubTask] = []
-        for task in tasks:
-            if task["id"] in existing_ids:
-                continue
-            key = self._dedup_key(task["question"])
-            if not key or key in self.seen_questions:
-                continue
-            self.seen_questions.add(key)
-            kept.append(task)
-        return kept[:max_tasks]
 
     def absorb(self, execution: TaskExecution) -> None:
         """把一次方向研究产物并入工作状态。
