@@ -1355,3 +1355,24 @@ def test_delegate_research_allows_repeat_topic_and_scopes_run_id():
     sup_b, ctx_b = _delegate_context("run-b", current_round=1, agent=agent_b)
     _delegate(ctx_b, "重复主题")
     assert agent_b.task_run_ids == ["run-b"]
+
+
+def test_render_outcome_vocabulary_and_user_text_lookup():
+    """terminal_reason 三域词汇的出口规则:引擎两域查表成中文,lifecycle 原样。"""
+    from deepresearcher.schemas import RenderOutcome, StopReason
+    from deepresearcher.schemas.sections import _RENDER_OUTCOME_DESCRIPTIONS, terminal_reason_text
+
+    for outcome in RenderOutcome:
+        assert RenderOutcome(outcome.value) is outcome
+    assert set(_RENDER_OUTCOME_DESCRIPTIONS) == set(RenderOutcome)
+
+    # 第一域:StopReason 值 → 中文描述(此前裸词直进用户报告)。
+    assert (
+        terminal_reason_text(StopReason.ROUND_BUDGET_EXHAUSTED)
+        == "研究轮次预算已耗尽。"
+    )
+    # 第二域:RenderOutcome 值。
+    assert terminal_reason_text(RenderOutcome.REPORT_RENDERED) == "报告已渲染交付。"
+    # 第三域:lifecycle 字符串原样透传(自有包装点)。
+    assert terminal_reason_text("user_cancelled") == "user_cancelled"
+    assert terminal_reason_text("") == "研究未完成。"

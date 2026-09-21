@@ -135,6 +135,58 @@ class RunError(BaseModel):
         )
 
 
+class RenderOutcome(StrEnum):
+    """渲染终点节点写下的交付结局:terminal_reason 的第二域(第一域是 StopReason)。
+
+    值与 checkpoint/前端已冻结,只做枚举化与用户可读文案的单一来源;
+    跨进程持久化的 lifecycle 终态(user_cancelled/server_shutdown 等)是第三域,
+    仅登记于 DB 侧,不经此枚举。
+    """
+
+    CLARIFICATION_NEEDED = "clarification_needed"
+    QUICK_ANSWER = "quick_answer"
+    WRITER_EXHAUSTED = "writer_exhausted"
+    RESEARCH_INCOMPLETE = "research_incomplete"
+    REVIEW_RECOVERY_EXHAUSTED = "review_recovery_exhausted"
+    REVIEW_REJECTED = "review_rejected"
+    MISSING_REPORT_DRAFT = "missing_report_draft"
+    REPORT_RENDERED = "report_rendered"
+
+    @property
+    def description(self) -> str:
+        return _RENDER_OUTCOME_DESCRIPTIONS[self]
+
+
+_RENDER_OUTCOME_DESCRIPTIONS: dict[RenderOutcome, str] = {
+    RenderOutcome.CLARIFICATION_NEEDED: "等待用户澄清后才能继续。",
+    RenderOutcome.QUICK_ANSWER: "以即时回答方式交付。",
+    RenderOutcome.WRITER_EXHAUSTED: "报告写作未通过引用协议校验。",
+    RenderOutcome.RESEARCH_INCOMPLETE: "研究未完成。",
+    RenderOutcome.REVIEW_RECOVERY_EXHAUSTED: "审阅修订次数已耗尽。",
+    RenderOutcome.REVIEW_REJECTED: "整体审阅未通过。",
+    RenderOutcome.MISSING_REPORT_DRAFT: "缺少可渲染的草稿或引用元数据。",
+    RenderOutcome.REPORT_RENDERED: "报告已渲染交付。",
+}
+
+
+def terminal_reason_text(value: object) -> str:
+    """把 terminal_reason 换成面向用户的中文——三域词汇的统一查表出口。
+
+    terminal_reason 混装 StopReason 值、RenderOutcome 值与 DB lifecycle 字符串;
+    凡渲染进用户报告必经此函数,裸机器词不得再直达用户。未登记值原样返回
+    (lifecycle 词汇自有中文包装点)。
+    """
+    text = str(value or "")
+    if not text:
+        return "研究未完成。"
+    for enum_cls in (StopReason, RenderOutcome):
+        try:
+            return enum_cls(text).description
+        except ValueError:
+            continue
+    return text
+
+
 class RunStatus(BaseModel):
     """一次 run 的状态快照：当前阶段 + 终止原因 + 错误。值对象，不驱动流程、
     不代表"正在运行的生命周期"——阶段推进由节点产出增量、Graph 路由决定。"""

@@ -1,7 +1,14 @@
 """最终报告渲染节点。"""
 
 from deepresearcher.reporting import render_final_report, render_incomplete_report
-from deepresearcher.schemas import ReviewProgress, RunStatus, SupervisorProgress, WriterProgress
+from deepresearcher.schemas import (
+    RenderOutcome,
+    ReviewProgress,
+    RunStatus,
+    SupervisorProgress,
+    WriterProgress,
+    terminal_reason_text,
+)
 from deepresearcher.state import ResearchState, section
 
 
@@ -17,12 +24,12 @@ async def render_final_report_node(state: ResearchState):
     if state.get("answer_mode") == "clarification_needed":
         return {
             "report": report,
-            "run": RunStatus(phase="completed", terminal_reason="clarification_needed"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.CLARIFICATION_NEEDED),
         }
     if state.get("answer_mode") == "quick_answer":
         return {
             "report": report,
-            "run": RunStatus(phase="completed", terminal_reason="quick_answer"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.QUICK_ANSWER),
         }
     if writer.status in {"failed", "exhausted"}:
         feedback = str(writer.feedback or "报告草稿未能通过引用协议校验。")
@@ -33,10 +40,10 @@ async def render_final_report_node(state: ResearchState):
             )
             + "\n\n[写作校验：未通过]",
             "answer_mode": "research_incomplete",
-            "run": RunStatus(phase="completed", terminal_reason="writer_exhausted"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.WRITER_EXHAUSTED),
         }
     if research.status == "incomplete" and not state.get("report_draft"):
-        feedback = str(run.terminal_reason or "研究未完成。")
+        feedback = terminal_reason_text(run.terminal_reason)
         return {
             "report": render_incomplete_report(
                 state,
@@ -44,7 +51,7 @@ async def render_final_report_node(state: ResearchState):
             )
             + "\n\n[研究阶段：未完成；未启动 Writer]",
             "answer_mode": "research_incomplete",
-            "run": RunStatus(phase="completed", terminal_reason="research_incomplete"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.RESEARCH_INCOMPLETE),
         }
     if state.get("answer_mode") == "research_incomplete":
         evidence_count = len(state.get("evidences", []))
@@ -55,9 +62,9 @@ async def render_final_report_node(state: ResearchState):
         )
         return {
             "report": report + f"\n\n[研究未完成：{message}]",
-            "run": RunStatus(phase="completed", terminal_reason="research_incomplete"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.RESEARCH_INCOMPLETE),
         }
-    if run.terminal_reason == "review_recovery_exhausted":
+    if run.terminal_reason == RenderOutcome.REVIEW_RECOVERY_EXHAUSTED:
         citations = list(state.get("citations", []))
         draft = state.get("report_draft", "")
         if citations and draft:
@@ -71,14 +78,16 @@ async def render_final_report_node(state: ResearchState):
             return {
                 "report": report + "\n\n[审阅状态：已达到修订上限，按最后一版交付]",
                 "answer_mode": "review_limited",
-                "run": RunStatus(phase="completed", terminal_reason="review_recovery_exhausted"),
+                "run": RunStatus(
+                    phase="completed", terminal_reason=RenderOutcome.REVIEW_RECOVERY_EXHAUSTED
+                ),
             }
     if review.status == "rejected":
         feedback = review.feedback or "整体审阅未通过。"
         return {
             "report": render_incomplete_report(state, [feedback]) + "\n\n[整体审阅：未通过]",
             "answer_mode": "research_incomplete",
-            "run": RunStatus(phase="completed", terminal_reason="review_rejected"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REVIEW_REJECTED),
         }
 
     citations = list(state.get("citations", []))
@@ -91,7 +100,7 @@ async def render_final_report_node(state: ResearchState):
             )
             + "\n\n[渲染校验：未通过]",
             "answer_mode": "research_incomplete",
-            "run": RunStatus(phase="completed", terminal_reason="missing_report_draft"),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.MISSING_REPORT_DRAFT),
         }
     return {
         "report": render_final_report(
@@ -101,5 +110,5 @@ async def render_final_report_node(state: ResearchState):
             body=draft,
             citations=citations,
         ),
-        "run": RunStatus(phase="completed", terminal_reason="report_rendered"),
+        "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REPORT_RENDERED),
     }
