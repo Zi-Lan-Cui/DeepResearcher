@@ -178,6 +178,35 @@ class PostgresRunQueue:
             await session.commit()
             return result.rowcount == 1
 
+    async def settle_cancellations(self) -> list[RunWork]:
+        """取消意图是持久事实,落地不依赖 executor 活着。
+
+        带 flag 的行里,running 归 heartbeat→executor 自写终态;只有
+        "接了意图却没写终态就死了"的 interrupted 行需要代笔者。claim 的
+        WHERE 永远排除带 flag 的行,不 settle 它们就永久沉没——清扫者兜底。
+        """
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(Run)
+                    .where(
+                        Run.cancellation_requested_at.is_not(None),
+                        Run.status == "interrupted",
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+            work = [RunWork(run_id=run.id, user_id=run.user_id, query=run.query) for run in rows]
+            for run in rows:
+                run.status = "cancelled"
+                run.terminal_reason = "user_cancelled"
+                run.finished_at = _utcnow()
+                run.lease_owner = None
+                run.lease_expires_at = None
+                run.resume_payload = None
+            await session.commit()
+            return work
+
     async def reap_expired(self) -> list[RunWork]:
         """Return expired running claims to ``interrupted`` for checkpoint resume."""
         async with self._claim_lock:

@@ -997,3 +997,108 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     await execution.shutdown()
     await engine.dispose()
     await asyncio.sleep(0.1)
+
+
+async def test_settle_cancellations_terminates_abandoned_cancel_intent(manager):
+    """worker 死在"取消意图已写、终态未落"窗口:清扫者代笔 cancelled+done 帧。"""
+    run_id = "run-cancel-sunk"
+    async with manager.session_factory() as session:
+        session.add(
+            Run(
+                id=run_id,
+                user_id=USER_ID,
+                query="q",
+                status="interrupted",
+                cancellation_requested_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    await manager.execution._settle_cancellations()  # noqa: SLF001
+
+    async with manager.session_factory() as session:
+        run = await session.get(Run, run_id)
+        assert run.status == "cancelled"
+        assert run.terminal_reason == "user_cancelled"
+        assert run.finished_at is not None
+        assert run.lease_owner is None
+        done = (
+            await session.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
+            )
+        ).all()
+        assert len(done) == 1
+
+
+class _FlakyRenewQueue:
+    def __init__(self, *, fail_rounds: int) -> None:
+        self._fail_rounds = fail_rounds
+        self.renew_calls = 0
+
+    async def renew(self, _work, *, lease_seconds):
+        self.renew_calls += 1
+        if self.renew_calls <= self._fail_rounds:
+            raise ConnectionError("connection pool hiccup")
+        return True
+
+    async def cancellation_requested(self, _work):
+        return False
+
+
+class _RecordingLeaseExecutor:
+    def __init__(self) -> None:
+        self.lease_lost: list[str] = []
+        self.cancel_requested: list[str] = []
+
+    def mark_lease_lost(self, run_id):
+        self.lease_lost.append(run_id)
+
+    def mark_cancellation_requested(self, run_id):
+        self.cancel_requested.append(run_id)
+
+
+def _heartbeat_worker(queue, executor):
+    from deepresearcher.service.execution.worker import RunWorker
+
+    worker = RunWorker(
+        queue=queue,
+        executor=executor,
+        max_running=1,
+        lease_seconds=600,
+        heartbeat_seconds=600,
+    )
+    worker._heartbeat_seconds = 0.01  # noqa: SLF001 - 测试提速
+    return worker
+
+
+async def test_heartbeat_survives_transient_db_errors():
+    from deepresearcher.service.runs.queue import RunWork
+
+    work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", attempt=1)
+    queue = _FlakyRenewQueue(fail_rounds=2)
+    executor = _RecordingLeaseExecutor()
+    worker = _heartbeat_worker(queue, executor)
+
+    task = asyncio.create_task(worker._heartbeat(work, None))  # noqa: SLF001
+    async with asyncio.timeout(3):
+        while queue.renew_calls < 3:
+            await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert executor.lease_lost == []  # 瞬断不误杀健康执行
+
+
+async def test_heartbeat_escalates_persistent_db_errors_to_lease_lost():
+    from deepresearcher.service.runs.queue import RunWork
+
+    work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", attempt=1)
+    queue = _FlakyRenewQueue(fail_rounds=99)
+    executor = _RecordingLeaseExecutor()
+    worker = _heartbeat_worker(queue, executor)
+    worker._heartbeat_failure_budget = 2  # noqa: SLF001
+
+    async with asyncio.timeout(3):
+        await worker._heartbeat(work, None)  # noqa: SLF001
+
+    assert executor.lease_lost == ["r1"]  # 预算耗尽必须降级,不许静默退场

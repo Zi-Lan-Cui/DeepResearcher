@@ -164,12 +164,19 @@ class RunExecutor:
                 )
         except asyncio.CancelledError:
             if run_id not in self._shutdown_interrupts and run_id not in self._lost_leases:
-                persisted = await self.persist_status(
-                    run_id,
-                    status="cancelled",
-                    terminal_reason="user_cancelled",
-                    claim=claim,
-                )
+                # shield:终态落库事务不再被二次 cancel 打断(shutdown 紧接
+                # 取消的双击时序);本协程照常退出,写库由被 shield 的任务完成。
+                try:
+                    persisted = await asyncio.shield(
+                        self.persist_status(
+                            run_id,
+                            status="cancelled",
+                            terminal_reason="user_cancelled",
+                            claim=claim,
+                        )
+                    )
+                except asyncio.CancelledError:
+                    raise
                 if claim is not None and not persisted:
                     self.mark_lease_lost(run_id)
         except UsageBudgetExceeded as exc:
