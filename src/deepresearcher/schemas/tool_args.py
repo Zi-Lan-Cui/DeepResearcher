@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +17,7 @@ from deepresearcher.schemas.limits import (
     STRUCTURED_TEXT_HARD_LIMIT_CHARS,
 )
 from deepresearcher.schemas.reporting import ResearchAspect
+from deepresearcher.vocab import Support
 
 
 class SearchSources(BaseModel):
@@ -93,7 +93,7 @@ class EvidenceSubmission(BaseModel):
     document_id: str = Field(min_length=1)
     claim: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     quote: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
-    support: Literal["direct", "partial", "insufficient"] = "direct"
+    support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
