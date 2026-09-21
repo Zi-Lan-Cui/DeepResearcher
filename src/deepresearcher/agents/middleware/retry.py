@@ -39,7 +39,9 @@ class ToolErrorNormalizerMiddleware(AgentMiddleware):
     原始异常;归一只对重试语义生效。
     """
 
-    name = "ToolErrorNormalizer"
+    @property
+    def name(self) -> str:
+        return "ToolErrorNormalizer"
 
     async def awrap_tool_call(self, request, handler):  # type: ignore[override]
         try:
