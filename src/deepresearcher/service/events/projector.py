@@ -33,6 +33,7 @@ from typing import Any
 
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import StopReason
+from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
 
 TRUNCATED_EVENT = "stream_truncated"
 
@@ -61,6 +62,22 @@ _TASK_UPDATES: dict[str, str] = {
 class SseFrame:
     event: str
     data: dict
+
+
+def project_clarification(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """clarification_requested 载荷 → 客户端可见的 {question, options};空 question 不成帧。
+
+    截断上限(options≤3 条、每条 120 字;question≤500 字)是敏感文案的白名单出口,
+    SSE 与 REST 两条通道共用此一处——改规则只改这里,不再两处各演化一份漂移。
+    """
+    question = _text(payload.get("question"), 500)
+    raw_options = payload.get("options")
+    options = (
+        [_text(item, 120) for item in raw_options[:3] if _text(item, 120)]
+        if isinstance(raw_options, list)
+        else []
+    )
+    return {"question": question, "options": options} if question else None
 
 
 def project(record: Mapping[str, Any]) -> SseFrame | None:
@@ -114,7 +131,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，开始收束")
         return None
     if event_type == "supervisor_model_turn":
-        thought = _text(payload.get("content_preview"), 800)  # 与 _PREVIEW_CHARS 对齐
+        thought = _text(payload.get("content_preview"), EVENT_CONTENT_PREVIEW_CHARS)
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
     # ---- 方向卡（Supervisor 块内子项）----
     if event_type == "research_task_started":
@@ -175,18 +192,8 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         status = _text(payload.get("status"), 32)
         return _frame("status", seq, {"status": status}) if status else None
     if event_type == "clarification_requested":
-        question = _text(payload.get("question"), 500)
-        raw_options = payload.get("options")
-        options = (
-            [_text(item, 120) for item in raw_options[:3] if _text(item, 120)]
-            if isinstance(raw_options, list)
-            else []
-        )
-        return (
-            _frame("clarification", seq, {"question": question, "options": options})
-            if question
-            else None
-        )
+        clarification = project_clarification(payload)
+        return _frame("clarification", seq, clarification) if clarification else None
     if event_type == "run_done":
         return _frame(
             "done",

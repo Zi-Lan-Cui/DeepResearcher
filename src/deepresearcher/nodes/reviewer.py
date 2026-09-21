@@ -8,7 +8,6 @@ from openai import ContentFilterFinishReasonError
 from pydantic import ValidationError
 
 from deepresearcher.config import AgentConfig
-from deepresearcher.llm import ainvoke_structured
 from deepresearcher.observability.logger import get_logger
 from deepresearcher.prompts import (
     get_runtime_environment,
@@ -53,7 +52,7 @@ def reviewer_evidence_card(citation: Citation) -> dict[str, object]:
     }
 
 
-async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured=ainvoke_structured):
+async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
     """审阅草稿并把结论交还 Supervisor，不自行调度 Writer 或研究员。"""
     review = section(state, "review", ReviewProgress)
     attempt = review.attempts + 1

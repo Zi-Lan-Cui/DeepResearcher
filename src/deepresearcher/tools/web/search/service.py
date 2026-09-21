@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.execution import AgentExecutionScope
@@ -14,7 +13,7 @@ from deepresearcher.schemas.limits import (
     SEARCH_RESULTS_AUDIT_PREVIEW_COUNT,
 )
 from deepresearcher.state import SubTask
-from deepresearcher.tools.cache_keys import normalize_text, semantic_cache_key
+from deepresearcher.tools.cache_keys import canonical_url, normalize_text, semantic_cache_key
 from deepresearcher.tools.errors import ProviderExhaustedError, ToolConfigurationError
 from deepresearcher.tools.web.search.client import SearchClient
 from deepresearcher.tools.web.search.models import (
@@ -192,14 +191,6 @@ class SearchTool:
             getattr(self.client, "effective_limit", None),
         )
 
-    @staticmethod
-    def _canonical_url(url: str) -> str:
-        url, _ = urldefrag(url.strip())
-        parts = urlsplit(url)
-        return urlunsplit(
-            (parts.scheme, parts.netloc.lower(), parts.path.rstrip("/"), parts.query, "")
-        )
-
     @classmethod
     def _rank_and_dedupe(cls, results):
         by_url = {}
@@ -207,7 +198,9 @@ class SearchTool:
             url = result.get("url", "")
             if not url:
                 continue
-            key = cls._canonical_url(url)
+            # 与缓存共用同一 canonical_url;去重折叠尾斜杠。凭证 URL 归一为 ""
+            # (不可共用身份)——退回原串,既不误并也不丢结果。
+            key = canonical_url(url, strip_trailing_slash=True) or url
             current = by_url.get(key)
             if current is None or result.get("score", 0.0) > current.get("score", 0.0):
                 by_url[key] = result

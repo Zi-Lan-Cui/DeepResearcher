@@ -245,7 +245,9 @@ def build_graph(
             trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
-        destinations=(NodeName.SUPERVISOR,),
+        # clarification_needed 与 terminal phase 都直落渲染:destinations 是图形状
+        # 唯一机器可读声明,漏 RENDER 会误导读者与绘图工具。
+        destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
     )
     graph.add_node(
         NodeName.QUICK_ANSWER,
