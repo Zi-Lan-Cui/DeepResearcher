@@ -23,6 +23,7 @@ from pydantic import BaseModel
 _PROJECT_TYPE_PACKAGES = (
     "deepresearcher.schemas",
     "deepresearcher.evidence",
+    "deepresearcher.observability",
     "deepresearcher.state",
     "deepresearcher.routing",
     "deepresearcher.reporting",

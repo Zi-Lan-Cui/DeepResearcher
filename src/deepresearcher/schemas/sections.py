@@ -10,11 +10,12 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from deepresearcher.errors import AgentError
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.routing import NodeName
+from deepresearcher.schemas.limits import RUN_ERROR_TEXT_HARD_LIMIT_CHARS
 from deepresearcher.schemas.reporting import (
     Citation,
     ParagraphBinding,
@@ -33,8 +34,6 @@ class StopReason(StrEnum):
     GLOBAL_ROUND_BUDGET_EXHAUSTED = "global_round_budget_exhausted"
     MODEL_CALL_LIMIT_EXCEEDED = "supervisor_model_call_limit_exceeded"
     AGENT_FAILED = "supervisor_agent_failed"
-    # 搜索提供方账户级不可用（额度/鉴权）：非本方向偶发，应停止重试/派发、自然收尾。
-    SEARCH_PROVIDER_EXHAUSTED = "search_provider_exhausted"
 
     @property
     def allows_partial_report(self) -> bool:
@@ -74,6 +73,8 @@ class StopReason(StrEnum):
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
+    # 全覆盖由 test_sections 钉死:缺描述会静默落到语义相反的兜底句。
+    StopReason.SUFFICIENT: "Supervisor 确认现有材料足以形成完整研究报告。",
     StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
     StopReason.SUFFICIENT_WITHOUT_EVIDENCE: "充分性决策与 Evidence 状态矛盾。",
     StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
@@ -88,7 +89,6 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
     StopReason.ROUND_BUDGET_EXHAUSTED: 20,
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: 25,
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: 30,
-    StopReason.SEARCH_PROVIDER_EXHAUSTED: 35,
     StopReason.SUFFICIENT_WITHOUT_EVIDENCE: 40,
     StopReason.AGENT_FAILED: 45,
     StopReason.SUBMITTED_WITH_GAPS: 50,
@@ -104,6 +104,15 @@ class RunError(BaseModel):
     message: str
     retryable: bool = False
     detail: str = ""
+
+    @field_validator("message", "detail", mode="before")
+    @classmethod
+    def _clip_long_text(cls, value: object) -> object:
+        # 校验器只截断不抛错:错误处理路径自身绝不允许因超长文本再造异常。
+        text = str(value)
+        if len(text) > RUN_ERROR_TEXT_HARD_LIMIT_CHARS:
+            return text[: RUN_ERROR_TEXT_HARD_LIMIT_CHARS - 8] + "…[截断]"
+        return value
 
     @classmethod
     def from_exception(cls, stage: str, error: Exception) -> "RunError":
@@ -274,10 +283,10 @@ class WriterResult(BaseModel):
     writer_selected_evidence_ids: list[str] | None = None
 
     def state_update(self) -> dict[str, object]:
-        """转为 LangGraph 状态增量，阶段状态只通过嵌套模型交接。"""
-        update = self.model_dump(exclude_none=True)
-        for name in ("run", "writer", "review"):
-            value = getattr(self, name)
-            if value is not None:
-                update[name] = value
-        return update
+        """转为 LangGraph 状态增量，阶段状态只通过嵌套模型交接。
+
+        None 字段不产生增量;模型字段以对象整体写入——model_dump 会把
+        citations/bindings 摊平成 dict,同 run 内破坏"消费方拿到的恒是模型"
+        的恢复前提,dict↔模型转换只发生在 checkpoint 边界。
+        """
+        return {name: value for name, value in self if value is not None}

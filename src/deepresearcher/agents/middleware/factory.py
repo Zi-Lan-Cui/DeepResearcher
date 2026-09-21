@@ -72,7 +72,8 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
             ),
         )
     middleware.append(model_retry(profile.agent_name, emit=profile.emit))
-    middleware.extend(tool_retry(names, label) for names, label in profile.retry_tools)
+    # 标签默认取工具名本身(retry_tools 只声明工具;展示名即协议名)。
+    middleware.extend(tool_retry(names, names[0]) for names in profile.retry_tools)
     if profile.serial_tools:
         middleware.append(SerialToolMiddleware(profile.serial_tools))
     for tool_name, tool_call_limit in profile.tool_call_limits:

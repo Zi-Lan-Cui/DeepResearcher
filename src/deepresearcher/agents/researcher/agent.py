@@ -91,10 +91,7 @@ class ResearchAgent:
                         model=self.llm,
                         max_turns=self.config.research_agent_max_turns + 1,
                         context_window_tokens=context_window_tokens,
-                        retry_tools=[
-                            (["SearchSources"], "SearchSources"),
-                            (["ReadSources"], "ReadSources"),
-                        ],
+                        retry_tools=[["SearchSources"], ["ReadSources"]],
                         serial_tools={
                             "SearchSources",
                             "ReadWorkingSet",

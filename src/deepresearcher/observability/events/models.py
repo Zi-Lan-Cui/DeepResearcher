@@ -169,9 +169,19 @@ def make_node_event(
         component=component,
         status=status,
         duration_ms=round(duration_ms, 2) if duration_ms is not None else None,
-        error=error[:500] if error else "",
+        error=_clip(error, _EVENT_ERROR_MAX_CHARS),
         payload=payload or {},
     )
+
+
+_EVENT_ERROR_MAX_CHARS = 500
+
+
+def _clip(text: str | None, limit: int) -> str:
+    """事件里的错误文本带截断标记,与 RunError 钳位同一口径留痕。"""
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[: limit - 8] + "…[截断]"
 
 
 def make_artifact_event(

@@ -382,21 +382,6 @@ class RunExecutor:
             await self.publish_status(run_id, "running")
         return transitioned
 
-    async def persist_interrupted(self, run_id: str) -> bool:
-        """Persist a resumable shutdown without publishing the terminal done frame."""
-        self._shutdown_interrupts.add(run_id)
-        async with self._session_factory() as session:
-            run = await session.get(Run, run_id)
-            if run is None or run.status in TERMINAL_STATUSES:
-                self._shutdown_interrupts.discard(run_id)
-                return False
-            run.status = "interrupted"
-            run.terminal_reason = "server_shutdown"
-            run.error_message = None
-            run.finished_at = None
-            await session.commit()
-        return True
-
     async def _persist_awaiting_input(self, run_id: str, *, claim: RunWork | None = None) -> bool:
         if claim is not None:
             async with self._session_factory() as session:

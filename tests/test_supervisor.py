@@ -1208,11 +1208,13 @@ def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
 def test_stop_reason_vocabulary_single_source():
     """StopReason 是停止原因的唯一来源：词汇可回环、描述与兜底判定挂成员。"""
     from deepresearcher.schemas import StopReason
+    from deepresearcher.schemas.sections import _STOP_REASON_DESCRIPTIONS
 
     for reason in StopReason:
         assert StopReason(reason.value) is reason  # 每个成员可由字符串值回环
-        assert reason.description  # 无成员会拿空描述
         assert isinstance(reason, str)  # terminal_reason/JSON 等 str 消费点兼容
+    # 描述表全覆盖:漏登记的成员会静默吃兜底句(兜底句对 SUFFICIENT 语义相反)。
+    assert set(_STOP_REASON_DESCRIPTIONS) == set(StopReason)
 
     # 兜底进入部分报告的集合语义钉死（原 _final_update 手工清单的行为锁）：
     assert {r for r in StopReason if r.allows_partial_report} == {
@@ -1223,7 +1225,7 @@ def test_stop_reason_vocabulary_single_source():
     }
     # 描述文案保留原逐字内容（回归锁）：
     assert StopReason.ROUND_BUDGET_EXHAUSTED.description == "研究轮次预算已耗尽。"
-    assert StopReason.SUFFICIENT.description == "Supervisor 未确认现有材料足以形成完整研究报告。"
+    assert StopReason.SUFFICIENT.description == "Supervisor 确认现有材料足以形成完整研究报告。"
 
 
 def test_stop_reason_rank_is_a_declared_total_order():

@@ -209,7 +209,7 @@ def test_writer_preserves_review_attempts_when_draft_is_ready():
     assert result["review"].attempts == 2
 
 
-def test_writer_result_serializes_nested_citation_models_for_graph_state():
+def test_writer_result_keeps_nested_models_for_graph_state():
     result = WriterResult(
         report_draft="## 结论\n\n事实。[[cite:e1]]",
         answer_mode="deep_research",
@@ -217,8 +217,9 @@ def test_writer_result_serializes_nested_citation_models_for_graph_state():
         paragraph_bindings=[ParagraphBinding(text="事实。", kind="evidence", evidence_ids=["e1"])],
     ).state_update()
 
-    assert result["citations"] == [_cite("e1", url="https://example.com/a").model_dump()]
-    assert result["paragraph_bindings"] == [_binding("事实。", ["e1"]).model_dump()]
+    # 同 run 内 State 恒为模型对象;dict↔模型转换只在 checkpoint 边界发生。
+    assert result["citations"] == [_cite("e1", url="https://example.com/a")]
+    assert result["paragraph_bindings"] == [_binding("事实。", ["e1"])]
     assert result["report_draft"] == "## 结论\n\n事实。[[cite:e1]]"
 
 
@@ -245,7 +246,7 @@ def test_writer_binds_markdown_cite_to_explicit_evidence():
     )
 
     # Writer 产出 evidence_id 键的草稿与绑定，不渲染编号
-    assert result["paragraph_bindings"] == [_binding("A 的平均延迟为 20ms。", ["e1"]).model_dump()]
+    assert result["paragraph_bindings"] == [_binding("A 的平均延迟为 20ms。", ["e1"])]
     assert "[[cite:e1]]" in result["report_draft"]
     assert "[来源1]" not in result["report_draft"]
     assert result["citations"] == [
@@ -254,7 +255,7 @@ def test_writer_binds_markdown_cite_to_explicit_evidence():
             claim="A 的平均延迟为 20ms",
             quote="A 的平均延迟为 20ms。",
             url="https://example.com/a",
-        ).model_dump()
+        )
     ]
 
 
@@ -390,8 +391,8 @@ def test_writer_preserves_uncited_conclusion_for_reviewer():
     )
 
     assert result["paragraph_bindings"] == [
-        _binding("A 的平均延迟为 20ms。", ["e1"]).model_dump(),
-        _binding("因此，这项结果应结合测试条件理解，不能单独外推到所有场景。").model_dump(),
+        _binding("A 的平均延迟为 20ms。", ["e1"]),
+        _binding("因此，这项结果应结合测试条件理解，不能单独外推到所有场景。"),
     ]
 
 
@@ -463,7 +464,7 @@ def test_writer_accepts_chinese_source_separators():
     )
 
     assert result["paragraph_bindings"] == [
-        _binding("两个来源共同支撑的结论。", ["e2", "e1"], kind="synthesis").model_dump()
+        _binding("两个来源共同支撑的结论。", ["e2", "e1"], kind="synthesis")
     ]
 
 
@@ -499,7 +500,7 @@ def test_writer_retries_invalid_evidence_binding_instead_of_falling_back():
     )
 
     assert calls == 2
-    assert result["paragraph_bindings"][0]["evidence_ids"] == ["e1"]
+    assert result["paragraph_bindings"][0].evidence_ids == ["e1"]
     assert "这一结果仅适用于给定测试条件。" in result["report_draft"]
 
 
@@ -552,7 +553,7 @@ def test_writer_does_not_parse_cite_markers_inside_fenced_or_inline_code():
         },
     )
 
-    assert result["paragraph_bindings"] == [_binding("真正需要引用的结论。", ["e1"]).model_dump()]
+    assert result["paragraph_bindings"] == [_binding("真正需要引用的结论。", ["e1"])]
 
 
 def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
