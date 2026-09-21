@@ -91,7 +91,7 @@ class RunExecutor:
         self._checkpointer = checkpointer
         self._material_store = material_store
         self._ephemeral_bus = ephemeral_bus
-        # 搜索提供方账户级健康跨 worker 共享（PG）；非 PG（测试/SQLite）用 SearchClient 的内存默认。
+        # 搜索提供方账户级健康跨 worker 共享（PG）；非 PG（测试/SQLite）用 SearchService 的内存默认。
         self._provider_health = (
             PostgresProviderHealth(session_factory)
             if str(getattr(config, "database_url", "")).startswith("postgresql")

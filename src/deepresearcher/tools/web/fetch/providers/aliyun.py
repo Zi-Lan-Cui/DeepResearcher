@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 
 from deepresearcher.config import SearchConfig
 from deepresearcher.tools.errors import SourceUnavailableError, ToolParseError, ToolRequestError
-from deepresearcher.tools.web.aliyun import AliyunDtsApi
+from deepresearcher.tools.transport.aliyun import AliyunDtsApi
 from deepresearcher.tools.web.fetch.models import SourceDocument
 from deepresearcher.tools.web.parsing import (
     DocumentBlock,

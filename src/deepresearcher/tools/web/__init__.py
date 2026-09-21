@@ -18,9 +18,9 @@ from deepresearcher.tools.web.fetch import (
 from deepresearcher.tools.web.reader import SourceReaderTool
 from deepresearcher.tools.web.search import (
     SearchCandidate,
-    SearchClient,
     SearchProvider,
     SearchResult,
+    SearchService,
     SearchTool,
     SearchToolResult,
 )
@@ -36,7 +36,7 @@ __all__ = [
     "FetchProvider",
     "FetchService",
     "SearchCandidate",
-    "SearchClient",
+    "SearchService",
     "SearchProvider",
     "SearchResult",
     "SearchTool",

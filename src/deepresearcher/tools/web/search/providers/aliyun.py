@@ -1,7 +1,7 @@
 """阿里云 DTS AI WebSearch Provider。"""
 
 from deepresearcher.tools.errors import ToolParseError, ToolRequestError
-from deepresearcher.tools.web.aliyun import AliyunDtsApi
+from deepresearcher.tools.transport.aliyun import AliyunDtsApi
 from deepresearcher.tools.web.search.models import SearchResult
 
 

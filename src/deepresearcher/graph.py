@@ -30,12 +30,12 @@ from deepresearcher.tools import (
     DirectHttpFetchProvider,
     FetchService,
     HttpClient,
-    SearchClient,
+    SearchService,
     SearchTool,
     SourceReaderTool,
     ToolConfigurationError,
 )
-from deepresearcher.tools.web.aliyun import create_aliyun_dts_client
+from deepresearcher.tools.transport.aliyun import create_aliyun_dts_client
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 
 
@@ -156,7 +156,7 @@ def build_graph(
     )
     aliyun_client = create_aliyun_dts_client(settings.search) if uses_aliyun else None
     search_tool = SearchTool(
-        SearchClient(
+        SearchService(
             settings.search,
             shared_http,
             aliyun_client=aliyun_client,

@@ -231,7 +231,7 @@ class DirectionLLM:
         return next(self.decisions)
 
 
-class FakeSearchClient:
+class FakeSearchService:
     async def asearch(self, query):
         return [
             {"title": query, "url": f"https://example.com/{query}/a", "snippet": "", "score": 0.9},
@@ -299,7 +299,7 @@ def researcher_agent(config, decisions, reader=None):
     return ResearchAgent(
         DirectionLLM(decisions),
         config,
-        search_tool=SearchTool(FakeSearchClient()),
+        search_tool=SearchTool(FakeSearchService()),
         reader_tool=reader or FakeReader(),
     )
 

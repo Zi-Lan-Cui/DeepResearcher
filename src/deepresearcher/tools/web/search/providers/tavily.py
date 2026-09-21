@@ -1,4 +1,4 @@
-"""Tavily 搜索适配器。"""
+"""Tavily 搜索 SearchProvider。"""
 
 from deepresearcher.config import SearchConfig
 from deepresearcher.tools.errors import ToolParseError
