@@ -1,7 +1,7 @@
 """Supervisor 方向派发业务实现:不感知 langgraph 的纯 async 函数。
 
 delegate_research 执行一次 ResearchDelegate 工具请求:预算 hard check、任务
-编号/去重、派发 ResearchAgent、吸收结果,返回给模型的完整方向报告 dict;
+编号、派发 ResearchAgent、吸收结果,返回给模型的完整方向报告 dict;
 工具回执与消息配对留在协议层(tools.py),本模块不认识 ToolMessage。
 簿记并发由 bookkeeping_lock 保护,实际子 Agent 并发受 deps.worker_limit 限制。
 """
@@ -26,13 +26,16 @@ async def delegate_research(
     bookkeeping_lock: asyncio.Lock,
     topic: str,
 ) -> dict[str, object]:
-    """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号/去重、
+    """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号、
     派发 ResearchAgent、吸收结果、返回完整方向报告。
+
+    同主题重复不做程序化去重:逐字键拦不住改写、只会误伤重试;防重复靠
+    提示词纪律,浪费靠 max_subtasks/轮次预算封顶。
     """
     round_no = loop_state.current_round
 
     def reported(result: dict[str, object]) -> dict[str, object]:
-        # 规划器的工具调用若被静默消化（blocked/skipped），事件流里只会
+        # 规划器的工具调用若被静默消化（blocked），事件流里只会
         # 看到连续两个 model_turn——delegate_started/completed 让“空轮次”可解释。
         deps.emit(
             "delegate_completed",
@@ -72,13 +75,7 @@ async def delegate_research(
             "parent_task_id": "",
             "operation_id": f"research-task-{task_index:04d}",
         }
-        new_tasks = loop_state.filter_new_tasks(
-            [task], max_tasks=deps.config.max_subtasks_per_round
-        )
-    if not new_tasks:
-        loop_state.set_stop_reason(StopReason.NO_NEW_TASKS)
-        return reported({"status": "skipped", "reason": "duplicate_or_budget", "topic": topic})
-    execution = await _execute_research_task(deps, new_tasks[0])
+    execution = await _execute_research_task(deps, task)
     async with bookkeeping_lock:
         loop_state.absorb(execution)
     direction_report: dict[str, object] = {

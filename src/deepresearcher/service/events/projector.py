@@ -110,8 +110,6 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == "delegate_completed":
         status = str(payload.get("status", ""))
-        if status == "skipped":
-            return _plan(seq, NodeName.SUPERVISOR, "发现重复研究方向，已跳过并调整计划")
         if status == "blocked":
             return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，开始收束")
         return None

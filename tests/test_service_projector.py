@@ -241,10 +241,6 @@ def test_agent_finished_events_are_silent():
 
 
 def test_delegate_completed_maps_silent_planner_outcomes():
-    skipped = project(
-        _record("delegate_completed", {"status": "skipped", "reason": "duplicate_or_budget"})
-    )
-    assert skipped.data["text"] == "发现重复研究方向，已跳过并调整计划"
     blocked = project(
         _record("delegate_completed", {"status": "blocked", "reason": "round_budget_exhausted"})
     )

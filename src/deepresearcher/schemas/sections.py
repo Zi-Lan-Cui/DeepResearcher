@@ -29,8 +29,6 @@ class StopReason(StrEnum):
     SUFFICIENT = "supervisor_sufficient"
     SUBMITTED_WITH_GAPS = "supervisor_submitted_with_gaps"
     SUFFICIENT_WITHOUT_EVIDENCE = "sufficient_without_evidence"
-    NO_NEW_TASKS = "no_new_tasks"
-    NO_TOOL_CALLS = "no_tool_calls"
     ROUND_BUDGET_EXHAUSTED = "round_budget_exhausted"
     GLOBAL_ROUND_BUDGET_EXHAUSTED = "global_round_budget_exhausted"
     MODEL_CALL_LIMIT_EXCEEDED = "supervisor_model_call_limit_exceeded"
@@ -45,7 +43,6 @@ class StopReason(StrEnum):
             StopReason.ROUND_BUDGET_EXHAUSTED,
             StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
             StopReason.MODEL_CALL_LIMIT_EXCEEDED,
-            StopReason.NO_NEW_TASKS,
             StopReason.SUBMITTED_WITH_GAPS,
         }
 
@@ -59,15 +56,13 @@ class StopReason(StrEnum):
     def rank(self) -> int:
         """终止原因的**声明式**权威度;数字越大越能覆盖小的。
 
-        Supervisor 一次运行里多个位置可能给 stop_reason 赋值(瞬时去重副作用、
-        轮次预算、模型调用天花板、异常、模型显式决定);过去依赖"物理书写顺序 +
+        Supervisor 一次运行里多个位置可能给 stop_reason 赋值(轮次预算、
+        模型调用天花板、异常、模型显式决定);过去依赖"物理书写顺序 +
         零散 is None 守卫"隐式规定优先级,任何新增写点都可能悄悄把该显示的终态
         压下去。改为单调 rank 之后,`SupervisorLoopState.set_stop_reason` 按 rank 采纳,
         新增写点不用再操心顺序——只需选一个合适的 rank。
 
         分级理由:
-        - 瞬时副作用 (NO_NEW_TASKS) 最低——一次 dup 只是 delegate 局部事件,
-          不能压过任何真实终止原因。
         - 轮次预算 (ROUND < GLOBAL) 表示"没做完但到点了",低于天花板命中,
           因为后者是"到点前就被强行掐掉"这一更强的终止事实。
         - 模型调用天花板 (MODEL_CALL_LIMIT) 表示"根本没机会收尾"。
@@ -81,8 +76,6 @@ class StopReason(StrEnum):
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
     StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
     StopReason.SUFFICIENT_WITHOUT_EVIDENCE: "充分性决策与 Evidence 状态矛盾。",
-    StopReason.NO_NEW_TASKS: "没有可去重的新研究任务。",
-    StopReason.NO_TOOL_CALLS: "Supervisor 模型既未派发研究任务，也未给出充分性决策。",
     StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过天花板）。",
@@ -92,8 +85,6 @@ _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
 
 # 声明式权威度；见 StopReason.rank 的 docstring。留 5 的间隔便于将来插入新级别。
 _STOP_REASON_RANKS: dict[StopReason, int] = {
-    StopReason.NO_TOOL_CALLS: 5,
-    StopReason.NO_NEW_TASKS: 10,
     StopReason.ROUND_BUDGET_EXHAUSTED: 20,
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: 25,
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: 30,
