@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 
 from langgraph.types import Command
 
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.runs.queue import (
@@ -252,7 +252,7 @@ class RunWorker:
         self._tasks.pop(run_id, None)
         self._claims.pop(run_id, None)
         if not self._closed:
-            task = asyncio.create_task(self.wake(), name="embedded-worker-dispatch")
+            task = asyncio.create_task(self.wake(), name="run-worker-dispatch")
             self._dispatch_tasks.add(task)
             task.add_done_callback(self._dispatch_tasks.discard)
 

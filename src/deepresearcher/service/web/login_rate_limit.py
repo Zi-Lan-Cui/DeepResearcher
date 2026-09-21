@@ -13,10 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deepresearcher.service.persistence.models import LoginThrottle
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from deepresearcher.service.persistence.models import utcnow as _utcnow
 
 
 def _aware(value: datetime) -> datetime:

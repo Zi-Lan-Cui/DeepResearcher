@@ -349,18 +349,18 @@ async def read_document(
     }
 
 
-async def add_evidence(
+async def _validate_submissions(
     deps: ResearcherDeps,
     task: SubTask,
     loop_state: ResearcherLoopState,
-    event_context: dict[str, object],
-    commit_lock: asyncio.Lock,
     submissions: list[dict[str, object]],
-    reason: str,
-) -> dict[str, object]:
-    if deps.material_store is None:
-        return {"status": "failed", "reason": "material_store_unavailable"}
-    accepted: list[Evidence] = []
+) -> tuple[list[tuple[int, str, Evidence]], list[dict[str, object]], list[str], int]:
+    """锁外逐条校验提交：原文读取、引用逐字验证、批内去重、置信度解析。
+
+    返回 (candidates, rejected, duplicates, accepted_via_normalization)。
+    产物只是候选 Evidence 与拒因清单，不触碰 loop_state——入池的并发/容量
+    判断全部留给 add_evidence 的 commit_lock 临界区。
+    """
     rejected: list[dict[str, object]] = []
     duplicates: list[str] = []
     pending_ids: set[str] = set()
@@ -368,6 +368,7 @@ async def add_evidence(
     accepted_via_normalization = 0  # 逐字被连字符/ligature 编码差异卡住、靠归一救回的条数
     # 批内 memo：同文档多条引用只取一次原文(Redis 后端下省 N-1 次全量 GET)。
     source_texts: dict[str, str] = {}
+    assert deps.material_store is not None  # 调用方已守卫
     for index, raw in enumerate(submissions):
         document_id = str(raw.get("document_id", ""))
         document = loop_state.documents.get(document_id)
@@ -434,10 +435,31 @@ async def add_evidence(
         )
         candidates.append((index, document_id, evidence))
         pending_ids.add(evidence_id)
+    return candidates, rejected, duplicates, accepted_via_normalization
 
+
+async def add_evidence(
+    deps: ResearcherDeps,
+    task: SubTask,
+    loop_state: ResearcherLoopState,
+    event_context: dict[str, object],
+    commit_lock: asyncio.Lock,
+    submissions: list[dict[str, object]],
+    reason: str,
+) -> dict[str, object]:
+    """逐条校验(锁外,可含网络读)→ 排序截断 → commit_lock 短临界区入池。
+
+    边界:校验不触碰 loop_state;去重/每源容量/档案容量的检查-然后-动作
+    全部收进临界区,并发提交不会互相吞并槽位或越过每源上限。
+    """
+    if deps.material_store is None:
+        return {"status": "failed", "reason": "material_store_unavailable"}
+    accepted: list[Evidence] = []
+    candidates, rejected, duplicates, accepted_via_normalization = await _validate_submissions(
+        deps, task, loop_state, submissions
+    )
     ranked = sorted(candidates, key=lambda item: item[2].confidence, reverse=True)
     selected = ranked[: deps.config.evidence_add_batch_size]
-    # 原文读取和引用校验可并发；只有去重、容量与入池是短临界区。
     async with commit_lock:
         existing_ids = {item.evidence_id for item in loop_state.evidences}
         per_source = {

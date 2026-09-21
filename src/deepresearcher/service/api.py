@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.web.routes.auth import router as auth_router
 from deepresearcher.service.web.routes.events import router as events_router

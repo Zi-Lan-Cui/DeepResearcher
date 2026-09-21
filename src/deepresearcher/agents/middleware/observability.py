@@ -12,7 +12,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
 
 from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.usage_runtime import enforce_usage_budget
 from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
 from deepresearcher.schemas.tool_args import TOOL_RECEIPT_PREFIX

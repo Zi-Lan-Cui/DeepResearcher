@@ -7,7 +7,6 @@ execution, capacity gates, and crash recovery live in ``WorkerCoordinator``.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, update
@@ -16,14 +15,11 @@ from deepresearcher.service.events.publisher import RunEventPublisher
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.events.stream import FanoutSink
 from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
+from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.service import QuotaExceededError as QuotaExceededError
 from deepresearcher.service.runs.service import RunService
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.signals import PostgresSignalBus
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class RunManager:

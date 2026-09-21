@@ -12,23 +12,12 @@ from datetime import datetime, timezone
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# 运行状态取值。P0 用普通 str 而非枚举/CHECK 约束，便于增删而不触发 ALTER；
-# 该常量是 ORM 层的单一合法集合，控制面与执行面共用同一词汇。
-# run 终态的唯一合法集合(SSE 兜底、claim 排除、租约结算共用)。
+# Run.status 用普通 str 而非枚举/CHECK 约束:增删状态不触发 ALTER。
+# 终态是唯一需要跨层共识的子集——SSE 兜底、claim 排除、租约结算共用这一份清单。
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
-RUN_STATUSES = (
-    "queued",
-    "running",
-    "interrupted",
-    "awaiting_input",
-    "completed",
-    "failed",
-    "cancelled",
-)
 
-
-def _utcnow() -> datetime:
+def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
@@ -48,7 +37,7 @@ class ProviderHealthRecord(Base):
     provider: Mapped[str] = mapped_column(String(32), primary_key=True)
     reason: Mapped[str] = mapped_column(String(32))
     open_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class User(Base):
@@ -57,7 +46,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     runs: Mapped[list["Run"]] = relationship(back_populates="user")
 
@@ -71,7 +60,7 @@ class LoginThrottle(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Run(Base):
@@ -89,7 +78,7 @@ class Run(Base):
     citations_json: Mapped[list | None] = mapped_column(JSON)
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(96), index=True)
@@ -136,7 +125,7 @@ class RunEvent(Base):
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
     event_type: Mapped[str] = mapped_column(String(64))
     record: Mapped[dict] = mapped_column(JSON)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     run: Mapped["Run"] = relationship(back_populates="events")
 
@@ -160,6 +149,6 @@ class RunUsage(Base):
     cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     detail_json: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     run: Mapped["Run"] = relationship(back_populates="usage_records")

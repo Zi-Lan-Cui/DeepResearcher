@@ -8,7 +8,7 @@ from openai import ContentFilterFinishReasonError
 from pydantic import ValidationError
 
 from deepresearcher.config import AgentConfig
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.prompts import (
     get_runtime_environment,
     language_directive,
@@ -102,24 +102,23 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
         ),
     ]
 
-    retry_config = agent_config
     decision = None
-    for retry_index in range(retry_config.reviewer_retry_attempts + 1):
+    for retry_index in range(agent_config.reviewer_retry_attempts + 1):
         try:
             decision = await invoke_structured(llm, ReviewDecision, messages)
             break
         except asyncio.CancelledError:
             raise
         except _RETRYABLE_REVIEW_ERRORS as exc:
-            if retry_index >= retry_config.reviewer_retry_attempts:
+            if retry_index >= agent_config.reviewer_retry_attempts:
                 raise
             _logger.warning(
                 "reviewer_retry attempt=%d/%d error=%s",
                 retry_index + 1,
-                retry_config.reviewer_retry_attempts,
+                agent_config.reviewer_retry_attempts,
                 type(exc).__name__,
             )
-            await asyncio.sleep(retry_config.reviewer_retry_initial_seconds * (retry_index + 1))
+            await asyncio.sleep(agent_config.reviewer_retry_initial_seconds * (retry_index + 1))
     assert decision is not None  # 循环不变量：break 或 raise
 
     status = (

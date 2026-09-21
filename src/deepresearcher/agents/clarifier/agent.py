@@ -50,6 +50,8 @@ class Clarifier:
                         agent_name="Clarifier",
                         event_slug="clarifier",
                         model=llm,
+                        # +4 为防失控余量,不承担业务配额:轮次上限由
+                        # clarification_rounds 与程序侧守卫执行。
                         max_turns=MAX_CLARIFICATION_ROUNDS + 4,
                         context_window_tokens=context_window_tokens,
                         serial_tools={"AskClarification", "ClarificationComplete"},
@@ -60,7 +62,7 @@ class Clarifier:
         )
 
     async def run(self, state: ClarifierGraphState) -> dict[str, object]:
-        """为每次 Agent 决策注入独立工具锁；上下文不写入 checkpoint。"""
+        """注入本轮独立的调度栅栏(ToolExecutionGate)；上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
             context=ClarifierLoopContext(

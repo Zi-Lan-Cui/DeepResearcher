@@ -20,7 +20,6 @@ from deepresearcher.schemas.limits import (
 from deepresearcher.vocab import SUPPORT_ORDER, Support
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WriterSupportLevel = Support  # 同一阶梯,唯一来源 vocab.Support
 
 
 def _env(name: str, default: str = "") -> str:
@@ -116,7 +115,7 @@ class AgentConfig:
     # Writer 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     writer_max_turns: int = 8
     writer_feedback_chars: int = 800
-    writer_minimum_support: WriterSupportLevel = "direct"
+    writer_minimum_support: Support = "direct"
     writer_max_markdown_chars: int = 24_000
     # 单次 ReadEvidence 每轮交付量（可一次请求至多 50 条，差额 not_read_ids 排队）。
     # 引用总条数不设上限——writer_max_selected_evidence 已移除：它制造过两次
@@ -314,7 +313,7 @@ def _agent_config() -> AgentConfig:
         writer_max_turns=max(1, _int_env("AGENT_WRITER_MAX_TURNS", 8)),
         writer_feedback_chars=max(100, _int_env("AGENT_WRITER_FEEDBACK_CHARS", 800)),
         writer_minimum_support=cast(
-            WriterSupportLevel,
+            Support,
             _choice_env(
                 "AGENT_WRITER_MINIMUM_SUPPORT",
                 "direct",

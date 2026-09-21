@@ -1,16 +1,16 @@
-"""Service-agnostic run usage context consumed by agents and tools."""
+"""服务无关的 run 用量上下文:agent 与工具经 ContextVar 读取记账与预算。"""
 
 from __future__ import annotations
 
-import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
 
 from deepresearcher.config import LLMConfig
+from deepresearcher.observability.logging_config import get_logger
 
-logger = logging.getLogger("deepresearcher.observability.usage_runtime")
+logger = get_logger("deepresearcher.observability.usage_runtime")
 
 
 class UsageRecorder(Protocol):

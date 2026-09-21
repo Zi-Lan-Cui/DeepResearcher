@@ -34,7 +34,7 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.prompts import (
     get_runtime_environment,
     language_directive,
@@ -150,7 +150,7 @@ class ResearchSupervisor:
         )
 
     @staticmethod
-    def _build_supervisor_context(
+    def _supervisor_history_from_state(
         state: ResearchState,
     ) -> list[BaseMessage]:
         """从图 State 恢复 Supervisor 私有上下文；首次运行时写入初始委托。"""
@@ -181,8 +181,8 @@ class ResearchSupervisor:
         改写还是补研究不由独立决策判定，而由工具循环里的模型直接表达：
         ResearchComplete 冻结最新综合版本进入改写，ResearchDelegate 继续补研究。
         """
-        history = self._build_supervisor_context(state)
-        # 首次运行时 _build_supervisor_context 会补入初始 System/Human 消息；
+        history = self._supervisor_history_from_state(state)
+        # 首次运行时 _supervisor_history_from_state 会补入初始 System/Human 消息；
         # 快照必须取 State 入口长度，确保这些消息也能持久化到上下文历史。
         history_start = len(state.get("supervisor_messages", []))
 

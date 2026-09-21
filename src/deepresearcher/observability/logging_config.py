@@ -5,6 +5,11 @@ from pathlib import Path
 from deepresearcher.observability.tracing.context import current_context
 
 
+def get_logger(name: str = "deepresearcher") -> logging.Logger:
+    """全仓 logger 命名的唯一入口(与 configure_logging 一个家)。"""
+    return logging.getLogger(name)
+
+
 class CompactFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)

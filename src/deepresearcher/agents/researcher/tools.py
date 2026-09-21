@@ -162,12 +162,17 @@ def build_researcher_tools() -> list[BaseTool]:
         del reason
         loop_state = runtime.context.loop_state
         requested = list(dict.fromkeys(evidence_ids))
-        existing = set(loop_state.active_evidence_ids)
         released = loop_state.release_evidence(requested)
+        archived = {item.evidence_id for item in loop_state.evidences}
         return format_tool_receipt(
             {
                 "released_evidence_ids": released,
-                "unknown_evidence_ids": [item for item in requested if item not in existing],
+                # 重复释放同一 id ≠ 编造:档案在而工作集无,单列一键;
+                # unknown 只留给真不在档案的 id——与 Restore 的两键形状对齐。
+                "not_in_working_set_ids": [
+                    item for item in requested if item in archived and item not in released
+                ],
+                "unknown_evidence_ids": [item for item in requested if item not in archived],
                 **_working_set_snapshot(loop_state),
             }
         )

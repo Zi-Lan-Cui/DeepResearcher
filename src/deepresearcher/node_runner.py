@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
-from deepresearcher.observability.events.models import make_node_event
+from deepresearcher.observability.events.models import failure_event_fields, make_node_event
 from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 from deepresearcher.reporting import render_error_report, render_incomplete_report
 from deepresearcher.routing import NodeName
@@ -43,15 +43,11 @@ async def execute_node(
     except (GraphBubbleUp, asyncio.CancelledError, KeyboardInterrupt, NodeCancelledError):
         raise
     except Exception as exc:
-        error = RunError.from_exception(stage, exc)
         # 失败事件进入状态供最终运行记录使用；生命周期日志由
         # observability.instrumentation 单独负责，避免职责重复。
-        event = make_node_event(
-            stage,
-            "failed",
-            error=error.message,
-            payload={"code": error.code, "retryable": error.retryable},
-        )
+        # 两处的 error/code/retryable 口径来自 failure_event_fields 单源。
+        error, fields = failure_event_fields(stage, exc)
+        event = make_node_event(stage, "failed", **fields)
         budget_exhausted = isinstance(exc, UsageBudgetExceeded)
         if budget_exhausted:
             error = RunError(

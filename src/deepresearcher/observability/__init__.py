@@ -7,8 +7,7 @@ from deepresearcher.observability.events import (
     make_artifact_event,
     make_node_event,
 )
-from deepresearcher.observability.logger import get_logger
-from deepresearcher.observability.logging_config import configure_logging
+from deepresearcher.observability.logging_config import configure_logging, get_logger
 
 __all__ = [
     "Event",

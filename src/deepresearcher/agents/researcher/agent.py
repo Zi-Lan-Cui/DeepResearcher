@@ -28,7 +28,7 @@ from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.observability.logger import get_logger
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.prompts import (
     get_runtime_environment,
     language_directive,
@@ -94,6 +94,7 @@ class ResearchAgent:
                         agent_name="ResearchAgent",
                         event_slug="researcher",
                         model=self.llm,
+                        # +1:步数预算走完后再给一次不带工具的收尾回合。
                         max_turns=self.config.research_agent_max_turns + 1,
                         context_window_tokens=context_window_tokens,
                         retry_tools=[["SearchSources"], ["ReadSources"]],

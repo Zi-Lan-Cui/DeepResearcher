@@ -29,6 +29,11 @@ from deepresearcher.agents.middleware.retry import (
     model_retry,
     tool_retry,
 )
+from deepresearcher.agents.middleware.serial_tools import SerialToolMiddleware
+from deepresearcher.agents.middleware.tool_loop_guard import (
+    SubmittedExitMiddleware,
+    ToolLoopGuardMiddleware,
+)
 from deepresearcher.observability.events import AgentEmit
 from deepresearcher.tokens import get_token_estimator
 
@@ -138,12 +143,6 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     先于 AgentObservability 注册（after-hook 逆序执行），保证回合日志完整记录
     被拦截的文本输出；ModelCallLimit 最后注册，其计数先于日志中间件递增。
     """
-    from deepresearcher.agents.middleware.serial_tools import SerialToolMiddleware
-    from deepresearcher.agents.middleware.tool_loop_guard import (
-        SubmittedExitMiddleware,
-        ToolLoopGuardMiddleware,
-    )
-
     trigger = max(1_024, int(profile.context_window_tokens * 0.8))
     keep = max(1_024, int(profile.context_window_tokens * 0.25))
     middleware: list[AgentMiddleware] = [

@@ -194,10 +194,16 @@ def build_supervisor_tools() -> list[BaseTool]:
         del reason
         loop_state = runtime.context.loop_state
         released = loop_state.release_evidence(evidence_ids)
+        archived = {item.evidence_id for item in loop_state.evidences}
         return format_tool_receipt(
             {
                 "released_evidence_ids": released,
-                "unknown_evidence_ids": [item for item in evidence_ids if item not in released],
+                # 重复释放同一 id ≠ 编造:档案在而工作集无,单列一键;
+                # unknown 只留给真不在档案的 id——与 Restore 的两键形状对齐。
+                "not_in_working_set_ids": [
+                    item for item in evidence_ids if item in archived and item not in released
+                ],
+                "unknown_evidence_ids": [item for item in evidence_ids if item not in archived],
                 **working_set_snapshot(loop_state),
             }
         )
