@@ -21,7 +21,7 @@ from fakes import (
     TASK,
     DirectionLLM,
     FakeReader,
-    FakeSearchClient,
+    FakeSearchService,
     researcher_agent,
 )
 
@@ -139,7 +139,7 @@ def test_research_agent_records_context_observations_and_tool_results():
 
 
 def test_search_results_are_compact_and_can_be_paged_from_search_cache():
-    class ManySearchClient:
+    class ManySearchService:
         def __init__(self):
             self.calls = 0
 
@@ -155,7 +155,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
                 for index in range(12)
             ]
 
-    client = ManySearchClient()
+    client = ManySearchService()
     materials = MemoryResearchMaterialStore()
     agent = ResearchAgent(
         DirectionLLM([]),
@@ -403,7 +403,7 @@ def test_research_agent_requires_all_dependencies_at_construction():
         ResearchAgent(
             None,
             AgentConfig(),
-            search_tool=SearchTool(FakeSearchClient()),
+            search_tool=SearchTool(FakeSearchService()),
             reader_tool=FakeReader(),
         )
     with pytest.raises(ValueError, match="SearchTool"):
@@ -479,7 +479,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
     agent = ResearchAgent(
         DirectionLLM([]),
         AgentConfig(evidence_max_per_source=4),
-        search_tool=SearchTool(FakeSearchClient()),
+        search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
@@ -540,7 +540,7 @@ def test_add_evidence_validates_before_ranking_by_confidence():
     agent = ResearchAgent(
         DirectionLLM([]),
         AgentConfig(evidence_add_batch_size=1, evidence_max_per_source=2),
-        search_tool=SearchTool(FakeSearchClient()),
+        search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
@@ -598,7 +598,7 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
     agent = ResearchAgent(
         DirectionLLM([]),
         AgentConfig(evidence_add_batch_size=2, evidence_max_per_source=1),
-        search_tool=SearchTool(FakeSearchClient()),
+        search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )

@@ -1,4 +1,4 @@
-"""跨 worker 共享熔断位（Postgres/SQLite 后端）+ SearchClient 命中即触发的行为。"""
+"""跨 worker 共享熔断位（Postgres/SQLite 后端）+ SearchService 命中即触发的行为。"""
 
 import pytest
 from sqlalchemy import select
@@ -8,8 +8,8 @@ from deepresearcher.service.persistence.database import init_db, make_engine, ma
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
 from deepresearcher.tools.errors import ProviderExhaustedError
 from deepresearcher.tools.transport import HttpClient
-from deepresearcher.tools.web.search.client import SearchClient
 from deepresearcher.tools.web.search.health import MemoryProviderHealth
+from deepresearcher.tools.web.search.service import SearchService
 
 pytestmark = pytest.mark.asyncio
 
@@ -69,14 +69,14 @@ async def test_concurrent_first_trips_survive_pk_race(tmp_path):
     await engine.dispose()
 
 
-async def test_searchclient_trips_shared_health_on_provider_exhausted(tmp_path):
+async def test_searchservice_trips_shared_health_on_provider_exhausted(tmp_path):
     """撞一次账户级不可用 → 写共享健康位 → 下一次搜索在出网前就被短路（跨 worker 生效的机制）。"""
     engine, factory = _factory(tmp_path)
     await init_db(engine)
     health = PostgresProviderHealth(factory)
     config = SearchConfig(tavily_api_key="k", provider="tavily")
     http = HttpClient(config)
-    client = SearchClient(config, http, provider_health=health)
+    client = SearchService(config, http, provider_health=health)
 
     async def _boom(query, limit):  # 假冒 provider：抛账户级错误
         raise ProviderExhaustedError("quota_exhausted", "HTTP 432")

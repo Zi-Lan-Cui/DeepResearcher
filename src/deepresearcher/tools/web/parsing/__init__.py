@@ -1,4 +1,9 @@
-"""网页与文档格式解析；只解析，不下载、不切 chunk。"""
+"""网页与文档格式解析；只解析，不下载、不切 chunk。
+
+返回形状按名字规律:plain 版(parse_html/parse_pdf/…)给 (title, text);
+*_blocks 后缀版给 (title, text, blocks)。pdf/docx 只有 plain 版——版式文档
+不产结构化块,blocks 缺席是契约而非缺口。
+"""
 
 from deepresearcher.tools.web.parsing.docx import parse_docx
 from deepresearcher.tools.web.parsing.html import parse_html, parse_html_blocks

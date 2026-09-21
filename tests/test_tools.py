@@ -17,19 +17,19 @@ from deepresearcher.tools.errors import (
     ToolRequestError,
 )
 from deepresearcher.tools.transport import HttpClient
+from deepresearcher.tools.transport.aliyun import AliyunDtsClient
 from deepresearcher.tools.web import (
     AliyunFetchProvider,
     DirectHttpFetchProvider,
     FetchService,
-    SearchClient,
+    SearchService,
 )
-from deepresearcher.tools.web.aliyun import AliyunDtsClient
 
 
 def test_aliyun_wrapper_does_not_import_credentials_before_settings_load():
     code = (
         "import sys; "
-        "import deepresearcher.tools.web.aliyun.client; "
+        "import deepresearcher.tools.transport.aliyun.client; "
         "assert 'alibabacloud_credentials.utils.auth_util' not in sys.modules"
     )
 
@@ -152,7 +152,7 @@ def test_source_profile_domain_rules_resist_suffix_spoofing():
 
 def test_search_parses_tavily_response_without_network():
     config = SearchConfig(tavily_api_key="test", max_results=2)
-    client = SearchClient(
+    client = SearchService(
         config,
         FakeHttpClient(
             response(
@@ -191,7 +191,7 @@ def test_tavily_null_raw_content_still_validates_as_result():
     from deepresearcher.tools.web.search.models import SearchToolResult
 
     config = SearchConfig(tavily_api_key="test", max_results=5)
-    client = SearchClient(
+    client = SearchService(
         config,
         FakeHttpClient(
             response(
@@ -228,7 +228,7 @@ def test_tavily_null_raw_content_still_validates_as_result():
 
 def test_search_parses_baidu_references_through_common_result_contract():
     config = SearchConfig(provider="baidu", baidu_api_key="test", max_results=2)
-    client = SearchClient(
+    client = SearchService(
         config,
         FakeHttpClient(
             response(
@@ -276,7 +276,7 @@ def test_search_parses_aliyun_results_through_common_contract():
                 ],
             )
 
-    client = SearchClient(
+    client = SearchService(
         SearchConfig(provider="aliyun", max_results=2),
         aliyun_client=FakeAliyunClient(),
     )
@@ -332,7 +332,7 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
 
 
 def test_aliyun_account_level_sdk_error_trips_provider_exhausted():
-    """账户级 SDK 错误码必须抛 ProviderExhaustedError,否则 SearchClient 熔断对它静默失灵。"""
+    """账户级 SDK 错误码必须抛 ProviderExhaustedError,否则 SearchService 熔断对它静默失灵。"""
 
     class SdkError(Exception):
         def __init__(self, code: str, message: str):
@@ -365,7 +365,7 @@ def test_aliyun_account_level_sdk_error_trips_provider_exhausted():
 
 
 def test_search_reports_baidu_api_error_instead_of_empty_results():
-    client = SearchClient(
+    client = SearchService(
         SearchConfig(provider="baidu", baidu_api_key="test"),
         FakeHttpClient(response({"code": "401", "message": "invalid key"})),
     )
@@ -376,12 +376,12 @@ def test_search_reports_baidu_api_error_instead_of_empty_results():
 
 def test_search_rejects_missing_configuration():
     with pytest.raises(ToolConfigurationError):
-        asyncio.run(SearchClient(SearchConfig()).asearch("question"))
+        asyncio.run(SearchService(SearchConfig()).asearch("question"))
 
 
 def test_search_rejects_malformed_response():
     config = SearchConfig(tavily_api_key="test")
-    client = SearchClient(
+    client = SearchService(
         config,
         FakeHttpClient(
             response(
@@ -751,7 +751,7 @@ class _RateLimitedProvider:
 def _client_with_fake_provider(monkeypatch, provider):
     import time as _time
 
-    client = SearchClient(SearchConfig(provider="baidu", baidu_api_key="test"))
+    client = SearchService(SearchConfig(provider="baidu", baidu_api_key="test"))
     monkeypatch.setattr(client, "_provider", lambda: provider)
     return client, _time
 
@@ -829,7 +829,7 @@ def test_search_client_caps_provider_concurrency(monkeypatch):
     """跨 worker 并发查询被收敛到 max_concurrent_requests 路在飞。"""
     provider = _ConcurrencyTrackingProvider()
     config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
-    client = SearchClient(config)
+    client = SearchService(config)
     monkeypatch.setattr(client, "_provider", lambda: provider)
 
     async def run():
@@ -863,7 +863,7 @@ def test_search_client_queued_request_bails_when_breaker_opens(monkeypatch):
 
     provider = BlockingThenRateLimited()
     config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=1)
-    client = SearchClient(config)
+    client = SearchService(config)
     monkeypatch.setattr(client, "_provider", lambda: provider)
 
     async def run():

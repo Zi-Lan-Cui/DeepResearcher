@@ -1,4 +1,4 @@
-"""百度千帆 AI Search v2 适配器。"""
+"""百度千帆 AI Search v2 SearchProvider。"""
 
 import re
 

@@ -84,7 +84,7 @@ class AliyunDtsClient:
             code = str(getattr(exc, "code", "") or "")
             user_code = _ALIYUN_ACCOUNT_FATAL.get(code)
             if user_code is not None:
-                # 账户级失败抛专用类型:让 SearchClient 开熔断、跨 worker 快速收尾,
+                # 账户级失败抛专用类型:让 SearchService 开熔断、跨 worker 快速收尾,
                 # 而非每个请求各自反复撞同一个鉴权错误。
                 raise ProviderExhaustedError(
                     user_code,
