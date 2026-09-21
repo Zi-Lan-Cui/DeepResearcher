@@ -89,9 +89,8 @@ class SupervisorLoopContext:
 class TaskExecution:
     """一次方向研究执行的完整产物：结果模型与 absorb 所需的 Evidence/来源清单。
 
-    曾额外携带手工构造的 ToolMessage（_result_message）注入历史；该消息全库
-    零消费者——模型看到的方向报告由 delegate_research 返回值经 tools.py 协议层
-    打包,故删除,tool_call_id 参数链随之消失。
+    模型看到的方向报告由 delegate_research 返回值经 tools.py 协议层打包,
+    本对象只承载数据、不承载消息。
     """
 
     task_result: ResearchDirectionResult
@@ -132,12 +131,9 @@ class SupervisorLoopState:
     聚合、active 工作集、task result、coverage gaps、failure details、
     research synthesis、working_set_revision、stop reason、当前轮次。
 
-    曾有问题级去重(seen_questions + 逐字归一键)：模型改写一词即漏拦、逐字命中时
-    反而把失败方向永久烧掉,防重复的实际职责在提示词纪律与轮次/子任务预算,故删除。
-
     节点结束时把整份副本交给幂等 reducer 合并（merge_evidences / merge_task_results /
-    merge_unique），reducer 按 id 折回原样。曾用 `_snapshot`+`deltas()` 手搓增量切片,
-    把不变式拆成三处平行簿记、易静默丢字段,故改回全量交给幂等 reducer。
+    merge_unique），reducer 按 id 折回原样——不手搓增量切片,以免把不变式拆成
+    多处平行簿记而静默丢字段。
     """
 
     def __init__(

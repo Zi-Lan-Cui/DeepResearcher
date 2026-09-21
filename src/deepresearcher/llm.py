@@ -7,9 +7,8 @@
   软化为指引文本,agent 得以继续;但预算耗尽与账户级不可用是例外,
   retry_on 对它们豁免、让其冒泡到既有 fail-fast 收口;
 - 内容级：本文件的 repair 循环——JSON 不合规时回炉,langchain 不提供。
-曾有第四层"runnable 传输重试"(llm/retry.py),其谓词是内置 TimeoutError/ConnectionError,
-而 langchain-openai 真实抛出的是 openai.*Error(不 subclass 之),实测永不命中,已删;
-见 git blame。因此本模块不包装模型,create_agent 与中间件拿到的都是同一个裸实例。
+本模块不包装模型:create_agent 与中间件拿到的都是同一个裸实例,
+网络抖动的重试职责完全在 SDK,不在 runnable 层重复设闸。
 """
 
 from __future__ import annotations
