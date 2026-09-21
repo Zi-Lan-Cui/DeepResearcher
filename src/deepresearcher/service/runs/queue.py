@@ -19,6 +19,19 @@ def _utcnow() -> datetime:
 
 
 @dataclass(frozen=True)
+class ClaimCapacitySaturated:
+    """全局并发上限已满、本轮无法领取——与"没有可领取的行"是两种语义。
+
+    调用方(embedded/独立 worker 的 wake)据此把显式 preferred 放回队列;
+    若混同为 None,容量满瞬间从 recover/settle 弹出的 resume 任务会被吞掉,
+    该 interrupted 行要沉没到下次进程重启。
+    """
+
+
+CAPACITY_SATURATED = ClaimCapacitySaturated()
+
+
+@dataclass(frozen=True)
 class RunWork:
     run_id: str
     user_id: int
@@ -57,7 +70,7 @@ class PostgresRunQueue:
         worker_id: str,
         lease_seconds: int,
         preferred: RunWork | None = None,
-    ) -> RunWork | None:
+    ) -> RunWork | ClaimCapacitySaturated | None:
         async with self._claim_lock:
             async with self._session_factory() as session:
                 now = _utcnow()
@@ -75,7 +88,7 @@ class PostgresRunQueue:
                     )
                     if int(running or 0) >= self._max_global_running:
                         await session.rollback()
-                        return None
+                        return CAPACITY_SATURATED
                 allowed = ("queued",)
                 if preferred is None:
                     candidate = (

@@ -16,7 +16,11 @@ from deepresearcher.service.persistence.database import (
     migrate_database,
 )
 from deepresearcher.service.persistence.models import Run, User
-from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
+from deepresearcher.service.runs.queue import (
+    ClaimCapacitySaturated,
+    PostgresRunQueue,
+    RunWork,
+)
 from deepresearcher.service.runs.service import QuotaExceededError, RunService
 from deepresearcher.service.settings import get_service_config
 from deepresearcher.service.signals import PostgresSignalBus
@@ -210,7 +214,10 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
                 preferred=RunWork(third_run_id, user_id, "slot b"),
             ),
         )
-        assert sum(claim is not None for claim in slot_claims) == 1
+        # 输家必须是"容量饱和"而非 None——wake 靠这个区分把 preferred 弹回队列,
+        # 否则 resume 任务会在容量满的瞬间被吞掉。
+        assert sum(isinstance(claim, RunWork) for claim in slot_claims) == 1
+        assert sum(isinstance(claim, ClaimCapacitySaturated) for claim in slot_claims) == 1
 
     finally:
         async with factory() as session:
