@@ -34,12 +34,11 @@ def evidence_card(evidence: Evidence) -> dict[str, object]:
     }
 
 
-def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]:
-    """Supervisor 工具回执与轮次观察共用的完整综合稿视图。"""
+def synthesis_card(synthesis: ResearchSynthesis | None) -> dict[str, object] | None:
+    """综合稿的扁平内容卡;无稿为 None。"""
     if synthesis is None:
-        return {"synthesis_revision": 0, "research_synthesis": None}
+        return None
     return {
-        "synthesis_revision": synthesis.revision,
         "based_on_working_set_revision": synthesis.based_on_working_set_revision,
         "answer_goal": synthesis.answer_goal,
         "overall_summary": synthesis.overall_summary,
@@ -49,6 +48,14 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
         "conflicts": synthesis.conflicts,
         "next_actions": synthesis.next_actions,
         "decision_rationale": synthesis.decision_rationale,
+    }
+
+
+def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]:
+    """Supervisor 工具回执与轮次观察共用的视图:恒两键、形状不随有无综合稿漂移。"""
+    return {
+        "synthesis_revision": synthesis.revision if synthesis is not None else 0,
+        "research_synthesis": synthesis_card(synthesis),
     }
 
 

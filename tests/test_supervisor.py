@@ -146,9 +146,11 @@ def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
     )
     snapshot = synthesis_snapshot(synthesis)
 
-    assert snapshot["aspects"][0]["role"] == "结论主线"
-    assert snapshot["aspects"][0]["required"] is False
-    assert snapshot["decision_rationale"] == "决策理由"
+    assert snapshot["synthesis_revision"] == 1
+    card = snapshot["research_synthesis"]
+    assert card["aspects"][0]["role"] == "结论主线"
+    assert card["aspects"][0]["required"] is False
+    assert card["decision_rationale"] == "决策理由"
 
 
 class SupervisorLLM:

@@ -2,7 +2,7 @@
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from deepresearcher.config import get_settings
+from deepresearcher.config import AgentConfig
 from deepresearcher.llm import ainvoke_structured
 from deepresearcher.prompts import (
     get_runtime_environment,
@@ -13,7 +13,7 @@ from deepresearcher.prompts import (
 from deepresearcher.schemas import RouteDecision, RunStatus
 
 
-async def router(state, llm, *, invoke_structured=ainvoke_structured):
+async def router(state, llm, *, agent_config: AgentConfig, invoke_structured=ainvoke_structured):
     query = state["query"].strip()
     try:
         result = await invoke_structured(
@@ -24,7 +24,7 @@ async def router(state, llm, *, invoke_structured=ainvoke_structured):
                     content=(
                         load_prompt("router")
                         + "\n"
-                        + language_directive(get_settings().agent.output_language)
+                        + language_directive(agent_config.output_language)
                     )
                 ),
                 HumanMessage(

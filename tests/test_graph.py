@@ -66,7 +66,7 @@ def _graph_settings(tmp_path: Path) -> Settings:
     )
 
 
-async def _deep_research_route(_state, _llm):
+async def _deep_research_route(_state, _llm, **_kwargs):
     return {"route": "deep_research", "route_reason": "测试"}
 
 
@@ -202,7 +202,7 @@ def test_router_delegates_research_classification_to_llm():
 
             return _Decision()
 
-    result = asyncio.run(nodes.router({"query": "哪些 galgame 具有广泛的影响力"}, RoutingLLM()))
+    result = asyncio.run(nodes.router({"query": "哪些 galgame 具有广泛的影响力"}, RoutingLLM(), agent_config=AgentConfig()))
     assert result["route"] == "quick_answer"
     assert result["route_reason"] == "模型判断为单一问题"
 
@@ -216,7 +216,7 @@ def test_router_model_failure_fails_closed_to_deep_research():
 
             return _Boom()
 
-    result = asyncio.run(nodes.router({"query": "单一事实问题"}, FailingLLM()))
+    result = asyncio.run(nodes.router({"query": "单一事实问题"}, FailingLLM(), agent_config=AgentConfig()))
     assert result["route"] == "deep_research"
     assert "调用失败" in result["route_reason"]
 
@@ -418,7 +418,7 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
     monkeypatch.setattr(graph, "ResearchSupervisor", _CompleteSupervisor)
     monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
 
-    async def fail_reviewer(_state, _llm):
+    async def fail_reviewer(_state, _llm, **_kwargs):
         raise RuntimeError("reflection boom")
 
     monkeypatch.setattr(graph.nodes, "reviewer", fail_reviewer)

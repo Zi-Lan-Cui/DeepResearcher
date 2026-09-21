@@ -23,7 +23,7 @@ from deepresearcher.agents.supervisor.state import (
     SupervisorDeps,
     SupervisorLoopContext,
     SupervisorLoopState,
-    synthesis_snapshot,
+    synthesis_card,
     working_set_snapshot,
 )
 from deepresearcher.agents.supervisor.tools import (
@@ -486,9 +486,7 @@ class ResearchSupervisor:
         synthesis: ResearchSynthesis | None,
     ) -> dict[str, object] | None:
         """每轮固定注入当前综合稿，避免上下文压缩后丢失研究认知。"""
-        if synthesis is None:
-            return None
-        return synthesis_snapshot(synthesis)
+        return synthesis_card(synthesis)
 
     def _report_brief_from_synthesis(self, synthesis: ResearchSynthesis) -> ReportBrief:
         """从冻结综合版本派生报告任务书，避免 Complete 再提交第二事实源。"""
