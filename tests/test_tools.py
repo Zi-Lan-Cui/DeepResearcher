@@ -10,6 +10,7 @@ from curl_cffi.requests.exceptions import Timeout
 
 from deepresearcher.config import SearchConfig
 from deepresearcher.tools.errors import (
+    ProviderExhaustedError,
     SourceUnavailableError,
     ToolConfigurationError,
     ToolParseError,
@@ -328,6 +329,39 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
     assert search_request.max_results == 50
     assert fetch_request.url == "https://spring.io"
     assert fetch_request.output_format == "markdown"
+
+
+def test_aliyun_account_level_sdk_error_trips_provider_exhausted():
+    """账户级 SDK 错误码必须抛 ProviderExhaustedError,否则 SearchClient 熔断对它静默失灵。"""
+
+    class SdkError(Exception):
+        def __init__(self, code: str, message: str):
+            super().__init__(message)
+            self.code = code
+            self.message = message
+
+    class RejectingSdk:
+        def __init__(self, code: str):
+            self._code = code
+
+        async def web_search_async(self, _request):
+            raise SdkError(self._code, "boom")
+
+        async def web_fetch_async(self, _request):  # pragma: no cover - 只走 search
+            raise AssertionError
+
+    def call_with(code):
+        client = AliyunDtsClient(SearchConfig(aliyun_region_id="r"), RejectingSdk(code))
+        return client.web_search("q", 3)
+
+    with pytest.raises(ProviderExhaustedError) as caught:
+        asyncio.run(call_with("InvalidAccessKeyId"))
+    assert caught.value.user_code == "invalid_key"
+
+    # 鉴权以外的错误(如瞬态 5xx)不映射成账户级:误熔断代价高于多撞一次。
+    with pytest.raises(ToolRequestError) as transient:
+        asyncio.run(call_with("ServiceUnavailable"))
+    assert transient.value.retryable is True
 
 
 def test_search_reports_baidu_api_error_instead_of_empty_results():
