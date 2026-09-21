@@ -64,7 +64,7 @@ def _bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def _project_path_env(name: str, default: Path) -> Path:
+def project_path_env(name: str, default: Path) -> Path:
     """读取路径配置；相对路径统一以项目根目录为基准。"""
     path = Path(_env(name, str(default))).expanduser()
     return path if path.is_absolute() else _PROJECT_ROOT / path
@@ -403,7 +403,7 @@ def _app_config() -> AppConfig:
 
 def _observability_config() -> ObservabilityConfig:
     return ObservabilityConfig(
-        log_dir=Path(_env("OBSERVABILITY_LOG_DIR", str(_PROJECT_ROOT / "var" / "logs"))),
+        log_dir=project_path_env("OBSERVABILITY_LOG_DIR", _PROJECT_ROOT / "var" / "logs"),
         log_file=_env("OBSERVABILITY_LOG_FILE", "agent.log"),
         event_file=_env("OBSERVABILITY_EVENT_FILE", "events.jsonl"),
         trace_file=_env("OBSERVABILITY_TRACE_FILE", "traces.jsonl"),

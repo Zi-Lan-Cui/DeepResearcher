@@ -98,8 +98,8 @@ async def delegate_research(
         direction_report["provider_exhausted"] = True
         direction_report["instruction"] = (
             "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
-            "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后 "
-            "ResearchComplete（足以成文）或 ResearchReady（保存部分报告）收尾。"
+            "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后调用 ResearchComplete；"
+            "若不足以成文则直接结束本轮，系统按 partial 交付。"
         )
     return reported(direction_report)
 

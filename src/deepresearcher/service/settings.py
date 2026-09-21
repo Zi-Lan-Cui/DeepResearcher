@@ -16,6 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from deepresearcher.config import project_path_env
 from deepresearcher.observability.logger import get_logger
 
 # service/settings.py 位于 src/deepresearcher/service/ 下，比 config.py 深一层。
@@ -144,7 +145,7 @@ def get_service_config() -> ServiceConfig:
         forwarded_allow_ips=_env("SERVICE_FORWARDED_ALLOW_IPS", "127.0.0.1"),
         host=_env("SERVICE_HOST", "127.0.0.1"),
         port=_int_env("SERVICE_PORT", 8080),
-        service_log_dir=Path(_env("SERVICE_LOG_DIR", str(_PROJECT_ROOT / "var" / "service"))),
+        service_log_dir=project_path_env("SERVICE_LOG_DIR", _PROJECT_ROOT / "var" / "service"),
         jsonl_events=_bool_env("SERVICE_JSONL_EVENTS", True),
     )
 
