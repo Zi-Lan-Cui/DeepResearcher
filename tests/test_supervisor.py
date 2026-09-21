@@ -1367,10 +1367,7 @@ def test_render_outcome_vocabulary_and_user_text_lookup():
     assert set(_RENDER_OUTCOME_DESCRIPTIONS) == set(RenderOutcome)
 
     # 第一域:StopReason 值 → 中文描述(此前裸词直进用户报告)。
-    assert (
-        terminal_reason_text(StopReason.ROUND_BUDGET_EXHAUSTED)
-        == "研究轮次预算已耗尽。"
-    )
+    assert terminal_reason_text(StopReason.ROUND_BUDGET_EXHAUSTED) == "研究轮次预算已耗尽。"
     # 第二域:RenderOutcome 值。
     assert terminal_reason_text(RenderOutcome.REPORT_RENDERED) == "报告已渲染交付。"
     # 第三域:lifecycle 字符串原样透传(自有包装点)。
