@@ -455,6 +455,47 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
         )
         await session.commit()
 
+
+async def test_sse_idle_survives_poll_timeout_and_sends_heartbeat(client, monkeypatch):
+    """轮询超时是常态:一轮 wait 没有事件到达时生成器必须活着发心跳。
+
+    裸 TimeoutError 曾从这条路径漏到 Starlette 顶层——空闲连接每个 poll 周期
+    500 一次,前端表现为不断重连。压缩 poll/heartbeat 常量到 20ms 让空转密集发生。
+    """
+    from deepresearcher.service.web.routes import events as events_route
+
+    monkeypatch.setattr(events_route, "SSE_DB_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(events_route, "SSE_HEARTBEAT_SECONDS", 0.02)
+
+    token = await register(client)
+    gate = asyncio.Event()
+    client.graphs.append(FakeGraph(gate=gate))
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
+    await wait_status(client, token, run_id, {"running"})
+
+    async def release_after_idle_ticks() -> None:
+        # 先让 SSE 空转十几个 poll 周期——按旧形态第一个周期就该炸穿连接。
+        await asyncio.sleep(0.3)
+        gate.set()
+
+    releaser = asyncio.create_task(release_after_idle_ticks())
+    text = ""
+    async with asyncio.timeout(8):
+        async with client.stream(
+            "GET", f"/api/runs/{run_id}/events", headers=_auth(token)
+        ) as response:
+            assert response.status_code == 200
+            async for chunk in response.aiter_text():
+                text += chunk
+                if "event: done" in text:
+                    break
+    await releaser
+
+    assert ": ping" in text  # 空转期间连接存活并发了心跳
+    assert "event: done" in text  # 心跳之后仍能正常收终局,不是靠重连糊上去的
+
     frames = await read_sse(client, token, run_id, timeout=8.0)
     events = [event for event, _ in frames]
     assert events[-1] == "done"
