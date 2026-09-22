@@ -28,7 +28,7 @@ def make_lifespan(
         cfg = config or get_service_config()
         engine_settings = settings or get_settings()
         # 两进程的真实差异压缩成三个开关:embedded 才需 material/http,
-        # 仅分进程模式才需 redis 预览总线(嵌入模式与 Worker 共享 FanoutSink)。
+        # 仅分进程模式才需 redis 预览总线(嵌入模式与 Worker 共享进程内 Preview/Hub)。
         async with build_runtime_stack(
             cfg,
             engine_settings,
@@ -38,22 +38,20 @@ def make_lifespan(
         ) as stack:
             session_factory = stack.session_factory
             signal_bus = stack.signal_bus
-            fanout = stack.fanout
+            hub = stack.hub
+            preview = stack.preview
             material_store = stack.material_store
             http_client = stack.http_client
             checkpointer = stack.checkpointer
             ephemeral_bus = stack.ephemeral_bus
-            event_store = stack.event_store
-            event_publisher = stack.event_publisher
             execution = None
             if cfg.api_embedded_worker:
                 execution = WorkerCoordinator(
                     settings=engine_settings,
                     session_factory=session_factory,
                     config=cfg,
-                    fanout=fanout,
-                    event_store=event_store,
-                    event_publisher=event_publisher,
+                    hub=hub,
+                    preview=preview,
                     http_client=http_client,
                     graph_factory=graph_factory,
                     checkpointer=checkpointer,
@@ -63,11 +61,9 @@ def make_lifespan(
             manager = RunManager(
                 session_factory=session_factory,
                 config=cfg,
-                fanout=fanout,
+                hub=hub,
                 checkpointer=checkpointer,
                 signal_bus=signal_bus,
-                event_store=event_store,
-                event_publisher=event_publisher,
             )
             worker_signal_subscriptions: list[tuple[SignalKind, int]] = []
             if execution is not None:
@@ -97,7 +93,8 @@ def make_lifespan(
             app.state.settings = engine_settings
             app.state.engine = stack.engine
             app.state.session_factory = session_factory
-            app.state.fanout = fanout
+            app.state.hub = hub
+            app.state.preview = preview
             app.state.manager = manager
             app.state.execution = execution
             app.state.checkpointer = checkpointer

@@ -11,9 +11,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from deepresearcher.service.events.publisher import RunEventPublisher
-from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.events.stream import FanoutSink
+from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.service import QuotaExceededError as QuotaExceededError
@@ -30,31 +28,24 @@ class RunManager:
         *,
         session_factory: Callable[[], Any],
         config: ServiceConfig,
-        fanout: FanoutSink,
+        hub: RunEventHub,
         checkpointer: Any = None,
         signal_bus: PostgresSignalBus | None = None,
-        event_store: RunEventStore | None = None,
-        event_publisher: RunEventPublisher | None = None,
     ) -> None:
         self._checkpointer = checkpointer
         self._session_factory = session_factory
         self._config = config
-        self._fanout = fanout
+        self._hub = hub
         self.signal_bus = signal_bus or PostgresSignalBus()
-        self.event_store = event_store or RunEventStore(session_factory)
-        self._event_publisher = event_publisher or RunEventPublisher(
-            session_factory=session_factory,
-            fanout=fanout,
-            event_store=self.event_store,
-            signal_bus=self.signal_bus,
-        )
+        # 只读句柄:cancel 即时分支要 tail 判终态;投递与门铃归 Hub 统管。
+        self.event_store = hub.store
         self._run_service = RunService(session_factory=session_factory, config=config)
 
     async def start(self, user_id: int, query: str) -> str:
         run_id = await self._run_service.create(user_id, query.strip())
-        self._fanout.open(run_id)
-        await self._event_publisher.publish_status(run_id, "queued")
-        await self._event_publisher.flush(run_id)
+        self._hub.open(run_id)
+        await self._hub.publish_status(run_id, "queued")
+        await self._hub.flush(run_id)
         await self.signal_bus.notify_work_available()
         return run_id
 
@@ -79,10 +70,10 @@ class RunManager:
                 run.lease_expires_at = None
             await session.commit()
         if immediate:
-            self._fanout.open(run_id)
-            await self._event_publisher.publish_done(run_id)
-            await self._event_publisher.flush(run_id)
-            self._fanout.close(run_id)
+            self._hub.open(run_id)
+            await self._hub.publish_done(run_id)
+            await self._hub.flush(run_id)
+            self._hub.close(run_id)
         else:
             await self.signal_bus.notify_cancel(run_id)
         async with self._session_factory() as session:
@@ -138,9 +129,9 @@ class RunManager:
             await session.commit()
             if result.rowcount != 1:
                 raise RuntimeError("already_resumed")
-        self._fanout.open(run_id)
-        await self._event_publisher.publish_status(run_id, "queued")
-        await self._event_publisher.flush(run_id)
+        self._hub.open(run_id)
+        await self._hub.publish_status(run_id, "queued")
+        await self._hub.flush(run_id)
         await self.signal_bus.notify_work_available()
         async with self._session_factory() as session:
             current = await session.get(Run, run_id)

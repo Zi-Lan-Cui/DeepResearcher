@@ -19,9 +19,9 @@ from deepresearcher.llm import classify_llm_error
 from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
-from deepresearcher.service.events.publisher import RunEventPublisher
-from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.events.stream import CompositeSink, FanoutSink
+from deepresearcher.service.events.hub import RunEventHub
+from deepresearcher.service.events.preview import LocalPreviewBus
+from deepresearcher.service.events.sinks import CompositeSink
 from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
@@ -61,9 +61,8 @@ class RunExecutor:
         settings: Settings,
         session_factory: Callable[[], Any],
         config: ServiceConfig,
-        fanout: FanoutSink,
-        event_store: RunEventStore,
-        event_publisher: RunEventPublisher,
+        hub: RunEventHub,
+        preview: LocalPreviewBus,
         usage_store: UsageStore,
         llm_gate: CapacityGate,
         llm_rate_limiter: ProviderRateLimiter,
@@ -76,11 +75,10 @@ class RunExecutor:
         self._settings = settings
         self._session_factory = session_factory
         self._config = config
-        self._fanout = fanout
-        self._event_store = event_store
-        # 投递/门铃的闸口在 publisher.flush:executor 必须用协调层注入的同一实例
-        # (与本进程 fanout/signal 共享),不设默认构造以防绕过闸口的第二份 publisher。
-        self._event_publisher = event_publisher
+        self._hub = hub
+        self._preview = preview
+        # 投递/门铃的闸口在 RunEventHub.flush:executor 必须用协调层注入的同一实例,
+        # 不设默认构造以防绕过闸口的第二份闸口。
         self._usage_store = usage_store
         self._llm_gate = llm_gate
         self._llm_rate_limiter = llm_rate_limiter
@@ -122,9 +120,9 @@ class RunExecutor:
         claim: RunWork | None = None,
     ) -> None:
         # Worker 可能与受理该 Run 的 API 不在同一进程；执行面必须
-        # 自行打开本地 sink，不能依赖 API 进程中的 fanout.open().
-        self._fanout.open(run_id)
-        sinks: list[Any] = [self._fanout]
+        # 自行打开本地 sink，不能依赖 API 进程中的 hub.open().
+        self._hub.open(run_id)
+        sinks: list[Any] = [self._hub]
         if self._config.jsonl_events:
             sinks.append(JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl"))
         sink = CompositeSink(*sinks)
@@ -211,7 +209,7 @@ class RunExecutor:
                 await self.publish_done(run_id)
             await self.flush_events(run_id)
             if run_id not in self._lost_leases:
-                self._fanout.close(run_id)
+                self._hub.close(run_id)
             self._lost_leases.discard(run_id)
             self._cancellation_requests.discard(run_id)
             reset_usage_runtime(usage_token)
@@ -265,7 +263,7 @@ class RunExecutor:
             if not await self._persist_awaiting_input(run_id, claim=claim):
                 self.mark_lease_lost(run_id)
                 return False
-            self._fanout.write(
+            self._hub.write(
                 {
                     "run_id": run_id,
                     "event_type": "clarification_requested",
@@ -333,7 +331,7 @@ class RunExecutor:
             try:
                 # Embedded mode keeps the zero-dependency local fast path. An
                 # independent Worker additionally publishes to Redis when enabled.
-                self._fanout.publish_ephemeral(run_id, event)
+                self._preview.publish_ephemeral(run_id, event)
                 if self._ephemeral_bus is not None:
                     await self._ephemeral_bus.publish(run_id, event)
             except Exception:  # noqa: BLE001 - 预览通道不反噬运行
@@ -476,13 +474,13 @@ class RunExecutor:
             return
 
     async def flush_events(self, run_id: str) -> None:
-        await self._event_publisher.flush(run_id)
+        await self._hub.flush(run_id)
 
     async def publish_status(self, run_id: str, status: str) -> None:
-        await self._event_publisher.publish_status(run_id, status)
+        await self._hub.publish_status(run_id, status)
 
     async def publish_done(self, run_id: str) -> None:
-        await self._event_publisher.publish_done(run_id)
+        await self._hub.publish_done(run_id)
 
     async def _fail_llm_unavailable(
         self, run_id: str, user_code: str, claim: RunWork | None

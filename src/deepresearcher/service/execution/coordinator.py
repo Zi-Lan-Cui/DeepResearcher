@@ -10,9 +10,8 @@ from sqlalchemy import func, select
 from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
-from deepresearcher.service.events.publisher import RunEventPublisher
-from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.events.stream import FanoutSink
+from deepresearcher.service.events.hub import RunEventHub
+from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.models import Run, RunEvent
@@ -32,9 +31,8 @@ class WorkerCoordinator:
         settings: Settings,
         session_factory: Callable[[], Any],
         config: ServiceConfig,
-        fanout: FanoutSink,
-        event_store: RunEventStore,
-        event_publisher: RunEventPublisher,
+        hub: RunEventHub,
+        preview: LocalPreviewBus,
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
@@ -42,7 +40,7 @@ class WorkerCoordinator:
         ephemeral_bus: EphemeralEventBus | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._fanout = fanout
+        self._hub = hub
         self._checkpointer = checkpointer
         self.usage_store = UsageStore(session_factory)
         self.llm_gate = CapacityGate(settings.llm.max_concurrent_requests)
@@ -58,9 +56,8 @@ class WorkerCoordinator:
             settings=settings,
             session_factory=session_factory,
             config=config,
-            fanout=fanout,
-            event_store=event_store,
-            event_publisher=event_publisher,
+            hub=hub,
+            preview=preview,
             usage_store=self.usage_store,
             llm_gate=self.llm_gate,
             llm_rate_limiter=self.llm_rate_limiter,
@@ -109,10 +106,10 @@ class WorkerCoordinator:
         没有这一步,那些 run 会沉没到用户再点一次取消为止。
         """
         for settled in await self.queue.settle_cancellations():
-            self._fanout.open(settled.run_id)
+            self._hub.open(settled.run_id)
             await self.executor.publish_done(settled.run_id)
             await self.executor.flush_events(settled.run_id)
-            self._fanout.close(settled.run_id)
+            self._hub.close(settled.run_id)
 
     async def reconcile_startup(self) -> tuple[int, list[tuple[str, int, str]]]:
         """Classify queued/interrupted/orphaned runs before autonomous polling."""
@@ -131,7 +128,7 @@ class WorkerCoordinator:
             ).all()
             for run in stale:
                 if run.status == "queued":
-                    self._fanout.open(run.id)
+                    self._hub.open(run.id)
                     continue
                 if await self._has_checkpoint(run.id):
                     resumable.append((run.id, run.user_id, run.query))
@@ -175,7 +172,7 @@ class WorkerCoordinator:
         return tuple_ is not None
 
     async def _recover_expired(self, work: RunWork) -> RunWork | None:
-        self._fanout.open(work.run_id)
+        self._hub.open(work.run_id)
         if await self._has_checkpoint(work.run_id):
             # "resuming" 帧改由 worker 在 claim 成功后发:此处广播会给
             # 被取消 flag 排除、或被他 worker 抢走的行留下幻影恢复提示。
@@ -193,13 +190,13 @@ class WorkerCoordinator:
         )
         await self.executor.publish_done(work.run_id)
         await self.executor.flush_events(work.run_id)
-        self._fanout.close(work.run_id)
+        self._hub.close(work.run_id)
         return None
 
     async def resume_runs(self, pending: list[tuple[str, int, str]]) -> int:
         for run_id, user_id, query in pending:
             # 同 _recover_expired:恢复广播推迟到 claim 成功之后(worker 侧发)。
-            self._fanout.open(run_id)
+            self._hub.open(run_id)
             await self.worker.submit(
                 RunWork(run_id=run_id, user_id=user_id, query=query, resume=True)
             )

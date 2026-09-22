@@ -17,10 +17,10 @@ from deepresearcher.config import (
     SearchConfig,
     Settings,
 )
-from deepresearcher.service.events.publisher import RunEventPublisher
+from deepresearcher.service.events.hub import RunEventHub
+from deepresearcher.service.events.preview import CLOSE_STREAM as CLOSE_STREAM_FLAG
+from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.events.stream import CLOSE_STREAM as CLOSE_STREAM_FLAG
-from deepresearcher.service.events.stream import FanoutSink
 from deepresearcher.service.execution.coordinator import WorkerCoordinator
 from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunEvent, User
@@ -137,7 +137,8 @@ class ServiceHarness:
         config,
         engine,
         session_factory,
-        fanout,
+        hub,
+        preview,
         holder,
         signal_bus,
     ):
@@ -146,7 +147,8 @@ class ServiceHarness:
         self.config = config
         self.engine = engine
         self.session_factory = session_factory
-        self.fanout = fanout
+        self.hub = hub
+        self.preview = preview
         self.holder = holder
         self.signal_bus = signal_bus
 
@@ -177,7 +179,7 @@ async def manager(tmp_path):
 
         session.add(User(id=USER_ID, email="u@test", password_hash="h"))
         await session.commit()
-    fanout = FanoutSink(asyncio.get_running_loop())
+    preview = LocalPreviewBus(asyncio.get_running_loop())
     config = ServiceConfig(
         database_url="unused",
         jwt_secret="s" * 40,
@@ -207,29 +209,26 @@ async def manager(tmp_path):
 
     signal_bus = PostgresSignalBus()
     event_store = RunEventStore(session_factory)
-    event_publisher = RunEventPublisher(
+    hub = RunEventHub(
         session_factory=session_factory,
-        fanout=fanout,
-        event_store=event_store,
+        store=event_store,
+        preview=preview,
         signal_bus=signal_bus,
     )
     execution = WorkerCoordinator(
         settings=_settings(tmp_path),
         session_factory=session_factory,
         config=config,
-        fanout=fanout,
+        hub=hub,
+        preview=preview,
         http_client=SimpleNamespace(),
         graph_factory=graph_factory,
-        event_store=event_store,
-        event_publisher=event_publisher,
     )
     controller = RunManager(
         session_factory=session_factory,
         config=config,
-        fanout=fanout,
+        hub=hub,
         signal_bus=signal_bus,
-        event_store=event_store,
-        event_publisher=event_publisher,
     )
     signal_bus.subscribe("run_available", lambda _payload: execution.wake())
     signal_bus.subscribe("run_cancel_requested", execution.handle_cancel_notification)
@@ -239,7 +238,8 @@ async def manager(tmp_path):
         config=config,
         engine=engine,
         session_factory=session_factory,
-        fanout=fanout,
+        hub=hub,
+        preview=preview,
         holder=holder,
         signal_bus=signal_bus,
     )
@@ -308,20 +308,20 @@ async def test_running_status_is_announced_only_for_user_visible_claim(manager):
             ]
         )
         await session.commit()
-    manager.fanout.open(silent_id)
-    manager.fanout.open(announced_id)
+    manager.hub.open(silent_id)
+    manager.hub.open(announced_id)
 
     assert await manager.execution.executor._mark_running(  # noqa: SLF001
         silent_id,
         announce_running=False,
     )
-    assert manager.fanout.take_pending(silent_id) == []
+    assert manager.hub._pending.get(silent_id, []) == []  # noqa: SLF001 - 只读席位缓冲
 
     assert await manager.execution.executor._mark_running(  # noqa: SLF001
         announced_id,
         announce_running=True,
     )
-    assert manager.fanout.take_pending(announced_id) == [
+    assert list(manager.hub._pending.get(announced_id, [])) == [  # noqa: SLF001
         {
             "run_id": announced_id,
             "event_type": "run_status",
@@ -428,7 +428,12 @@ async def test_remote_manager_cancel_uses_notification_without_waiting_for_heart
         controller = RunManager(
             session_factory=manager.session_factory,
             config=manager.config,
-            fanout=FanoutSink(asyncio.get_running_loop()),
+            hub=RunEventHub(
+                session_factory=manager.session_factory,
+                store=RunEventStore(manager.session_factory),
+                preview=LocalPreviewBus(asyncio.get_running_loop()),
+                signal_bus=signal_bus,
+            ),
             signal_bus=signal_bus,
         )
         started = time.monotonic()
@@ -818,7 +823,7 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         ],
     )
     run_id = await manager.start(USER_ID, "q")
-    _, queue = manager.fanout.subscribe(run_id)  # start 已登记任务但未开跑：必然先于 delta
+    _, queue = manager.preview.subscribe(run_id)  # start 已登记任务但未开跑：必然先于 delta
     gate.set()
     await _settle(manager, run_id)
 
@@ -936,23 +941,23 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         service_log_dir=tmp_path,
         jsonl_events=False,
     )
-    fanout = FanoutSink(asyncio.get_running_loop())
+    preview = LocalPreviewBus(asyncio.get_running_loop())
     event_store = RunEventStore(factory)
-    event_publisher = RunEventPublisher(
+    hub = RunEventHub(
         session_factory=factory,
-        fanout=fanout,
-        event_store=event_store,
+        store=event_store,
+        preview=preview,
+        signal_bus=PostgresSignalBus(),
     )
     execution = WorkerCoordinator(
         settings=_settings(tmp_path),
         session_factory=factory,
         config=config,
-        fanout=fanout,
+        hub=hub,
+        preview=preview,
         http_client=SimpleNamespace(),
         graph_factory=graph_factory,
         checkpointer=FakeSaver({"run-orphan"}),
-        event_store=event_store,
-        event_publisher=event_publisher,
     )
     killed, resumable = await execution.reconcile_startup()
     assert killed == 1
