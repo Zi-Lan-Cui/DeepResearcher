@@ -206,15 +206,12 @@ async def manager(tmp_path):
         return graph
 
     signal_bus = PostgresSignalBus()
-    event_store = RunEventStore(
-        session_factory,
-        publish_persisted=fanout.publish_persisted,
-        signal_bus=signal_bus,
-    )
+    event_store = RunEventStore(session_factory)
     event_publisher = RunEventPublisher(
         session_factory=session_factory,
         fanout=fanout,
         event_store=event_store,
+        signal_bus=signal_bus,
     )
     execution = WorkerCoordinator(
         settings=_settings(tmp_path),
@@ -940,7 +937,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         jsonl_events=False,
     )
     fanout = FanoutSink(asyncio.get_running_loop())
-    event_store = RunEventStore(factory, publish_persisted=fanout.publish_persisted)
+    event_store = RunEventStore(factory)
     event_publisher = RunEventPublisher(
         session_factory=factory,
         fanout=fanout,

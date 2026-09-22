@@ -41,13 +41,12 @@ class RunManager:
         self._config = config
         self._fanout = fanout
         self.signal_bus = signal_bus or PostgresSignalBus()
-        self.event_store = event_store or RunEventStore(
-            session_factory,
-            publish_persisted=fanout.publish_persisted,
-            signal_bus=self.signal_bus,
-        )
+        self.event_store = event_store or RunEventStore(session_factory)
         self._event_publisher = event_publisher or RunEventPublisher(
-            session_factory=session_factory, fanout=fanout, event_store=self.event_store
+            session_factory=session_factory,
+            fanout=fanout,
+            event_store=self.event_store,
+            signal_bus=self.signal_bus,
         )
         self._run_service = RunService(session_factory=session_factory, config=config)
 
