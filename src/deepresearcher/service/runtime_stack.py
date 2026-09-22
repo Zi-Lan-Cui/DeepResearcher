@@ -113,15 +113,12 @@ async def build_runtime_stack(
             )
             await checkpointer.setup()
 
-        event_store = RunEventStore(
-            session_factory,
-            publish_persisted=fanout.publish_persisted,
-            signal_bus=signal_bus,
-        )
+        event_store = RunEventStore(session_factory)
         event_publisher = RunEventPublisher(
             session_factory=session_factory,
             fanout=fanout,
             event_store=event_store,
+            signal_bus=signal_bus,
         )
         yield RuntimeStack(
             engine=engine,

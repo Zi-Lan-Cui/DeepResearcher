@@ -8,22 +8,19 @@ from typing import Any
 from sqlalchemy import select, update
 
 from deepresearcher.service.persistence.models import Run, RunEvent
-from deepresearcher.service.signals import PostgresSignalBus
 
 
 class RunEventStore:
-    def __init__(
-        self,
-        session_factory: Callable[[], Any],
-        *,
-        publish_persisted: Callable[[str, Sequence[dict]], None] | None = None,
-        signal_bus: PostgresSignalBus | None = None,
-    ) -> None:
+    def __init__(self, session_factory: Callable[[], Any]) -> None:
         self._session_factory = session_factory
-        self._publish_persisted = publish_persisted
-        self._signal_bus = signal_bus
 
     async def append(self, run_id: str, records: Sequence[dict]) -> list[dict]:
+        """事务内分配 seq 并落库;返回带 seq 的完整记录。
+
+        本方法只负责持久,不做投递与通知——**唯一合法调用者是 RunEventHub.flush**,
+        那里在 append 成功后显式执行本地投递和门铃。直调本方法 = 消费端收不到
+        唤醒,只会靠轮询恢复:允许(轮询是兜底),但请知道自己绕过了闸口。
+        """
         if not records:
             return []
         async with self._session_factory() as session:
@@ -52,10 +49,6 @@ class RunEventStore:
                     )
                 )
             await session.commit()
-        if self._publish_persisted is not None:
-            self._publish_persisted(run_id, assigned)
-        if self._signal_bus is not None:
-            await self._signal_bus.notify_event(run_id)
         return assigned
 
     async def after(self, run_id: str, seq: int) -> list[RunEvent]:

@@ -63,7 +63,7 @@ class RunExecutor:
         config: ServiceConfig,
         fanout: FanoutSink,
         event_store: RunEventStore,
-        event_publisher: RunEventPublisher | None = None,
+        event_publisher: RunEventPublisher,
         usage_store: UsageStore,
         llm_gate: CapacityGate,
         llm_rate_limiter: ProviderRateLimiter,
@@ -78,11 +78,9 @@ class RunExecutor:
         self._config = config
         self._fanout = fanout
         self._event_store = event_store
-        self._event_publisher = event_publisher or RunEventPublisher(
-            session_factory=session_factory,
-            fanout=fanout,
-            event_store=event_store,
-        )
+        # 投递/门铃的闸口在 publisher.flush:executor 必须用协调层注入的同一实例
+        # (与本进程 fanout/signal 共享),不设默认构造以防绕过闸口的第二份 publisher。
+        self._event_publisher = event_publisher
         self._usage_store = usage_store
         self._llm_gate = llm_gate
         self._llm_rate_limiter = llm_rate_limiter
