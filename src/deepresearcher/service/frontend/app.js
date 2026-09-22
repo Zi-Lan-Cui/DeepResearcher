@@ -192,11 +192,27 @@ window.addEventListener("resize", () => {
 });
 setInterval(() => { if ($("view-home").classList.contains("hide") === false) refreshRuns(); }, 5000);
 
+/* ---------- markdown 安全渲染 ---------- */
+/* 正文与进度文本都是模型产出，不是可信内容：marked 透传原始 HTML，
+   innerHTML 前必须过 DOMPurify。marked/DOMPurify 任一 CDN 缺失都返回 null，
+   调用方回退 textContent——"库没加载上"绝不允许退化成"跳过消毒"。 */
+function markdownHtml(text, { inline = false } = {}) {
+  if (!window.marked || !window.DOMPurify || window.__marked_failed || window.__purify_failed) {
+    return null;
+  }
+  const raw = inline ? marked.parseInline(text) : marked.parse(text);
+  return DOMPurify.sanitize(raw);
+}
+
 /* ---------- 进度呈现：全局时间线（supervisor 整体视角）+ 方向卡片（searcher 细节） ---------- */
 function progressLine(text, warn) {
   const div = document.createElement("div");
   div.className = "ln" + (warn ? " warn" : "");
-  div.textContent = text;
+  // 进度是日志节奏：只渲染行内样式（**粗体**/`代码`/链接），
+  // markdown 表格保持竖线原文——块级表格会把单行时间线撑成块。
+  const html = markdownHtml(text, { inline: true });
+  if (html === null) div.textContent = text;
+  else div.innerHTML = html;
   const log = $("global-log");
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
@@ -278,7 +294,9 @@ function stageNote(stage, text, warn) {
   const body = ensureStage(stage).querySelector(".stage-body");
   const div = document.createElement("div");
   div.className = "ln" + (warn ? " warn" : "");
-  div.textContent = text;
+  const html = markdownHtml(text, { inline: true });
+  if (html === null) div.textContent = text;
+  else div.innerHTML = html;
   body.appendChild(div);
   const lines = body.querySelectorAll(":scope > .ln");
   if (lines.length > 40) lines[0].remove();
@@ -557,14 +575,15 @@ function renderReport(md, fallbackCitations, detail) {
   renderReportMeta(detail);
   $("report-actions").classList.toggle("hide", !(detail && detail.report_markdown));
   const reportEl = $("report");
-  if (window.marked && !window.__marked_failed) {
-    // 论文式角标：[来源N] → <sup>[N]</sup> 可点击上标（marked 透传内联 HTML；
-    // 渲染器只在散文里替换标记，代码区不含 [来源N]，无注入面）。
-    const linkified = bodyMd.replace(
-      /\[来源(\d+)\]/g,
-      (_s, n) => `<sup class="cite-ref"><a href="#src-${n}">[${n}]</a></sup>`,
-    );
-    reportEl.innerHTML = marked.parse(linkified);
+  // 论文式角标：[来源N] → <sup>[N]</sup> 可点击上标；sup/a/href 均在
+  // DOMPurify 默认白名单内，消毒只滤恶意载荷、不滤这个标记。
+  const linkified = bodyMd.replace(
+    /\[来源(\d+)\]/g,
+    (_s, n) => `<sup class="cite-ref"><a href="#src-${n}">[${n}]</a></sup>`,
+  );
+  const clean = markdownHtml(linkified);
+  if (clean !== null) {
+    reportEl.innerHTML = clean;
   } else {
     const pre = document.createElement("pre"); pre.textContent = stripped;
     reportEl.replaceChildren(pre);
