@@ -112,9 +112,11 @@ class MiddlewareProfile:
     serial_tools: set[str] | None = None
     tool_call_limits: Sequence[tuple[str, int]] = ()
     submission_guard: SubmissionGuard | None = None
-    # 提交落盘后由 SubmittedExitMiddleware 在下一跳静默出环(Supervisor 的
-    # ResearchComplete 用它终结;工具本身不设 return_direct)。None = 不挂。
-    exit_probe: Callable[[Any], bool] | None = None
+    # 提交落盘后由 SubmittedExitMiddleware 在下一跳静默出环;probe 收
+    # (context, state),读该 agent 提交事实所在的单一事实源;工具一律不设
+    # return_direct、不用 Command(goto) 控环——被拒的回执必须能留环自愈。
+    # None = 不挂。
+    exit_probe: Callable[[Any, Any], bool] | None = None
     emit: AgentEmit | None = None  # 契约见 observability.events.AgentEmit
 
 

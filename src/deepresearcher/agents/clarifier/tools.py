@@ -5,7 +5,6 @@ import re
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
-from langgraph.graph import END
 from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 
@@ -112,7 +111,6 @@ def build_clarifier_tools():
         if rounds >= MAX_CLARIFICATION_ROUNDS:
             query = str(runtime.state.get("query") or "")
             return Command(
-                goto=END,
                 update={
                     "intent_summary": query,
                     "assumptions": ["澄清轮次已用尽，按原问题并列覆盖合理解释。"],
@@ -123,7 +121,6 @@ def build_clarifier_tools():
                 },
             )
         return Command(
-            goto=END,
             update={
                 "pending_question": question.strip(),
                 "pending_options": choices,
@@ -147,7 +144,6 @@ def build_clarifier_tools():
         不影响继续研究的合理假设。不得用普通文本结束；这是 Clarifier 的唯一完成信号。
         """
         return Command(
-            goto=END,
             update={
                 "intent_summary": intent_summary.strip(),
                 "research_focus": [item.strip() for item in research_focus if item.strip()][

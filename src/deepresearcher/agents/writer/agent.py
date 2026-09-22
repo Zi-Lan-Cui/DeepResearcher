@@ -129,6 +129,11 @@ class ReportWriter:
                             ),
                             max_nudges=self.config.finalization_attempts,
                         ),
+                        # 校验通过的草稿落定后下一跳静默出环:收场不再依赖
+                        # 模型多跑一轮自由文本,也关掉"提交后仍可再调工具"的窗口。
+                        exit_probe=lambda ctx, _state: (
+                            getattr(ctx, "validated_draft", None) is not None
+                        ),
                         emit=self._emit,
                     )
                 ),

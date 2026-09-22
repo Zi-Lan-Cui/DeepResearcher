@@ -127,6 +127,15 @@ class ResearchAgent:
                                 "ResearchDirectionComplete 诚实提交已覆盖内容和剩余缺口。"
                             ),
                         ),
+                        # 与 submitted_probe 同一信号:方向结果落定(stop_reason 收口)
+                        # 后下一跳静默出环;被拒回执不写 stop_reason,模型留环改正。
+                        exit_probe=lambda ctx, _state: (
+                            getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
+                            in {
+                                DirectionStopReason.COMPLETE,
+                                DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+                            }
+                        ),
                         emit=self._emit,
                     )
                 ),

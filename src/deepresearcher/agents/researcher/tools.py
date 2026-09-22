@@ -198,7 +198,10 @@ def build_researcher_tools() -> list[BaseTool]:
             }
         )
 
-    @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete, return_direct=True)
+    # 不设 return_direct:边级终结只看工具名、不看回执内容——被拒的提交也会
+    # 当场终结循环,模型失去改正引用窗口。接受后 stop_reason 落定,由
+    # SubmittedExitMiddleware 在下一跳静默出环(与 Supervisor/Writer 同构)。
+    @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
     async def complete_direction(
         reason: str,
         selected_evidence_ids: list[str],
@@ -206,7 +209,7 @@ def build_researcher_tools() -> list[BaseTool]:
         remaining_gaps: list[str],
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
-        """提交当前方向的最终局部结果，并立即结束工具循环。"""
+        """提交当前方向的最终局部结果；被拒则按回执修正后重提。"""
         loop_state = runtime.context.loop_state
         requested = list(dict.fromkeys(selected_evidence_ids))
         active = set(loop_state.active_evidence_ids)
