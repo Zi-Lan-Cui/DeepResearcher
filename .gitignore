@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Editor state (interpreter choice lives in .vscode/settings.json locally)
+.vscode/
+
 # Local planning and design notes
 docs/
 /TODO.md
