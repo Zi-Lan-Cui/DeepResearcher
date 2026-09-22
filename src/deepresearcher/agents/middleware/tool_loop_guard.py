@@ -39,15 +39,20 @@ class SubmittedExitMiddleware(AgentMiddleware):
     (天花板计数、观测钩子全部空转),反复拒绝时一路撞 recursion wall。
     jump_to 是 langchain 环内唯一走完整流水线的出口通道;与 ToolLoopGuard
     同族——一个把未提交踢回模型,一个把已提交放出循环。
+
+    probe 收 (context, state) 双参:提交事实住在哪层由各 agent 决定,只许读
+    单一事实源——supervisor/writer/researcher 的信号在 context(loop_state/
+    validated_draft),clarifier 的信号是 state 通道(outer 子图要消费它,
+    再往 context 立旗标就是平行簿记)。
     """
 
-    def __init__(self, exit_probe: Callable[[Any], bool]):
+    def __init__(self, exit_probe: Callable[[Any, Any], bool]):
         super().__init__()
         self._exit_probe = exit_probe
 
     @hook_config(can_jump_to=["end"])
     async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        if self._exit_probe(getattr(runtime, "context", None)):
+        if self._exit_probe(getattr(runtime, "context", None), state):
             return {"jump_to": "end"}
         return None
 

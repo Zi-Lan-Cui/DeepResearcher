@@ -139,7 +139,7 @@ class ResearchSupervisor:
                         tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
                         # ResearchComplete 接受、综合稿落盘后由 SubmittedExitMiddleware
                         # 在下一跳静默出环;循环终结不交给 return_direct/Command。
-                        exit_probe=lambda ctx: bool(
+                        exit_probe=lambda ctx, _state: bool(
                             ctx is not None and ctx.loop_state.completed_synthesis is not None
                         ),
                         emit=self._emit_audit_event,
