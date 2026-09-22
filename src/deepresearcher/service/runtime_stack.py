@@ -1,6 +1,6 @@
 """进程无关的基础设施栈：API 与 Worker 两种 runtime 的无差异核。
 
-只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、FanoutSink、
+只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、事件闸口(Hub/Preview)、
 信号总线、checkpointer(serde 白名单)、事件 store/publisher,以及它们的
 teardown 顺序。刻意**不收**的差异——留在各自 runtime 里保持可见:
 - API 的 auth/login-limiter/RunManager;Worker 的 coordinator/订阅/恢复锁;
@@ -20,10 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deepresearcher.config import Settings
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
-from deepresearcher.service.events.publisher import RunEventPublisher
+from deepresearcher.service.events.hub import RunEventHub
+from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.events.stream import FanoutSink
 from deepresearcher.service.persistence.database import (
     make_engine,
     make_session_factory,
@@ -43,10 +43,9 @@ class RuntimeStack:
 
     engine: Any
     session_factory: async_sessionmaker[AsyncSession]
-    fanout: FanoutSink
+    hub: RunEventHub
+    preview: LocalPreviewBus
     signal_bus: PostgresSignalBus
-    event_store: RunEventStore
-    event_publisher: RunEventPublisher
     checkpointer: Any
     ephemeral_bus: EphemeralEventBus | None
     material_store: Any
@@ -73,7 +72,7 @@ async def build_runtime_stack(
         engine = make_engine(cfg.database_url)
         resources.push_async_callback(engine.dispose)
         session_factory = make_session_factory(engine)
-        fanout = FanoutSink(asyncio.get_running_loop())
+        preview = LocalPreviewBus(asyncio.get_running_loop())
         signal_bus = PostgresSignalBus()
         await signal_bus.start(cfg.database_url)
         resources.push_async_callback(signal_bus.close)
@@ -113,20 +112,18 @@ async def build_runtime_stack(
             )
             await checkpointer.setup()
 
-        event_store = RunEventStore(session_factory)
-        event_publisher = RunEventPublisher(
+        hub = RunEventHub(
             session_factory=session_factory,
-            fanout=fanout,
-            event_store=event_store,
+            store=RunEventStore(session_factory),
+            preview=preview,
             signal_bus=signal_bus,
         )
         yield RuntimeStack(
             engine=engine,
             session_factory=session_factory,
-            fanout=fanout,
+            hub=hub,
+            preview=preview,
             signal_bus=signal_bus,
-            event_store=event_store,
-            event_publisher=event_publisher,
             checkpointer=checkpointer,
             ephemeral_bus=ephemeral_bus,
             material_store=material_store,

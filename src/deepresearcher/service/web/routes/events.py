@@ -11,8 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from deepresearcher.service.events.preview import CLOSE_STREAM
 from deepresearcher.service.events.projector import project
-from deepresearcher.service.events.stream import CLOSE_STREAM
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.web.dependencies import app_state, owned_run
 
@@ -36,7 +36,12 @@ async def run_events(
     state = app_state(request)
 
     async def stream() -> AsyncIterator[str]:
-        key, queue = state.fanout.subscribe(run.id)
+        # 席位归属显式化:run 未 open(被回收/异进程从未在此开过)就不挂本地队列,
+        # 纯走"DB tail + 门铃"——旧 subscribe 内检 open 塞哨兵的隐式契约改为调用方判定。
+        local_key: int | None = None
+        local_queue: asyncio.Queue | None = None
+        if state.hub.is_open(run.id):
+            local_key, local_queue = state.preview.subscribe(run.id)
         notify_key, notify_queue = state.manager.signal_bus.subscribe_event(run.id)
         preview_subscription = None
         if state.ephemeral_bus is not None:
@@ -90,16 +95,18 @@ async def run_events(
                 for frame in frames:
                     yield frame
                 if saw_done:
-                    state.fanout.close(run.id)
+                    state.hub.close(run.id)
                     return
                 if not rows:
                     frames, settled = await _terminate_if_settled()
                     for frame in frames:
                         yield frame
                     if settled:
-                        state.fanout.close(run.id)
+                        state.hub.close(run.id)
                         return
-                local_wait = asyncio.create_task(queue.get())
+                local_wait = (
+                    asyncio.create_task(local_queue.get()) if local_queue is not None else None
+                )
                 notify_wait = asyncio.create_task(notify_queue.get())
                 preview_wait = (
                     asyncio.create_task(preview_subscription.queue.get())
@@ -120,7 +127,7 @@ async def run_events(
                         waiter.cancel()
                     await asyncio.gather(*waits, return_exceptions=True)
                 items = []
-                if local_wait in done:
+                if local_wait is not None and local_wait in done:
                     items.append(local_wait.result())
                 if preview_wait is not None and preview_wait in done:
                     items.append(preview_wait.result())
@@ -148,10 +155,11 @@ async def run_events(
                     for frame in frames:
                         yield frame
                     if settled:
-                        state.fanout.close(run.id)
+                        state.hub.close(run.id)
                         return
         finally:
-            state.fanout.unsubscribe(run.id, key)
+            if local_key is not None:
+                state.preview.unsubscribe(run.id, local_key)
             state.manager.signal_bus.unsubscribe("event_committed", notify_key)
             if preview_subscription is not None:
                 await preview_subscription.close()
