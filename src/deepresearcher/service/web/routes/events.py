@@ -119,8 +119,6 @@ async def run_events(
                     for waiter in waits:
                         waiter.cancel()
                     await asyncio.gather(*waits, return_exceptions=True)
-                if not done:
-                    raise TimeoutError
                 items = []
                 if local_wait in done:
                     items.append(local_wait.result())
@@ -129,8 +127,8 @@ async def run_events(
                 if notify_wait in done:
                     notify_wait.result()
                 if not items:
-                    # 无人叫醒(DB 轮询到点/仅 notify 唤醒):走一次心跳检查再回轮询头,
-                    # 等价于原 TimeoutError 分支;notify 唤醒多一次心跳无害。
+                    # 本轮无人叫醒(wait 超时 done 为空,或仅 notify 唤醒):
+                    # 走一次心跳检查再回轮询头。超时是常态,不是异常——绝不许上抛。
                     now = asyncio.get_running_loop().time()
                     if now - last_ping >= SSE_HEARTBEAT_SECONDS:
                         last_ping = now
