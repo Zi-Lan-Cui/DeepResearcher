@@ -17,6 +17,7 @@ from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.models import Run, RunEvent
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
+from deepresearcher.service.runs.transitions import apply_transition
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepresearcher.tools.web.materials import ResearchMaterialStore
@@ -134,10 +135,8 @@ class WorkerCoordinator:
                     resumable.append((run.id, run.user_id, run.query))
                     continue
                 killed += 1
-                run.status = "failed"
-                run.terminal_reason = "server_restart"
+                apply_transition(run, "recover_dead", now=_utcnow())
                 run.error_message = "进程重启导致运行中断，请重新发起。"
-                run.finished_at = _utcnow()
                 max_seq = await session.scalar(
                     select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id)
                 )

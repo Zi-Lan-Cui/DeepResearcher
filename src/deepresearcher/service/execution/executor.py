@@ -22,10 +22,16 @@ from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.sinks import CompositeSink
-from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
+from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
 from deepresearcher.service.runs.queue import RunWork
+from deepresearcher.service.runs.transitions import (
+    apply_transition,
+    may_overwrite,
+    side_effects,
+    transition_for,
+)
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.usage import (
     CapacityGate,
@@ -363,8 +369,8 @@ class RunExecutor:
                 ):
                     return False
                 transitioned = True
-            elif run is not None and run.status in ("queued", "interrupted", "awaiting_input"):
-                run.status = "running"
+            elif run is not None and run.status in transition_for("mark_running").sources:
+                apply_transition(run, "mark_running", now=_utcnow())
                 if run.started_at is None:
                     run.started_at = _utcnow()
                 transitioned = True
@@ -376,6 +382,8 @@ class RunExecutor:
     async def _persist_awaiting_input(self, run_id: str, *, claim: RunWork | None = None) -> bool:
         if claim is not None:
             async with self._session_factory() as session:
+                # 来源钉死 running 是所有权围栏(claim 持有者唯一合法写相),
+                # 故意严于命令表来源并集,不查表。
                 result = await session.execute(
                     update(Run)
                     .where(
@@ -384,26 +392,18 @@ class RunExecutor:
                         Run.lease_owner == claim.lease_owner,
                         Run.attempt == claim.attempt,
                     )
-                    .values(
-                        status="awaiting_input",
-                        terminal_reason=None,
-                        error_message=None,
-                        finished_at=None,
-                        lease_owner=None,
-                        lease_expires_at=None,
-                        resume_payload=None,
-                    )
+                    .values(**side_effects("awaiting_input", now=_utcnow()))
                 )
                 await session.commit()
                 return result.rowcount == 1
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
-            if run is None or run.status in TERMINAL_STATUSES:
+            # 对账写(无 claim 的嵌入路径):只受"不覆盖终态"约束,来源不必是
+            # running——自愈正是为残余竞态窗口准备的,故不走 await_input 迁移。
+            if run is None or not may_overwrite(run.status):
                 return False
-            run.status = "awaiting_input"
-            run.terminal_reason = None
-            run.error_message = None
-            run.finished_at = None
+            for key, value in side_effects("awaiting_input", now=_utcnow()).items():
+                setattr(run, key, value)
             await session.commit()
             return True
 
@@ -438,11 +438,11 @@ class RunExecutor:
     async def persist_status(
         self, run_id: str, *, status: str, claim: RunWork | None = None, **extra: Any
     ) -> bool:
-        values = {"status": status, "finished_at": _utcnow()}
+        # 对账写:结构副作用查表,站点字段(extra)覆写其上;来源纪律只有"不覆盖终态"。
+        values = side_effects(status, now=_utcnow())
         values.update({key: value for key, value in extra.items() if value is not None})
-        if status in TERMINAL_STATUSES:
-            values.update(lease_owner=None, lease_expires_at=None, resume_payload=None)
         if claim is not None:
+            # 同上:WHERE 的 running 是所有权围栏,严于表并集,不查表。
             async with self._session_factory() as session:
                 result = await session.execute(
                     update(Run)
@@ -458,7 +458,7 @@ class RunExecutor:
                 return result.rowcount == 1
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
-            if run is None or run.status in TERMINAL_STATUSES:
+            if run is None or not may_overwrite(run.status):
                 return False
             for key, value in values.items():
                 setattr(run, key, value)
