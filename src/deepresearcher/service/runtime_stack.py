@@ -1,6 +1,6 @@
 """进程无关的基础设施栈：API 与 Worker 两种 runtime 的无差异核。
 
-只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、事件闸口(Hub/Preview)、
+只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、事件闸口(Hub)、
 信号总线、checkpointer(serde 白名单)、事件 store/publisher,以及它们的
 teardown 顺序。刻意**不收**的差异——留在各自 runtime 里保持可见:
 - API 的 auth/login-limiter/RunManager;Worker 的 coordinator/订阅/恢复锁;
@@ -10,7 +10,6 @@ teardown 顺序。刻意**不收**的差异——留在各自 runtime 里保持�
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -21,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from deepresearcher.config import Settings
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.persistence.database import (
@@ -44,7 +42,6 @@ class RuntimeStack:
     engine: Any
     session_factory: async_sessionmaker[AsyncSession]
     hub: RunEventHub
-    preview: LocalPreviewBus
     signal_bus: PostgresSignalBus
     checkpointer: Any
     ephemeral_bus: EphemeralEventBus | None
@@ -73,7 +70,6 @@ async def build_runtime_stack(
         engine = make_engine(service_config.database_url)
         resources.push_async_callback(engine.dispose)
         session_factory = make_session_factory(engine)
-        preview = LocalPreviewBus(asyncio.get_running_loop())
         signal_bus = PostgresSignalBus()
         await signal_bus.start(service_config.database_url)
         resources.push_async_callback(signal_bus.close)
@@ -116,14 +112,12 @@ async def build_runtime_stack(
         hub = RunEventHub(
             session_factory=session_factory,
             store=RunEventStore(session_factory),
-            preview=preview,
             signal_bus=signal_bus,
         )
         yield RuntimeStack(
             engine=engine,
             session_factory=session_factory,
             hub=hub,
-            preview=preview,
             signal_bus=signal_bus,
             checkpointer=checkpointer,
             ephemeral_bus=ephemeral_bus,

@@ -18,7 +18,6 @@ from deepresearcher.config import (
     Settings,
 )
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import CLOSE_STREAM as CLOSE_STREAM_FLAG
 from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.execution.coordinator import WorkerCoordinator
@@ -179,7 +178,7 @@ async def manager(tmp_path):
 
         session.add(User(id=USER_ID, email="u@test", password_hash="h"))
         await session.commit()
-    preview = LocalPreviewBus(asyncio.get_running_loop())
+    preview = LocalPreviewBus()
     config = ServiceConfig(
         database_url="unused",
         jwt_secret="s" * 40,
@@ -212,7 +211,6 @@ async def manager(tmp_path):
     hub = RunEventHub(
         session_factory=session_factory,
         store=event_store,
-        preview=preview,
         signal_bus=signal_bus,
     )
     execution = WorkerCoordinator(
@@ -220,9 +218,9 @@ async def manager(tmp_path):
         session_factory=session_factory,
         config=config,
         hub=hub,
-        preview=preview,
         http_client=SimpleNamespace(),
         graph_factory=graph_factory,
+        ephemeral_bus=preview,
     )
     controller = RunManager(
         session_factory=session_factory,
@@ -431,7 +429,6 @@ async def test_remote_manager_cancel_uses_notification_without_waiting_for_heart
             hub=RunEventHub(
                 session_factory=manager.session_factory,
                 store=RunEventStore(manager.session_factory),
-                preview=LocalPreviewBus(asyncio.get_running_loop()),
                 signal_bus=signal_bus,
             ),
             signal_bus=signal_bus,
@@ -797,15 +794,11 @@ async def test_run_graph_passes_thread_id_config(manager):
 
 async def test_streaming_preview_routing_and_ephemerality(manager):
     """官方 flag 形态：只有 supervisor 直下（ns 深度1）的 text 进预览；
-    深层嵌套（tools 路径）、writer、空文本一律静默；帧无 seq、不落库。"""
+    深层嵌套（tools 路径）、writer、空文本一律静默；帧无 seq、不落库。
+
+    预览只有一条腿:执行器直发注入的总线(测试里 manager 与 executor 共享
+    同一个 LocalPreviewBus 实例),不再有"本地快路径+远端记录"的双腿对照。"""
     gate = asyncio.Event()
-    remote_previews = []
-
-    class RecordingPreviewBus:
-        async def publish(self, run_id, event):
-            remote_previews.append((run_id, event))
-
-    manager.execution.executor._ephemeral_bus = RecordingPreviewBus()  # noqa: SLF001
     manager.execution.worker._max_running = 1  # noqa: SLF001 - subscription timing seam
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
@@ -823,18 +816,16 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         ],
     )
     run_id = await manager.start(USER_ID, "q")
-    _, queue = manager.preview.subscribe(run_id)  # start 已登记任务但未开跑：必然先于 delta
+    # start 已登记任务但未开跑：订阅必然先于 delta
+    subscription = await manager.preview.subscribe(run_id)
     gate.set()
     await _settle(manager, run_id)
 
     frames = []
-    while not queue.empty():
-        item = queue.get_nowait()
-        if item is not CLOSE_STREAM_FLAG:
-            frames.append(item)
+    while not subscription.queue.empty():
+        frames.append(subscription.queue.get_nowait())
     deltas = [f for f in frames if f["event_type"] == "text_delta"]
     assert [d["payload"] for d in deltas] == [{"channel": "supervisor", "text": "先梳理缺口，"}]
-    assert remote_previews == [(run_id, deltas[0])]
     assert all("seq" not in d for d in deltas)  # ephemeral：不占 seq
     async with manager.session_factory() as session:
         persisted = (
@@ -941,12 +932,10 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         service_log_dir=tmp_path,
         jsonl_events=False,
     )
-    preview = LocalPreviewBus(asyncio.get_running_loop())
     event_store = RunEventStore(factory)
     hub = RunEventHub(
         session_factory=factory,
         store=event_store,
-        preview=preview,
         signal_bus=PostgresSignalBus(),
     )
     execution = WorkerCoordinator(
@@ -954,7 +943,6 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         session_factory=factory,
         config=config,
         hub=hub,
-        preview=preview,
         http_client=SimpleNamespace(),
         graph_factory=graph_factory,
         checkpointer=FakeSaver({"run-orphan"}),

@@ -292,10 +292,8 @@ def test_text_delta_whitelist_and_no_seq():
     assert "seq" not in ok.data and "SECRET" not in json.dumps(ok.data, ensure_ascii=False)
 
 
-def test_truncation_marker_becomes_error_frame():
-    frame = project(_record("stream_truncated"))
-    assert frame.event == "error"
-    assert "回放" in frame.data["text"]
+# stream_truncated 的产生者(进程内快推)已删除;它留在下方 default-deny 名单里,
+# 保证即便有代码再投这种帧,投影层也不出口。
 
 
 @pytest.mark.parametrize(

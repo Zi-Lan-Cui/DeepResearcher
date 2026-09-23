@@ -11,7 +11,6 @@ from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.models import Run, RunEvent
@@ -33,7 +32,6 @@ class WorkerCoordinator:
         session_factory: Callable[[], Any],
         config: ServiceConfig,
         hub: RunEventHub,
-        preview: LocalPreviewBus,
         http_client: Any,
         graph_factory: Callable[..., Any] = build_graph,
         checkpointer: Any = None,
@@ -58,7 +56,6 @@ class WorkerCoordinator:
             session_factory=session_factory,
             config=config,
             hub=hub,
-            preview=preview,
             usage_store=self.usage_store,
             llm_gate=self.llm_gate,
             llm_rate_limiter=self.llm_rate_limiter,

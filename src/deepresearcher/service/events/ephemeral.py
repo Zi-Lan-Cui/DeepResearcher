@@ -1,7 +1,10 @@
-"""Lossy cross-process preview transport contracts.
+"""Lossy preview transport contracts.
 
 Ephemeral events improve live presentation only. They have no sequence number,
-are never persisted, and must never participate in run-state decisions.
+are never persisted, and must never participate in run-state decisions. The
+protocol has two interchangeable implementations chosen at assembly time:
+``RedisEphemeralEventBus`` (cross-process, production) and ``LocalPreviewBus``
+(same event loop, single-stack harnesses).
 """
 
 from __future__ import annotations
@@ -9,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 @dataclass
@@ -27,6 +30,7 @@ class EphemeralSubscription:
         await self._close()
 
 
+@runtime_checkable
 class EphemeralEventBus(Protocol):
     """Best-effort preview bus; implementations must absorb transport failure."""
 

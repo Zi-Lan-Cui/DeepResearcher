@@ -68,7 +68,6 @@ async def worker_lifespan(
             session_factory=stack.session_factory,
             config=service_config,
             hub=stack.hub,
-            preview=stack.preview,
             http_client=stack.http_client,
             graph_factory=graph_factory,
             checkpointer=stack.checkpointer,

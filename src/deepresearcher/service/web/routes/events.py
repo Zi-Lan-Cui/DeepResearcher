@@ -11,7 +11,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from deepresearcher.service.events.preview import CLOSE_STREAM
 from deepresearcher.service.events.projector import project
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.web.dependencies import app_state, owned_run
@@ -36,19 +35,15 @@ async def run_events(
     state = app_state(request)
 
     async def stream() -> AsyncIterator[str]:
-        # 席位归属显式化:run 未 open(被回收/异进程从未在此开过)就不挂本地队列,
-        # 纯走"DB tail + 门铃"——旧 subscribe 内检 open 塞哨兵的隐式契约改为调用方判定。
-        local_key: int | None = None
-        local_queue: asyncio.Queue | None = None
-        if state.hub.is_open(run.id):
-            local_key, local_queue = state.preview.subscribe(run.id)
+        # 两条唤醒源、一条数据路:已提交帧只从 DB tail 读(门铃或 poll 叫醒);
+        # 预览帧读 EphemeralEventBus 订阅。不存在进程内快推,也就不需要去重。
         notify_key, notify_queue = state.manager.signal_bus.subscribe_event(run.id)
         preview_subscription = None
         if state.ephemeral_bus is not None:
             try:
                 preview_subscription = await state.ephemeral_bus.subscribe(run.id)
             except Exception:  # noqa: BLE001 - durable DB stream remains available
-                logger.warning("redis_preview_subscribe_failed run_id=%s", run.id, exc_info=True)
+                logger.warning("preview_subscribe_failed run_id=%s", run.id, exc_info=True)
         last_seq = 0
         last_ping = asyncio.get_running_loop().time()
 
@@ -104,16 +99,12 @@ async def run_events(
                     if settled:
                         state.hub.close(run.id)
                         return
-                local_wait = (
-                    asyncio.create_task(local_queue.get()) if local_queue is not None else None
-                )
                 notify_wait = asyncio.create_task(notify_queue.get())
-                preview_wait = (
-                    asyncio.create_task(preview_subscription.queue.get())
-                    if preview_subscription is not None
-                    else None
-                )
-                waits = [t for t in (local_wait, notify_wait, preview_wait) if t is not None]
+                waits = [notify_wait]
+                preview_wait = None
+                if preview_subscription is not None:
+                    preview_wait = asyncio.create_task(preview_subscription.queue.get())
+                    waits.append(preview_wait)
                 try:
                     done, _ = await asyncio.wait(
                         waits,
@@ -126,40 +117,26 @@ async def run_events(
                     for waiter in waits:
                         waiter.cancel()
                     await asyncio.gather(*waits, return_exceptions=True)
-                items = []
-                if local_wait is not None and local_wait in done:
-                    items.append(local_wait.result())
+                items: list[Any] = []
                 if preview_wait is not None and preview_wait in done:
                     items.append(preview_wait.result())
                 if notify_wait in done:
+                    # 门铃只是叫醒:payload 是 None,数据由下一轮循环头的 tail 取。
                     notify_wait.result()
                 if not items:
-                    # 本轮无人叫醒(wait 超时 done 为空,或仅 notify 唤醒):
+                    # 本轮无预览可发(wait 超时或仅门铃叫醒):
                     # 走一次心跳检查再回轮询头。超时是常态,不是异常——绝不许上抛。
                     now = asyncio.get_running_loop().time()
                     if now - last_ping >= SSE_HEARTBEAT_SECONDS:
                         last_ping = now
                         yield ": ping\n\n"
                     continue
-                closed_hint = False
                 for item in items:
-                    if item is CLOSE_STREAM or item is None:
-                        closed_hint = True
-                        continue
                     if item.get("event_type") == "text_delta":
                         frame = project(item)
                         if frame is not None:
                             yield _sse(frame)
-                if closed_hint:
-                    frames, settled = await _terminate_if_settled()
-                    for frame in frames:
-                        yield frame
-                    if settled:
-                        state.hub.close(run.id)
-                        return
         finally:
-            if local_key is not None:
-                state.preview.unsubscribe(run.id, local_key)
             state.manager.signal_bus.unsubscribe("event_committed", notify_key)
             if preview_subscription is not None:
                 await preview_subscription.close()
