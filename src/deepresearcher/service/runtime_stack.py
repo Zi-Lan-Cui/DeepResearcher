@@ -1,6 +1,6 @@
 """进程无关的基础设施栈：API 与 Worker 两种 runtime 的无差异核。
 
-只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、事件闸口(Hub)、
+只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、事件投递(Hub)、
 信号总线、checkpointer(serde 白名单)、事件 store/publisher,以及它们的
 teardown 顺序。刻意**不收**的差异——留在各自 runtime 里保持可见:
 - API 的 auth/login-limiter/RunManager;Worker 的 coordinator/订阅/恢复锁;

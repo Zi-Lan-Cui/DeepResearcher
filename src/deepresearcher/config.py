@@ -95,8 +95,9 @@ class LLMConfig:
     output_usd_per_million: float = 0.0
     cached_input_usd_per_million: float = 0.0
     price_version: str = "unpriced"
-    # 内容级修复预算：结构化输出不合规时回炉几次。传输级重试由 openai SDK 内建
-    # 消化、循环级由 ModelRetryMiddleware 用自带参数处理，本字段只管回炉这一层。
+    # 内容级修复预算：结构化输出不合规时重新送模型修复几次。传输级重试由
+    # openai SDK 内建消化、循环级由 ModelRetryMiddleware 用自带参数处理，
+    # 本字段只管内容级这一层。
     structured_repair_attempts: int = 1
 
     @property
@@ -118,8 +119,7 @@ class AgentConfig:
     writer_minimum_support: Support = "direct"
     writer_max_markdown_chars: int = 24_000
     # 单次 ReadEvidence 每轮交付量（可一次请求至多 50 条，差额 not_read_ids 排队）。
-    # 引用总条数不设上限——writer_max_selected_evidence 已移除：它制造过两次
-    # 提交死循环，而聚焦度实际由"只能引用已读"+审阅把关，与条数无关。
+    # 引用总条数不设上限：聚焦度由"只能引用已读"+审阅把关保证，与条数无关。
     writer_read_batch_size: int = 30
     # reviewer 对内容审查抖动/坏 JSON 的额外重试次数（传输级重试由 openai SDK 内建消化）。
     reviewer_retry_attempts: int = 1

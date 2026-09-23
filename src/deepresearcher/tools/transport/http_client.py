@@ -155,7 +155,7 @@ class HttpClient:
                         self.config.retry_max_seconds,
                         self.config.retry_initial_seconds * (2**attempt),
                     )
-                # 打散并发请求的同步重试脉冲，避免互相踩着限流窗口反复撞。
+                # 错开重试时点，避免并发请求的重试同时打满同一个限流窗口。
                 await asyncio.sleep(delay + random.uniform(0, delay * _JITTER_RATIO))
 
         error = ToolRequestError(

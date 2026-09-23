@@ -387,7 +387,7 @@ async def _validate_submissions(
             source_texts[document_id] = source_text
         # 入池不变式：quote 逐字（忽略空白 + 连字符/ligature 编码差异）出现在该来源正文里。
         # 宽松仍不过时再分一档：只差异标点/引号/破折号（词序列一致）→ quote_format_variant；
-        # 词都不同 → quote_paraphrase。这样能真正区分"格式误杀"与"模型改述"。
+        # 词都不同 → quote_paraphrase。这样能区分"格式导致的误拒"与"模型改述"。
         if not quote_in_source(source_text, quote):
             rejection = (
                 "quote_format_variant"

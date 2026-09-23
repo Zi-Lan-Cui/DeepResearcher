@@ -58,9 +58,9 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
 
 
 def test_render_final_report_strips_writer_authored_reference_section():
-    """Writer 违令自写来源小节：程序剥除之，参考表以唯一追加段为准。
+    """Writer 违反禁令自写来源小节：程序剥除之，参考表以唯一追加段为准。
 
-    线上龙意象运行实锤：正文一次+结尾一次两份「来源」并存。剥除必须发生在
+    线上事故已证实：正文一次+结尾一次两份「来源」并存。剥除必须发生在
     编号渲染之前——被剥段里的 [[cite:e1]] 不再抢占首现顺序，仅出现于此的
     citation 依既有规则不进参考表。
     """

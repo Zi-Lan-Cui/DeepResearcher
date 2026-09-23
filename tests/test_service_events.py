@@ -1,7 +1,7 @@
-"""RunEventHub 闸口契约与 LocalPreviewBus 协议实现的钉桩。
+"""RunEventHub 接口契约与 LocalPreviewBus 协议实现的回归测试。
 
-Hub 只负责:席位记账、pending 缓冲、flush(append→门铃)的失败语义。
-已提交事件不存在进程内快推——落库即全权交付,SSE 经门铃/DB tail 取帧。
+Hub 只负责:open 登记、pending 缓冲、flush(append→notify)的失败语义。
+已提交事件不做进程内直投,落库后以 DB 副本为唯一来源。
 """
 
 import asyncio
@@ -99,7 +99,7 @@ async def preview_bus():
     await bus.close()
 
 
-# ---------- Hub：收（write/席位） ----------
+# ---------- Hub：收（write/open 登记） ----------
 
 
 async def test_write_drops_unrouted_without_open_seat(hub):
@@ -109,7 +109,7 @@ async def test_write_drops_unrouted_without_open_seat(hub):
 
 
 async def test_write_from_worker_thread_and_flush_persists(hub, store, log):
-    """任意线程 write → 循环线程 flush 落库并发门铃(锁纪律;不再回环投递)。"""
+    """任意线程 write → 循环线程 flush 落库并发 notify(锁纪律)。"""
     hub.open("run-5")
 
     def write_from_thread():
@@ -137,7 +137,7 @@ async def test_pydantic_model_records_are_dumped(hub):
 
 
 async def test_open_bounded_evicts_oldest(store, signal):
-    """席位超额按插入序回收;被逐 run 的迟到 write/flush 静默 no-op。"""
+    """open 登记超额按插入序回收;被逐 run 的迟到 write/flush 静默 no-op。"""
     hub = RunEventHub(
         session_factory=lambda: _SessionCtx(),
         store=store,
@@ -165,7 +165,7 @@ async def test_flush_orders_append_then_notify(hub, store, log):
     hub.write({"run_id": "run-7", "event_type": "after", "payload": {}})
     await hub.flush("run-7")
 
-    assert log == ["append", "notify:run-7"]  # 门铃每批一次,在 append 之后
+    assert log == ["append", "notify:run-7"]  # notify 每批一次,在 append 之后
     assert [r["event_type"] for r in store.batches[0]] == ["before", "after"]
     assert [r["seq"] for r in store.batches[0]] == [1, 2]
     with hub._lock:  # noqa: SLF001
@@ -186,7 +186,7 @@ async def test_flush_requeues_head_on_store_failure(hub, store, log):
             "engine_0",
             "run_done",
         ]
-    assert log == ["append"]  # 失败的 append 有记录，门铃不发
+    assert log == ["append"]  # 失败的 append 有记录，notify 不发
 
     hub.write({"run_id": "r1", "event_type": "engine_1", "payload": {}})
     await hub.flush("r1")

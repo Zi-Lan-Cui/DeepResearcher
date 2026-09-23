@@ -48,11 +48,9 @@ class PublicUrlGuard:
         resolved = await self._resolve_addresses(ascii_hostname, port)
         if not resolved:
             raise UnsafeUrlError("URL 主机名没有可连接的地址。")
-        # 双栈主机会同时返回 A 与 AAAA；某些公开站点的一条记录（或本机 DNS 的
-        # 一条）可能落在非全局段。旧实现"任一地址非全局即整源拒绝"会误杀大量合法
-        # 来源（量子网络评测里一个方向被拦 50+ 次，Writer 无源可写→吐 0 引用残卷）。
-        # 正确策略：只要存在一个全局地址就放行，并把连接固定到全局地址集合；仅当
-        # 全部地址都非全局（真 SSRF）才拒绝。
+        # 双栈主机同时返回 A 与 AAAA，个别记录可能落在非全局段：存在全局
+        # 地址即放行并把连接固定到全局地址集合；全部非全局（真 SSRF）才拒绝。
+        # 按"任一地址非全局即整源拒绝"会错误拦下大量合法来源。
         addresses = tuple(a for a in resolved if self._is_global(a))
         if not addresses:
             raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")

@@ -43,7 +43,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     ):
         super().__init__()
         self.agent_name = agent_name
-        # 事件名前缀走显式 slug,不再从显示名 lower() 派生("ResearchAgent"→驼峰假蛇形)。
+        # 事件名前缀走显式 slug;显示名 lower() 得到的是驼峰形,不是 snake_case。
         self._slug = event_slug or agent_name.lower()
         self.run_limit = run_limit
         self._emit = emit

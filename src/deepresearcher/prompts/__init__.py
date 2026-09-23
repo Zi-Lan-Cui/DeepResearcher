@@ -1,16 +1,11 @@
 """提示词外置层：每个 agent/节点的 system 提示词以纯文本存放在本目录。
 
-动机：提示词会随调优持续变长，混在 Python 里难读难 diff。抽成 `.md` 后，
-"改 prompt" 与 "改代码" 分离，且这些文件本身就是缓存前缀里最静态的一层。
-
 约定：
 - `load_prompt(name)` 逐字返回 `prompts/<name>.md`（不 strip、不改行尾）——
-  调用点靠拼接 `language_directive(...)` / `.replace("__LANG__", …)` 组装，
-  与外置前的运行时字符串逐字一致；
+  调用点靠拼接 `language_directive(...)` / `.replace("__LANG__", …)` 组装；
 - 语言纪律模板在 `language.md`，`{language}` 由 `config.language_directive` 填；
 - `get_runtime_environment()` 提供随每次调用变化的环境事实（当前日期/时区）。
-  它是另一种"提示词素材"：静态正文在 .md，动态事实由它渲染进
-  `render_data_section("运行时环境", …)`——本包唯一 .py 因此就是门面自身。
+  静态正文在 .md，动态事实由它渲染进 `render_data_section("运行时环境", …)`。
 """
 
 from __future__ import annotations

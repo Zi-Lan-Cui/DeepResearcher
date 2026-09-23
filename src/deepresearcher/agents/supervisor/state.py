@@ -140,7 +140,7 @@ class SupervisorLoopState:
     research synthesis、working_set_revision、stop reason、当前轮次。
 
     节点结束时把整份副本交给幂等 reducer 合并（merge_evidences / merge_task_results /
-    merge_unique），reducer 按 id 折回原样——不手搓增量切片,以免把不变式拆成
+    merge_unique），reducer 按 id 折回原样——不手工拆增量,以免把不变式拆成
     多处平行簿记而静默丢字段。
     """
 

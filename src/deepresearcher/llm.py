@@ -2,11 +2,11 @@
 
 分层原则——谁在哪一层重试：
 - 传输级(超时/断连)：openai SDK 内建 max_retries 指数退避，覆盖一切经 ChatOpenAI
-  发出的请求,agent 循环与节点单次调用同蒙其荫;
+  发出的请求,agent 循环与节点单次调用都经过它;
 - 循环级：ModelRetryMiddleware(agents/middleware/retry.py)把最终失败的模型调用
   软化为指引文本,agent 得以继续;但预算耗尽与账户级不可用是例外,
   retry_on 对它们豁免、让其冒泡到既有 fail-fast 收口;
-- 内容级：本文件的 repair 循环——JSON 不合规时回炉,langchain 不提供;
+- 内容级：本文件的 repair 循环——JSON 不合规时重新送模型修复,langchain 不提供;
 - 压缩级(例外):SummarizationMiddleware 在 before_model 节点内直调模型做摘要,
   不经过预算闸与循环级软化——库内无注入口。它只在上下文越限后发生,
   每次压缩至多一笔有界调用,是本分层明示承认的第四出口。
@@ -84,7 +84,7 @@ async def ainvoke_text(
     *,
     request_kwargs: dict[str, Any] | None = None,
 ) -> Any:
-    """节点的单发文本调用；用量闸口在调用边界强制。"""
+    """节点的单发文本调用；用量检查在调用边界强制执行。"""
     await enforce_usage_budget()
     runnable = llm.bind(**request_kwargs) if request_kwargs else llm
     return await runnable.ainvoke(list(messages))
@@ -100,7 +100,7 @@ async def ainvoke_structured(
     """只在已收到不合规 JSON 时 repair；传输抖动由 openai SDK 内建重试消化。
 
     修复预算只从配置读(LLM_STRUCTURED_REPAIR_ATTEMPTS)；节点测试的注入缝是
-    各节点的 ``invoke_structured=`` 关键字，本函数不设第二道假缝。
+    各节点的 ``invoke_structured=`` 关键字，本函数不提供第二个注入点。
     """
     repair_attempts = get_settings().llm.structured_repair_attempts
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)

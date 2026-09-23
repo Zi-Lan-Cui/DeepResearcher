@@ -38,7 +38,7 @@ class RunManager:
         self._config = config
         self._hub = hub
         self.signal_bus = signal_bus or PostgresSignalBus()
-        # 只读句柄:cancel 即时分支要 tail 判终态;投递与门铃归 Hub 统管。
+        # 只读句柄:cancel 即时分支要 tail 判终态;投递与 notify 归 Hub 统管。
         self.event_store = hub.store
         self._run_service = RunService(session_factory=session_factory, config=config)
 
@@ -79,7 +79,7 @@ class RunManager:
         """SSE 兜底终止用:run 已终态则返回 done 帧载荷要素,否则 None。
 
         done 帧可能在失败批次中丢失(flush 已尽力回插,close 竞态仍可能截尾),
-        事件的权威副本是行状态——查到这里即该收尾,不让客户端永挂。
+        事件的权威副本是行状态——查到这里即该收尾,不让客户端无限等待。
         """
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)

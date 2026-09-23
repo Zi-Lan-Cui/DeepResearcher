@@ -199,7 +199,7 @@ class SearchTool:
             if not url:
                 continue
             # 与缓存共用同一 canonical_url;去重折叠尾斜杠。凭证 URL 归一为 ""
-            # (不可共用身份)——退回原串,既不误并也不丢结果。
+            # (不可共用身份)——退回原串,既不错误合并也不丢失结果。
             key = canonical_url(url, strip_trailing_slash=True) or url
             current = by_url.get(key)
             if current is None or result.get("score", 0.0) > current.get("score", 0.0):

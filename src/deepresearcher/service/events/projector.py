@@ -22,7 +22,7 @@ Supervisor 块的子项。
 - ``done``        终态 {status, answer_mode, report_available}
 
 各 agent 的 model_turn 计数不面向用户；唯一例外是 supervisor 的规划文字
-（写了字才出口，见 plan）。
+（有文本才发帧，见 plan）。
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == "node_failed":
         # 只说哪个阶段失败：内部异常文本永远不出网关（完整信息在 RunEvent/日志）。
         # 已知节点必须用 failed 的 stage_done 关框——否则阶段框停在"运行中"
-        # 的绿点上永远呼吸（reviewer 内容审查事故实锤），未知节点退回全局错误行。
+        # 的阶段框永远停在运行中（见 reviewer content_filter 事故），未知节点退回全局错误行。
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
                 "stage_done",

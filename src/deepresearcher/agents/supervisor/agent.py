@@ -339,7 +339,7 @@ class ResearchSupervisor:
         loop_state: SupervisorLoopState,
     ) -> SupervisorStateUpdate:
         """把工作状态转为 State 增量与路由决策。"""
-        # 地板兜底,不是优先级判断:整轮没产生任何信号时才补一个默认终态。
+        # 默认终态只是兜底,不是优先级判断:整轮没产生任何信号时才补。
         # 保持 `is None` + 直接赋值:地板不参与 rank 竞争,任何已采纳的终态
         # (哪怕权威度更低)都不该被"预算耗尽"的猜测覆盖。
         if not loop_state.sufficient and loop_state.stop_reason is None:

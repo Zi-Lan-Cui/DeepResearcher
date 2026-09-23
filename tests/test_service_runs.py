@@ -313,7 +313,7 @@ async def test_running_status_is_announced_only_for_user_visible_claim(manager):
         silent_id,
         announce_running=False,
     )
-    assert manager.hub._pending.get(silent_id, []) == []  # noqa: SLF001 - 只读席位缓冲
+    assert manager.hub._pending.get(silent_id, []) == []  # noqa: SLF001 - 只读 pending 缓冲
 
     assert await manager.execution.executor._mark_running(  # noqa: SLF001
         announced_id,
@@ -342,7 +342,7 @@ async def test_success_persists_terminal_and_injects_run_id(manager):
     assert run.report_markdown.startswith("# 研究报告")
     assert run.citations_json == graph.result["citations"]
     assert (run.evidence_count, run.source_count) == (41, 12)
-    assert run.query == "测试问题"  # strip 生效
+    assert run.query == "测试问题"
     async with manager.session_factory() as session:
         trace_events = list(
             (
@@ -728,7 +728,7 @@ async def test_events_are_persisted_in_seq_order_with_done_last(manager):
         ).all()
     types = [event.event_type for event in events]
     seqs = [event.seq for event in events]
-    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)  # 无洞、无重复
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
     assert types[0] == "run_status"  # queued 最早
     assert types[-1] == "run_done"  # done 严格最后（重连回放以此收尾）
     assert "engine_0" in types and "engine_2" in types
@@ -796,8 +796,8 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
     """官方 flag 形态：只有 supervisor 直下（ns 深度1）的 text 进预览；
     深层嵌套（tools 路径）、writer、空文本一律静默；帧无 seq、不落库。
 
-    预览只有一条腿:执行器直发注入的总线(测试里 manager 与 executor 共享
-    同一个 LocalPreviewBus 实例),不再有"本地快路径+远端记录"的双腿对照。"""
+    预览只有一条路径:执行器直发注入的总线(测试里 manager 与 executor
+    共享同一个 LocalPreviewBus 实例)。"""
     gate = asyncio.Event()
     manager.execution.worker._max_running = 1  # noqa: SLF001 - subscription timing seam
     manager.holder["graph"] = FakeGraph(
@@ -878,7 +878,7 @@ async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(man
 
 
 async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
-    """②全链路：分诊(判死/复活) → seq 续号 → astream(None) 续跑 → 新事件落库。"""
+    """②全链路：分诊(判定不可恢复/续跑) → seq 续号 → astream(None) 续跑 → 新事件落库。"""
     engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'resume.db'}")
     await init_db(engine)
     factory = make_session_factory(engine)
@@ -952,7 +952,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     assert resumable == [("run-orphan", USER_ID, "孤而可活")]
     async with factory() as session:
         assert (await session.get(Run, "run-dead")).status == "failed"
-        assert (await session.get(Run, "run-orphan")).status == "interrupted"  # 未判死
+        assert (await session.get(Run, "run-orphan")).status == "interrupted"
 
     assert await execution.resume_runs(resumable) == 1
     task = execution.tasks.get("run-orphan")
@@ -990,7 +990,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
 
 
 async def test_settle_cancellations_terminates_abandoned_cancel_intent(manager):
-    """worker 死在"取消意图已写、终态未落"窗口:清扫者代笔 cancelled+done 帧。"""
+    """worker 退出在"取消意图已写、终态未落"窗口:清理逻辑补写 cancelled+done 帧。"""
     run_id = "run-cancel-sunk"
     async with manager.session_factory() as session:
         session.add(

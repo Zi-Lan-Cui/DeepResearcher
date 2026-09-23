@@ -44,8 +44,7 @@ AGENT_RECURSION_LIMIT = 1_000
 class ObservableSummarizationMiddleware(SummarizationMiddleware):
     """压缩发生时记一笔 context_compacted——纯观测,不改任何压缩决策。
 
-    这组数据是将来裁定 clear_tool_inputs(是否连工具入参一起清)的唯一
-    合法依据:先看真实长 run 触发几次、清完还剩多少,再谈调参。
+    纯观测:只记录,不参与任何压缩决策。
     """
 
     def __init__(self, *, agent_name: str, emit: Any, trigger_tokens: int, **kwargs: Any) -> None:
@@ -114,7 +113,7 @@ class MiddlewareProfile:
     submission_guard: SubmissionGuard | None = None
     # 提交落盘后由 SubmittedExitMiddleware 在下一跳静默出环;probe 收
     # (context, state),读该 agent 提交事实所在的单一事实源;工具一律不设
-    # return_direct、不用 Command(goto) 控环——被拒的回执必须能留环自愈。
+    # return_direct、不用 Command(goto) 控环——被拒后模型必须留在循环内改正。
     # None = 不挂。
     exit_probe: Callable[[Any, Any], bool] | None = None
     emit: AgentEmit | None = None  # 契约见 observability.events.AgentEmit
@@ -124,7 +123,7 @@ def _message_text(message: BaseMessage) -> str:
     """把消息中用于计数的内容规范化为字符串(含工具调用参数)。
 
     tool_calls 的参数是真实载荷——Writer 草稿、AddEvidence 逐字引用都住在这里;
-    只数 content 会让两级压缩闸对最重的消息失明。
+    只数 content 会让两级压缩对最重的消息不生效。
     """
     parts = [message.content if isinstance(message.content, str) else str(message.content)]
     tool_calls = getattr(message, "tool_calls", None)

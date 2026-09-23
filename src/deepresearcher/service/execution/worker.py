@@ -60,7 +60,7 @@ class RunWorker:
 
     @property
     def tasks(self) -> dict[str, asyncio.Task[None]]:
-        """Compatibility view for cancellation and M1-era tests."""
+        """Compatibility view for cancellation tests."""
         return self._tasks
 
     @property
@@ -109,7 +109,7 @@ class RunWorker:
                 )
                 if isinstance(work, ClaimCapacitySaturated):
                     # 容量满 ≠ preferred 过期:弹出的显式任务放回队首、结束本轮,
-                    # 等下一次信号/轮询/收割唤醒;静默丢弃会让 resume 行沉没。
+                    # 等下一次信号/轮询/reap 唤醒;静默丢弃会让 resume 行再无被取时机。
                     if preferred is not None:
                         self._explicit.appendleft(preferred)
                         self._explicit_ids.add(preferred.run_id)
@@ -158,7 +158,7 @@ class RunWorker:
         try:
             if work.resume:
                 # claim 确实成功之后才广播恢复:被 cancel flag 排除或被他 worker
-                # 抢走的 preferred 行,不该留下"恢复中"的幻影帧。
+                # 抢走的 preferred 行,不该发出误报的 resuming 帧。
                 await self._executor.publish_status(work.run_id, "resuming")
                 await self._executor.flush_events(work.run_id)
             await self._executor.execute(
@@ -195,7 +195,7 @@ class RunWorker:
                         cancelled = await self._queue.cancellation_requested(work)
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - 基础设施瞬断不判健康执行的死刑
+                except Exception:  # noqa: BLE001 - 瞬断不应把健康执行判为失败
                     logger.warning("lease_heartbeat_db_error run_id=%s", work.run_id, exc_info=True)
                 if renewed:
                     transient_failures = 0
@@ -234,7 +234,7 @@ class RunWorker:
                         await self._after_reap()
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - 收割是整个状态机最后的兜底,自己绝不能死
+                except Exception:  # noqa: BLE001 - reap 是状态机最后的兜底,本循环自身不许抛异常退出
                     # 半途失败不补扫:reap_expired 每轮全量重扫,幂等吞掉瞬断即可。
                     logger.warning("lease_reap_db_error", exc_info=True)
         except asyncio.CancelledError:

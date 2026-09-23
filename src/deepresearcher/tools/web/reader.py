@@ -51,7 +51,7 @@ class SourceReaderTool:
         document_inline_max_tokens: int = 6_000,
     ):
         # fetcher 是 FetchService(跑整条 provider 链、带 material_fetch_key),
-        # 不是单个原子 FetchProvider——两者同名协议曾让缓存契约在类型层隐形。
+        # 不是单个原子 FetchProvider——同名协议下，缓存键不匹配不会被类型检查发现。
         if fetcher is None:
             raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchService。")
         self.fetcher = fetcher

@@ -101,7 +101,7 @@ class WorkerCoordinator:
         """带取消意图却停在 interrupted 的行:终态化 cancelled 并补 done 帧。
 
         取消意图的落地不依赖 executor 活着——claim/reap 永远跳过带 flag 的行,
-        没有这一步,那些 run 会沉没到用户再点一次取消为止。
+        没有这一步,那些 run 会停在 interrupted 直到用户再次取消。
         """
         for settled in await self.queue.settle_cancellations():
             self._hub.open(settled.run_id)
@@ -171,7 +171,7 @@ class WorkerCoordinator:
         self._hub.open(work.run_id)
         if await self._has_checkpoint(work.run_id):
             # "resuming" 帧改由 worker 在 claim 成功后发:此处广播会给
-            # 被取消 flag 排除、或被他 worker 抢走的行留下幻影恢复提示。
+            # 被取消 flag 排除、或被他 worker 抢走的行会收到误报的恢复提示。
             return RunWork(
                 run_id=work.run_id,
                 user_id=work.user_id,

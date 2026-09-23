@@ -63,7 +63,7 @@ class SearchService:
             try:
                 return await self._provider().asearch(query, limit)
             except ProviderExhaustedError as exc:
-                # 鉴权/额度型：打开健康位，让本 worker 后续（乃至跨 worker）快速失败。
+                # 鉴权/额度型：置熔断标记，让本 worker 后续（乃至跨 worker）快速失败。
                 await self._health.trip(provider, exc.user_code, _PROVIDER_HEALTH_SECONDS)
                 raise
             except ToolRequestError as exc:

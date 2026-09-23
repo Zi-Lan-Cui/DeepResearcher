@@ -15,7 +15,7 @@ from deepresearcher.service.signals import PostgresSignalBus
 
 logger = get_logger("deepresearcher.service.events")
 
-#: open 席位上限(API/Worker 进程各自持有):终结路径有 close,
+#: open 登记数量上限(API/Worker 进程各自持有):终结路径有 close,
 #: "从未被订阅也从未跑完"的 run 由超额回收兜底,常驻集合不许无界增长。
 _OPEN_MAX = 2048
 _DONE_DEDUP_MAX = 2048
@@ -35,7 +35,7 @@ class RunEventHub:
         self._signal_bus = signal_bus
         self._open_max = max(1, open_max)
         self._lock = threading.Lock()
-        # 键序即 open 的 FIFO 序(dict 保序);超限回收最旧席位。
+        # 键序即 open 的 FIFO 序(dict 保序);超限时回收最早的登记。
         self._open: dict[str, None] = {}
         self._pending: dict[str, list[dict]] = {}
         # done 幂等只需覆盖"同进程相邻两次发布"，插入序即 FIFO 淘汰序。
@@ -71,10 +71,10 @@ class RunEventHub:
         self._pending.pop(oldest, None)
 
     def close(self, run_id: str) -> None:
-        """摘除该 run 的席位与缓冲。
+        """摘除该 run 的 open 登记与缓冲。
 
-        订阅者不需要终结哨兵:SSE 的终止判定读的是库里行状态/已提交帧
-        (DB tail + 门铃),close 只影响本进程 pending 的记账。
+        订阅者经 DB tail + notify 判定终止,close 只影响本进程 pending
+        的记账。
         未取走的 pending 一并丢弃——终结顺序(take→最后一次 flush→close)
         是 executor 的职责,正常路径走不到丢数据;走到即记 warning。
         """
@@ -126,11 +126,11 @@ class RunEventHub:
             logger.warning("run_event_flush_failed run_id=%s", run_id, exc_info=True)
             self._requeue(run_id, records)
             return
-        # 落库即全权交付:订阅者经门铃+DB tail 取帧,不存在进程内快推。
+        # 写入 DB 后以库中副本为准:订阅者经 notify + DB tail 取帧,不经进程内直投。
         await self._signal_bus.notify_event(run_id)
 
     def _requeue(self, run_id: str, records: Sequence[dict]) -> None:
-        """持久化失败时把批次放回队首——只在席位仍在时回插;
+        """持久化失败时把批次放回队首——只在该 run 仍持有 open 登记时回插;
         close 之后的迟到批次按既有契约丢弃,客户端由 SSE 的行终态兜底收敛。"""
         with self._lock:
             if run_id not in self._open:

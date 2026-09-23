@@ -3,9 +3,7 @@
 行按"命名迁移"组织:键是动因的名字(claim、settle_cancelled…),值是
 合法来源集合 -> 目标状态 -> 固定原因。同为落到 running 的动因,合法来源并不
 相同(claim 不得触碰 awaiting_input 行,生命周期自愈可以),所以"来源->目标"
-的二元表装不下这种区别,必须逐个动因命名。不叫 Command:langchain 的
-Command 已在仓库里占走这个词,且 reap/settle 是清扫判定、并非谁在下令——
-transition 更贴近事实,也与 IllegalTransitionError 同一词根。
+的二元表装不下这种区别,必须逐个动因命名。
 
 两种执行机制共用这份数据:
 
@@ -18,7 +16,7 @@ side_effects 只收"目标状态唯一决定的值"(lease/finished_at/resume_pay
 terminal_reason 只在它由动因纯决定时随迁移行固定——reap 与 release 是同一条
 边、仅 reason 不同,恰为反例证明 reason 不是 f(状态)。引擎产出的动态原因
 (finish/fail)与用户文案(error_message)不经表,由调用点覆写。两类东西
-刻意不进表:所有权围栏(lease_owner/attempt 谓词)回答"谁能推",不是"能
+刻意不进表:所有权谓词(lease_owner/attempt)回答"谁能推",不是"能
 不能推";无 claim 的对账写(执行器把状态机真相回写行里)只受 may_overwrite
 "不得覆盖终态"约束——那不是命名迁移。
 """
@@ -59,13 +57,14 @@ TRANSITIONS: dict[str, Transition] = {
     "mark_running": Transition("running", frozenset({"queued", "interrupted", "awaiting_input"})),
     # 引擎暂停等待澄清:释放租约但保留行,等待 answer_resume。
     "await_input": Transition("awaiting_input", frozenset({"running"})),
-    # 心跳/领取者让位:reap 由清扫者代做(判死),release 由持有者自做(shutdown)。
+    # 落到 interrupted 的两条路:reap 由清理扫描补写(lease_expired),
+    # release 由持有者主动让位(server_shutdown)。
     "reap": Transition("interrupted", frozenset({"running"}), reason="lease_expired"),
     "release": Transition("interrupted", frozenset({"running"}), reason="server_shutdown"),
     # 用户提交澄清回答:awaiting_input 重新入队。
     "answer_resume": Transition("queued", frozenset({"awaiting_input"})),
     # 取消的三条路:未领取行立即结算;running 由执行器收到信号后自写;
-    # "接了意图却没写终态就死了"的 interrupted 由清扫者代笔。
+    # executor 退出遗留的 interrupted 行由 settle_cancelled 补写终态。
     "cancel_pending": Transition(
         "cancelled", frozenset({"queued", "awaiting_input", "interrupted"}), reason="user_cancelled"
     ),
@@ -76,7 +75,7 @@ TRANSITIONS: dict[str, Transition] = {
     # 正常终态只能由 running 的执行者写出;reason 来自引擎产物,不经表。
     "finish": Transition("completed", frozenset({"running"})),
     "fail": Transition("failed", frozenset({"running"})),
-    # 启动恢复:无租约的 running/上轮遗留的 interrupted 且无 checkpoint → 判死。
+    # 启动恢复:无租约的 running/上轮遗留的 interrupted 且无 checkpoint → 判定不可恢复。
     "recover_dead": Transition(
         "failed", frozenset({"running", "interrupted"}), reason="server_restart"
     ),

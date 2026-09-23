@@ -2,7 +2,7 @@
 
 `tools/web/search/health.py` 的内存版只在单进程生效；多 worker 部署下，一个 worker
 撞到额度/鉴权耗尽，其它 worker 仍会各自出网撞。本实现把熔断位落到 PostgreSQL，
-谁先撞谁写、其余 worker 在窗口内直接快速失败——"一处发现、全体停手"，但**不停进程**。
+谁先撞额度谁写熔断位，其余 worker 在恢复窗口内快速失败；熔断不停止进程。
 """
 
 from __future__ import annotations

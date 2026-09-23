@@ -526,7 +526,7 @@ def test_approved_reviewer_bypasses_supervisor_and_renders_final_report():
 
 
 def test_terminal_phase_trunk_overrides_every_business_handoff():
-    """主干规则：节点声明 rendering/failed 后，无论业务字段写的是什么去向都收束到渲染。"""
+    """统一路由规则：节点声明 rendering/failed 后，无论业务字段写的是什么，去向都收束到渲染。"""
     exhausted_writer = {
         "run": {"phase": "rendering"},
         "writer": {"status": "exhausted"},

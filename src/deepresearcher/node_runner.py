@@ -76,7 +76,6 @@ async def execute_node(
             "node_events": [event],
         }
         # 运行器的产物与节点产物过同一条不变量校验。此处校验不通过说明
-        # 错误路径本身被改坏，是运行器的 bug——向上抛出，绝不静默降级，
-        # 否则“能兜住一切异常”的假象会掩盖唯一不能出错的那条路径。
+        # 错误路径本身被改坏，是运行器的 bug——向上抛出，绝不静默降级。
         validate_state_invariants(state, failure)
         return failure

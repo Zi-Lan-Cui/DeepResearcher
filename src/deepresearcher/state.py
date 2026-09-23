@@ -160,7 +160,7 @@ _OPTIONAL_SCALAR_KEYS = frozenset(
 
 # operator.add 归约的通道集合(fold 累加、不幂等)。编译子图以普通节点挂进
 # 主图时,其终态携带全部通道,这些键必须整额覆写回主图——见 graph.py 的
-# _subgraph_routed_node;merge_* 家族靠幂等自愈,add 不能。
+# _subgraph_routed_node;merge_* 家族重放同值无副作用,add 不能。
 ADD_REDUCER_KEYS = frozenset(
     key
     for key, hint in get_type_hints(ResearchState, include_extras=True).items()

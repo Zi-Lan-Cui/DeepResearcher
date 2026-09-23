@@ -1,9 +1,8 @@
 """鉴权：argon2 口令哈希、HS256 JWT 编解码、每请求的 current_user 依赖。
 
-P0 决定：无状态 JWT，不建 sessions 表——代价是**无法服务端吊销**（登出=前端删
-token），用短 TTL（默认 12h）兜底。将来加 sessions/jti 黑名单时，改动收敛在
-TokenCodec 与 make_current_user 两处。decode 后仍回表查 User：删号立即失效，
-且把"这个 id 还存在吗"的检查放在唯一入口里。
+无状态 JWT，不建 sessions 表：代价是服务端无法吊销（登出=前端删 token），
+用短 TTL（默认 12h）限制窗口。decode 后仍回表查 User：删号立即失效，
+"这个 id 还存在吗"的检查集中在唯一入口。
 """
 
 from __future__ import annotations
@@ -78,7 +77,7 @@ class TokenCodec:
 
 
 def make_current_user(codec: TokenCodec, session_factory: Callable[[], Any]):
-    """构造 current_user 依赖：手解 Authorization 头（P0 不依赖 OpenAPI securityScheme，
+    """构造 current_user 依赖：手解 Authorization 头（不依赖 OpenAPI securityScheme，
     换来 lifespan 之后可按 state 组装、无 HTTPBearer 闭包绑定问题）。"""
 
     async def current_user(request: Request) -> User:

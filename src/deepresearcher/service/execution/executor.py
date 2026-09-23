@@ -80,8 +80,8 @@ class RunExecutor:
         self._session_factory = session_factory
         self._config = config
         self._hub = hub
-        # 投递/门铃的闸口在 RunEventHub.flush:executor 必须用协调层注入的同一实例,
-        # 不设默认构造以防绕过闸口的第二份闸口。
+        # 投递与 notify 只发生在 RunEventHub.flush:executor 必须复用协调层注入的
+        # 同一实例，不设默认构造，避免出现绕过它的第二个 Hub。
         self._usage_store = usage_store
         self._llm_gate = llm_gate
         self._llm_rate_limiter = llm_rate_limiter
@@ -158,8 +158,8 @@ class RunExecutor:
                 )
         except asyncio.CancelledError:
             if run_id not in self._shutdown_interrupts and run_id not in self._lost_leases:
-                # shield:终态落库事务不再被二次 cancel 打断(shutdown 紧接
-                # 取消的双击时序);本协程照常退出,写库由被 shield 的任务完成。
+                # shield:终态落库事务不再被二次 cancel 打断(shutdown 后紧跟
+                # 取消的二次时序);本协程照常退出,写库由被 shield 的任务完成。
                 try:
                     persisted = await asyncio.shield(
                         self.persist_status(
@@ -332,7 +332,7 @@ class RunExecutor:
                 "payload": {"channel": channel, "text": text[:200]},
             }
             try:
-                # 预览只有一条腿:协议实现(生产 Redis,单栈 harness 注入 Local bus)。
+                # 预览只走注入的总线这一条路径(生产 Redis,单栈 harness 注入 Local bus)。
                 # 已提交帧从不经过这里——SSE 从 DB tail 取。
                 if self._ephemeral_bus is not None:
                     await self._ephemeral_bus.publish(run_id, event)
@@ -378,7 +378,7 @@ class RunExecutor:
     async def _persist_awaiting_input(self, run_id: str, *, claim: RunWork | None = None) -> bool:
         if claim is not None:
             async with self._session_factory() as session:
-                # 来源钉死 running 是所有权围栏(claim 持有者唯一合法写相),
+                # WHERE 固定 running:只有当前 claim 持有者可写(所有权检查),
                 # 故意严于命令表来源并集,不查表。
                 result = await session.execute(
                     update(Run)
@@ -438,7 +438,7 @@ class RunExecutor:
         values = side_effects(status, now=_utcnow())
         values.update({key: value for key, value in extra.items() if value is not None})
         if claim is not None:
-            # 同上:WHERE 的 running 是所有权围栏,严于表并集,不查表。
+            # 同上:WHERE 固定 running 是所有权检查,严于迁移表来源并集,不查表。
             async with self._session_factory() as session:
                 result = await session.execute(
                     update(Run)

@@ -14,7 +14,7 @@ from deepresearcher.schemas import format_tool_receipt
 
 # 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
 # 决定，差额走 not_read_ids 显式排队。引用总条数刻意不设上限：聚焦度是写作
-# 质量问题，交给提示词引导、已读闸与审阅把关，硬上限只会催生凑数式选择。
+# 质量问题，交给提示词引导、已读校验与审阅把关；硬上限只会催生为凑数而选。
 REQUEST_WINDOW_IDS = 50
 
 
@@ -67,7 +67,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         context = runtime.context
         requested = list(dict.fromkeys(evidence_ids))
         # 静默截断曾让模型误以为"请求即已读"，引用被截掉的证据后无限循环烧尽
-        # 轮次（run-e10d1229 事故）。截断现在必须显式回传给模型。
+        # 轮次（引用错位事故）。截断必须显式回传给模型。
         unknown = [item for item in requested if item not in context.evidence_by_id]
         already_read = [
             item

@@ -74,7 +74,7 @@ class StopReason(StrEnum):
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
-    # 全覆盖由 test_sections 钉死:缺描述会静默落到语义相反的兜底句。
+    # 全覆盖由 test_sections 锁定:缺描述会静默落到语义相反的兜底句。
     StopReason.SUFFICIENT: "Supervisor 确认现有材料足以形成完整研究报告。",
     StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
     StopReason.SUFFICIENT_WITHOUT_EVIDENCE: "充分性决策与 Evidence 状态矛盾。",

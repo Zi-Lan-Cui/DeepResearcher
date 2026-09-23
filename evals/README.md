@@ -26,7 +26,7 @@ export DRB_ROOT=../deep_research_bench        # 或各命令显式传 --drb-root
 
 uv run python -m evals.cli split --dev 20     # 生成固定切分，全组共用，改动会使 dev/holdout 归属漂移
 
-export EVAL_BASE_URL=http://127.0.0.1:8080    # 被测服务：API + 至少 1 个 Worker（或 embedded）
+export EVAL_BASE_URL=http://127.0.0.1:8080    # 被测服务：API + 至少 1 个 Worker
 export EVAL_EMAIL=eval@local.dev EVAL_PASSWORD=***
 export SERVICE_DATABASE_URL=postgresql+asyncpg://...   # 行为断言需要 DB 特权读
 ```

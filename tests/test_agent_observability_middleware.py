@@ -263,7 +263,7 @@ async def test_sink_failure_does_not_block_host():
 
 
 def test_context_token_count_includes_tool_call_arguments():
-    """工具参数里住着最重的载荷(草稿/逐字引用);只数 content 会让压缩闸失明。"""
+    """工具参数里是最重的载荷(草稿/逐字引用);只数 content 会让压缩条件永不触发。"""
     from langchain_core.messages import AIMessage
 
     from deepresearcher.agents.middleware.factory import count_message_tokens
@@ -279,7 +279,7 @@ def test_context_token_count_includes_tool_call_arguments():
 
 
 def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
-    """canary:两个跨层字符串契约一旦上游改文案必须当场变红,而不是静默退化。"""
+    """canary:两个跨层字符串契约一旦上游改文案必须当场失败,而不是静默退化。"""
     from langchain.agents.middleware.model_call_limit import _build_limit_exceeded_message
 
     from deepresearcher.agents.middleware.observability import LIMIT_MESSAGE_MARKER
@@ -287,7 +287,7 @@ def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
 
     message = _build_limit_exceeded_message(1, 9, None, 8)
     assert LIMIT_MESSAGE_MARKER in message
-    # observability 剥前缀提指标:回执必须以其 startswith 认脸
+    # observability 剥前缀提指标:回执以 startswith 判定归属
     receipt = format_tool_receipt({"evidence_count": 2})
     assert receipt.startswith("【系统工具执行结果")
     assert receipt.split("\n", 1)[-1] == '{"evidence_count": 2}'
