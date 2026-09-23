@@ -20,7 +20,6 @@ from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
 from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.sinks import CompositeSink
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
@@ -68,7 +67,6 @@ class RunExecutor:
         session_factory: Callable[[], Any],
         config: ServiceConfig,
         hub: RunEventHub,
-        preview: LocalPreviewBus,
         usage_store: UsageStore,
         llm_gate: CapacityGate,
         llm_rate_limiter: ProviderRateLimiter,
@@ -82,7 +80,6 @@ class RunExecutor:
         self._session_factory = session_factory
         self._config = config
         self._hub = hub
-        self._preview = preview
         # 投递/门铃的闸口在 RunEventHub.flush:executor 必须用协调层注入的同一实例,
         # 不设默认构造以防绕过闸口的第二份闸口。
         self._usage_store = usage_store
@@ -335,9 +332,8 @@ class RunExecutor:
                 "payload": {"channel": channel, "text": text[:200]},
             }
             try:
-                # Embedded mode keeps the zero-dependency local fast path. An
-                # independent Worker additionally publishes to Redis when enabled.
-                self._preview.publish_ephemeral(run_id, event)
+                # 预览只有一条腿:协议实现(生产 Redis,单栈 harness 注入 Local bus)。
+                # 已提交帧从不经过这里——SSE 从 DB tail 取。
                 if self._ephemeral_bus is not None:
                     await self._ephemeral_bus.publish(run_id, event)
             except Exception:  # noqa: BLE001 - 预览通道不反噬运行

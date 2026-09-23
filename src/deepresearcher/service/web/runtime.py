@@ -35,7 +35,6 @@ def make_lifespan(
             app.state.engine = stack.engine
             app.state.session_factory = stack.session_factory
             app.state.hub = stack.hub
-            app.state.preview = stack.preview
             app.state.manager = RunManager(
                 session_factory=stack.session_factory,
                 config=service_config,

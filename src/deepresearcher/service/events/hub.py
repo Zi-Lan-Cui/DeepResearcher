@@ -9,7 +9,6 @@ from typing import Any
 from pydantic import BaseModel
 
 from deepresearcher.observability.logging_config import get_logger
-from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.signals import PostgresSignalBus
@@ -28,13 +27,11 @@ class RunEventHub:
         *,
         session_factory: Callable[[], Any],
         store: RunEventStore,
-        preview: LocalPreviewBus,
         signal_bus: PostgresSignalBus,
         open_max: int = _OPEN_MAX,
     ) -> None:
         self._session_factory = session_factory
         self.store = store
-        self._preview = preview
         self._signal_bus = signal_bus
         self._open_max = max(1, open_max)
         self._lock = threading.Lock()
@@ -72,11 +69,12 @@ class RunEventHub:
         oldest = next(iter(self._open))
         del self._open[oldest]
         self._pending.pop(oldest, None)
-        self._preview.drop(oldest)
 
     def close(self, run_id: str) -> None:
-        """终止该 run 的分发：先向订阅者发 CLOSE_STREAM 哨兵，再摘席位与缓冲。
+        """摘除该 run 的席位与缓冲。
 
+        订阅者不需要终结哨兵:SSE 的终止判定读的是库里行状态/已提交帧
+        (DB tail + 门铃),close 只影响本进程 pending 的记账。
         未取走的 pending 一并丢弃——终结顺序(take→最后一次 flush→close)
         是 executor 的职责,正常路径走不到丢数据;走到即记 warning。
         """
@@ -87,7 +85,6 @@ class RunEventHub:
             logger.warning(
                 "run_event_pending_dropped_on_close run_id=%s count=%d", run_id, len(pending)
             )
-        self._preview.close(run_id)
 
     def is_open(self, run_id: str) -> bool:
         with self._lock:
@@ -124,15 +121,12 @@ class RunEventHub:
         if not records:
             return
         try:
-            assigned = await self.store.append(run_id, records)
+            await self.store.append(run_id, records)
         except Exception:
             logger.warning("run_event_flush_failed run_id=%s", run_id, exc_info=True)
             self._requeue(run_id, records)
             return
-        try:
-            self._preview.deliver(run_id, assigned)
-        except Exception:
-            logger.warning("run_event_deliver_failed run_id=%s", run_id, exc_info=True)
+        # 落库即全权交付:订阅者经门铃+DB tail 取帧,不存在进程内快推。
         await self._signal_bus.notify_event(run_id)
 
     def _requeue(self, run_id: str, records: Sequence[dict]) -> None:

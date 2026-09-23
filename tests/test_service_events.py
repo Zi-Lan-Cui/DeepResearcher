@@ -1,12 +1,17 @@
-"""RunEventHub / LocalPreviewBus 闸口契约:收放铁律与降级语义的钉桩。"""
+"""RunEventHub 闸口契约与 LocalPreviewBus 协议实现的钉桩。
+
+Hub 只负责:席位记账、pending 缓冲、flush(append→门铃)的失败语义。
+已提交事件不存在进程内快推——落库即全权交付,SSE 经门铃/DB tail 取帧。
+"""
 
 import asyncio
 
 import pytest
 import pytest_asyncio
 
+from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import CLOSE_STREAM, LocalPreviewBus
+from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.sinks import CompositeSink
 
 pytestmark = pytest.mark.asyncio
@@ -17,15 +22,15 @@ async def _get_message(queue, timeout=1.0):
 
 
 class FakeStore:
-    """模拟 RunEventStore:append 分配 seq 并原样返回;after 供 tail。"""
+    """模拟 RunEventStore:append 分配 seq;after 供 tail。"""
 
-    def __init__(self):
+    def __init__(self, log: list[str]):
         self.batches: list[list[dict]] = []
-        self.calls: list[str] = []
+        self.log = log
         self.fail_next = False
 
     async def append(self, run_id, records):
-        self.calls.append("append")
+        self.log.append("append")
         if self.fail_next:
             self.fail_next = False
             raise ConnectionError("db blip")
@@ -43,11 +48,11 @@ class FakeStore:
 
 
 class FakeSignal:
-    def __init__(self):
-        self.events: list[str] = []
+    def __init__(self, log: list[str]):
+        self.log = log
 
     async def notify_event(self, run_id):
-        self.events.append(run_id)
+        self.log.append(f"notify:{run_id}")
 
 
 class _NoRunSession:
@@ -64,28 +69,34 @@ class _SessionCtx:
 
 
 @pytest.fixture
-def store():
-    return FakeStore()
+def log():
+    return []
 
 
 @pytest.fixture
-def signal():
-    return FakeSignal()
+def store(log):
+    return FakeStore(log)
+
+
+@pytest.fixture
+def signal(log):
+    return FakeSignal(log)
 
 
 @pytest_asyncio.fixture
-async def preview():
-    return LocalPreviewBus(asyncio.get_running_loop())
-
-
-@pytest_asyncio.fixture
-async def hub(preview, store, signal):
+async def hub(store, signal):
     return RunEventHub(
         session_factory=lambda: _SessionCtx(),
         store=store,
-        preview=preview,
         signal_bus=signal,
     )
+
+
+@pytest_asyncio.fixture
+async def preview_bus():
+    bus = LocalPreviewBus()
+    yield bus
+    await bus.close()
 
 
 # ---------- Hub：收（write/席位） ----------
@@ -97,17 +108,17 @@ async def test_write_drops_unrouted_without_open_seat(hub):
     assert hub._pending.get("never-opened", []) == []  # noqa: SLF001
 
 
-async def test_write_from_worker_thread_and_flush_delivers(hub, preview):
-    """任意线程 write → 循环线程 flush 后订阅者收帧(锁纪律 + 回环投递)。"""
+async def test_write_from_worker_thread_and_flush_persists(hub, store, log):
+    """任意线程 write → 循环线程 flush 落库并发门铃(锁纪律;不再回环投递)。"""
     hub.open("run-5")
-    _, queue = preview.subscribe("run-5")
 
     def write_from_thread():
         hub.write({"run_id": "run-5", "event_type": "x", "payload": {}})
 
     await asyncio.to_thread(write_from_thread)
     await hub.flush("run-5")
-    assert (await _get_message(queue))["seq"] == 1
+    assert store.batches[0][0]["seq"] == 1
+    assert log == ["append", "notify:run-5"]
 
 
 async def test_pydantic_model_records_are_dumped(hub):
@@ -125,24 +136,21 @@ async def test_pydantic_model_records_are_dumped(hub):
     assert "seq" not in pending[0]
 
 
-async def test_open_bounded_evicts_oldest_without_termination_sentinel(preview, store, signal):
-    """回收 ≠ 终结:最旧席位被逐出时不发 CLOSE_STREAM,只静默拆线降级 DB tail。"""
+async def test_open_bounded_evicts_oldest(store, signal):
+    """席位超额按插入序回收;被逐 run 的迟到 write/flush 静默 no-op。"""
     hub = RunEventHub(
         session_factory=lambda: _SessionCtx(),
         store=store,
-        preview=preview,
         signal_bus=signal,
         open_max=2,
     )
     hub.open("run-old")
-    _, old_queue = preview.subscribe("run-old")
     hub.open("run-mid")
     assert hub.is_open("run-old") and hub.is_open("run-mid")
 
     hub.open("run-new")  # 超限:run-old 按插入序出局
     assert not hub.is_open("run-old")
     assert hub.is_open("run-mid") and hub.is_open("run-new")
-    assert old_queue.empty()  # 无哨兵——订阅者不被告知 run 已死
     hub.write({"run_id": "run-old", "event_type": "late", "payload": {}})  # 静默丢弃不炸
     await hub.flush("run-old")
     assert store.batches == []
@@ -151,23 +159,20 @@ async def test_open_bounded_evicts_oldest_without_termination_sentinel(preview, 
 # ---------- Hub：放（flush 编排与失败语义） ----------
 
 
-async def test_flush_ordering_append_then_deliver_then_notify(hub, preview, store, signal):
+async def test_flush_orders_append_then_notify(hub, store, log):
     hub.open("run-7")
-    _, queue = preview.subscribe("run-7")
     hub.write({"run_id": "run-7", "event_type": "before", "payload": {}})
     hub.write({"run_id": "run-7", "event_type": "after", "payload": {}})
     await hub.flush("run-7")
 
-    received = [await _get_message(queue), await _get_message(queue)]
-    assert [item["event_type"] for item in received] == ["before", "after"]
-    assert [item["seq"] for item in received] == [1, 2]
-    assert signal.events == ["run-7"]  # 门铃每批一次,在 append 之后
-    # pending 已排空
+    assert log == ["append", "notify:run-7"]  # 门铃每批一次,在 append 之后
+    assert [r["event_type"] for r in store.batches[0]] == ["before", "after"]
+    assert [r["seq"] for r in store.batches[0]] == [1, 2]
     with hub._lock:  # noqa: SLF001
         assert hub._pending.get("run-7", []) == []  # noqa: SLF001
 
 
-async def test_flush_requeues_head_on_store_failure(hub, store, signal):
+async def test_flush_requeues_head_on_store_failure(hub, store, log):
     """排水失败必须回插队首:done 帧整批丢失会让全部 SSE 靠兜底才收敛。"""
     hub.open("r1")
     hub.write({"run_id": "r1", "event_type": "engine_0", "payload": {}})
@@ -181,7 +186,7 @@ async def test_flush_requeues_head_on_store_failure(hub, store, signal):
             "engine_0",
             "run_done",
         ]
-    assert signal.events == []  # 失败批不发门铃
+    assert log == ["append"]  # 失败的 append 有记录，门铃不发
 
     hub.write({"run_id": "r1", "event_type": "engine_1", "payload": {}})
     await hub.flush("r1")
@@ -192,41 +197,14 @@ async def test_flush_requeues_head_on_store_failure(hub, store, signal):
     ]  # 回插批次在新事件之前,seq 分配顺序不乱
 
 
-async def test_deliver_failure_after_commit_never_requeues(hub, store, signal):
-    """铁律:commit 成功即覆水难收——投递抛错只告警,绝不回插造重复批次。"""
-
-    class ExplodingPreview:
-        def deliver(self, *_args):
-            raise RuntimeError("local push down")
-
-        def close(self, *_args):
-            return None
-
-        def drop(self, *_args):
-            return None
-
-        def publish_ephemeral(self, *_args):
-            return None
-
-    hub._preview = ExplodingPreview()  # noqa: SLF001 - 注入故障
-    hub.open("r2")
-    hub.write({"run_id": "r2", "event_type": "engine_0", "payload": {}})
-
-    await hub.flush("r2")  # 不得抛出
-    assert len(store.batches) == 1  # 已持久化
-    with hub._lock:  # noqa: SLF001
-        assert hub._pending.get("r2", []) == []  # noqa: SLF001 - 不回插
-    assert signal.events == ["r2"]  # 门铃照发(它自带吞错)
-
-
-async def test_close_sentinels_subscribers_and_late_writes_drop(hub, preview):
+async def test_close_drops_seat_and_late_writes_drop(hub, store):
     hub.open("run-4")
-    _, queue = preview.subscribe("run-4")
     hub.close("run-4")
-    assert await _get_message(queue) is CLOSE_STREAM
+    assert not hub.is_open("run-4")
     hub.write({"run_id": "run-4", "event_type": "late", "payload": {}})
     await hub.flush("run-4")
     assert hub._pending.get("run-4") in (None, [])  # noqa: SLF001
+    assert store.batches == []
 
 
 # ---------- Hub：服务合成帧 ----------
@@ -248,65 +226,91 @@ async def test_publish_done_is_idempotent_per_process(hub, store):
     assert store.batches[0][0]["payload"]["status"] == "failed"  # 无行时的安全兜底
 
 
-# ---------- Preview：纯投递半区 ----------
+# ---------- LocalPreviewBus：EphemeralEventBus 的同环实现 ----------
 
 
-async def test_deliver_reaches_every_subscriber_with_same_object(preview):
-    _, queue_a = preview.subscribe("run-1")
-    _, queue_b = preview.subscribe("run-1")
-    record = {"run_id": "run-1", "event_type": "node_started", "payload": {}, "seq": 1}
-    preview.deliver("run-1", [record])
-    first = await _get_message(queue_a)
-    assert first is record
-    assert await _get_message(queue_b) is first
+async def test_local_bus_satisfies_protocol():
+    bus = LocalPreviewBus()
+    assert isinstance(bus, EphemeralEventBus)
+    await bus.close()
 
 
-async def test_unsubscribe_stops_delivery(preview):
-    key, queue_a = preview.subscribe("run-2")
-    _, queue_b = preview.subscribe("run-2")
-    preview.unsubscribe("run-2", key)
-    preview.deliver("run-2", [{"event_type": "x", "seq": 2}])
-    assert queue_a.empty()
-    assert (await _get_message(queue_b))["seq"] == 2
+async def test_publish_whitelist_and_no_seq(preview_bus):
+    subscription = await preview_bus.subscribe("run-1")
+    await preview_bus.publish(
+        "run-1",
+        {
+            "run_id": "run-1",
+            "event_type": "text_delta",
+            "payload": {"channel": "supervisor", "text": "甲"},
+        },
+    )
+    for invalid in (
+        {
+            "run_id": "other-run",
+            "event_type": "text_delta",
+            "payload": {"channel": "supervisor", "text": "串门"},
+        },
+        {"run_id": "run-1", "event_type": "run_status", "payload": {}},
+        {
+            "run_id": "run-1",
+            "event_type": "text_delta",
+            "payload": {"channel": "supervisor", "text": ""},
+        },
+    ):
+        await preview_bus.publish("run-1", invalid)
+    frame = await _get_message(subscription.queue)
+    assert frame["payload"]["text"] == "甲" and "seq" not in frame
+    assert subscription.queue.empty()  # 白名单外的帧没有排队
 
 
-async def test_overflow_drops_oldest_and_injects_truncation_marker():
-    preview = LocalPreviewBus(asyncio.get_running_loop(), queue_maxsize=2)
-    _, queue = preview.subscribe("run-3")
-    batch = [
-        {"run_id": "run-3", "event_type": f"e{i}", "payload": {}, "seq": i + 1} for i in range(4)
-    ]
-    preview.deliver("run-3", batch)
-
-    delivered = [await _get_message(queue), await _get_message(queue)]
-    assert [item["event_type"] for item in delivered] == ["stream_truncated"] * 2
-    assert [item["seq"] for item in delivered] == [1, 2]  # 标记沿用被丢者的 seq
-    assert [item["seq"] for item in batch] == [1, 2, 3, 4]  # 批次本身不受溢出影响
-
-
-async def test_publish_ephemeral_reaches_subscriber(preview):
-    _, queue = preview.subscribe("run-4")
-    preview.publish_ephemeral("run-4", {"run_id": "run-4", "event_type": "text_delta"})
-    frame = await _get_message(queue)
-    assert frame["event_type"] == "text_delta" and "seq" not in frame
+async def test_overflow_drops_oldest_without_marker():
+    """预览可丢:队满丢最旧,不注入截断标记——已提交帧根本不走这条通道。"""
+    bus = LocalPreviewBus(queue_maxsize=2)
+    subscription = await bus.subscribe("run-3")
+    for index in range(4):
+        await bus.publish(
+            "run-3",
+            {
+                "run_id": "run-3",
+                "event_type": "text_delta",
+                "payload": {"channel": "supervisor", "text": f"t{index}"},
+            },
+        )
+    kept = [await _get_message(subscription.queue), await _get_message(subscription.queue)]
+    assert [frame["payload"]["text"] for frame in kept] == ["t2", "t3"]
+    assert subscription.queue.empty()
 
 
-async def test_drop_is_silent_and_close_sentinels(preview):
-    _, queue_dropped = preview.subscribe("run-d")
-    preview.drop("run-d")
-    assert queue_dropped.empty()
-    preview.deliver("run-d", [{"event_type": "late"}])  # 拆线后投递 no-op
-    assert queue_dropped.empty()
+async def test_subscription_close_stops_delivery(preview_bus):
+    first = await preview_bus.subscribe("run-4")
+    second = await preview_bus.subscribe("run-4")
+    await first.close()
+    await first.close()  # 幂等
+    await preview_bus.publish(
+        "run-4",
+        {
+            "run_id": "run-4",
+            "event_type": "text_delta",
+            "payload": {"channel": "supervisor", "text": "x"},
+        },
+    )
+    assert first.queue.empty()
+    assert not second.queue.empty()
 
-    _, queue_closed = preview.subscribe("run-c")
-    preview.close("run-c")
-    assert await _get_message(queue_closed) is CLOSE_STREAM
 
-
-async def test_deliver_from_other_thread_hops_to_loop(preview):
-    _, queue = preview.subscribe("run-t")
-    await asyncio.to_thread(preview.deliver, "run-t", [{"event_type": "x", "seq": 9}])
-    assert (await _get_message(queue))["seq"] == 9
+async def test_bus_close_releases_all_and_shuts_publish(preview_bus):
+    subscription = await preview_bus.subscribe("run-5")
+    await preview_bus.close()
+    await preview_bus.publish(
+        "run-5",
+        {
+            "run_id": "run-5",
+            "event_type": "text_delta",
+            "payload": {"channel": "supervisor", "text": "x"},
+        },
+    )
+    assert subscription.queue.empty()
 
 
 # ---------- CompositeSink ----------

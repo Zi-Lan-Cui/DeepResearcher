@@ -35,8 +35,6 @@ from deepresearcher.routing import NodeName
 from deepresearcher.schemas import StopReason
 from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
 
-TRUNCATED_EVENT = "stream_truncated"
-
 _STAGE_TITLES: dict[str, str] = {
     NodeName.ROUTER: "理解问题 · Router",
     NodeName.CLARIFY: "澄清范围 · Clarify",
@@ -182,10 +180,6 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         if channel != "supervisor" or not text:
             return None
         return SseFrame(event="text_delta", data={"channel": channel, "text": text})
-    if event_type == TRUNCATED_EVENT:
-        return _frame(
-            "error", seq, {"text": "实时推送拥塞，部分进度被跳过；刷新页面可回放完整进度"}
-        )
 
     # ---- 服务层合成事件 ----
     if event_type == "run_status":
