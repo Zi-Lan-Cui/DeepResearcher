@@ -1,16 +1,4 @@
-"""RunEventHub：事件面的唯一闸口——收(缓冲/席位)、放(落库/投递/门铃)、服务合成帧。
-
-铁律(全类的存在理由,review 时逐条盯):
-- ``write()`` 是"收":同步、任意线程可调;持锁、**永不 await**;
-- ``flush()`` 是"放":仅事件循环线程调用;锁内只摘数据,**锁外 await**;
-  append 成功后投递抛错只告警、绝不回插(持久覆水难收,回插=制造重复批次);
-- 接缝就是方法边界:除 RunEventHub.flush 外任何代码不得直调 store.append——
-  绕过本闸口 = 消费端失去本地投递与门铃,只靠轮询恢复。
-
-席位(open)是本进程概念:executor/manager 声明"这个 run 的帧从这里进出",
-超上限按插入序 FIFO 回收(回收≠终结:静默拆线降级 DB tail,不发 CLOSE_STREAM)。
-逐字预览直推在 LocalPreviewBus;本类只在 close/drop 时指挥它的生命周期。
-"""
+"""RunEventHub：事件推送的唯一管理"""
 
 from __future__ import annotations
 
@@ -45,7 +33,7 @@ class RunEventHub:
         open_max: int = _OPEN_MAX,
     ) -> None:
         self._session_factory = session_factory
-        self.store = store  # 只读句柄:manager/SSE 经它 tail;写入唯一入口仍是本类 flush
+        self.store = store 
         self._preview = preview
         self._signal_bus = signal_bus
         self._open_max = max(1, open_max)
@@ -56,8 +44,6 @@ class RunEventHub:
         # done 幂等只需覆盖"同进程相邻两次发布"，插入序即 FIFO 淘汰序。
         self._done_published: dict[str, None] = {}
         self._announced_unrouted = False
-
-    # ---- 收：引擎 sink 契约（任意线程；持锁；绝不 await）----
 
     def write(self, record: BaseModel | Mapping[str, Any] | Any) -> None:
         """把无 seq 记录放入该 run 的 pending 缓冲；未 open 的 run 丢弃并告警一次。"""
@@ -74,8 +60,6 @@ class RunEventHub:
                 return
             self._pending.setdefault(run_id, []).append(data)
 
-    # ---- 席位生命周期 ----
-
     def open(self, run_id: str) -> None:
         with self._lock:
             if run_id not in self._open:
@@ -85,8 +69,6 @@ class RunEventHub:
                 self._evict_oldest_locked()
 
     def _evict_oldest_locked(self) -> None:
-        # 回收 ≠ 终结:preview.drop 静默拆线(不发 CLOSE_STREAM,run 可能还活着);
-        # 在途 flush 之后对已回收席位的投递天然是 no-op。
         oldest = next(iter(self._open))
         del self._open[oldest]
         self._pending.pop(oldest, None)
@@ -110,8 +92,6 @@ class RunEventHub:
     def is_open(self, run_id: str) -> bool:
         with self._lock:
             return run_id in self._open
-
-    # ---- 服务层合成帧（低频编排；write 的语法糖，不 flush）----
 
     async def publish_status(self, run_id: str, status: str) -> None:
         self.write({"run_id": run_id, "event_type": "run_status", "payload": {"status": status}})
@@ -138,8 +118,6 @@ class RunEventHub:
             }
         )
 
-    # ---- 放：排水编排（仅事件循环线程；锁内摘数据，锁外 await）----
-
     async def flush(self, run_id: str) -> None:
         with self._lock:
             records = self._pending.pop(run_id, [])
@@ -147,14 +125,13 @@ class RunEventHub:
             return
         try:
             assigned = await self.store.append(run_id, records)
-        except Exception:  # noqa: BLE001 - 排水失败不毒化 run,帧回插队首等下轮
+        except Exception: 
             logger.warning("run_event_flush_failed run_id=%s", run_id, exc_info=True)
             self._requeue(run_id, records)
             return
-        # commit 成功即覆水难收:以下两步的异常只记日志,绝不回插(那会造重复批次)。
         try:
             self._preview.deliver(run_id, assigned)
-        except Exception:  # noqa: BLE001 - 本地直推尽力而为,DB tail 是地板
+        except Exception:  
             logger.warning("run_event_deliver_failed run_id=%s", run_id, exc_info=True)
         await self._signal_bus.notify_event(run_id)
 
@@ -165,8 +142,6 @@ class RunEventHub:
             if run_id not in self._open:
                 return
             self._pending.setdefault(run_id, [])[:0] = records
-
-    # ---- 内部 ----
 
     def _drop_unrouted_locked(self, run_id: Any) -> None:
         if not self._announced_unrouted:
