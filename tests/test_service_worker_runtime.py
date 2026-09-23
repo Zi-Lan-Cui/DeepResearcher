@@ -32,11 +32,7 @@ async def _wait_graph_count(graphs, expected):
 async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path):
     """Exercise the M8 process boundaries against one shared durable database."""
     settings = service_settings(tmp_path)
-    config = service_config(
-        tmp_path,
-        api_embedded_worker=False,
-        worker_poll_seconds=0.01,
-    )
+    config = service_config(tmp_path, worker_poll_seconds=0.01)
     gate = asyncio.Event()
     built_graphs: list[FakeGraph] = []
 
@@ -46,12 +42,10 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
         built_graphs.append(graph)
         return graph
 
-    def forbidden_api_graph(**_kwargs):
-        raise AssertionError("API control plane attempted graph execution")
-
     async with worker_lifespan(settings, config, graph_factory=worker_graph_factory):
         async with worker_lifespan(settings, config, graph_factory=worker_graph_factory):
-            first_app = create_app(settings, config, graph_factory=forbidden_api_graph)
+            first_app = create_app(settings, config)
+            assert not hasattr(first_app.state, "execution")
             async with first_app.router.lifespan_context(first_app):
                 transport = httpx.ASGITransport(app=first_app)
                 async with httpx.AsyncClient(
@@ -74,7 +68,7 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
 
             # First API is now gone while the independently owned graph remains live.
             gate.set()
-            second_app = create_app(settings, config, graph_factory=forbidden_api_graph)
+            second_app = create_app(settings, config)
             async with second_app.router.lifespan_context(second_app):
                 transport = httpx.ASGITransport(app=second_app)
                 async with httpx.AsyncClient(

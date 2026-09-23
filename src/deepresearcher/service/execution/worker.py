@@ -1,4 +1,4 @@
-"""Lease-based run worker shared by embedded and independent process modes."""
+"""Lease-based run worker for the independent execution process."""
 
 from __future__ import annotations
 

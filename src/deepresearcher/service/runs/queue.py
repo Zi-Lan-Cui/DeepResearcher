@@ -24,7 +24,7 @@ from deepresearcher.service.runs.transitions import (
 class ClaimCapacitySaturated:
     """全局并发上限已满、本轮无法领取——与"没有可领取的行"是两种语义。
 
-    调用方(embedded/独立 worker 的 wake)据此把显式 preferred 放回队列;
+    调用方(worker 的 wake)据此把显式 preferred 放回队列;
     若混同为 None,容量满瞬间从 recover/settle 弹出的 resume 任务会被吞掉,
     该 interrupted 行要沉没到下次进程重启。
     """
@@ -52,9 +52,13 @@ class RunWork:
 class PostgresRunQueue:
     """Claim queued work with database ownership and expiring leases.
 
-    PostgreSQL uses ``FOR UPDATE SKIP LOCKED`` so independent workers never wait
-    on or receive the same row. SQLite ignores that clause; the process lock keeps
-    the test/embedded compatibility path deterministic.
+    Single-winner comes from the conditional UPDATE itself (status ∈ sources +
+    cancellation guard + attempt bump): it is an atomic CAS at the row, so a
+    losing claimer sees rowcount 0. PostgreSQL adds ``FOR UPDATE SKIP LOCKED``
+    candidate selection and an xact advisory lock around the count+claim
+    capacity check. ``_claim_lock`` only serializes this instance's own
+    poll/wake paths — multi-host correctness (e.g. two workers on one SQLite
+    file in tests) rests on the CAS, not on that lock.
     """
 
     def __init__(

@@ -5,15 +5,12 @@ keeps only application assembly so importing the API does not also hide route,
 authentication, SSE, and worker-lifecycle implementations in one large file.
 """
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from deepresearcher.config import Settings
-from deepresearcher.graph import build_graph
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.web.routes.auth import router as auth_router
@@ -27,14 +24,16 @@ _FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 def create_app(
     settings: Settings | None = None,
     config: ServiceConfig | None = None,
-    *,
-    graph_factory: Callable[..., Any] = build_graph,
 ) -> FastAPI:
-    """Build the HTTP control plane and mount its static client."""
+    """Build the HTTP control plane and mount its static client.
+
+    The control plane structurally cannot execute runs: graph assembly and the
+    worker lifecycle live only in ``deepresearcher.worker``.
+    """
 
     app = FastAPI(
         title="DeepResearcher Service",
-        lifespan=make_lifespan(settings, config, graph_factory),
+        lifespan=make_lifespan(settings, config),
     )
     app.state.service_logger = get_logger("deepresearcher.service.api")
     app.include_router(auth_router)

@@ -3,8 +3,8 @@
 The API owns HTTP/auth/SSE.  This runtime owns graph execution resources and
 autonomously consumes the durable PostgreSQL queue.
 
-基础设施装配在 ``service.runtime_stack``(与 API runtime 共享)。这里保留的
-Worker-only 差异:material/http/preview 恒开、启动恢复持 advisory lock、
+基础设施装配在 ``service.runtime_stack``(与 API runtime 共享,role="worker" 领取
+material/http)。这里保留的 Worker-only 差异:启动恢复持 advisory lock、
 coordinator 的订阅与 shutdown。
 """
 
@@ -62,13 +62,7 @@ async def worker_lifespan(
     """Create all resources owned by one independent Worker process."""
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()
-    async with build_runtime_stack(
-        service_config,
-        engine_settings,
-        with_material=True,
-        with_http=True,
-        with_preview_bus=True,
-    ) as stack:
+    async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:
         worker = WorkerCoordinator(
             settings=engine_settings,
             session_factory=stack.session_factory,
