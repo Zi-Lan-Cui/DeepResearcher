@@ -14,7 +14,8 @@ wheels/
 
 # Local planning and design notes
 docs/
-/TODO.md
+TODO.md
+CLAUDE.md
 /eval/
 
 # env
