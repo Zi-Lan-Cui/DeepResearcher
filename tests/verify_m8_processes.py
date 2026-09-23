@@ -203,7 +203,6 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
         "SERVICE_JWT_SECRET": "m8-automation-secret-must-be-at-least-32-chars",
         "SERVICE_HOST": "127.0.0.1",
         "SERVICE_PORT": str(port),
-        "SERVICE_API_EMBEDDED_WORKER": "false",
         "SERVICE_MAX_CONCURRENT_RUNS_PER_USER": "32",
         "SERVICE_MAX_GLOBAL_RUNNING_RUNS": "8",
         "SERVICE_MAX_GLOBAL_QUEUED_RUNS": "100",

@@ -4,8 +4,8 @@
 信号总线、checkpointer(serde 白名单)、事件 store/publisher,以及它们的
 teardown 顺序。刻意**不收**的差异——留在各自 runtime 里保持可见:
 - API 的 auth/login-limiter/RunManager;Worker 的 coordinator/订阅/恢复锁;
-- material_store 与 http_client 在 API 仅 embedded-worker 模式创建,Worker 恒创建;
-- redis 预览总线在 API 需 `not api_embedded_worker`,Worker 无条件按开关。
+- material_store 与 http_client 仅 `role="worker"` 创建(API 是纯控制面,永不执行);
+- redis 预览总线两 role 同规则:按 `redis_preview_enabled` 开关,工厂失败退化为 None。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -52,20 +52,21 @@ class RuntimeStack:
     http_client: HttpClient | None
 
 
+Role = Literal["api", "worker"]
+
+
 @asynccontextmanager
 async def build_runtime_stack(
     service_config: ServiceConfig,
     settings: Settings,
     *,
-    with_material: bool,
-    with_http: bool,
-    with_preview_bus: bool,
+    role: Role,
 ) -> AsyncIterator[RuntimeStack]:
     """装配两种 runtime 共享的基础设施,退出时按相反顺序释放。
 
     每获取一个资源就立刻登记进 AsyncExitStack——装配半途抛错(信号总线起了、
     checkpointer 没开成之类)也逆序回卷,不留悬挂连接;RuntimeStack 是纯持有物。
-    三个 with_* 开关就是两进程真实差异的最小表达——想合并差异前先看清这里。
+    role 就是两进程真实差异的最小表达——想加第三种形态前先看清这里。
     """
     async with AsyncExitStack() as resources:
         await migrate_database(service_config.database_url)
@@ -78,7 +79,7 @@ async def build_runtime_stack(
         resources.push_async_callback(signal_bus.close)
 
         material_store = None
-        if with_material:
+        if role == "worker":
             material_store = await create_research_material_store(
                 backend=service_config.material_store_backend,
                 redis_url=service_config.material_redis_url,
@@ -87,11 +88,11 @@ async def build_runtime_stack(
                 document_ttl_seconds=service_config.document_material_ttl_seconds,
             )
             resources.push_async_callback(material_store.close)
-        http_client = HttpClient(settings.search) if with_http else None
+        http_client = HttpClient(settings.search) if role == "worker" else None
         if http_client is not None:
             resources.push_async_callback(http_client.aclose)
         ephemeral_bus: EphemeralEventBus | None = None
-        if with_preview_bus and service_config.redis_preview_enabled:
+        if service_config.redis_preview_enabled:
             ephemeral_bus = await create_redis_ephemeral_bus(
                 service_config.redis_url,
                 channel_prefix=service_config.redis_channel_prefix,

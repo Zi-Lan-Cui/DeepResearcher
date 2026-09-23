@@ -6,6 +6,7 @@ import pytest_asyncio
 
 from deepresearcher.service.api import create_app
 from deepresearcher.service.events.ephemeral import EphemeralSubscription
+from deepresearcher.service.execution.runtime import worker_lifespan
 from fakes_service import (
     FakeGraph,
     parse_sse,
@@ -20,10 +21,6 @@ PASSWORD = "goodpassword"
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
-
-
-def _tick_events(frames):
-    return [data["text"] for event, data in frames if event == "tick"]
 
 
 @pytest_asyncio.fixture
@@ -47,17 +44,25 @@ async def client(tmp_path):
         graph._sink = event_sink
         return graph
 
-    app = create_app(
-        service_settings(tmp_path), service_config(tmp_path), graph_factory=graph_factory
-    )
-    # httpx ASGITransport 不执行 lifespan：在当前循环内手动进出，
-    # 使 engine/fanout/manager 与测试共享同一个事件循环。
-    async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://svc") as c:
-            c.graphs = graphs  # type: ignore[attr-defined]
-            c.app = app  # type: ignore[attr-defined]
-            yield c
+    settings = service_settings(tmp_path)
+    config = service_config(tmp_path, worker_poll_seconds=0.01)
+    # API 与 Worker 是各自独立的 lifespan,共享同一 sqlite 文件。
+    # httpx ASGITransport 不执行 lifespan:两个上下文都在当前循环内手动进出,
+    # engine/hub/manager/worker 与测试共享同一事件循环。
+    async with worker_lifespan(settings, config, graph_factory=graph_factory) as worker:
+        app = create_app(settings, config)
+        async with app.router.lifespan_context(app):
+            # sqlite 上没有跨 host NOTIFY:API 的 run_available / cancel 门铃只唤
+            # API 自己的订阅者,故在同进程桥给 worker。event_committed 刻意**不**桥——
+            # 已提交帧必须走 SSE 的 DB tail,这正是分进程世界的真实路径。
+            api_bus = app.state.manager.signal_bus
+            api_bus.subscribe("run_available", lambda _payload: worker.wake())
+            api_bus.subscribe("run_cancel_requested", worker.handle_cancel_notification)
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://svc") as c:
+                c.graphs = graphs  # type: ignore[attr-defined]
+                c.app = app  # type: ignore[attr-defined]
+                yield c
 
 
 async def register(client, email="a@test.dev") -> str:
@@ -173,14 +178,12 @@ async def test_run_lifecycle_detail_and_list(client):
 
 
 async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
-    def forbidden_graph_factory(**_kwargs):
-        raise AssertionError("control-plane API must not build or execute a graph")
+    """没有 worker host 时,run 永远停在 queued——控制面结构上无法执行。
 
-    app = create_app(
-        service_settings(tmp_path),
-        service_config(tmp_path, api_embedded_worker=False),
-        graph_factory=forbidden_graph_factory,
-    )
+    纯度不再靠 forbidden factory 探测:create_app 没有 graph 注入口,
+    app.state 上也不存在执行面属性。
+    """
+    app = create_app(service_settings(tmp_path), service_config(tmp_path))
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://svc") as isolated:
@@ -194,7 +197,8 @@ async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
                 f"/api/runs/{created.json()['run_id']}", headers=_auth(token)
             )
             assert detail.json()["status"] == "queued"
-            assert app.state.execution is None
+            assert not hasattr(app.state, "execution")
+            assert not hasattr(app.state, "material_store")
             cancelled = await isolated.post(
                 f"/api/runs/{created.json()['run_id']}/cancel", headers=_auth(token)
             )
