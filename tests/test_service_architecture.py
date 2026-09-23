@@ -131,6 +131,37 @@ def test_run_control_plane_does_not_import_execution_plane():
     )
 
 
+def test_web_control_plane_does_not_import_execution_plane():
+    """API 进程结构上无法执行:web→execution 的任何 import 都是 embedded 的还魂。"""
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT / "service" / "web"):
+        for lineno, resolved in _resolved_imports(path):
+            if _under(EXECUTION_PREFIX, resolved):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], "web control plane must not import execution modules:\n" + "\n".join(
+        violations
+    )
+
+
+def test_no_production_module_imports_local_preview_bus():
+    """LocalPreviewBus 只由单栈 harness(测试)构造。
+
+    生产的预览腿永远经 EphemeralEventBus 协议装配(Redis 总线,或退化为 None);
+    若谁把本地总线 import 进 src,等于重新发明 embedded 模式的进程内快推。
+    """
+    preview_prefix = "deepresearcher.service.events.preview"
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT):
+        for lineno, resolved in _resolved_imports(path):
+            if _under(preview_prefix, resolved):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], "production code must not import LocalPreviewBus:\n" + "\n".join(
+        violations
+    )
+
+
 def test_execution_runtime_can_be_imported_before_run_manager():
     """Canonical package modules must remain safe in either import order."""
 

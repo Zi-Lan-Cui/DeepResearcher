@@ -24,7 +24,12 @@ def _auth(token: str) -> dict[str, str]:
 
 
 @pytest_asyncio.fixture
-async def client(tmp_path):
+async def client(tmp_path, monkeypatch):
+    # 已提交帧唯一的推送节奏来源是 SSE_DB_POLL_SECONDS(sqlite 无门铃可指望);
+    # 压到 0.1s 让 tail 等待不再占据用例预算。生产常量由 verify_m8 的 PG 真机验证。
+    from deepresearcher.service.web.routes import events as events_route
+
+    monkeypatch.setattr(events_route, "SSE_DB_POLL_SECONDS", 0.1)
     graphs: list[FakeGraph] = []
 
     def graph_factory(
