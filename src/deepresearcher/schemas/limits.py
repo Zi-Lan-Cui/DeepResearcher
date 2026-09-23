@@ -27,6 +27,5 @@ SEARCH_RESULT_SNIPPET_PREVIEW_CHARS = 1_200
 SEARCH_RESULTS_AUDIT_PREVIEW_COUNT = 8
 SEARCH_RESULT_TITLE_PREVIEW_CHARS = 160
 # 回合思维链 content_preview 的字符预算:observability 产生端截一次、projector
-# 消费端(deny-by-default,不信任上游)再钳一次,两处共用此单源——改名即同步,
-# 不再有"与 _PREVIEW_CHARS 对齐"的口头约定。
+# 消费端(deny-by-default,不信任上游)再钳一次,两处共用此常量。
 EVENT_CONTENT_PREVIEW_CHARS = 800

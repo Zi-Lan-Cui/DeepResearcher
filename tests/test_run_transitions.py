@@ -1,7 +1,6 @@
 """Run 状态机命名迁移表的独立校验。
 
-EXPECT_* 是对着 service/runs/transitions.py 手抄的"第二意见":表被改动时
-这里必须同步——这是刻意的摩擦,状态机的边应当被有意识地改。
+EXPECT_* 是手抄自 service/runs/transitions.py 的第二份表:表改动时这里必须同步。
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ def test_reason_is_carried_by_fixed_provenance_transitions() -> None:
     # reap/release 是同一条边、仅 reason 不同的对照组:证明 reason 不是 f(状态)。
     assert TRANSITIONS["reap"].target == TRANSITIONS["release"].target
     assert TRANSITIONS["reap"].sources == TRANSITIONS["release"].sources
-    # 两边都必须带固定原因——只查"互异"会放过 None != "server_shutdown" 的漏网。
+    # 两边都必须带固定原因:只查"互异"会放过 None != "server_shutdown" 的情况。
     assert TRANSITIONS["reap"].reason is not None
     assert TRANSITIONS["release"].reason is not None
     assert TRANSITIONS["reap"].reason != TRANSITIONS["release"].reason

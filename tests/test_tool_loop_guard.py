@@ -68,7 +68,7 @@ async def test_nudge_budget_counts_from_private_state_channel_not_message_histor
     )
     runtime = SimpleNamespace(context=SimpleNamespace())
 
-    # 通道说已踢满:哪怕历史里一条 nudge 都没有,也绝不续命。
+    # 通道说已踢满:哪怕历史里一条 nudge 都没有,也绝不再给一轮机会。
     state = {"messages": [AIMessage(content="草稿直接写正文")], "nudge_count": 2}
     assert await middleware.aafter_model(state, runtime) is None
 

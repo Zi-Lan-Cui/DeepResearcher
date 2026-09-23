@@ -26,7 +26,7 @@ class ClaimCapacitySaturated:
 
     调用方(worker 的 wake)据此把显式 preferred 放回队列;
     若混同为 None,容量满瞬间从 recover/settle 弹出的 resume 任务会被吞掉,
-    该 interrupted 行要沉没到下次进程重启。
+    该 interrupted 行要停留到下次进程重启。
     """
 
 
@@ -176,7 +176,7 @@ class PostgresRunQueue:
         """Release a claim with owner+attempt CAS, normally for graceful shutdown."""
         if not work.claimed:
             return False
-        # WHERE 把来源钉死在 running(所有权),参数侧由迁移表把关。
+        # WHERE 固定 running(所有权),参数侧由迁移表把关。
         assert_transition("running", status)
         values: dict[str, Any] = {
             "status": status,
@@ -204,8 +204,8 @@ class PostgresRunQueue:
         """取消意图是持久事实,落地不依赖 executor 活着。
 
         带 flag 的行里,running 归 heartbeat→executor 自写终态;只有
-        "接了意图却没写终态就死了"的 interrupted 行需要代笔者。claim 的
-        WHERE 永远排除带 flag 的行,不 settle 它们就永久沉没——清扫者兜底。
+        executor 退出时未写终态的 interrupted 行需要这里补写。claim 的
+        WHERE 永远排除带 flag 的行,不 settle 它们就永久停留。
         """
         async with self._session_factory() as session:
             settle_transition = transition_for("settle_cancelled")

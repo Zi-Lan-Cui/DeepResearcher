@@ -27,8 +27,8 @@ from deepresearcher.state import section
 
 _logger = get_logger("deepresearcher.nodes.reviewer")
 
-# 只重试"同一请求重发可能改天换日"的失败：网关内容审查有随机抖动
-# （content_filter 事故实锤），JSON 解析/schema 校验失败同理。
+# 只重试同一请求重发后结果可能不同的失败：网关内容审查有随机抖动
+# （content_filter 事故已证实），JSON 解析/schema 校验失败同理。
 # 传输层超时/断连由 openai SDK 内建重试消化，不在这里重复。
 _RETRYABLE_REVIEW_ERRORS = (
     ContentFilterFinishReasonError,

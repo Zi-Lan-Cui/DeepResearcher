@@ -52,7 +52,7 @@ async def test_trip_only_extends_window(tmp_path):
 
 
 async def test_concurrent_first_trips_survive_pk_race(tmp_path):
-    """两 worker 同时首撞同一 provider:后提交方重试走 update 分支,不得把熔断开闸炸成主业务异常的替代品。"""
+    """两 worker 同时首撞同一 provider:后提交方重试走 update 分支,不得让熔断写入失败转成主业务异常。"""
     import asyncio
 
     engine, factory = _factory(tmp_path)

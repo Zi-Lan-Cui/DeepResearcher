@@ -329,7 +329,7 @@ def test_concurrent_delegates_allocate_unique_task_ids_before_absorb():
 
     旧实现下第二个并行 delegate 在第一个 absorb 之前读到同一 max+1，
     两个任务共享 task-0001，merge_task_results 按 task_id 去重静默吞掉
-    一个方向（线上龙意象运行实锤）。交错点用 fake 研究代理入口让出一次
+    一个方向（线上事故已证实）。交错点用 fake 研究代理入口让出一次
     事件循环来确定性复现。
     """
 
@@ -408,7 +408,7 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
             }
 
     # complete_args=None 使 fake 每轮重发同一批方向：程序化去重已删除，重复方向
-    # 每次都真实执行。fake 不会主动收尾，最终是模型调用天花板掐断循环——
+    # 每次都真实执行。fake 不会主动收尾，最终由模型调用次数上限终止循环。
     # 声明式 rank 让更强的 MODEL_CALL_LIMIT_EXCEEDED 压过轮次预算(终态归属回归)。
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["重复方向"], complete_args=None),
@@ -1289,12 +1289,12 @@ def test_stop_reason_vocabulary_single_source():
     from deepresearcher.schemas.sections import _STOP_REASON_DESCRIPTIONS
 
     for reason in StopReason:
-        assert StopReason(reason.value) is reason  # 每个成员可由字符串值回环
+        assert StopReason(reason.value) is reason
         assert isinstance(reason, str)  # terminal_reason/JSON 等 str 消费点兼容
     # 描述表全覆盖:漏登记的成员会静默吃兜底句(兜底句对 SUFFICIENT 语义相反)。
     assert set(_STOP_REASON_DESCRIPTIONS) == set(StopReason)
 
-    # 兜底进入部分报告的集合语义钉死（原 _final_update 手工清单的行为锁）：
+    # 锁定兜底进入部分报告的集合语义（与 _final_update 手工清单行为一致）：
     assert {r for r in StopReason if r.allows_partial_report} == {
         StopReason.ROUND_BUDGET_EXHAUSTED,
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
@@ -1307,7 +1307,7 @@ def test_stop_reason_vocabulary_single_source():
 
 
 def test_stop_reason_rank_is_a_declared_total_order():
-    """优先级是声明式的：每个成员有确定权威度，关键相邻关系被钉死。"""
+    """优先级是声明式的：每个成员有确定权威度，相邻关系固定。"""
     from deepresearcher.schemas import StopReason
 
     ranks = {reason: reason.rank for reason in StopReason}

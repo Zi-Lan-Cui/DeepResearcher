@@ -160,7 +160,7 @@ class RedisResearchMaterialStore:
                 )
                 return ref
             except FileNotFoundError:
-                # 索引比正文活得更久时按 miss 处理。
+                # 索引 TTL 长于正文时按 miss 处理。
                 await self._client.delete(self._fetch_key(fetch_key))
                 await record_cache_event(namespace="material_document", status="miss")
                 return None

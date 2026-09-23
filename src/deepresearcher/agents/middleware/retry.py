@@ -20,7 +20,7 @@ def retry_on(error: Exception) -> bool:
 
     配置错误、预算耗尽与账户级不可用(key/余额/硬限流)是 fail-fast 语义:
     必须冒泡到 node_runner / executor 的既有收口。在此软化它们,只会让
-    agent 带着已耗尽的额度继续空烧请求,并把 terminal_reason 伪装成研究语义。
+    agent 带着已耗尽的额度继续发无效请求,并把 terminal_reason 伪装成研究语义。
 
     取消不经此处:CancelledError 是 BaseException,库的重试循环只捕 Exception。
     """
@@ -135,7 +135,7 @@ def model_retry(
     """创建带有项目统一错误提示的模型重试中间件。
 
     逐次尝试由库内部循环、无处挂钩;可观测的锚点是耗尽这一确定时刻——
-    它意味着本回合白白烧掉 max_retries+1 次请求,事件流此前完全隐身。
+    它意味着本回合无效消耗 max_retries+1 次请求,此前无任何事件可见。
     """
 
     def on_failure(error: Exception) -> str:

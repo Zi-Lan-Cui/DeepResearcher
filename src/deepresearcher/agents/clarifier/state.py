@@ -31,7 +31,7 @@ class ClarifierLoopContext:
 class ClarifierDialogue(TypedDict, total=False):
     """内外图共享的澄清对话字段;字段名就是两图间 wire 契约,只定义一遍。
 
-    单边改动的旧形态靠人肉同步、静默丢字段;此后两 State 各继承一次。
+    单边改动只改一处、静默丢字段;两 State 各继承一次。
     """
 
     query: str

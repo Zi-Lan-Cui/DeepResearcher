@@ -1,7 +1,7 @@
 """evals harness 的核心回归：契约校验、题集文件、确定性 scorer、judge、聚合。
 
 evals/ 不在 ruff/pyright 门检内（刻意），但它的正确性必须由门检内的测试兜住：
-这些断言失败 = 评测数字不可信 = 整个评测体系失去意义。
+evals/ 不受 ruff/pyright 门检,其正确性由本文件的断言覆盖。
 """
 
 import csv
@@ -351,7 +351,7 @@ def test_clarify_flow_checks_resume_path():
     results = score_artifact(_artifact(events=_clarify_events()), case)
     cf = next(r for r in results if r.criterion_id == "cf")
     assert cf.verdict == "yes"
-    assert _gate(results, "seq_continuous").verdict == "yes"  # 附挂门同为绿
+    assert _gate(results, "seq_continuous").verdict == "yes"
     rerun = score_artifact(_artifact(events=_clarify_events(1)), case)
     cf = next(r for r in rerun if r.criterion_id == "cf")
     assert cf.verdict == "no" and "Router" in cf.reason  # 恢复重跑 Router → 行为违规

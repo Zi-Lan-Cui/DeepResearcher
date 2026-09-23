@@ -6,7 +6,7 @@ from deepresearcher.observability.tracing.context import current_context
 
 
 def get_logger(name: str = "deepresearcher") -> logging.Logger:
-    """全仓 logger 命名的唯一入口(与 configure_logging 一个家)。"""
+    """全仓 logger 命名的唯一入口(与 configure_logging 同模块)。"""
     return logging.getLogger(name)
 
 

@@ -752,8 +752,8 @@ def test_direction_evidence_pool_releases_slots_without_deleting_archive():
 
 
 def test_researcher_agent_crash_passes_through_as_failed_not_dressed_up():
-    """执行真相穿透:图级崩溃必须记 execution_status=failed/direction_agent_failed,
-    最小保守结果只改交付(conclusion/gaps),不得把炸过的方向粉饰成 completed。"""
+    """如实记录执行状态:图级崩溃必须记 execution_status=failed/direction_agent_failed,
+    最小保守结果只改交付(conclusion/gaps),不得把崩溃的方向标成 completed。"""
     agent = researcher_agent(AgentConfig(), decisions=[])
 
     class ExplodingLoop:

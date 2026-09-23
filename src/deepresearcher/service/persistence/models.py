@@ -116,7 +116,7 @@ class RunEvent(Base):
 
     ``record`` 存引擎写出的原始事件 dict——引擎侧已对所有 ``*_preview``/error 做了
     截断（≤1000 字），故单行体积天然有界。投影（面向用户的文案）不落库，回放时
-    经 projector 现算，保证「一个投影器 = 一份真相」。
+    经 projector 现算。
     """
 
     __tablename__ = "run_events"

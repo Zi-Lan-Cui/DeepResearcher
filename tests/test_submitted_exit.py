@@ -1,8 +1,8 @@
 """SubmittedExit 契约回归:真跑 create_agent 内层循环。
 
-clarifier/writer/researcher 的既有单测把 agent 循环整体 stub 掉,"提交后白转一圈、
+clarifier/writer/researcher 的既有单测把 agent 循环整体 stub 掉,"提交后多跑一圈、
 Command(goto=END) 被 pregel 丢弃"这类循环层缺陷在 stub 测法下不可见;本文件是唯一
-真跑内层循环的地方,钉住 D 案的三态:staged 即出环(零白转)、被拒留环、改对后出环。
+真跑内层循环的地方,覆盖三种行为:staged 即出环(不多跑)、被拒留环、改对后出环。
 """
 
 import asyncio
@@ -24,7 +24,7 @@ from deepresearcher.observability.execution import AgentExecutionScope
 
 
 class ScriptedModel:
-    """按脚本逐回合出牌并统计调用次数;超出脚本后重复末项(用于断言根本不该再被调)。"""
+    """按脚本逐回合返回响应并统计调用次数;超出脚本后重复末项(用于断言不该再被调)。"""
 
     def __init__(self, replies: list[Any]):
         self._replies = list(replies)
@@ -47,7 +47,7 @@ class StageState(AgentState, total=False):
 def test_staged_commit_exits_loop_without_extra_model_call():
     """提交写入 state 通道后,下一跳 before_model 直接出环——模型一次都不许多跑。
 
-    旧形态(Command(goto=END) 无 return_direct)在此会白转第二圈:goto 被 pregel
+    修复前的形态(Command(goto=END) 无 return_direct)在此会多跑一圈:goto 被 pregel
     丢弃、边级规则把消息送回模型。
     """
 
@@ -126,14 +126,14 @@ def test_rejected_receipt_stays_in_loop_until_accepted():
     )
     result = asyncio.run(agent.ainvoke({"messages": [HumanMessage("go")]}))
 
-    assert model.calls == 2  # 拒绝恰好多花一次(改正),接受后不再白转
+    assert model.calls == 2  # 拒绝恰好多花一次(改正),接受后不再多跑
     assert result["committed"] is True
 
 
 def test_clarifier_stages_question_with_single_model_call():
     """真实 Clarifier 内环接线:AskClarification staged 后不得再叫模型。
 
-    这是修复前必然红、修复后常绿的接线级钉;ask 节点复位 pending_question 放行
+    这是修复前必然失败、修复后稳定的接线级回归测试;ask 节点复位 pending_question 放行
     后续轮次由子图路由测试保障,不在本文件范围。
     """
 

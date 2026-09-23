@@ -17,8 +17,8 @@ EXECUTION_PREFIX = "deepresearcher.service.execution"
 SHELL_ENTRYPOINTS = frozenset({Path("src/deepresearcher/worker.py")})
 
 # 棘轮白名单：service 现存的每一条跨界 import（模块名与属性名都登记，按前缀
-# 匹配）。新增跨界 import 必须显式加名单并说明它为何是内核对外端口；方向是
-# 收窄（graph 与 protocol 类端口），不是等这些边自然消失——它们不会。
+# 匹配）。新增跨界 import 必须显式加名单并说明它为何是内核对外端口；
+# 方向是收窄（graph 与 protocol 类端口），已有边不会自行消失。
 ALLOWED_KERNEL_IMPORTS = frozenset(
     {
         # 配置与模型出入口
@@ -85,8 +85,7 @@ def _walk(root: Path):
 def test_kernel_does_not_import_service_layer():
     """内核（deepresearcher 除 service/ 与外壳入口外的一切）不得依赖投递层。
 
-    覆盖此前按目录枚举的 engine 规则，evidence/reporting/observability 等
-    新内核模块无需登记即自动受同一纪律约束。
+    evidence/reporting/observability 等新内核模块无需登记即自动受同一纪律约束。
     """
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT):
@@ -132,7 +131,7 @@ def test_run_control_plane_does_not_import_execution_plane():
 
 
 def test_web_control_plane_does_not_import_execution_plane():
-    """API 进程结构上无法执行:web→execution 的任何 import 都是 embedded 的还魂。"""
+    """API 进程结构上无法执行:web→execution 的任何 import 都等于重新启用 embedded。"""
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT / "service" / "web"):
         for lineno, resolved in _resolved_imports(path):
@@ -147,8 +146,8 @@ def test_web_control_plane_does_not_import_execution_plane():
 def test_no_production_module_imports_local_preview_bus():
     """LocalPreviewBus 只由单栈 harness(测试)构造。
 
-    生产的预览腿永远经 EphemeralEventBus 协议装配(Redis 总线,或退化为 None);
-    若谁把本地总线 import 进 src,等于重新发明 embedded 模式的进程内快推。
+    生产预览路径只经 EphemeralEventBus 协议装配(Redis 总线,或退化为 None);
+    若把本地总线 import 进 src,等于恢复 embedded 模式的进程内直投。
     """
     preview_prefix = "deepresearcher.service.events.preview"
     violations: list[str] = []

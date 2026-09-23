@@ -25,7 +25,7 @@ def _auth(token: str) -> dict[str, str]:
 
 @pytest_asyncio.fixture
 async def client(tmp_path, monkeypatch):
-    # 已提交帧唯一的推送节奏来源是 SSE_DB_POLL_SECONDS(sqlite 无门铃可指望);
+    # 已提交帧唯一的推送节奏来源是 SSE_DB_POLL_SECONDS(sqlite 无 NOTIFY 可依赖);
     # 压到 0.1s 让 tail 等待不再占据用例预算。生产常量由 verify_m8 的 PG 真机验证。
     from deepresearcher.service.web.routes import events as events_route
 
@@ -57,9 +57,10 @@ async def client(tmp_path, monkeypatch):
     async with worker_lifespan(settings, config, graph_factory=graph_factory) as worker:
         app = create_app(settings, config)
         async with app.router.lifespan_context(app):
-            # sqlite 上没有跨 host NOTIFY:API 的 run_available / cancel 门铃只唤
-            # API 自己的订阅者,故在同进程桥给 worker。event_committed 刻意**不**桥——
-            # 已提交帧必须走 SSE 的 DB tail,这正是分进程世界的真实路径。
+            # sqlite 上没有跨 host NOTIFY:API 发出的 run_available / cancel
+            # 通知只唤 API 自己的订阅者,故在同进程桥给 worker。
+            # event_committed 刻意不桥:已提交帧必须走 SSE 的 DB tail,
+            # 这正是分进程世界的真实路径。
             api_bus = app.state.manager.signal_bus
             api_bus.subscribe("run_available", lambda _payload: worker.wake())
             api_bus.subscribe("run_cancel_requested", worker.handle_cancel_notification)
@@ -166,7 +167,7 @@ async def test_run_lifecycle_detail_and_list(client):
     run_id = created.json()["run_id"]
 
     body = await wait_status(client, token, run_id, {"completed"})
-    assert body["query"] == "研究一下"  # strip 落库
+    assert body["query"] == "研究一下"
     assert body["report_markdown"].startswith("# 研究报告")
     assert body["citations"][0]["id"] == "e1"
     assert (body["evidence_count"], body["source_count"]) == (3, 2)
@@ -185,7 +186,7 @@ async def test_run_lifecycle_detail_and_list(client):
 async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
     """没有 worker host 时,run 永远停在 queued——控制面结构上无法执行。
 
-    纯度不再靠 forbidden factory 探测:create_app 没有 graph 注入口,
+    纯度是结构性的:create_app 没有 graph 注入口,
     app.state 上也不存在执行面属性。
     """
     app = create_app(service_settings(tmp_path), service_config(tmp_path))
@@ -315,7 +316,7 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
     assert by_event["task_done"]["summary"] == "证据 2 · 来源 1"
     assert by_event["task_update"]["task"] == "task-0001"
     seqs = [data["seq"] for _, data in frames]
-    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)  # 单调无重复
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
     done_data = frames[-1][1]
     assert done_data["status"] == "completed" and done_data["report_available"] is True
 
@@ -485,7 +486,7 @@ async def test_sse_idle_survives_poll_timeout_and_sends_heartbeat(client, monkey
     await wait_status(client, token, run_id, {"running"})
 
     async def release_after_idle_ticks() -> None:
-        # 先让 SSE 空转十几个 poll 周期——按旧形态第一个周期就该炸穿连接。
+        # 先让 SSE 空转十几个 poll 周期——修复前的形态第一个周期就会断开连接。
         await asyncio.sleep(0.3)
         gate.set()
 
@@ -503,7 +504,7 @@ async def test_sse_idle_survives_poll_timeout_and_sends_heartbeat(client, monkey
     await releaser
 
     assert ": ping" in text  # 空转期间连接存活并发了心跳
-    assert "event: done" in text  # 心跳之后仍能正常收终局,不是靠重连糊上去的
+    assert "event: done" in text  # 心跳之后同一连接收到终局
 
     frames = await read_sse(client, token, run_id, timeout=8.0)
     events = [event for event, _ in frames]

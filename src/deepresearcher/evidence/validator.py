@@ -9,7 +9,7 @@
 - `quote_in_source`（入池判定）：在忽略空白之上，再做 NFKC + 去软连字符/断词连字符，
   把 PDF/网页里 `exam‑ple`、`exam-\nple`、ligature `ﬁ` 这类**忠实引用的编码变体**
   救回来。两侧对称归一，改述仍不可能匹配（字母序列不同）。
-调用方据此区分"编码误杀"（strict 不过但 loose 过）与"模型改述"（loose 也不过）。
+调用方据此区分"编码导致的误拒"（strict 不过但 loose 过）与"模型改述"（loose 也不过）。
 """
 
 import re

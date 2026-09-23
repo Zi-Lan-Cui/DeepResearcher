@@ -187,7 +187,7 @@ class ResearchAgent:
             loop_state.stop_detail = str(exc)
         # 凡未正常收尾的,一律套用最小保守结果保住已验证证据、补降级标注。
         # 它只改写**交付**语义(conclusion/gaps);执行真相由 status/stop_reason
-        # 如实穿透——崩溃的方向就是 failed,不借"completed+fallback"粉饰。
+        # 如实记录——崩溃的方向就是 failed,不得标成 completed+fallback。
         if status != "cancelled" and loop_state.stop_reason not in {
             DirectionStopReason.COMPLETE,
             DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,

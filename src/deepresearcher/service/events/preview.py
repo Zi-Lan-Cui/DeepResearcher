@@ -1,12 +1,12 @@
 """进程内预览总线:EphemeralEventBus 协议的同环实现。
 
-只承载 text_delta 预览帧——无 seq、不落库、队满丢最旧。已提交事件不走任何
-进程内快推:SSE 从 DB tail run_events,由信号总线门铃唤醒(权威副本在库里)。
+只承载 text_delta 预览帧——无 seq、不落库、队满丢最旧。已提交事件不经
+进程内直投:SSE 从 DB tail run_events,由信号总线 notify 唤醒(权威副本在库里)。
 
 生产装配不构造本类(redis 预览开启用 Redis 总线,关闭则预览退化、durable 流
 不受影响);它存在的唯一理由是单栈 harness——测试里 worker 与订阅者同进程、
-同事件循环时,用它把执行器的预览腿直接递到订阅队列。契约(白名单校验、丢帧
-可容忍、close 幂等)由协议测试钉住,与 Redis 实现可互换。
+同事件循环时,用它把执行器的预览帧直接送进订阅队列。契约(白名单校验、丢帧
+可容忍、close 幂等)由协议测试覆盖,与 Redis 实现可互换。
 """
 
 from __future__ import annotations

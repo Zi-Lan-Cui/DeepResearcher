@@ -13,7 +13,7 @@ from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INL
 from deepresearcher.schemas import Citation, ResearchDirectionResult, RunError, SupervisorProgress
 from deepresearcher.state import ResearchState, section
 
-# Writer 提示词禁止自写来源列表，但违令必须程序兜底：整段剥除（连同其中
+# Writer 提示词禁止自写来源列表，模型违反时也必须程序兜底：整段剥除（连同其中
 # [[cite:…]] 标记，避免其抢占首现编号），编号权威只属于本模块的追加段。
 _REFERENCE_HEADING = re.compile(
     r"^(#{2,3})[ \t]*(?:参考来源|引用来源|参考文献|引用列表|来源列表|参考文档|资料来源"

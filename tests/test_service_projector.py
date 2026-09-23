@@ -99,7 +99,7 @@ def test_node_failed_uses_safe_text_only():
 
 
 def test_direction_search_becomes_task_update_without_direction_text():
-    """方向文案只在开卡时出口一次；update 行只报数量，防刷屏且不重复长标题。"""
+    """方向文案只在事件卡片首次出现时输出一次；update 行只报数量，不重复长标题。"""
     frame = project(
         _record(
             "direction_search_completed",
@@ -292,7 +292,7 @@ def test_text_delta_whitelist_and_no_seq():
     assert "seq" not in ok.data and "SECRET" not in json.dumps(ok.data, ensure_ascii=False)
 
 
-# stream_truncated 的产生者(进程内快推)已删除;它留在下方 default-deny 名单里,
+# stream_truncated 的产生者(进程内直投)已删除;它留在下方 default-deny 名单里,
 # 保证即便有代码再投这种帧,投影层也不出口。
 
 

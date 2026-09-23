@@ -20,7 +20,7 @@ def test_reworded_quote_is_paraphrase_across_all_tiers():
 
 
 def test_encoding_variants_rescued_by_loose_but_rejected_by_strict():
-    # PDF 软连字符 / 断词连字符 / ligature：忠实引用被 strict 误杀，loose 救回。
+    # PDF 软连字符 / 断词连字符 / ligature：忠实引用被 strict 错误拒绝、被 loose 接受。
     for source, quote in (
         ("exam­ple system", "example system"),  # 软连字符
         ("exam-\nple system", "example system"),  # 断词换行

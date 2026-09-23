@@ -35,8 +35,8 @@ async def run_events(
     state = app_state(request)
 
     async def stream() -> AsyncIterator[str]:
-        # 两条唤醒源、一条数据路:已提交帧只从 DB tail 读(门铃或 poll 叫醒);
-        # 预览帧读 EphemeralEventBus 订阅。不存在进程内快推,也就不需要去重。
+        # 两条唤醒源、一条数据路:已提交帧只从 DB tail 读(notify 或 poll 叫醒);
+        # 预览帧读 EphemeralEventBus 订阅。没有进程内直投,也就不需要去重。
         notify_key, notify_queue = state.manager.signal_bus.subscribe_event(run.id)
         preview_subscription = None
         if state.ephemeral_bus is not None:
@@ -63,7 +63,7 @@ async def run_events(
         async def _terminate_if_settled() -> tuple[list[str], bool]:
             """done 帧可能整批丢在失败的 flush 里——行的终态才是权威。
 
-            重排一次 tail 防止"刚落库的 done 被兜底帧插队",仍没有才合成。
+            重排一次 tail,防止合成帧排在刚落库的 done 之前;仍没有才合成。
             """
             frames, saw_done = _drain(await state.manager.event_store.after(run.id, last_seq))
             if saw_done:
@@ -113,7 +113,7 @@ async def run_events(
                     )
                 finally:
                     # 成功路径只回收未完成的挂起者;客户端断连时 asyncio.wait 不为
-                    # 子任务负责——两种结局都从这里统一收口,不给自己留泄漏窗口。
+                    # 子任务负责——两条退出路径都在这里回收挂起任务。
                     for waiter in waits:
                         waiter.cancel()
                     await asyncio.gather(*waits, return_exceptions=True)
@@ -121,10 +121,10 @@ async def run_events(
                 if preview_wait is not None and preview_wait in done:
                     items.append(preview_wait.result())
                 if notify_wait in done:
-                    # 门铃只是叫醒:payload 是 None,数据由下一轮循环头的 tail 取。
+                    # notify 只是叫醒:payload 是 None,数据由下一轮循环头的 tail 取。
                     notify_wait.result()
                 if not items:
-                    # 本轮无预览可发(wait 超时或仅门铃叫醒):
+                    # 本轮无预览可发(wait 超时或仅 notify 叫醒):
                     # 走一次心跳检查再回轮询头。超时是常态,不是异常——绝不许上抛。
                     now = asyncio.get_running_loop().time()
                     if now - last_ping >= SSE_HEARTBEAT_SECONDS:
