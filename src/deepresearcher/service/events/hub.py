@@ -33,7 +33,7 @@ class RunEventHub:
         open_max: int = _OPEN_MAX,
     ) -> None:
         self._session_factory = session_factory
-        self.store = store 
+        self.store = store
         self._preview = preview
         self._signal_bus = signal_bus
         self._open_max = max(1, open_max)
@@ -125,13 +125,13 @@ class RunEventHub:
             return
         try:
             assigned = await self.store.append(run_id, records)
-        except Exception: 
+        except Exception:
             logger.warning("run_event_flush_failed run_id=%s", run_id, exc_info=True)
             self._requeue(run_id, records)
             return
         try:
             self._preview.deliver(run_id, assigned)
-        except Exception:  
+        except Exception:
             logger.warning("run_event_deliver_failed run_id=%s", run_id, exc_info=True)
         await self._signal_bus.notify_event(run_id)
 

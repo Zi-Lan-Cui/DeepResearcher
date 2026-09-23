@@ -54,7 +54,7 @@ class RuntimeStack:
 
 @asynccontextmanager
 async def build_runtime_stack(
-    cfg: ServiceConfig,
+    service_config: ServiceConfig,
     settings: Settings,
     *,
     with_material: bool,
@@ -68,40 +68,40 @@ async def build_runtime_stack(
     三个 with_* 开关就是两进程真实差异的最小表达——想合并差异前先看清这里。
     """
     async with AsyncExitStack() as resources:
-        await migrate_database(cfg.database_url)
-        engine = make_engine(cfg.database_url)
+        await migrate_database(service_config.database_url)
+        engine = make_engine(service_config.database_url)
         resources.push_async_callback(engine.dispose)
         session_factory = make_session_factory(engine)
         preview = LocalPreviewBus(asyncio.get_running_loop())
         signal_bus = PostgresSignalBus()
-        await signal_bus.start(cfg.database_url)
+        await signal_bus.start(service_config.database_url)
         resources.push_async_callback(signal_bus.close)
 
         material_store = None
         if with_material:
             material_store = await create_research_material_store(
-                backend=cfg.material_store_backend,
-                redis_url=cfg.material_redis_url,
-                key_prefix=cfg.material_key_prefix,
-                search_ttl_seconds=cfg.search_material_ttl_seconds,
-                document_ttl_seconds=cfg.document_material_ttl_seconds,
+                backend=service_config.material_store_backend,
+                redis_url=service_config.material_redis_url,
+                key_prefix=service_config.material_key_prefix,
+                search_ttl_seconds=service_config.search_material_ttl_seconds,
+                document_ttl_seconds=service_config.document_material_ttl_seconds,
             )
             resources.push_async_callback(material_store.close)
         http_client = HttpClient(settings.search) if with_http else None
         if http_client is not None:
             resources.push_async_callback(http_client.aclose)
         ephemeral_bus: EphemeralEventBus | None = None
-        if with_preview_bus and cfg.redis_preview_enabled:
+        if with_preview_bus and service_config.redis_preview_enabled:
             ephemeral_bus = await create_redis_ephemeral_bus(
-                cfg.redis_url,
-                channel_prefix=cfg.redis_channel_prefix,
-                queue_size=cfg.redis_preview_queue_size,
+                service_config.redis_url,
+                channel_prefix=service_config.redis_channel_prefix,
+                queue_size=service_config.redis_preview_queue_size,
             )
             if ephemeral_bus is not None:  # 工厂可降级为 None(持久流仍可用),None 无从回卷
                 resources.push_async_callback(ephemeral_bus.close)
 
         checkpointer = None
-        dsn = checkpoint_dsn(cfg.database_url)
+        dsn = checkpoint_dsn(service_config.database_url)
         if dsn is not None:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 

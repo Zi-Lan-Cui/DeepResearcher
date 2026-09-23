@@ -60,10 +60,10 @@ async def worker_lifespan(
     graph_factory: Callable[..., Any] = build_graph,
 ) -> AsyncIterator[WorkerCoordinator]:
     """Create all resources owned by one independent Worker process."""
-    cfg = config or get_service_config()
+    service_config = config or get_service_config()
     engine_settings = settings or get_settings()
     async with build_runtime_stack(
-        cfg,
+        service_config,
         engine_settings,
         with_material=True,
         with_http=True,
@@ -72,7 +72,7 @@ async def worker_lifespan(
         worker = WorkerCoordinator(
             settings=engine_settings,
             session_factory=stack.session_factory,
-            config=cfg,
+            config=service_config,
             hub=stack.hub,
             preview=stack.preview,
             http_client=stack.http_client,
