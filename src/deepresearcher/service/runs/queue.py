@@ -13,6 +13,11 @@ from sqlalchemy import func, select, text, update
 from deepresearcher.service.coordination import RUN_CLAIM_CAPACITY_LOCK_ID
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
+from deepresearcher.service.runs.transitions import (
+    apply_transition,
+    assert_transition,
+    transition_for,
+)
 
 
 @dataclass(frozen=True)
@@ -86,7 +91,7 @@ class PostgresRunQueue:
                     if int(running or 0) >= self._max_global_running:
                         await session.rollback()
                         return CAPACITY_SATURATED
-                allowed = ("queued",)
+                claim_name = "claim"
                 if preferred is None:
                     candidate = (
                         select(Run.id)
@@ -97,17 +102,18 @@ class PostgresRunQueue:
                         .scalar_subquery()
                     )
                 else:
-                    allowed = ("queued", "interrupted") if preferred.resume else ("queued",)
+                    claim_name = "claim_resume" if preferred.resume else "claim"
                     candidate = preferred.run_id
+                claim_transition = transition_for(claim_name)
                 result = await session.execute(
                     update(Run)
                     .where(
                         Run.id == candidate,
-                        Run.status.in_(allowed),
+                        Run.status.in_(claim_transition.sources),
                         Run.cancellation_requested_at.is_(None),
                     )
                     .values(
-                        status="running",
+                        status=claim_transition.target,
                         lease_owner=worker_id,
                         lease_expires_at=now + timedelta(seconds=lease_seconds),
                         attempt=Run.attempt + 1,
@@ -166,6 +172,8 @@ class PostgresRunQueue:
         """Release a claim with owner+attempt CAS, normally for graceful shutdown."""
         if not work.claimed:
             return False
+        # WHERE 把来源钉死在 running(所有权),参数侧由迁移表把关。
+        assert_transition("running", status)
         values: dict[str, Any] = {
             "status": status,
             "lease_owner": None,
@@ -196,24 +204,20 @@ class PostgresRunQueue:
         WHERE 永远排除带 flag 的行,不 settle 它们就永久沉没——清扫者兜底。
         """
         async with self._session_factory() as session:
+            settle_transition = transition_for("settle_cancelled")
             rows = (
                 await session.scalars(
                     select(Run)
                     .where(
                         Run.cancellation_requested_at.is_not(None),
-                        Run.status == "interrupted",
+                        Run.status.in_(settle_transition.sources),
                     )
                     .with_for_update(skip_locked=True)
                 )
             ).all()
             work = [RunWork(run_id=run.id, user_id=run.user_id, query=run.query) for run in rows]
             for run in rows:
-                run.status = "cancelled"
-                run.terminal_reason = "user_cancelled"
-                run.finished_at = _utcnow()
-                run.lease_owner = None
-                run.lease_expires_at = None
-                run.resume_payload = None
+                apply_transition(run, "settle_cancelled", now=_utcnow())
             await session.commit()
             return work
 
@@ -221,11 +225,12 @@ class PostgresRunQueue:
         """Return expired running claims to ``interrupted`` for checkpoint resume."""
         async with self._claim_lock:
             async with self._session_factory() as session:
+                reap_transition = transition_for("reap")
                 rows = (
                     await session.scalars(
                         select(Run)
                         .where(
-                            Run.status == "running",
+                            Run.status.in_(reap_transition.sources),
                             Run.lease_expires_at.is_not(None),
                             Run.lease_expires_at < _utcnow(),
                         )
@@ -236,10 +241,6 @@ class PostgresRunQueue:
                     RunWork(run_id=run.id, user_id=run.user_id, query=run.query) for run in rows
                 ]
                 for run in rows:
-                    run.status = "interrupted"
-                    run.terminal_reason = "lease_expired"
-                    run.lease_owner = None
-                    run.lease_expires_at = None
-                    run.finished_at = None
+                    apply_transition(run, "reap", now=_utcnow())
                 await session.commit()
                 return work

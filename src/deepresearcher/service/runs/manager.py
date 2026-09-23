@@ -16,6 +16,7 @@ from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.service import QuotaExceededError as QuotaExceededError
 from deepresearcher.service.runs.service import RunService
+from deepresearcher.service.runs.transitions import apply_transition, transition_for
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.signals import PostgresSignalBus
 
@@ -60,14 +61,9 @@ class RunManager:
             if run.status in TERMINAL_STATUSES:
                 return run
             run.cancellation_requested_at = _utcnow()
-            if run.status in ("queued", "awaiting_input", "interrupted"):
+            if run.status in transition_for("cancel_pending").sources:
                 immediate = True
-                run.status = "cancelled"
-                run.terminal_reason = "user_cancelled"
-                run.finished_at = _utcnow()
-                run.resume_payload = None
-                run.lease_owner = None
-                run.lease_expires_at = None
+                apply_transition(run, "cancel_pending", now=_utcnow())
             await session.commit()
         if immediate:
             self._hub.open(run_id)
@@ -107,11 +103,12 @@ class RunManager:
         answer = answer.strip()
         if not answer:
             raise ValueError("澄清回答不能为空。")
+        resume_transition = transition_for("answer_resume")
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
             if run is None or run.user_id != user_id:
                 raise LookupError(run_id)
-            if run.status != "awaiting_input":
+            if run.status not in resume_transition.sources:
                 raise RuntimeError(run.status)
         if not await self._has_checkpoint(run_id):
             raise RuntimeError("checkpoint_missing")
@@ -121,10 +118,10 @@ class RunManager:
                 .where(
                     Run.id == run_id,
                     Run.user_id == user_id,
-                    Run.status == "awaiting_input",
+                    Run.status.in_(resume_transition.sources),
                     Run.resume_payload.is_(None),
                 )
-                .values(status="queued", resume_payload={"answer": answer})
+                .values(status=resume_transition.target, resume_payload={"answer": answer})
             )
             await session.commit()
             if result.rowcount != 1:
