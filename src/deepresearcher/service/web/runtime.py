@@ -25,16 +25,16 @@ def make_lifespan(
 ) -> Callable[[FastAPI], Any]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        cfg = config or get_service_config()
+        service_config = config or get_service_config()
         engine_settings = settings or get_settings()
         # 两进程的真实差异压缩成三个开关:embedded 才需 material/http,
         # 仅分进程模式才需 redis 预览总线(嵌入模式与 Worker 共享进程内 Preview/Hub)。
         async with build_runtime_stack(
-            cfg,
+            service_config,
             engine_settings,
-            with_material=cfg.api_embedded_worker,
-            with_http=cfg.api_embedded_worker,
-            with_preview_bus=not cfg.api_embedded_worker,
+            with_material=service_config.api_embedded_worker,
+            with_http=service_config.api_embedded_worker,
+            with_preview_bus=not service_config.api_embedded_worker,
         ) as stack:
             session_factory = stack.session_factory
             signal_bus = stack.signal_bus
@@ -45,11 +45,11 @@ def make_lifespan(
             checkpointer = stack.checkpointer
             ephemeral_bus = stack.ephemeral_bus
             execution = None
-            if cfg.api_embedded_worker:
+            if service_config.api_embedded_worker:
                 execution = WorkerCoordinator(
                     settings=engine_settings,
                     session_factory=session_factory,
-                    config=cfg,
+                    config=service_config,
                     hub=hub,
                     preview=preview,
                     http_client=http_client,
@@ -60,7 +60,7 @@ def make_lifespan(
                 )
             manager = RunManager(
                 session_factory=session_factory,
-                config=cfg,
+                config=service_config,
                 hub=hub,
                 checkpointer=checkpointer,
                 signal_bus=signal_bus,
@@ -89,7 +89,7 @@ def make_lifespan(
                     app.state.service_logger.info("resuming_orphan_runs count=%d", resumed)
                 await execution.start()
 
-            app.state.config = cfg
+            app.state.config = service_config
             app.state.settings = engine_settings
             app.state.engine = stack.engine
             app.state.session_factory = session_factory
@@ -100,14 +100,14 @@ def make_lifespan(
             app.state.checkpointer = checkpointer
             app.state.material_store = material_store
             app.state.ephemeral_bus = ephemeral_bus
-            app.state.codec = TokenCodec(cfg.jwt_secret, cfg.token_ttl_hours)
+            app.state.codec = TokenCodec(service_config.jwt_secret, service_config.token_ttl_hours)
             app.state.login_rate_limiter = LoginRateLimiter(
                 session_factory,
-                secret=cfg.jwt_secret,
-                account_attempts=cfg.login_account_attempts,
-                ip_attempts=cfg.login_ip_attempts,
-                window_seconds=cfg.login_rate_window_seconds,
-                block_seconds=cfg.login_block_seconds,
+                secret=service_config.jwt_secret,
+                account_attempts=service_config.login_account_attempts,
+                ip_attempts=service_config.login_ip_attempts,
+                window_seconds=service_config.login_rate_window_seconds,
+                block_seconds=service_config.login_block_seconds,
             )
             app.state.auth_dependency = make_current_user(app.state.codec, session_factory)
             try:
