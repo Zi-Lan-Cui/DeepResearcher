@@ -1,4 +1,4 @@
-"""Source reader tool: fetch, normalize, and register source documents."""
+"""来源读取工具：抓取、归一并登记来源文档。"""
 
 import asyncio
 import time

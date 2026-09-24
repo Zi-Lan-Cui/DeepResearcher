@@ -1,9 +1,8 @@
-"""Public-web URL policy used by source fetching.
+"""来源抓取使用的公网 URL 策略。
 
-The guard resolves a hostname before the request and returns libcurl RESOLVE
-entries.  The caller must use those entries for the actual connection; merely
-checking DNS and resolving it again inside the HTTP stack leaves a DNS-rebinding
-window.
+本模块在发出请求前解析主机名并返回 libcurl RESOLVE 条目。
+调用方必须用这些条目建立实际连接；只查 DNS、再在 HTTP 栈内
+重新解析，会留下 DNS rebinding 窗口。
 """
 
 import asyncio
@@ -17,7 +16,7 @@ from deepresearcher.tools.errors import UnsafeUrlError
 
 @dataclass(frozen=True)
 class ResolvedPublicUrl:
-    """A normalized public URL and the addresses approved for this request."""
+    """规范化后的公网 URL 与本次请求获准使用的地址集合。"""
 
     url: str
     hostname: str
@@ -26,14 +25,14 @@ class ResolvedPublicUrl:
 
     @property
     def curl_resolve(self) -> list[str]:
-        # CURLOPT_RESOLVE accepts comma-separated addresses. IPv6 literals need
-        # brackets so their colons are not confused with host/port separators.
+        # CURLOPT_RESOLVE 接受逗号分隔的地址。IPv6 字面量需要方括号，
+        # 否则冒号会与 host/port 分隔符混淆。
         pinned = ",".join(f"[{item}]" if ":" in item else item for item in self.addresses)
         return [f"{self.hostname}:{self.port}:{pinned}"]
 
 
 class PublicUrlGuard:
-    """Resolve and admit only ordinary public HTTP(S) destinations."""
+    """只解析并放行普通的公网 HTTP(S) 目标。"""
 
     async def resolve(self, url: str) -> ResolvedPublicUrl:
         parsed = self._parse(url)
@@ -55,8 +54,8 @@ class PublicUrlGuard:
         if not addresses:
             raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
 
-        # Normalize the host used by URL and CURLOPT_RESOLVE to the same ASCII
-        # spelling. Preserve path/query/fragment; fragments are not sent on wire.
+        # 把 URL 与 CURLOPT_RESOLVE 使用的主机名归一到同一 ASCII 写法。
+        # 保留 path/query/fragment；fragment 不会随线上请求发送。
         host_for_url = f"[{ascii_hostname}]" if ":" in ascii_hostname else ascii_hostname
         if parsed.port is not None:
             host_for_url = f"{host_for_url}:{parsed.port}"
@@ -100,7 +99,7 @@ class PublicUrlGuard:
     def _parse(url: str) -> SplitResult:
         try:
             parsed = urlsplit(str(url).strip())
-            # Accessing port performs its validation (invalid/out-of-range ports).
+            # 访问 .port 同时完成校验，拒绝非法与越界端口。
             parsed.port
         except ValueError as exc:
             raise UnsafeUrlError("URL 格式无效。") from exc

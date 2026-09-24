@@ -1,4 +1,4 @@
-"""Static dependency guards for the kernel/service (hexagonal) boundary."""
+"""内核/service 边界的静态依赖守卫。"""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ def test_no_production_module_imports_local_preview_bus():
 
 
 def test_execution_runtime_can_be_imported_before_run_manager():
-    """Canonical package modules must remain safe in either import order."""
+    """包的正规模块必须任意导入顺序都安全。"""
 
     code = (
         "from deepresearcher.service.execution.runtime import worker_lifespan; "

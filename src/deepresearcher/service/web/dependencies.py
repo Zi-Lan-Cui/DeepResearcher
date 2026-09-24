@@ -1,4 +1,4 @@
-"""Request-scoped FastAPI dependencies."""
+"""请求作用域的 FastAPI 依赖。"""
 
 from typing import Any
 
@@ -25,6 +25,6 @@ async def owned_run(
     async with state.session_factory() as session:
         run = await session.scalar(select(Run).where(Run.id == run_id, Run.user_id == user.id))
     if run is None:
-        # Missing and cross-user resources deliberately share one response.
+        # 资源不存在与跨用户访问刻意共用同一响应。
         raise HTTPException(status_code=404, detail="运行不存在。")
     return run

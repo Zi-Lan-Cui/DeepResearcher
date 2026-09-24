@@ -116,6 +116,10 @@ class RunEventHub:
         )
 
     async def flush(self, run_id: str) -> None:
+        """排空该 run 的 pending 批次并落库。
+
+        失败时整批回插队首、不发 notify；成功后以库中副本为准再发 notify。
+        """
         with self._lock:
             records = self._pending.pop(run_id, [])
         if not records:

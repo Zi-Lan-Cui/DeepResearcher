@@ -38,9 +38,9 @@ class SearchService:
         self.config = config
         self.http = http_client or HttpClient(config)
         # 供应商级断路表：provider -> 单调时钟恢复点。传输层在 429/503 上
-        # 记录的恢复时间会写到这里，窗口内的新请求不再出网重复撞墙。
+        # 记录的恢复时间会写到这里，窗口内的新请求不再出网向供应商重复请求。
         self._rate_limit_deadlines: dict[str, float] = {}
-        # 供应商级并发闸：provider -> Semaphore。worker × query 的乘性并发
+        # 供应商级并发上限：provider -> Semaphore。worker × query 的乘性并发
         # 在这里收敛为对供应商的恒定在飞请求数。
         self._provider_semaphores: dict[str, asyncio.Semaphore] = {}
         self._aliyun_client = aliyun_client

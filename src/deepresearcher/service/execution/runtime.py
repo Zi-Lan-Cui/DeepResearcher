@@ -29,11 +29,10 @@ logger = get_logger("deepresearcher.service.execution.runtime")
 
 @asynccontextmanager
 async def _startup_recovery_lock(session_factory: Callable[[], Any]) -> AsyncIterator[None]:
-    """Serialize startup classification across Worker processes.
+    """跨 Worker 进程串行化启动归类。
 
-    Claims themselves are already protected by row locks/CAS.  This lock only
-    protects the one-off scan of ``interrupted`` rows, which may emit terminal
-    events and therefore must not run twice.
+    claim 本身已由行锁/CAS 保护。本锁只保护对 ``interrupted`` 行的
+    一次性扫描——它可能产生终态事件，因此不得跑两次。
     """
     async with session_factory() as session:
         if session.get_bind().dialect.name != "postgresql":
@@ -59,7 +58,11 @@ async def worker_lifespan(
     *,
     graph_factory: Callable[..., Any] = build_graph,
 ) -> AsyncIterator[WorkerCoordinator]:
-    """Create all resources owned by one independent Worker process."""
+    """创建一个独立 Worker 进程拥有的全部资源。
+
+    返回:
+        WorkerCoordinator: 已进入启动流程的协调器；上下文退出时关闭。
+    """
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()
     async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:

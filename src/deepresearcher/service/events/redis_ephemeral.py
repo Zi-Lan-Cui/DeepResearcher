@@ -1,4 +1,4 @@
-"""Redis Pub/Sub implementation for lossy cross-process token previews."""
+"""基于 Redis Pub/Sub 的可丢弃跨进程 token 预览实现。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ REDIS_PREVIEW_IO_TIMEOUT_SECONDS = 1.0
 
 
 class RedisEphemeralEventBus(EphemeralEventBus):
-    """Publish previews without turning Redis into a source of truth."""
+    """发布预览帧，但不把 Redis 变成事实源。"""
 
     def __init__(self, client: Any, *, channel_prefix: str, queue_size: int) -> None:
         self._client = client
@@ -128,7 +128,11 @@ async def create_redis_ephemeral_bus(
     channel_prefix: str,
     queue_size: int,
 ) -> RedisEphemeralEventBus | None:
-    """Connect when configured; degrade to durable-only streaming on failure."""
+    """按配置连接；失败时降级为只有持久流。
+
+    返回:
+        RedisEphemeralEventBus | None: 连接不可用时为 None。
+    """
 
     try:
         from redis.asyncio import Redis

@@ -1,4 +1,4 @@
-"""Stable HTTP response projections for service models."""
+"""服务模型对应的稳定 HTTP 响应投影。"""
 
 from datetime import datetime, timezone
 from typing import Any

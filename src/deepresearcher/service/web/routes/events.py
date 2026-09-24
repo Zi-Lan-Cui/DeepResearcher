@@ -1,4 +1,4 @@
-"""Authenticated SSE replay and live-tail route."""
+"""带鉴权的 SSE 回放与实时尾随路由。"""
 
 from __future__ import annotations
 
@@ -32,10 +32,15 @@ async def run_events(
     request: Request,
     run: Run = Depends(owned_run),
 ) -> StreamingResponse:
+    """以 SSE 回放并实时尾随某个 run 的持久事件流。
+
+    返回:
+        StreamingResponse: 帧流，直到 done 或行终态兜底。
+    """
     state = app_state(request)
 
     async def stream() -> AsyncIterator[str]:
-        # 两条唤醒源、一条数据路:已提交帧只从 DB tail 读(notify 或 poll 叫醒);
+        # 两条唤醒源、一条数据路:已提交帧只从 DB tail 读(notify 或 poll 唤醒);
         # 预览帧读 EphemeralEventBus 订阅。没有进程内直投,也就不需要去重。
         notify_key, notify_queue = state.manager.signal_bus.subscribe_event(run.id)
         preview_subscription = None
@@ -121,10 +126,10 @@ async def run_events(
                 if preview_wait is not None and preview_wait in done:
                     items.append(preview_wait.result())
                 if notify_wait in done:
-                    # notify 只是叫醒:payload 是 None,数据由下一轮循环头的 tail 取。
+                    # notify 只是唤醒信号,payload 是 None,数据由下一轮循环头的 tail 取。
                     notify_wait.result()
                 if not items:
-                    # 本轮无预览可发(wait 超时或仅 notify 叫醒):
+                    # 本轮无预览可发(wait 超时或仅 notify 唤醒):
                     # 走一次心跳检查再回轮询头。超时是常态,不是异常——绝不许上抛。
                     now = asyncio.get_running_loop().time()
                     if now - last_ping >= SSE_HEARTBEAT_SECONDS:

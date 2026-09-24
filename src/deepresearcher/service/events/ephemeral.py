@@ -1,10 +1,9 @@
-"""Lossy preview transport contracts.
+"""可丢弃预览的传输契约。
 
-Ephemeral events improve live presentation only. They have no sequence number,
-are never persisted, and must never participate in run-state decisions. The
-protocol has two interchangeable implementations chosen at assembly time:
-``RedisEphemeralEventBus`` (cross-process, production) and ``LocalPreviewBus``
-(same event loop, single-stack harnesses).
+Ephemeral 事件只改善实时观感：没有序号、从不持久化，不得参与
+run 状态判定。协议有两个可互换的实现，装配时选定：
+``RedisEphemeralEventBus``（跨进程，生产）与 ``LocalPreviewBus``
+（同事件循环，单栈 harness）。
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from typing import Protocol, runtime_checkable
 
 @dataclass
 class EphemeralSubscription:
-    """One bounded preview subscription owned by an SSE request."""
+    """由单个 SSE 请求持有的一份有界预览订阅。"""
 
     queue: asyncio.Queue[dict]
     _close: Callable[[], Awaitable[None]]
@@ -32,7 +31,7 @@ class EphemeralSubscription:
 
 @runtime_checkable
 class EphemeralEventBus(Protocol):
-    """Best-effort preview bus; implementations must absorb transport failure."""
+    """尽力而为的预览总线；实现必须自行吸收传输故障。"""
 
     async def publish(self, run_id: str, event: dict) -> None: ...
 
@@ -42,7 +41,15 @@ class EphemeralEventBus(Protocol):
 
 
 def preview_event(value: object, *, run_id: str) -> dict | None:
-    """Validate and rebuild the only event shape allowed on the lossy bus."""
+    """校验并重建可丢弃通道上唯一允许的事件形状。
+
+    参数:
+        value: 待检查的原始事件对象。
+        run_id: 事件宣称所属的 run。
+
+    返回:
+        dict | None: 白名单通过时返回重建后的安全帧，否则 None。
+    """
 
     if not isinstance(value, dict) or value.get("run_id") != run_id:
         return None

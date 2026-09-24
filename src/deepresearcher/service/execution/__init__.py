@@ -1,1 +1,1 @@
-"""Worker execution, scheduling, leases, and process lifecycle."""
+"""worker 执行、调度、租约与进程生命周期。"""

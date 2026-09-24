@@ -69,27 +69,25 @@ def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
 
 
 async def init_db(engine: AsyncEngine) -> None:
-    """Create the complete schema for isolated SQLite tests."""
+    """为隔离的 SQLite 测试创建完整 schema。"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
 
 async def migrate_database(database_url: str) -> None:
-    """Idempotently ensure the application schema exists (create missing tables).
+    """幂等地确保应用 schema 存在（创建缺失的表）。
 
-    No Alembic migration chain is maintained for this unreleased project; the
-    schema is derived from the model metadata with ``create_all`` (checkfirst),
-    so re-running is a no-op and adding a table means editing models only. API and
-    multiple Workers may start together, so on PostgreSQL the DDL is wrapped in a
-    transaction-scoped advisory lock to serialize concurrent create_all; SQLite is
-    the single-process test path.
+    本项目未上线，不维护 Alembic 迁移链：schema 由模型元数据经
+    ``create_all``（checkfirst）推出，重跑是空操作，加表只改模型。
+    API 与多个 Worker 可能同时启动，因此 PostgreSQL 上把 DDL 包在
+    事务级 advisory lock 里串行化并发 create_all；SQLite 是单进程测试路径。
     """
     engine = make_engine(database_url)
     try:
         async with engine.begin() as connection:
             if connection.dialect.name == "postgresql":
-                # xact advisory lock releases automatically at commit, guarding the
-                # concurrent cross-process DDL below.
+                # 事务级 advisory lock 在提交时自动释放，
+                # 保护下方并发的跨进程 DDL。
                 await connection.execute(
                     text("SELECT pg_advisory_xact_lock(:lock_id)"),
                     {"lock_id": DATABASE_MIGRATION_LOCK_ID},

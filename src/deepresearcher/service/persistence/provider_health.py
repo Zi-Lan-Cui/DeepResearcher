@@ -2,7 +2,7 @@
 
 `tools/web/search/health.py` 的内存版只在单进程生效；多 worker 部署下，一个 worker
 撞到额度/鉴权耗尽，其它 worker 仍会各自出网撞。本实现把熔断位落到 PostgreSQL，
-谁先撞额度谁写熔断位，其余 worker 在恢复窗口内快速失败；熔断不停止进程。
+遇到额度错误时，先发现者写熔断位，其余 worker 在恢复窗口内快速失败；熔断不停止进程。
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ class PostgresProviderHealth:
         return row.reason if until > _utcnow() else None
 
     async def trip(self, provider: str, reason: str, seconds: float) -> None:
-        # select-then-insert 在多 worker 并发首撞同一 key 时会让后提交方吃
-        # IntegrityError；调用点住在 except ProviderExhaustedError 分支内，
-        # 任熔断开闸当场替换原始业务异常类型。冲突即重走 update 分支重试。
+        # select-then-insert 在多 worker 并发首次写入同一 key 时，后提交方会收到
+        # IntegrityError；调用点处于 except ProviderExhaustedError 分支内，
+        # 任何熔断写入都会当场替换原始业务异常类型。冲突即重走 update 分支重试。
         for attempt in range(2):
             async with self._session_factory() as session:
                 now = _utcnow()

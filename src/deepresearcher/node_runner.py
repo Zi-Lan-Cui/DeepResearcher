@@ -31,6 +31,19 @@ async def execute_node(
     取消和键盘中断必须继续向上传播，不能被当成业务失败吞掉；其余异常
     统一生成 ``RunError``，返回最小失败状态，由图中的最终渲染节点负责
     结束本次运行。
+
+    参数:
+        state: 当前研究状态。
+        stage: 节点名，用于失败事件与 RunError。
+        node: 节点函数，可同步可异步。
+
+    返回:
+        dict: 节点 update，或失败收口 update。
+
+    抛出:
+        GraphBubbleUp / asyncio.CancelledError / KeyboardInterrupt /
+            NodeCancelledError: 冒泡信号原样传播。
+        Exception: 失败产物自身违反状态不变量时——运行器的 bug。
     """
     try:
         restore_state_models(state)

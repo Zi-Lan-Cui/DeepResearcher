@@ -1,4 +1,4 @@
-"""Opt-in PostgreSQL integration tests for distributed claim semantics."""
+"""分布式领取语义的 PostgreSQL 集成测试,需显式开启。"""
 
 import asyncio
 import os

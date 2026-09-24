@@ -22,15 +22,15 @@ async def _wait_status(client, token, run_id, expected):
 
 
 async def _wait_graph_count(graphs, expected):
-    # Claim commits ``running`` immediately before graph construction; observe
-    # the second condition rather than assuming both actions are atomic.
+    # 领取在构图之前就把 ``running`` 提交;观测第二个条件,
+    # 而不是假设两个动作原子发生。
     async with asyncio.timeout(3):
         while len(graphs) != expected:
             await asyncio.sleep(0.01)
 
 
 async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path):
-    """Exercise the M8 process boundaries against one shared durable database."""
+    """在一个共享持久数据库上验证 M8 的进程边界。"""
     settings = service_settings(tmp_path)
     config = service_config(tmp_path, worker_poll_seconds=0.01)
     gate = asyncio.Event()
@@ -66,7 +66,7 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
                     await _wait_graph_count(built_graphs, 1)
                     assert len(built_graphs) == 1
 
-            # First API is now gone while the independently owned graph remains live.
+            # 第一个 API 已退出,被 Worker 独立持有的图仍在运行。
             gate.set()
             second_app = create_app(settings, config)
             async with second_app.router.lifespan_context(second_app):

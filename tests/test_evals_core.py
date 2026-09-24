@@ -1,7 +1,6 @@
 """evals harness 的核心回归：契约校验、题集文件、确定性 scorer、judge、聚合。
 
-evals/ 不在 ruff/pyright 门检内（刻意），但它的正确性必须由门检内的测试兜住：
-evals/ 不受 ruff/pyright 门检,其正确性由本文件的断言覆盖。
+evals/ 不在 ruff/pyright 门检范围内，它的正确性由本文件的断言覆盖。
 """
 
 import csv
@@ -50,7 +49,7 @@ def _case(**overrides):
     return EvalCase(**base)
 
 
-# ---- schemas ----
+# ---- 数据 schema ----
 
 
 def test_behavior_seed_set_loads_and_validates():
@@ -106,7 +105,7 @@ def test_validate_catches_broken_cases():
     assert validate_case(bad_dim)
 
 
-# ---- drb adapter ----
+# ---- DRB 适配 ----
 
 
 @pytest.fixture
@@ -191,7 +190,7 @@ def test_drb_split_is_seeded_stable_and_partitions(fake_drb, tmp_path):
     assert held == []  # id=1 落在 dev
 
 
-# ---- deterministic scorer ----
+# ---- 确定性 scorer ----
 
 
 def _artifact(**overrides) -> Artifact:
@@ -428,7 +427,7 @@ def test_parse_verdict_prefix_ordering():
     assert parse_verdict("yes, clearly") == "yes"
 
 
-# ---- aggregate ----
+# ---- 聚合 ----
 
 
 def test_external_weighted_score_and_threshold():
@@ -548,7 +547,7 @@ def test_cohen_kappa_basic():
     )
 
 
-# ---- judge identity (self-preference guard) ----
+# ---- judge 身份约束:防止自评偏好 ----
 
 
 def _fake_llm_settings(monkeypatch, model: str = "mimo-v2.5"):

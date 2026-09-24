@@ -52,7 +52,7 @@ from deepresearcher.schemas import (
 from deepresearcher.state import ResearchState, section
 from deepresearcher.vocab import SUPPORT_RANK as _SUPPORT_RANK
 
-# 模型违反协议直接输出正文时的救回下限：短于该长度或没有 cite 标记的
+# 模型违反协议直接输出正文时，判定其可接收为草稿的下限：短于该长度或没有 cite 标记的
 # 收尾文本按闲聊/致歉处理，不视为报告草稿。
 _INLINE_DRAFT_MIN_CHARS = 300
 
@@ -117,7 +117,7 @@ class ReportWriter:
                         model=self.llm,
                         max_turns=self.config.writer_max_turns,
                         context_window_tokens=context_window_tokens,
-                        # 提交前输出纯文本不算结束：踢回重试，耗尽后由 _recover_inline_draft 兜底。
+                        # 提交前输出纯文本不算结束：退回重试，耗尽后由 _recover_inline_draft 兜底。
                         submission_guard=SubmissionGuard(
                             nudge_message=(
                                 "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
@@ -230,7 +230,7 @@ class ReportWriter:
     def _recover_inline_draft(
         self, loop_context: WriterLoopContext, messages: Sequence[BaseMessage]
     ) -> None:
-        """救回跳过 CompleteReport、把报告直接写成收尾正文的草稿。
+        """接收跳过 CompleteReport、把报告直接写成收尾正文的草稿。
 
         只有通过与 CompleteReport 完全相同的本地引用校验才算有效提交；
         校验失败时至少把正文保留进 last_markdown，不再整篇丢弃。
@@ -244,7 +244,7 @@ class ReportWriter:
             loop_context.last_markdown = text
             if len(text) > loop_context.max_markdown_chars:
                 loop_context.last_error = (
-                    f"模型直接输出的正文超过上限 {loop_context.max_markdown_chars} 字符，未予救回。"
+                    f"模型直接输出的正文超过上限 {loop_context.max_markdown_chars} 字符，不予接收。"
                 )
                 self._emit("writer_inline_draft_rejected", {"error": loop_context.last_error})
                 return

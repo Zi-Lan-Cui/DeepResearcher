@@ -1,7 +1,7 @@
-"""Run control-plane admission service.
+"""run 控制面准入服务。
 
-This service persists accepted work as ``queued``. It deliberately knows nothing
-about asyncio tasks, LangGraph, checkpoints, or workers.
+本服务把受理的工作持久为 ``queued``。它刻意不知道 asyncio 任务、
+LangGraph、checkpoint 或 worker。
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from deepresearcher.service.settings import ServiceConfig
 
 
 class QuotaExceededError(Exception):
-    """The user's accepted, unfinished run count reached its quota."""
+    """该用户已受理且未完成的 run 数达到配额。"""
 
 
 class RunService:
-    """Apply admission policy and persist durable queued work."""
+    """执行准入策略并持久化排队工作。"""
 
     def __init__(
         self,

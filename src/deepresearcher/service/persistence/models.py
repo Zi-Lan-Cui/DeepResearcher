@@ -52,7 +52,7 @@ class User(Base):
 
 
 class LoginThrottle(Base):
-    """Shared login-attempt window; keys are HMACs, never raw email/IP values."""
+    """共享的登录尝试窗口；键只存 HMAC，不存原始 email/IP 值。"""
 
     __tablename__ = "login_throttles"
 
@@ -131,7 +131,7 @@ class RunEvent(Base):
 
 
 class RunUsage(Base):
-    """One billable or externally capacity-consuming operation."""
+    """一次计费或占用外部配额的操作。"""
 
     __tablename__ = "run_usage"
 

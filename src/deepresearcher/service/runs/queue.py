@@ -1,4 +1,4 @@
-"""Durable PostgreSQL run claiming and lease management."""
+"""持久的 PostgreSQL run 领取与租约管理。"""
 
 from __future__ import annotations
 
@@ -50,15 +50,14 @@ class RunWork:
 
 
 class PostgresRunQueue:
-    """Claim queued work with database ownership and expiring leases.
+    """按数据库所有权与到期租约领取排队工作。
 
-    Single-winner comes from the conditional UPDATE itself (status ∈ sources +
-    cancellation guard + attempt bump): it is an atomic CAS at the row, so a
-    losing claimer sees rowcount 0. PostgreSQL adds ``FOR UPDATE SKIP LOCKED``
-    candidate selection and an xact advisory lock around the count+claim
-    capacity check. ``_claim_lock`` only serializes this instance's own
-    poll/wake paths — multi-host correctness (e.g. two workers on one SQLite
-    file in tests) rests on the CAS, not on that lock.
+    单一胜者由条件 UPDATE 本身保证（status ∈ sources + 取消守卫 +
+    attempt 递增）：对行来说是原子 CAS，落败的领取者看到 rowcount 0。
+    PostgreSQL 额外用 ``FOR UPDATE SKIP LOCKED`` 选候选，并用事务级
+    advisory lock 包住计数+领取的容量检查。``_claim_lock`` 只串行化本实例
+    自身的 poll/wake 路径——多宿主正确性（如测试中两个 worker 共用一个
+    SQLite 文件）依赖 CAS，不依赖该锁。
     """
 
     def __init__(
@@ -77,12 +76,23 @@ class PostgresRunQueue:
         lease_seconds: int,
         preferred: RunWork | None = None,
     ) -> RunWork | ClaimCapacitySaturated | None:
+        """领取一行排队工作并建立租约。
+
+        参数:
+            worker_id: 领取者标识，写入 lease_owner。
+            lease_seconds: 租约时长。
+            preferred: 显式待领取项（resume/恢复路径）。
+
+        返回:
+            RunWork | ClaimCapacitySaturated | None:
+                领取成功 / 全局容量已满 / 本轮无可领取行。
+        """
         async with self._claim_lock:
             async with self._session_factory() as session:
                 now = _utcnow()
                 if self._max_global_running is not None:
                     # PostgreSQL 上用事务 advisory lock 串行化“计数+领取”；
-                    # SQLite 测试/单进程兼容路径由 _claim_lock 保护。
+                    # SQLite 测试路径下,各实例的 _claim_lock 只串行化本实例。
                     bind = session.get_bind()
                     if bind.dialect.name == "postgresql":
                         await session.execute(
@@ -173,7 +183,19 @@ class PostgresRunQueue:
     async def release(
         self, work: RunWork, *, status: str, terminal_reason: str | None = None
     ) -> bool:
-        """Release a claim with owner+attempt CAS, normally for graceful shutdown."""
+        """以 owner+attempt CAS 释放领取，通常用于优雅 shutdown。
+
+        参数:
+            work: 本 worker 持有的领取凭据。
+            status: 目标状态，须满足迁移表 running→status。
+            terminal_reason: 可选终态原因。
+
+        返回:
+            bool: CAS 命中为 True；未领取或行已被接管为 False。
+
+        抛出:
+            IllegalTransitionError: status 不是 running 的合法目标时。
+        """
         if not work.claimed:
             return False
         # WHERE 固定 running(所有权),参数侧由迁移表把关。
@@ -206,6 +228,9 @@ class PostgresRunQueue:
         带 flag 的行里,running 归 heartbeat→executor 自写终态;只有
         executor 退出时未写终态的 interrupted 行需要这里补写。claim 的
         WHERE 永远排除带 flag 的行,不 settle 它们就永久停留。
+
+        返回:
+            list[RunWork]: 被终态化的行（仅身份字段），供调用方补投递。
         """
         async with self._session_factory() as session:
             settle_transition = transition_for("settle_cancelled")
@@ -226,7 +251,11 @@ class PostgresRunQueue:
             return work
 
     async def reap_expired(self) -> list[RunWork]:
-        """Return expired running claims to ``interrupted`` for checkpoint resume."""
+        """把租约过期的 running 领取退回 ``interrupted``，供 checkpoint 续跑。
+
+        返回:
+            list[RunWork]: 被退回的行（仅身份字段，无领取凭据）。
+        """
         async with self._claim_lock:
             async with self._session_factory() as session:
                 reap_transition = transition_for("reap")

@@ -1,8 +1,7 @@
-"""No-LLM M8 process, failover and HTTP/SSE capacity verification.
+"""无 LLM 的 M8 进程、故障接管与 HTTP/SSE 容量验证。
 
-This script starts a real Uvicorn API and two real Worker OS processes against
-an explicitly configured PostgreSQL database.  Its graph is test-only and waits
-on files, so it incurs no model/search/fetch cost.
+本脚本对着显式配置的 PostgreSQL 启动真实 Uvicorn API 与两个真实
+Worker OS 进程。图仅供测试、以文件同步,不产生模型/搜索/抓取费用。
 """
 
 from __future__ import annotations
@@ -169,7 +168,7 @@ async def _cleanup(database_url: str, email: str, run_ids: list[str]) -> None:
     factory = make_session_factory(engine)
     try:
         async with factory() as session:
-            # LangGraph checkpoint tables intentionally have no FK to runs.
+            # LangGraph 的 checkpoint 表刻意不对 runs 建外键。
             bind = session.get_bind()
             if bind.dialect.name == "postgresql" and run_ids:
                 for run_id in run_ids:
@@ -270,7 +269,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             assert all(item.status_code == 200 for item in responses)
             await sse_stack.aclose()
 
-            # Rolling API replacement while the Worker-owned graph stays blocked.
+            # 滚动替换 API,Worker 持有的图全程阻塞。
             group.stop(api)
             api = group.start("api-2", sys.executable, "server.py")
             await _wait_api(base_url)
@@ -302,14 +301,13 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             assert completed["report_markdown"].startswith("# M8")
             await _validate_database(database_url, failover_run)
 
-            # ---- F2: graceful SIGTERM -> interrupted -> checkpoint resume ----
-            # A graceful Worker stop releases its in-flight run as ``interrupted``
-            # with a clean lease release (distinct from the lease-expiry takeover
-            # exercised above).  Neither the poll loop (claims only ``queued``) nor
-            # the lease reaper (targets expired ``running`` leases) can resume such a
-            # row -- only a Worker's startup reconcile does, by submitting an
-            # explicit ``resume=True`` claim.  This exercises that whole path on a
-            # dedicated run, still blocked on the release marker.
+            # ---- F2: 优雅 SIGTERM -> interrupted -> checkpoint 续跑 ----
+            # Worker 优雅停止时以干净的租约释放把在飞 run 落为
+            # ``interrupted``,与前面验证的租约过期接管是两条路径。
+            # 轮询循环只领 ``queued``、租约清扫只处理过期的 ``running``,
+            # 都无法续上这种行——只有 Worker 启动 reconcile 会提交显式
+            # ``resume=True`` 领取。本段在一个专用 run 上走完这条路径,
+            # 该 run 仍阻塞在 release 标记上。
             graceful_run = await _create_run(client, token, "M8 graceful resume")
             run_ids.append(graceful_run)
             await _eventually(
@@ -327,7 +325,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             graceful_owner_pid = next(iter(graceful_pids))
             graceful_owner = next(p for p in workers if p.pid == graceful_owner_pid)
 
-            # SIGTERM (not SIGKILL): the Worker drains and releases the run cleanly.
+            # SIGTERM 而非 SIGKILL:Worker 排空并干净地释放该 run。
             group.stop(graceful_owner, hard=False)
             interrupted = await _eventually(
                 lambda: _run_detail(client, token, graceful_run),
@@ -339,8 +337,8 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 f"expected server_shutdown, got {interrupted['terminal_reason']!r}"
             )
 
-            # A freshly started Worker's startup reconcile resumes the run from its
-            # checkpoint; it re-enters the graph under a new PID.
+            # 新启动 Worker 的 startup reconcile 从 checkpoint 续跑该 run;
+            # 以新 PID 重入图。
             resume_worker = group.start(
                 "worker-f2-resume", sys.executable, "tests/m8_fake_worker.py"
             )
@@ -368,7 +366,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             assert completed_graceful["report_markdown"].startswith("# M8")
             await _validate_database(database_url, graceful_run)
 
-            # Restore two live Workers, then verify queue/capacity at 1/2/4/8.
+            # 恢复两个在跑的 Worker,再按 1/2/4/8 验证队列与容量。
             workers.append(
                 group.start("worker-replacement", sys.executable, "tests/m8_fake_worker.py")
             )
@@ -402,7 +400,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                     timeout=10,
                     label=f"single graph execution for concurrency wave {level}",
                 )
-                # A second claimant would normally enter within one poll interval.
+                # 正常情况下,第二个领取者会在一个轮询间隔内进入。
                 await asyncio.sleep(0.3)
                 assert all(len(_entered_pids(marker_dir, run_id)) == 1 for run_id in wave)
                 for run_id in wave:

@@ -1,10 +1,10 @@
-"""强制工具提交守卫：模型在未完成提交时输出纯文本，踢回重试。
+"""强制工具提交守卫：模型在未完成提交时输出纯文本，退回要求其重试。
 
 部分 Agent（如 Writer）以工具调用作为唯一合法提交点；模型偶尔违反协议，
 把本应作为工具参数提交的内容直接写进回复正文。本中间件在 after_model
 观察到最后一条消息无 tool_calls 且提交探测仍未完成时，注入一条纠错
 HumanMessage 并 jump 回模型，最多 max_nudges 次；耗尽后放行，
-让位于业务层的兜底（如 Writer 的内联草稿救回），不制造死循环。
+改由业务层兜底，例如 Writer 接收内联草稿，不制造死循环。
 """
 
 from collections.abc import Callable
@@ -21,7 +21,7 @@ from deepresearcher.observability.logging_config import get_logger
 
 
 class ToolLoopGuardState(AgentState[Any]):
-    """本回合已踢回次数走私有 state 通道。
+    """本回合已退回次数走私有 state 通道。
 
     不放实例属性：中间件实例随编译图共享，跨运行互相污染；也不从消息历史
     推导：Summarization 压缩会整表重建历史，基于历史的计数会被静默清零、
@@ -38,7 +38,7 @@ class SubmittedExitMiddleware(AgentMiddleware):
     不用工具返回 Command(goto=...) 做循环控制:实测那会跳过中间件流水线
     (天花板计数、观测钩子全部空转),反复拒绝时一路撞 recursion wall。
     jump_to 是 langchain 环内唯一走完整流水线的出口通道;与 ToolLoopGuard
-    同族——一个把未提交踢回模型,一个把已提交放出循环。
+    同族——一个把未提交的退回给模型,一个让已提交的退出循环。
 
     probe 收 (context, state) 双参:提交事实住在哪层由各 agent 决定,只许读
     单一事实源——supervisor/writer/researcher 的信号在 context(loop_state/
@@ -121,7 +121,7 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
             return None
         if MODEL_FAILURE_MARKER in (last.text or ""):
             # ModelRetry 耗尽后软化的引导文本:这是后端故障,不是协议违规。
-            # 踢回会让每次故障膨胀成一整轮新的重试,交给业务层兜底收敛。
+            # 退回会让每次故障膨胀成一整轮新的重试,交给业务层兜底收敛。
             return None
         if self.submitted_probe(getattr(runtime, "context", None)):
             return None

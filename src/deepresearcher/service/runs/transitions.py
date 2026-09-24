@@ -135,6 +135,14 @@ def apply_transition(row: Any, name: str, *, now: datetime) -> None:
 
     校验用该迁移自己的来源集:箭头存在但用错动因名(如拿 cancel_pending 推
     running 行)同样拒绝。迁移固定携带的 reason 在结构副作用之后写入。
+
+    参数:
+        row: 已加载的 Run 行(鸭子类型)。
+        name: 动因名。
+        now: 用于终态字段的时间戳。
+
+    抛出:
+        IllegalTransitionError: 当前状态不在该迁移来源集内时。
     """
     transition = TRANSITIONS[name]
     if row.status not in transition.sources:

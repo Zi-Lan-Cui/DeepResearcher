@@ -1,8 +1,8 @@
-"""FastAPI application composition root.
+"""FastAPI 应用装配根。
 
-Security and transport policy live in ``service.web``. This module deliberately
-keeps only application assembly so importing the API does not also hide route,
-authentication, SSE, and worker-lifecycle implementations in one large file.
+安全与传输策略住在 ``service.web``。本模块刻意只保留应用装配，
+避免导入 API 时把路由、鉴权、SSE 与 worker 生命周期实现
+藏进同一个大文件。
 """
 
 from pathlib import Path
@@ -25,10 +25,13 @@ def create_app(
     settings: Settings | None = None,
     config: ServiceConfig | None = None,
 ) -> FastAPI:
-    """Build the HTTP control plane and mount its static client.
+    """装配 HTTP 控制面并挂载静态前端。
 
-    The control plane structurally cannot execute runs: graph assembly and the
-    worker lifecycle live only in ``deepresearcher.worker``.
+    控制面在结构上无法执行 run：图装配与 worker 生命周期
+    只存在于 ``deepresearcher.worker``。
+
+    返回:
+        FastAPI: 配置好 lifespan 的应用实例。
     """
 
     app = FastAPI(

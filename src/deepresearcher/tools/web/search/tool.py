@@ -1,4 +1,4 @@
-"""Web search tool: retrieve and cache candidate sources for a research task."""
+"""网络搜索工具：为研究任务检索并缓存候选来源。"""
 
 import asyncio
 import time

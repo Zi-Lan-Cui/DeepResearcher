@@ -1,4 +1,4 @@
-"""Database-authoritative RunEvent sequence allocation and persistence."""
+"""以数据库为权威的 RunEvent 序号分配与持久化。"""
 
 from __future__ import annotations
 

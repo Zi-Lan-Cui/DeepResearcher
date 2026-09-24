@@ -195,9 +195,8 @@ class HttpClient:
         for redirect_count in range(_MAX_PUBLIC_REDIRECTS + 1):
             resolved = await self._url_guard.resolve(current_url)
             if self._owns_client:
-                # A dedicated handle lets CURLOPT_RESOLVE pin this hop to the
-                # addresses checked above. trust_env=False also prevents an
-                # ambient proxy from bypassing the destination policy.
+                # 专用 handle 让 CURLOPT_RESOLVE 把这一跳固定在上方
+                # 校验过的地址上；trust_env=False 同时阻止环境代理绕过目标策略。
                 async with AsyncSession(
                     timeout=self.config.timeout,
                     trust_env=False,
@@ -215,8 +214,8 @@ class HttpClient:
                         allow_redirects=False,
                     )
             else:
-                # Dependency-injected clients are used by deterministic tests.
-                # They still receive normalized URLs and manual redirect policy.
+                # 注入的客户端供确定性测试使用；
+                # 它们同样收到规范化 URL 与手动重定向策略。
                 response = await self._request_once(
                     self.client,
                     method=current_method,
@@ -263,8 +262,7 @@ class HttpClient:
         timeout: float | None,
         allow_redirects: bool,
     ) -> Response:
-        # curl_cffi's stubs expose narrower literal/collection types than this
-        # project boundary intentionally accepts.
+        # curl_cffi 的 stub 暴露的类型比本边界刻意接受的更窄。
         request = cast(Any, client.request)
         return await request(
             method,

@@ -1,4 +1,4 @@
-"""Deep Research Agent MVP."""
+"""深度研究 Agent。"""
 
 from deepresearcher.graph import build_graph
 

@@ -58,7 +58,7 @@ _LLM_UNAVAILABLE_MESSAGE = {
 
 
 class RunExecutor:
-    """Execute one claimed run; scheduling and ownership remain outside this class."""
+    """执行一个已领取的 run；调度与所有权在本类之外。"""
 
     def __init__(
         self,
@@ -101,15 +101,15 @@ class RunExecutor:
         self._cancellation_requests: set[str] = set()
 
     def mark_shutdown(self, run_ids: Iterable[str]) -> None:
-        """Mark cancellation as process shutdown before local tasks are cancelled."""
+        """在本地任务被取消前，把该取消标记为进程 shutdown。"""
         self._shutdown_interrupts.update(run_ids)
 
     def mark_lease_lost(self, run_id: str) -> None:
-        """Prevent a cancelled stale owner from publishing state or a done frame."""
+        """阻止已被取消的过期持有者再发布状态或 done 帧。"""
         self._lost_leases.add(run_id)
 
     def mark_cancellation_requested(self, run_id: str) -> None:
-        """Identify cancellation driven by the durable control-plane intent."""
+        """标记该取消由持久化的控制面意图驱动。"""
         self._cancellation_requests.add(run_id)
 
     async def execute(
@@ -124,6 +124,14 @@ class RunExecutor:
     ) -> None:
         # Worker 可能与受理该 Run 的 API 不在同一进程；执行面必须
         # 自行打开本地 sink，不能依赖 API 进程中的 hub.open().
+        """执行一个已领取的 run 直至终态或挂起。
+
+        参数:
+            run_id/user_id/query: run 身份与研究问题。
+            resume: 是否以恢复模式续跑。
+            resume_input: 恢复输入（澄清回答等）。
+            claim: 本 worker 的领取凭据；None 表示不经领取的直连路径。
+        """
         self._hub.open(run_id)
         sinks: list[Any] = [self._hub]
         if self._config.jsonl_events:
@@ -229,7 +237,7 @@ class RunExecutor:
         resume_input: Any,
         claim: RunWork | None,
     ) -> bool:
-        """Execute the graph while the run TraceContext is bound."""
+        """在 run 的 TraceContext 绑定期间执行图。"""
         # 系统重启续跑已经播报 resuming，保持该状态直到后续阶段事件；
         # 人工澄清恢复则必须在 Worker 真正 claim 后从 queued 切到 running。
         announce_running = not resume or resume_input is not None
@@ -286,7 +294,7 @@ class RunExecutor:
     async def _run_graph(
         self, run_id: str, graph: Any, inputs: Any, *, callbacks: list[Any] | None = None
     ) -> tuple[dict, dict | None]:
-        """Stream root state, interrupts and safe token previews from the graph."""
+        """从图流式输出根状态、中断与安全的 token 预览。"""
         final: dict = {}
         interruption: dict | None = None
         async for namespace, mode, chunk in graph.astream(
@@ -435,6 +443,17 @@ class RunExecutor:
         self, run_id: str, *, status: str, claim: RunWork | None = None, **extra: Any
     ) -> bool:
         # 对账写:结构副作用查表,站点字段(extra)覆写其上;来源纪律只有"不覆盖终态"。
+        """把生命周期事实写成行状态，并落对应事件。
+
+        参数:
+            run_id: 目标 run。
+            status: 目标状态。
+            claim: 提供时用 owner+attempt CAS 写，防止过期持有者覆盖。
+            **extra: 附加列；None 值跳过。
+
+        返回:
+            bool: 是否写入成功（CAS 未命中或行已终态为 False）。
+        """
         values = side_effects(status, now=_utcnow())
         values.update({key: value for key, value in extra.items() if value is not None})
         if claim is not None:
@@ -495,7 +514,7 @@ class RunExecutor:
 
 
 def _field(container: Any, key: str, default: Any = None) -> Any:
-    """Read a field from checkpoint-restored dicts or Pydantic/domain models."""
+    """从 checkpoint 恢复的 dict 或 Pydantic/领域模型上读取字段。"""
     if isinstance(container, dict):
         return container.get(key, default)
     return getattr(container, key, default)

@@ -1,8 +1,8 @@
-"""Stable PostgreSQL coordination keys shared by independent service processes.
+"""独立服务进程共享的稳定 PostgreSQL 协调键。
 
-Advisory lock keys are a database-wide coordination contract.  Keep them named,
-unique, and stable across rolling deployments: changing a key while old processes
-are still alive would split one critical section into two unrelated locks.
+advisory lock 的键是全库范围的协调契约：保持具名、唯一、
+跨滚动部署稳定。旧进程存活期间改键，会把一段临界区拆成
+两把互不相干的锁。
 """
 
 DATABASE_MIGRATION_LOCK_ID = 731_904_620

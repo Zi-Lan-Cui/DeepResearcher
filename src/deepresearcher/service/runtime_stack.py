@@ -62,7 +62,7 @@ async def build_runtime_stack(
     """装配两种 runtime 共享的基础设施,退出时按相反顺序释放。
 
     每获取一个资源就立刻登记进 AsyncExitStack——装配半途抛错(信号总线起了、
-    checkpointer 没开成之类)也逆序回卷,不留悬挂连接;RuntimeStack 是纯持有物。
+    checkpointer 没开成之类)也按相反顺序释放,不留悬挂连接;RuntimeStack 是纯持有物。
     role 就是两进程真实差异的最小表达——想加第三种形态前先看清这里。
     """
     async with AsyncExitStack() as resources:
@@ -94,7 +94,7 @@ async def build_runtime_stack(
                 channel_prefix=service_config.redis_channel_prefix,
                 queue_size=service_config.redis_preview_queue_size,
             )
-            if ephemeral_bus is not None:  # 工厂可降级为 None(持久流仍可用),None 无从回卷
+            if ephemeral_bus is not None:  # 工厂可降级为 None(持久流仍可用),None 无需登记释放
                 resources.push_async_callback(ephemeral_bus.close)
 
         checkpointer = None
