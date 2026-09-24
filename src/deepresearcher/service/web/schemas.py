@@ -1,4 +1,4 @@
-"""HTTP request schemas."""
+"""HTTP 请求模型。"""
 
 from pydantic import BaseModel, Field
 

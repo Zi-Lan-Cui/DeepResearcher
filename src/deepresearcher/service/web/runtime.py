@@ -1,8 +1,8 @@
-"""FastAPI lifespan composition for the HTTP control plane.
+"""HTTP 控制面的 FastAPI lifespan 装配。
 
-The API never executes graphs: ``WorkerCoordinator`` lives exclusively in the
-independent worker process (``python -m deepresearcher.worker``). This lifespan
-assembles the control-plane collaborators over the shared infrastructure stack.
+API 永不执行图：``WorkerCoordinator`` 只存在于独立 worker 进程
+（``python -m deepresearcher.worker``）。本 lifespan 在共享基础设施栈之上
+装配控制面协作者。
 """
 
 from __future__ import annotations

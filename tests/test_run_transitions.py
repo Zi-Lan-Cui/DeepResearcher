@@ -75,14 +75,14 @@ def test_terminal_states_are_sinks() -> None:
 
 
 def test_reason_is_carried_by_fixed_provenance_transitions() -> None:
-    # reap/release 是同一条边、仅 reason 不同的对照组:证明 reason 不是 f(状态)。
+    # reap/release 目标与来源完全相同、仅 reason 不同:说明 reason 不是状态本身的函数。
     assert TRANSITIONS["reap"].target == TRANSITIONS["release"].target
     assert TRANSITIONS["reap"].sources == TRANSITIONS["release"].sources
     # 两边都必须带固定原因:只查"互异"会放过 None != "server_shutdown" 的情况。
     assert TRANSITIONS["reap"].reason is not None
     assert TRANSITIONS["release"].reason is not None
     assert TRANSITIONS["reap"].reason != TRANSITIONS["release"].reason
-    # 引擎动态原因(终态产物)不随行固定。
+    # finish/fail 的 reason 是引擎产物,不随行固定。
     assert TRANSITIONS["finish"].reason is None
     assert TRANSITIONS["fail"].reason is None
 

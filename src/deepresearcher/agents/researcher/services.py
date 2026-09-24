@@ -365,7 +365,7 @@ async def _validate_submissions(
     duplicates: list[str] = []
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
-    accepted_via_normalization = 0  # 逐字被连字符/ligature 编码差异卡住、靠归一救回的条数
+    accepted_via_normalization = 0  # 逐字比对因连字符/ligature 编码差异失败、归一化后才接受的条数
     # 批内 memo：同文档多条引用只取一次原文(Redis 后端下省 N-1 次全量 GET)。
     source_texts: dict[str, str] = {}
     assert deps.material_store is not None  # 调用方已守卫
@@ -494,7 +494,7 @@ async def add_evidence(
             "rejected_count": len(rejected),
             "duplicate_count": len(duplicates),
             # 直方图归因证据为何被丢；quote_paraphrase=改述（宽松也不过）；
-            # 另有 accepted_via_normalization 记"逐字但被连字符/ligature 卡、靠归一救回"的条数。
+            # 另有 accepted_via_normalization 记录逐字比对失败、归一化后才接受的条数。
             "rejected_reasons": rejected_reasons,
             "accepted_via_normalization": accepted_via_normalization,
             # 模型提交证据时的理由：留作审计/归因的可解释信号，不再静默丢弃。

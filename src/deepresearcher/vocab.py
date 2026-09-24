@@ -1,7 +1,7 @@
 """跨模块共享的字面量词汇表:同一值集只登记一次,wire 形状不变。
 
 必须住在根级而非 schemas/ 之内:evidence.models 也要 import 它,放进
-schemas 包会重新点燃 evidence⇄schemas 的半初始化引信。本模块只依赖 typing。
+放进 schemas 包会重新引入 evidence⇄schemas 循环导入,该包在半初始化状态下直接报错。本模块只依赖 typing。
 
 两组刻意相近但**不同域**的词汇,读码时勿混:
 - ``RouteDecision.route`` 的 ``clarify_needed``:路由节点的即时判定(wire 值已冻结);

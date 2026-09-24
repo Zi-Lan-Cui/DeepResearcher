@@ -1,4 +1,4 @@
-"""Database-backed login throttling shared by every API process."""
+"""所有 API 进程共享的、由数据库支撑的登录限速。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from deepresearcher.service.persistence.models import utcnow as _utcnow
 
 
 def _aware(value: datetime) -> datetime:
-    # SQLite drops timezone information; production PostgreSQL preserves it.
+    # SQLite 丢弃时区信息；生产 PostgreSQL 会保留。
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
@@ -28,10 +28,10 @@ class LoginRateLimitResult:
 
 
 class LoginRateLimiter:
-    """Consume login budgets atomically across API processes.
+    """跨 API 进程原子地消耗登录预算。
 
-    PostgreSQL advisory transaction locks serialize each privacy-preserving key.
-    The asyncio lock is only the SQLite/test compatibility path.
+    PostgreSQL 用事务级 advisory lock 按隐私安全键串行化；
+    asyncio 锁只是 SQLite/测试的兼容路径。
     """
 
     def __init__(

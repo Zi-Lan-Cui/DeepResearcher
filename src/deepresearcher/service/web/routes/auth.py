@@ -1,4 +1,4 @@
-"""Registration, login, and current-user routes."""
+"""注册、登录与当前用户路由。"""
 
 from typing import Any
 

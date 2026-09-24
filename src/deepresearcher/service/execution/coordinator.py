@@ -1,4 +1,4 @@
-"""Worker execution-plane composition, scheduling, and crash recovery."""
+"""worker 执行平面的组装、调度与崩溃恢复。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 
 class WorkerCoordinator:
-    """Own all resources and recovery policy used only by a Worker process."""
+    """只归 Worker 进程使用的全部资源与恢复策略。"""
 
     def __init__(
         self,
@@ -91,7 +91,7 @@ class WorkerCoordinator:
         await self.worker.wake()
 
     async def handle_cancel_notification(self, run_id: str) -> None:
-        """Fast path for cross-process cancel; the queue row is rechecked first."""
+        """跨进程取消的快速路径：先回查队列行再行动。"""
         await self.worker.cancel_if_requested(run_id)
 
     async def shutdown(self) -> None:
@@ -110,7 +110,12 @@ class WorkerCoordinator:
             self._hub.close(settled.run_id)
 
     async def reconcile_startup(self) -> tuple[int, list[tuple[str, int, str]]]:
-        """Classify queued/interrupted/orphaned runs before autonomous polling."""
+        """在自主轮询开始前归类 queued/interrupted/孤儿 run。
+
+        返回:
+            tuple[int, list[tuple[str, int, str]]]:
+                (判死行数, 可续跑的 (run_id, user_id, query) 列表)。
+        """
         resumable: list[tuple[str, int, str]] = []
         killed = 0
         await self.queue.reap_expired()

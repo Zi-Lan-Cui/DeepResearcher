@@ -1,1 +1,1 @@
-"""Database construction, ORM models, migrations, and persistent caches."""
+"""数据库构造、ORM 模型、迁移与持久缓存。"""

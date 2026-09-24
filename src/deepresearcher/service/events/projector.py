@@ -173,7 +173,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == "text_delta":
         # 生产者是 RunExecutor 对官方 astream(subgraphs=True) messages 的 ns 路由；
-        # 这里仍做第二道闸：只放行 supervisor。writer 正文走工具参数、
+        # 这里仍做第二道校验：只放行 supervisor。writer 正文走工具参数、
         # reviewer 是结构化调用——两者只应看到最终聚合结果。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)

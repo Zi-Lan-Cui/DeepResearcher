@@ -1,4 +1,4 @@
-"""Lease-based run worker for the independent execution process."""
+"""为独立执行进程提供租约式 run worker。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ logger = get_logger("deepresearcher.service.execution.worker")
 
 
 class RunWorker:
-    """Fill local slots on signals, with slow polling as a recovery path."""
+    """按信号填充本地槽位，慢轮询作为恢复路径。"""
 
     def __init__(
         self,
@@ -60,7 +60,7 @@ class RunWorker:
 
     @property
     def tasks(self) -> dict[str, asyncio.Task[None]]:
-        """Compatibility view for cancellation tests."""
+        """供取消测试使用的兼容视图。"""
         return self._tasks
 
     @property
@@ -68,34 +68,34 @@ class RunWorker:
         return self._worker_id
 
     async def start(self) -> None:
-        """Start signal-ready dispatch and fallback polling; safe to call repeatedly."""
+        """启动信号驱动的派发与兜底轮询；可安全重复调用。"""
         if self._closed:
             return
         self._ensure_background_tasks()
         await self.wake()
 
     async def submit(self, work: RunWork) -> None:
-        """Prioritize an already durable resume/recovery work item."""
+        """优先处理一个已持久化的 resume/恢复工作项。"""
         if work.run_id not in self._explicit_ids and work.run_id not in self._tasks:
             self._explicit.append(work)
             self._explicit_ids.add(work.run_id)
         await self.wake()
 
     def request_cancel(self, run_id: str) -> None:
-        """Low-latency local hint; the database intent remains authoritative."""
+        """低延迟的本地提示；数据库中的取消意图仍是权威。"""
         task = self._tasks.get(run_id)
         if task is not None and not task.done():
             self._executor.mark_cancellation_requested(run_id)
             task.cancel()
 
     async def cancel_if_requested(self, run_id: str) -> None:
-        """Verify a notification against durable state before cancelling local work."""
+        """取消本地工作前先对照持久状态核实通知。"""
         work = self._claims.get(run_id)
         if work is not None and await self._queue.cancellation_requested(work):
             self.request_cancel(run_id)
 
     async def wake(self) -> None:
-        """Fill all currently free slots; safe to call after every state transition."""
+        """填充当前全部空闲槽位；任何状态转换后都可安全调用。"""
         if self._closed:
             return
         self._ensure_background_tasks()
@@ -115,7 +115,7 @@ class RunWorker:
                         self._explicit_ids.add(preferred.run_id)
                     return
                 if work is None:
-                    # A stale explicit entry must not prevent ordinary queued work.
+                    # 过期的显式条目不应挡住普通的排队工作。
                     if preferred is not None:
                         continue
                     return

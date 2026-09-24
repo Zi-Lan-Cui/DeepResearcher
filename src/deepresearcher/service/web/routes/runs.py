@@ -1,4 +1,4 @@
-"""Run admission, query, cancellation, and clarification-resume routes."""
+"""run 准入、查询、取消与澄清续答路由。"""
 
 from typing import Any
 

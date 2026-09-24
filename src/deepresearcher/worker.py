@@ -1,4 +1,4 @@
-"""Independent execution-plane entry: ``python -m deepresearcher.worker``."""
+"""独立执行平面入口：``python -m deepresearcher.worker``。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from deepresearcher.service.execution.runtime import worker_lifespan
 
 
 async def run() -> None:
-    """Run until SIGINT/SIGTERM cancels the main task."""
+    """运行到 SIGINT/SIGTERM 取消主任务为止。"""
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

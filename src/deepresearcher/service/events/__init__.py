@@ -1,1 +1,1 @@
-"""Event transport, persistence, notification, and safe projection."""
+"""事件传输、持久化、通知与安全投影。"""

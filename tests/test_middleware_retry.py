@@ -28,8 +28,8 @@ def test_model_retry_predicate():
 def test_tool_retry_predicate_trusts_only_declared_retryability():
     assert tool_retry_on(ToolRequestError("429 稍后")) is True
     assert tool_retry_on(ToolError("配置缺失")) is False
-    # 内建 Timeout/Connection 不再是判据:与真实工具异常类型永不相交,
-    # 假保险删除后由边界归一层兜住一切未知异常。
+    # 内建 Timeout/Connection 不再是判据:与真实工具异常类型不相交,
+    # 不命中的保险删除后,未知异常全部由边界归一层统一处理。
     assert tool_retry_on(TimeoutError("永不命中的形状")) is False
     assert tool_retry_on(ConnectionError("同上")) is False
 

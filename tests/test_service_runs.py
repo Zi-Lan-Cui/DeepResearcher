@@ -126,7 +126,7 @@ def _completed_result():
 
 
 class ServiceHarness:
-    """Expose control and execution planes explicitly in integration-style tests."""
+    """在集成风格测试中显式暴露控制面与执行面。"""
 
     def __init__(
         self,
@@ -294,7 +294,7 @@ async def test_manager_delegates_execution_without_building_graph_itself(manager
 
 
 async def test_running_status_is_announced_only_for_user_visible_claim(manager):
-    """Human resume leaves queued only when waiting; restart resume keeps resuming."""
+    """人工 resume 只在等待时离开 queued;重启恢复的 resume 持续续跑。"""
 
     silent_id = "run-system-resume"
     announced_id = "run-human-resume"
@@ -583,7 +583,7 @@ async def test_two_queue_instances_claim_a_run_only_once(manager):
 
 
 async def test_worker_polling_claims_run_created_by_another_process(manager):
-    """Independent Worker does not rely on the API process calling wake()."""
+    """独立 Worker 不依赖 API 进程调用 wake(),靠自身轮询领取。"""
     manager.execution.worker._poll_seconds = 0.01  # noqa: SLF001 - polling seam
     graph = FakeGraph(result=_completed_result(), emit_events=1)
     manager.holder["graph"] = graph

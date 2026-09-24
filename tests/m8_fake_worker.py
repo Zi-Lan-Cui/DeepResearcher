@@ -1,4 +1,4 @@
-"""Test-only Worker process with a checkpointed, externally released graph."""
+"""仅供测试的 Worker 进程:图带 checkpoint,由外部文件信号放行。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def build_harness_graph(*, event_sink, checkpointer=None, **_kwargs):
     marker_dir = Path(os.environ["M8_MARKER_DIR"])
 
     async def checkpoint_ready(_state: HarnessState) -> dict:
-        # This completed superstep is the recovery point before the blocking work.
+        # 这个已完成的 superstep 就是阻塞工作之前的恢复点。
         return {}
 
     async def controlled_work(state: HarnessState) -> dict:

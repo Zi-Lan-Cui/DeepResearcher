@@ -1,4 +1,4 @@
-"""Run-scoped capacity control and usage/cost accounting."""
+"""run 级并发控制与用量/成本记账。"""
 
 from __future__ import annotations
 
@@ -249,7 +249,7 @@ class UsageStore:
 
 
 class RunUsageCallback(AsyncCallbackHandler):
-    """Capture every provider attempt, including Agent and structured calls."""
+    """记录每一次提供方调用，包括 Agent 与结构化调用。"""
 
     def __init__(
         self,

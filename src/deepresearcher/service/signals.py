@@ -1,4 +1,4 @@
-"""PostgreSQL-backed best-effort signals between API and Worker processes."""
+"""API 与 Worker 进程之间由 PostgreSQL 承载的尽力而为信号。"""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ logger = logging.getLogger("deepresearcher.service.signals")
 
 
 class PostgresSignalBus:
-    """Deliver low-latency hints while PostgreSQL tables remain authoritative.
+    """在 PostgreSQL 表保持权威的同时提供低延迟提示。
 
-    Signals may be missed during disconnects or startup. Consumers must retain a
-    durable reconciliation path; this bus only removes routine polling latency.
+    信号可能在断连或启动窗口丢失。消费方必须保留持久化的对账路径；
+    本总线只消除常规轮询延迟。
     """
 
     def __init__(self) -> None:

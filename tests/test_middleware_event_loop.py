@@ -39,7 +39,7 @@ class _WrapperSmokeModel(BaseChatModel):
 
 @tool("LoopSmokeEcho")
 async def _echo(value: str) -> str:
-    """Return the supplied value."""
+    """原样返回传入的值。"""
     return value
 
 

@@ -39,7 +39,7 @@ class ToolRequestError(ToolError):
 
 
 class UnsafeUrlError(ToolRequestError):
-    """A source URL violates the public-network fetching policy."""
+    """来源 URL 违反公网抓取策略。"""
 
     code = "unsafe_url"
     retryable = False

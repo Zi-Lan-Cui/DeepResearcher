@@ -1,7 +1,7 @@
-"""API control plane for durable Run commands.
+"""持久 Run 命令的 API 控制面。
 
-The manager accepts, cancels, and resumes runs. Worker-only scheduling,
-execution, capacity gates, and crash recovery live in ``WorkerCoordinator``.
+manager 受理、取消、恢复 run。worker 专属的调度、执行、容量闸与
+崩溃恢复在 ``WorkerCoordinator``。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from deepresearcher.service.signals import PostgresSignalBus
 
 
 class RunManager:
-    """Persist user commands and expose durable events to the HTTP layer."""
+    """持久化用户命令，并向 HTTP 层暴露持久事件。"""
 
     def __init__(
         self,
@@ -43,6 +43,11 @@ class RunManager:
         self._run_service = RunService(session_factory=session_factory, config=config)
 
     async def start(self, user_id: int, query: str) -> str:
+        """受理新研究问题，创建 queued 行并通知 worker。
+
+        返回:
+            str: 新 run 的 id。
+        """
         run_id = await self._run_service.create(user_id, query.strip())
         self._hub.open(run_id)
         await self._hub.publish_status(run_id, "queued")
@@ -51,6 +56,18 @@ class RunManager:
         return run_id
 
     async def cancel(self, user_id: int, run_id: str) -> Run:
+        """请求取消一个 run。
+
+        参数:
+            user_id: 资源所有者。
+            run_id: 目标 run。
+
+        返回:
+            Run: 处理后的行。
+
+        抛出:
+            LookupError: run 不存在或非本人所有。
+        """
         immediate = False
         async with self._session_factory() as session:
             run = await session.scalar(
@@ -100,6 +117,21 @@ class RunManager:
         return tuple_ is not None
 
     async def resume_with_input(self, user_id: int, run_id: str, answer: str) -> str:
+        """提交澄清回答并把 run 重新入队。
+
+        参数:
+            user_id: 资源所有者。
+            run_id: 处于 awaiting_input 的 run。
+            answer: 用户回答。
+
+        返回:
+            str: 入队后的当前状态。
+
+        抛出:
+            ValueError: 回答为空。
+            LookupError: run 不存在或非本人所有。
+            RuntimeError: checkpoint_missing 或 already_resumed。
+        """
         answer = answer.strip()
         if not answer:
             raise ValueError("澄清回答不能为空。")

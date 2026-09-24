@@ -14,7 +14,7 @@ logger = get_logger("deepresearcher.observability.usage_runtime")
 
 
 class UsageRecorder(Protocol):
-    """Minimal execution-owned capability exposed to engine code."""
+    """执行面拥有、暴露给引擎代码的最小能力。"""
 
     async def enforce_budget(self, run_id: str, config: LLMConfig) -> None: ...
 
@@ -46,7 +46,7 @@ class UsageRuntime:
 
 
 class UsageBudgetExceeded(RuntimeError):
-    """The current run reached one of its configured LLM usage limits."""
+    """当前 run 已达到配置的某一项模型用量上限。"""
 
 
 _runtime: ContextVar[UsageRuntime | None] = ContextVar("deepresearcher_usage_runtime", default=None)
@@ -65,7 +65,11 @@ def current_usage_runtime() -> UsageRuntime | None:
 
 
 async def enforce_usage_budget() -> None:
-    """Check the active run budget; no-op outside a service execution context."""
+    """检查当前 run 的用量预算；不在服务执行上下文时是空操作。
+
+    抛出:
+        UsageBudgetExceeded: 预算耗尽时。
+    """
 
     runtime = current_usage_runtime()
     if runtime is not None:

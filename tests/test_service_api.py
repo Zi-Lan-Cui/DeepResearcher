@@ -151,7 +151,7 @@ async def test_successful_login_clears_only_the_account_budget(client):
     success = await client.post("/api/login", json={"email": "a@test.dev", "password": PASSWORD})
     assert success.status_code == 200
 
-    # The previous account failures were cleared; a fresh full budget is available.
+    # 此前的账号失败计数已清零,预算完整可用。
     for _ in range(5):
         assert (await client.post("/api/login", json=wrong)).status_code == 401
     assert (await client.post("/api/login", json=wrong)).status_code == 429

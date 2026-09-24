@@ -58,7 +58,7 @@ class ToolErrorNormalizerMiddleware(AgentMiddleware):
 
 
 # 软化文本的指纹:ToolLoopGuard 据此区分"模型后端故障的引导"与"协议违规的
-# 纯文本"——前者踢回只会把一次故障放大成一整轮新的重试。
+# 纯文本"——前者退回只会把一次故障放大成一整轮新的重试。
 MODEL_FAILURE_MARKER = "的模型调用在重试后仍未成功"
 
 
