@@ -40,6 +40,7 @@ class SearchTool:
         self.trace_recorder = trace_recorder
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.tools.web_search")
+        # 实例随 build_graph 每 run 新建:缓存生命周期=单个 run,随 run 结束回收。
         self._query_cache: dict[str, list[SearchResult]] = {}
         self._query_cache_lock = asyncio.Lock()
 
