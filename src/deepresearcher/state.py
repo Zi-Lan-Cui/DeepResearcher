@@ -27,7 +27,6 @@ from pydantic import BaseModel
 
 from deepresearcher.errors import AgentError
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.observability.events.models import NodeEvent
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     Citation,
@@ -149,7 +148,6 @@ class ResearchState(TypedDict, total=False):
     # 审计(Instrumentation)
     evidence_count: int
     source_count: int
-    node_events: Annotated[list[NodeEvent], add]
 
 
 # 允许为 None 的标量通道由注解派生,不再手工登记第二份:新增 Optional 通道
@@ -192,7 +190,6 @@ def restore_state_models(state: dict[str, object]) -> None:
         ("task_results", ResearchDirectionResult),
         ("citations", Citation),
         ("paragraph_bindings", ParagraphBinding),
-        ("node_events", NodeEvent),
     )
     for key, model_cls in list_models:
         values = state.get(key)

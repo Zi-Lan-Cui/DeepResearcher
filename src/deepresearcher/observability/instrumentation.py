@@ -80,7 +80,6 @@ def instrument_node(
                 )
                 if event_sink is not None:
                     event_sink.write(event)
-                result["node_events"] = [*result.get("node_events", []), event]
                 return result
             except GraphBubbleUp:
                 # interrupt() 是子图控制流，由根图持久化，不是节点失败。

@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
-from deepresearcher.observability.events.models import failure_event_fields, make_node_event
+from deepresearcher.observability.events.models import failure_event_fields
 from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 from deepresearcher.reporting import render_error_report, render_incomplete_report
 from deepresearcher.routing import NodeName
@@ -56,11 +56,9 @@ async def execute_node(
     except (GraphBubbleUp, asyncio.CancelledError, KeyboardInterrupt, NodeCancelledError):
         raise
     except Exception as exc:
-        # 失败事件进入状态供最终运行记录使用；生命周期日志由
-        # observability.instrumentation 单独负责，避免职责重复。
-        # 两处的 error/code/retryable 口径来自 failure_event_fields 单源。
-        error, fields = failure_event_fields(stage, exc)
-        event = make_node_event(stage, "failed", **fields)
+        # 失败的生命周期事件由 observability.instrumentation 经 sink 单路记录，
+        # 状态里不再留副本；这里的 error 口径与事件侧共用 failure_event_fields 单源。
+        error, _ = failure_event_fields(stage, exc)
         budget_exhausted = isinstance(exc, UsageBudgetExceeded)
         if budget_exhausted:
             error = RunError(
@@ -86,7 +84,6 @@ async def execute_node(
                 if budget_exhausted
                 else render_error_report(cast(ResearchState, state), error)
             ),
-            "node_events": [event],
         }
         # 运行器的产物与节点产物过同一条不变量校验。此处校验不通过说明
         # 错误路径本身被改坏，是运行器的 bug——向上抛出，绝不静默降级。
