@@ -20,7 +20,7 @@ from deepresearcher.config import (
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.execution.queue import PostgresRunQueue
-from deepresearcher.service.execution.worker_runtime import WorkerRuntime
+from deepresearcher.service.execution.runtime import WorkerRuntime
 from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunEvent, User
 from deepresearcher.service.preview.local import LocalPreviewBus
