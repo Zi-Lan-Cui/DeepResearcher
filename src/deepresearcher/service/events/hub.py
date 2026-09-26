@@ -68,7 +68,11 @@ class RunEventHub:
     def _evict_oldest_locked(self) -> None:
         oldest = next(iter(self._open))
         del self._open[oldest]
-        self._pending.pop(oldest, None)
+        pending = self._pending.pop(oldest, None)
+        if pending:
+            logger.warning(
+                "run_event_pending_dropped_on_evict run_id=%s count=%d", oldest, len(pending)
+            )
 
     def close(self, run_id: str) -> None:
         """摘除该 run 的 open 登记与缓冲。

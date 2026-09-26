@@ -66,6 +66,18 @@ SERVICE_REDIS_PREVIEW_ENABLED=true uv run python -m deepresearcher.worker
 - 数据库、Redis 与登录令牌；
 - Token 和费用上限。
 
+## 容量假设
+
+- 事件 Hub 是进程内的:`_OPEN_MAX=2048` 个 open run 登记,超额按插入序回收最早者,
+  未落库的 pending 会丢弃并记 `run_event_pending_dropped_on_evict` warning(已落库的
+  不受影响)。前提是单进程(API 或 worker)并发 run 数远小于该值。
+- `run_done` 幂等去重只覆盖同进程;API 与 worker 各持一个 hub,同一 run 理论上可能
+  落库两条 done,SSE 首条 done 即终止,客户端无感。
+- `ProviderRateLimiter` 的 RPM/TPM 窗口是 per-worker 的,按估算 token 记账、不与实际
+  返回对账:多 worker 时有效限额约为配置值 x N。单 worker 部署不受影响;多 worker 请
+  按 worker 数折算配置,或替换为共享计数实现。
+- 搜索查询结果缓存(`SearchTool._query_cache`)随 run 结束整体回收,不设进程级上限。
+
 ## 公网部署
 
 默认配置只监听本机地址。如果需要公网访问，请在应用前配置 HTTPS 反向代理，并使用强随机 SERVICE_JWT_SECRET；不要将开发配置直接暴露到公网。
