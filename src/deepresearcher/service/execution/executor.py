@@ -18,13 +18,13 @@ from deepresearcher.graph import build_graph
 from deepresearcher.llm import classify_llm_error
 from deepresearcher.observability import JsonlSink
 from deepresearcher.observability.tracing import TraceRecorder
-from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.sinks import CompositeSink
+from deepresearcher.service.execution.queue import RunWork
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
-from deepresearcher.service.runs.queue import RunWork
+from deepresearcher.service.preview.protocol import EphemeralEventBus
 from deepresearcher.service.runs.transitions import (
     apply_transition,
     may_overwrite,

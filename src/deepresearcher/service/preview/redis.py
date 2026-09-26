@@ -7,13 +7,13 @@ import json
 import logging
 from typing import Any
 
-from deepresearcher.service.events.ephemeral import (
+from deepresearcher.service.preview.protocol import (
     EphemeralEventBus,
     EphemeralSubscription,
     preview_event,
 )
 
-logger = logging.getLogger("deepresearcher.service.events.redis_ephemeral")
+logger = logging.getLogger("deepresearcher.service.preview.redis")
 REDIS_PREVIEW_IO_TIMEOUT_SECONDS = 1.0
 
 

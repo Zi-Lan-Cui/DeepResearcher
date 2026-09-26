@@ -9,13 +9,13 @@ from sqlalchemy import func, select
 
 from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
-from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.execution.executor import RunExecutor
+from deepresearcher.service.execution.queue import PostgresRunQueue, RunWork
 from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.models import Run, RunEvent
 from deepresearcher.service.persistence.models import utcnow as _utcnow
-from deepresearcher.service.runs.queue import PostgresRunQueue, RunWork
+from deepresearcher.service.preview.protocol import EphemeralEventBus
 from deepresearcher.service.runs.transitions import apply_transition
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, UsageStore

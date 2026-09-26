@@ -5,8 +5,8 @@ import pytest
 import pytest_asyncio
 
 from deepresearcher.service.api import create_app
-from deepresearcher.service.events.ephemeral import EphemeralSubscription
 from deepresearcher.service.execution.runtime import worker_lifespan
+from deepresearcher.service.preview.protocol import EphemeralSubscription
 from fakes_service import (
     FakeGraph,
     parse_sse,

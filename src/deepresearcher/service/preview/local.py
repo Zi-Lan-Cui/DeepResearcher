@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 
-from deepresearcher.service.events.ephemeral import (
+from deepresearcher.service.preview.protocol import (
     EphemeralSubscription,
     preview_event,
 )

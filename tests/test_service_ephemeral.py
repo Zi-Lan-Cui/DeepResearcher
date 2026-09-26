@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from deepresearcher.service.events.ephemeral import preview_event
-from deepresearcher.service.events.redis_ephemeral import (
+from deepresearcher.service.preview.protocol import preview_event
+from deepresearcher.service.preview.redis import (
     RedisEphemeralEventBus,
     create_redis_ephemeral_bus,
 )

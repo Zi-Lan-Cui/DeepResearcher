@@ -11,7 +11,7 @@ from langgraph.types import Command
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.execution.executor import RunExecutor
-from deepresearcher.service.runs.queue import (
+from deepresearcher.service.execution.queue import (
     ClaimCapacitySaturated,
     PostgresRunQueue,
     RunWork,
