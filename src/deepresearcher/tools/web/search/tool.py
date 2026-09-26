@@ -50,6 +50,7 @@ class SearchTool:
     async def arun_queries(self, task: SubTask, *, queries: list[str]) -> SearchToolResult:
         started = time.perf_counter()
         link: SpanContext | None = None
+        failures: list[SearchFailure] = []  # 先绑定:早期异常路径下 except 侧需要引用它
         search_queries = list(
             dict.fromkeys(query.strip() for query in queries if query.strip())
         ) or [task["question"]]
@@ -182,7 +183,7 @@ class SearchTool:
                 task,
                 exc,
                 queries=search_queries,
-                failures=failures if "failures" in locals() else None,
+                failures=failures,
             )
 
     def _cache_key(self, query: str) -> str:
