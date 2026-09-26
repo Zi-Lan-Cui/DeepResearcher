@@ -10,10 +10,11 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.coordination import RUN_ADMISSION_LOCK_ID
+from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.settings import ServiceConfig
 
@@ -41,14 +42,9 @@ class RunService:
         query = query.strip()
         async with self._admission_lock:
             async with self._session_factory() as session:
-                bind = session.get_bind()
-                if bind.dialect.name == "postgresql":
-                    # 用户配额和全局 queued 上限都是跨行不变量。一把短事务锁
-                    # 将所有 API 副本的“计数 + INSERT”串行化，commit/rollback 自动释放。
-                    await session.execute(
-                        text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                        {"lock_id": RUN_ADMISSION_LOCK_ID},
-                    )
+                # 用户配额和全局 queued 上限都是跨行不变量。一把短事务锁
+                # 将所有 API 副本的“计数 + INSERT”串行化，commit/rollback 自动释放。
+                await acquire_xact_lock(session, RUN_ADMISSION_LOCK_ID)
                 outstanding = await session.scalar(
                     select(func.count())
                     .select_from(Run)
