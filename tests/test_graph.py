@@ -20,7 +20,6 @@ from deepresearcher.config import (
 from deepresearcher.graph import build_graph
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.node_runner import execute_node
-from deepresearcher.observability.events.models import NodeEvent
 from deepresearcher.routing import (
     NodeName,
     route_after_reviewer,
@@ -320,7 +319,6 @@ def test_node_runner_restores_checkpoint_models_before_node():
         assert isinstance(state["run"].error, RunError)
         assert isinstance(state["review"].issues[0], ReviewIssue)
         assert isinstance(state["citations"][0], Citation)
-        assert isinstance(state["node_events"][0], NodeEvent)
         return {"run": RunStatus(phase="routing")}
 
     result = asyncio.run(
@@ -332,15 +330,6 @@ def test_node_runner_restores_checkpoint_models_before_node():
                 },
                 "review": {"issues": [{"severity": "warning", "reason": "可改进"}]},
                 "citations": [{"id": "e1"}],
-                "node_events": [
-                    {
-                        "event_id": "evt-1",
-                        "event_type": "node_completed",
-                        "timestamp": "2026-01-01T00:00:00+00:00",
-                        "node": "writer",
-                        "status": "completed",
-                    }
-                ],
             },
             stage="inspect",
             node=inspect_state,
@@ -473,7 +462,7 @@ def test_writer_revisit_overwrites_add_channels_instead_of_folding(tmp_path, mon
     """子图全量回写的回归：add-reducer 通道若不覆写，每次进 Writer 会把已有历史再 fold 一遍。
 
     脚本：supervisor→writer→reviewer(退回)→supervisor→writer→reviewer(通过)→render，
-    两次访问 WRITER 子图；supervisor_messages 与 node_events 必须按真实回合线性增长。
+    两次访问 WRITER 子图；supervisor_messages 必须按真实回合线性增长，不得翻倍。
     """
 
     class _TwiceSupervisor:
@@ -515,8 +504,6 @@ def test_writer_revisit_overwrites_add_channels_instead_of_folding(tmp_path, mon
         "第1轮综合",
         "第2轮综合",
     ]
-    assert [event.node for event in result["node_events"]].count("writer") == 2
-    assert len(result["node_events"]) == len({event.event_id for event in result["node_events"]})
     assert result["run"].phase == "completed"
 
 

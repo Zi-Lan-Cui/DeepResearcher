@@ -94,7 +94,7 @@ def _subgraph_routed_node(
 
     子图 ainvoke 返回的是全通道终态(输入被逐通道播种);直接作为主图
     update,operator.add 通道会把主图已有的整段历史再 fold 一遍、每访问
-    翻倍。故在观测层补记 node_events 之后、回写之前,把 ADD_REDUCER_KEYS
+    翻倍。故在观测层补记事件之后、回写之前,把 ADD_REDUCER_KEYS
     覆写成 Overwrite(子图终态即全量,语义正确)。merge_* 通道幂等,
     无需适配;普通通道 last-write-wins,回写同值亦无副作用。
     """
