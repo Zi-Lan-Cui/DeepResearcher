@@ -11,7 +11,7 @@ Alembic 版本迁移链——schema 演进直接改 models 再重建即可。
 
 from __future__ import annotations
 
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool, StaticPool
 
 from deepresearcher.service.coordination import DATABASE_MIGRATION_LOCK_ID
+from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
 from deepresearcher.service.persistence.models import Base
 
 
@@ -85,13 +86,9 @@ async def migrate_database(database_url: str) -> None:
     engine = make_engine(database_url)
     try:
         async with engine.begin() as connection:
-            if connection.dialect.name == "postgresql":
-                # 事务级 advisory lock 在提交时自动释放，
-                # 保护下方并发的跨进程 DDL。
-                await connection.execute(
-                    text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                    {"lock_id": DATABASE_MIGRATION_LOCK_ID},
-                )
+            # 事务级 advisory lock 在提交时自动释放,保护下方并发的跨进程 DDL;
+            # SQLite 单进程测试路径上空操作。
+            await acquire_xact_lock(connection, DATABASE_MIGRATION_LOCK_ID)
             await connection.run_sync(Base.metadata.create_all)
     finally:
         await engine.dispose()

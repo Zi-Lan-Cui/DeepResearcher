@@ -9,9 +9,10 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
 from deepresearcher.service.persistence.models import LoginThrottle
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 
@@ -62,12 +63,8 @@ class LoginRateLimiter:
             lock = _NullAsyncContext() if is_postgres else self._sqlite_lock
             async with lock:
                 async with session.begin():
-                    if is_postgres:
-                        for key_hash, _limit in sorted(budgets):
-                            await session.execute(
-                                text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                                {"lock_id": self._lock_id(key_hash)},
-                            )
+                    for key_hash, _limit in sorted(budgets):
+                        await acquire_xact_lock(session, self._lock_id(key_hash))
                     return await self._consume_locked(session, budgets)
 
     async def clear_account(self, email: str) -> None:
@@ -77,11 +74,7 @@ class LoginRateLimiter:
             lock = _NullAsyncContext() if is_postgres else self._sqlite_lock
             async with lock:
                 async with session.begin():
-                    if is_postgres:
-                        await session.execute(
-                            text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                            {"lock_id": self._lock_id(key_hash)},
-                        )
+                    await acquire_xact_lock(session, self._lock_id(key_hash))
                     row = await session.get(LoginThrottle, key_hash)
                     if row is not None:
                         await session.delete(row)

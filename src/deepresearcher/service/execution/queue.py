@@ -8,9 +8,10 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 
 from deepresearcher.service.coordination import RUN_CLAIM_CAPACITY_LOCK_ID
+from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.transitions import (
@@ -93,12 +94,7 @@ class PostgresRunQueue:
                 if self._max_global_running is not None:
                     # PostgreSQL 上用事务 advisory lock 串行化“计数+领取”；
                     # SQLite 测试路径下,各实例的 _claim_lock 只串行化本实例。
-                    bind = session.get_bind()
-                    if bind.dialect.name == "postgresql":
-                        await session.execute(
-                            text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                            {"lock_id": RUN_CLAIM_CAPACITY_LOCK_ID},
-                        )
+                    await acquire_xact_lock(session, RUN_CLAIM_CAPACITY_LOCK_ID)
                     running = await session.scalar(
                         select(func.count()).select_from(Run).where(Run.status == "running")
                     )

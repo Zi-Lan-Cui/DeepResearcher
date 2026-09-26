@@ -149,6 +149,43 @@ def test_event_and_preview_planes_do_not_import_each_other():
     )
 
 
+def test_asyncpg_raw_connections_live_only_in_signals():
+    """PG 正门是 sqlalchemy 引擎;唯一登记在案的例外是 signals 的长驻订阅连接。
+
+    第二扇门必须只有一处、且有成文理由(见 signals.py 头),否则 NullPool/
+    方言/池策略的集中决定开始被各模块绕过。
+    """
+    allowed = Path("src/deepresearcher/service/signals.py")
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT):
+        for lineno, resolved in _resolved_imports(path):
+            if _under("asyncpg", resolved) and path != allowed:
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], "asyncpg may only be imported by service.signals:\n" + "\n".join(
+        violations
+    )
+
+
+def test_advisory_lock_sql_lives_in_persistence_helper():
+    """pg_advisory_* 只许出现在 persistence/advisory_lock.py。
+
+    锁语义(何时释放、跨不跨 yield)一旦散写各平面,复制一份就多一种复制错的方式。
+    """
+    allowed = Path("src/deepresearcher/service/persistence/advisory_lock.py")
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT):
+        if path == allowed:
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if "pg_advisory" in line:
+                violations.append(f"{path}:{lineno} contains pg_advisory")
+
+    assert violations == [], (
+        "advisory lock SQL must stay inside persistence.advisory_lock:\n" + "\n".join(violations)
+    )
+
+
 def test_store_append_has_single_caller():
     """生产内唯一合法的 RunEventStore.append 调用点是 RunEventHub.flush。
 

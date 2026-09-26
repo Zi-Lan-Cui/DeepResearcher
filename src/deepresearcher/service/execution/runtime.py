@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from deepresearcher.config import Settings, get_settings
 from deepresearcher.graph import build_graph
@@ -22,6 +22,7 @@ from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.execution.queue import PostgresRunQueue, RunWork
 from deepresearcher.service.execution.worker import RunWorker
+from deepresearcher.service.persistence.advisory_lock import held_session_lock
 from deepresearcher.service.persistence.models import Run, RunEvent
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.preview.protocol import EphemeralEventBus
@@ -225,20 +226,8 @@ async def _startup_recovery_lock(session_factory: Callable[[], Any]) -> AsyncIte
     一次性扫描——它可能产生终态事件，因此不得跑两次。
     """
     async with session_factory() as session:
-        if session.get_bind().dialect.name != "postgresql":
+        async with held_session_lock(session, WORKER_STARTUP_RECOVERY_LOCK_ID):
             yield
-            return
-        await session.execute(
-            text("SELECT pg_advisory_lock(:lock_id)"),
-            {"lock_id": WORKER_STARTUP_RECOVERY_LOCK_ID},
-        )
-        try:
-            yield
-        finally:
-            await session.execute(
-                text("SELECT pg_advisory_unlock(:lock_id)"),
-                {"lock_id": WORKER_STARTUP_RECOVERY_LOCK_ID},
-            )
 
 
 @asynccontextmanager
