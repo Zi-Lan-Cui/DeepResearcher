@@ -18,9 +18,7 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deepresearcher.config import Settings
-from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.redis_ephemeral import create_redis_ephemeral_bus
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.persistence.database import (
     make_engine,
@@ -30,6 +28,8 @@ from deepresearcher.service.persistence.database import (
 from deepresearcher.service.persistence.redis_material_store import (
     create_research_material_store,
 )
+from deepresearcher.service.preview.protocol import EphemeralEventBus
+from deepresearcher.service.preview.redis import create_redis_ephemeral_bus
 from deepresearcher.service.settings import ServiceConfig, checkpoint_dsn
 from deepresearcher.service.signals import PostgresSignalBus
 from deepresearcher.tools.transport import HttpClient

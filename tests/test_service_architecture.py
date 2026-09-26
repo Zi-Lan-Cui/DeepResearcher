@@ -130,6 +130,50 @@ def test_run_control_plane_does_not_import_execution_plane():
     )
 
 
+def test_event_and_preview_planes_do_not_import_each_other():
+    """持久事件面与可丢弃预览面互不依赖;跨面接线只发生在执行器与 SSE 路由。"""
+    preview_prefix = "deepresearcher.service.preview"
+    events_prefix = "deepresearcher.service.events"
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT / "service" / "events"):
+        for lineno, resolved in _resolved_imports(path):
+            if _under(preview_prefix, resolved):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+    for path in _walk(KERNEL_ROOT / "service" / "preview"):
+        for lineno, resolved in _resolved_imports(path):
+            if _under(events_prefix, resolved):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], "event and preview planes must stay independent:\n" + "\n".join(
+        violations
+    )
+
+
+def test_store_append_has_single_caller():
+    """生产内唯一合法的 RunEventStore.append 调用点是 RunEventHub.flush。
+
+    绕过 hub 直写账本 = 消费端收不到唤醒、seq 编排与 _requeue 契约全部失效。
+    """
+    allowed = Path("src/deepresearcher/service/events/hub.py")
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append"
+            ):
+                base = node.func.value
+                receiver = getattr(base, "attr", None) or getattr(base, "id", None)
+                if receiver in {"store", "event_store"} and path != allowed:
+                    violations.append(f"{path}:{node.lineno} calls {receiver}.append")
+
+    assert violations == [], "only RunEventHub.flush may append to the event store:\n" + "\n".join(
+        violations
+    )
+
+
 def test_web_control_plane_does_not_import_execution_plane():
     """API 进程结构上无法执行:web→execution 的任何 import 都等于重新启用 embedded。"""
     violations: list[str] = []
@@ -149,7 +193,7 @@ def test_no_production_module_imports_local_preview_bus():
     生产预览路径只经 EphemeralEventBus 协议装配(Redis 总线,或退化为 None);
     若把本地总线 import 进 src,等于恢复 embedded 模式的进程内直投。
     """
-    preview_prefix = "deepresearcher.service.events.preview"
+    preview_prefix = "deepresearcher.service.preview.local"
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT):
         for lineno, resolved in _resolved_imports(path):

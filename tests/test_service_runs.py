@@ -18,13 +18,13 @@ from deepresearcher.config import (
     Settings,
 )
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.execution.coordinator import WorkerCoordinator
+from deepresearcher.service.execution.queue import PostgresRunQueue
 from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.preview.local import LocalPreviewBus
 from deepresearcher.service.runs.manager import RunManager
-from deepresearcher.service.runs.queue import PostgresRunQueue
 from deepresearcher.service.runs.service import QuotaExceededError, RunService
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.signals import PostgresSignalBus
@@ -1062,7 +1062,7 @@ def _heartbeat_worker(queue, executor):
 
 
 async def test_heartbeat_survives_transient_db_errors():
-    from deepresearcher.service.runs.queue import RunWork
+    from deepresearcher.service.execution.queue import RunWork
 
     work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", attempt=1)
     queue = _FlakyRenewQueue(fail_rounds=2)
@@ -1080,7 +1080,7 @@ async def test_heartbeat_survives_transient_db_errors():
 
 
 async def test_heartbeat_escalates_persistent_db_errors_to_lease_lost():
-    from deepresearcher.service.runs.queue import RunWork
+    from deepresearcher.service.execution.queue import RunWork
 
     work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", attempt=1)
     queue = _FlakyRenewQueue(fail_rounds=99)
@@ -1150,7 +1150,7 @@ async def test_poll_loop_survives_transient_claim_error():
 
 async def test_wake_requeues_preferred_when_capacity_saturated():
     """容量满 ≠ preferred 过期:显式 resume 任务弹回队首等下轮,而非被静默吞掉。"""
-    from deepresearcher.service.runs.queue import ClaimCapacitySaturated, RunWork
+    from deepresearcher.service.execution.queue import ClaimCapacitySaturated, RunWork
 
     work = RunWork(run_id="run-resume-saturated", user_id=1, query="q", resume=True)
     queue = _ScriptedClaimQueue([ClaimCapacitySaturated(), ClaimCapacitySaturated()])

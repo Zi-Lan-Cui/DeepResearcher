@@ -9,10 +9,10 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from deepresearcher.service.events.ephemeral import EphemeralEventBus
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.events.preview import LocalPreviewBus
 from deepresearcher.service.events.sinks import CompositeSink
+from deepresearcher.service.preview.local import LocalPreviewBus
+from deepresearcher.service.preview.protocol import EphemeralEventBus
 
 pytestmark = pytest.mark.asyncio
 

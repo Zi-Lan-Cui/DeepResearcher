@@ -10,17 +10,17 @@ from sqlalchemy import delete, update
 
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.events.store import RunEventStore
+from deepresearcher.service.execution.queue import (
+    ClaimCapacitySaturated,
+    PostgresRunQueue,
+    RunWork,
+)
 from deepresearcher.service.persistence.database import (
     make_engine,
     make_session_factory,
     migrate_database,
 )
 from deepresearcher.service.persistence.models import Run, User
-from deepresearcher.service.runs.queue import (
-    ClaimCapacitySaturated,
-    PostgresRunQueue,
-    RunWork,
-)
 from deepresearcher.service.runs.service import QuotaExceededError, RunService
 from deepresearcher.service.settings import get_service_config
 from deepresearcher.service.signals import PostgresSignalBus
