@@ -11,12 +11,15 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 from functools import lru_cache
-from os import getenv
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from deepresearcher.config import project_path_env
+from deepresearcher.env import env_bool as _bool_env
+from deepresearcher.env import env_float as _float_env
+from deepresearcher.env import env_int as _int_env
+from deepresearcher.env import env_str as _env
 from deepresearcher.observability.logging_config import get_logger
 
 # service/settings.py 位于 src/deepresearcher/service/ 下，比 config.py 深一层。
@@ -26,33 +29,6 @@ logger = get_logger("deepresearcher.service.settings")
 
 # 短于此长度的 secret 会被视为未正确配置：HS256 暴力成本与密钥熵直接挂钩。
 _MIN_SECRET_CHARS = 32
-
-
-def _env(name: str, default: str = "") -> str:
-    return getenv(name, default).strip()
-
-
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(_env(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(_env(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw = _env(name, "true" if default else "false").lower()
-    if raw in {"1", "true", "yes"}:
-        return True
-    if raw in {"0", "false", "no"}:
-        return False
-    return default
 
 
 @dataclass(frozen=True)

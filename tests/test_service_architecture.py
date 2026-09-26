@@ -32,6 +32,7 @@ ALLOWED_KERNEL_IMPORTS = frozenset(
         "deepresearcher.observability.tracing.context",  # current_span_context / new_id
         "deepresearcher.observability.usage_runtime",  # bind/current/enforce/record/reset + 异常与类型
         # 契约与词汇
+        "deepresearcher.env",  # env_str/int/float/bool:两套配置的解析语义单源
         "deepresearcher.routing",  # NodeName
         "deepresearcher.schemas",  # StopReason 等
         "deepresearcher.schemas.limits",  # EVENT_CONTENT_PREVIEW_CHARS

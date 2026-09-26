@@ -6,12 +6,15 @@
 
 from dataclasses import dataclass
 from functools import lru_cache
-from os import getenv
 from pathlib import Path
 from typing import Literal, cast
 
 from dotenv import load_dotenv
 
+from deepresearcher.env import env_bool as _bool_env
+from deepresearcher.env import env_float as _float_env
+from deepresearcher.env import env_int as _int_env
+from deepresearcher.env import env_str as _env
 from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
     REPORT_CAVEATS_HARD_LIMIT,
@@ -20,24 +23,6 @@ from deepresearcher.schemas.limits import (
 from deepresearcher.vocab import SUPPORT_ORDER, Support
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _env(name: str, default: str = "") -> str:
-    return getenv(name, default).strip()
-
-
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(_env(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(_env(name, str(default)))
-    except ValueError:
-        return default
 
 
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
@@ -53,15 +38,6 @@ def _ordered_choices_env(name: str, default: str, choices: set[str]) -> tuple[st
         allowed = ", ".join(sorted(choices))
         raise ValueError(f"{name} 包含无效值: {', '.join(invalid)}；可选值: {allowed}")
     return values
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw = _env(name, "true" if default else "false").lower()
-    if raw in {"1", "true", "yes"}:
-        return True
-    if raw in {"0", "false", "no"}:
-        return False
-    return default
 
 
 def project_path_env(name: str, default: Path) -> Path:

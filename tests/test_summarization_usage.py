@@ -79,7 +79,9 @@ def test_summarization_call_is_recorded_but_bypasses_model_wrappers():
         history = []
         for i in range(6):
             history.append({"role": "user", "content": f"问题{i} " + "用于超过阈值的中文。" * 10})
-            history.append({"role": "assistant", "content": f"回答{i} " + "用于超过阈值的中文。" * 10})
+            history.append(
+                {"role": "assistant", "content": f"回答{i} " + "用于超过阈值的中文。" * 10}
+            )
         result = await agent.ainvoke({"messages": history}, config={"callbacks": [starts]})
         return model, starts, result
 
