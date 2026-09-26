@@ -1,7 +1,7 @@
 """持久 Run 命令的 API 控制面。
 
 manager 受理、取消、恢复 run。worker 专属的调度、执行、容量闸与
-崩溃恢复在 ``WorkerCoordinator``。
+崩溃恢复在 ``WorkerRuntime``。
 """
 
 from __future__ import annotations

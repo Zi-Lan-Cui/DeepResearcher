@@ -3,7 +3,7 @@
 只收"两边逐字相同"的装配与逆序拆解:migrate/engine/session、事件投递(Hub)、
 信号总线、checkpointer(serde 白名单)、事件 store/publisher,以及它们的
 teardown 顺序。刻意**不收**的差异——留在各自 runtime 里保持可见:
-- API 的 auth/login-limiter/RunManager;Worker 的 coordinator/订阅/恢复锁;
+- API 的 auth/login-limiter/RunManager;Worker 的 WorkerRuntime/订阅/恢复锁;
 - material_store 与 http_client 仅 `role="worker"` 创建(API 是纯控制面,永不执行);
 - redis 预览总线两 role 同规则:按 `redis_preview_enabled` 开关,工厂失败退化为 None。
 """
@@ -37,7 +37,7 @@ from deepresearcher.tools.transport import HttpClient
 
 @dataclass
 class RuntimeStack:
-    """基础设施栈的持有物;协调对象(coordinator/manager)由各 runtime 自行装配。"""
+    """基础设施栈的持有物;装配对象(WorkerRuntime/RunManager)由各 runtime 自行构造。"""
 
     engine: Any
     session_factory: async_sessionmaker[AsyncSession]

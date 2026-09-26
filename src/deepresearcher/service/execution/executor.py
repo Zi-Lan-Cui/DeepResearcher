@@ -1,7 +1,7 @@
 """Run 执行面：驱动单个 LangGraph Run 并收敛其持久化结果。
 
 RunExecutor 不受理用户请求、不检查队列配额、不选择下一个 Run；
-它只由 WorkerCoordinator 在执行面调用。
+它只由 WorkerRuntime 在执行面调用。
 """
 
 from __future__ import annotations

@@ -19,8 +19,8 @@ from deepresearcher.config import (
 )
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.execution.coordinator import WorkerCoordinator
 from deepresearcher.service.execution.queue import PostgresRunQueue
+from deepresearcher.service.execution.worker_runtime import WorkerRuntime
 from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunEvent, User
 from deepresearcher.service.preview.local import LocalPreviewBus
@@ -213,7 +213,7 @@ async def manager(tmp_path):
         store=event_store,
         signal_bus=signal_bus,
     )
-    execution = WorkerCoordinator(
+    execution = WorkerRuntime(
         settings=_settings(tmp_path),
         session_factory=session_factory,
         config=config,
@@ -938,7 +938,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         store=event_store,
         signal_bus=PostgresSignalBus(),
     )
-    execution = WorkerCoordinator(
+    execution = WorkerRuntime(
         settings=_settings(tmp_path),
         session_factory=factory,
         config=config,
