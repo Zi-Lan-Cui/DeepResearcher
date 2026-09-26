@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Run.status 用普通 str 而非枚举/CHECK 约束:增删状态不触发 ALTER。
@@ -134,6 +134,12 @@ class RunUsage(Base):
     """一次计费或占用外部配额的操作。"""
 
     __tablename__ = "run_usage"
+    __table_args__ = (
+        # 预算检查每次模型调用都按 (category='llm', created_at>=窗口) 求 SUM,
+        # 复合索引服务这条热路径。create_all 只在新库生效;既有库补一次
+        # CREATE INDEX 即可(项目不维护迁移链,与加表同一约定)。
+        Index("ix_run_usage_category_created_at", "category", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
