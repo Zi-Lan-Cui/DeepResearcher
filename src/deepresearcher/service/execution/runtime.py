@@ -19,7 +19,7 @@ from deepresearcher.graph import build_graph
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.execution.executor import RunExecutor
+from deepresearcher.service.execution.executor import RunExecutor, prune_event_jsonl
 from deepresearcher.service.execution.queue import PostgresRunQueue, RunWork
 from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.advisory_lock import held_session_lock
@@ -245,6 +245,11 @@ async def worker_lifespan(
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()
     async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:
+        pruned = prune_event_jsonl(
+            service_config.service_log_dir / "events", service_config.jsonl_retention_days
+        )
+        if pruned:
+            logger.info("jsonl_event_logs_pruned count=%d", pruned)
         worker = WorkerRuntime(
             settings=engine_settings,
             session_factory=stack.session_factory,

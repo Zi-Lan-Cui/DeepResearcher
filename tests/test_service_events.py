@@ -313,6 +313,31 @@ async def test_bus_close_releases_all_and_shuts_publish(preview_bus):
     assert subscription.queue.empty()
 
 
+# ---------- JSONL retention ----------
+
+
+async def test_prune_event_jsonl_by_mtime(tmp_path):
+    import os
+    import time as _time
+
+    from deepresearcher.service.execution.executor import prune_event_jsonl
+
+    events = tmp_path / "events"
+    events.mkdir()
+    old_log = events / "run-old.jsonl"
+    fresh_log = events / "run-new.jsonl"
+    other = events / "keep.txt"
+    for f in (old_log, fresh_log, other):
+        f.write_text("x")
+    stale = _time.time() - 40 * 86_400
+    os.utime(old_log, (stale, stale))
+
+    assert prune_event_jsonl(events, retention_days=14) == 1
+    assert not old_log.exists() and fresh_log.exists() and other.exists()
+    assert prune_event_jsonl(events, retention_days=0) == 0  # 关闭
+    assert prune_event_jsonl(tmp_path / "missing", retention_days=14) == 0
+
+
 # ---------- CompositeSink ----------
 
 

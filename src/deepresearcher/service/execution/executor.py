@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import update
@@ -47,6 +49,27 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 logger = logging.getLogger("deepresearcher.service.execution.executor")
 
 _FLUSH_INTERVAL_SECONDS = 2.0
+
+
+def prune_event_jsonl(events_dir: Path, retention_days: int) -> int:
+    """按 mtime 删除超龄的 run 事件 JSONL,返回删除数。
+
+    清理是尽力而为:单个文件出错跳过,绝不让运维杂务打断进程启动。
+    retention_days<=0 表示关闭清理。
+    """
+    if retention_days <= 0 or not events_dir.is_dir():
+        return 0
+    cutoff = time.time() - retention_days * 86_400
+    removed = 0
+    for path in events_dir.glob("run-*.jsonl"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
 
 # 账户级 LLM 不可用 → 面向用户的安全文案（不泄露内部错误串）。
 _LLM_UNAVAILABLE_MESSAGE = {

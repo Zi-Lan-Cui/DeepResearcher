@@ -84,6 +84,7 @@ class ServiceConfig:
     port: int = 8080
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
     jsonl_events: bool = True
+    jsonl_retention_days: int = 14
 
 
 @lru_cache(maxsize=1)
@@ -145,6 +146,7 @@ def get_service_config() -> ServiceConfig:
         port=_int_env("SERVICE_PORT", 8080),
         service_log_dir=project_path_env("SERVICE_LOG_DIR", _PROJECT_ROOT / "var" / "service"),
         jsonl_events=_bool_env("SERVICE_JSONL_EVENTS", True),
+        jsonl_retention_days=max(0, _int_env("SERVICE_JSONL_RETENTION_DAYS", 14)),
     )
 
 
