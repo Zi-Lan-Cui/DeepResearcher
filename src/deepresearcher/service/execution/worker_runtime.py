@@ -22,7 +22,7 @@ from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, Usag
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 
-class WorkerCoordinator:
+class WorkerRuntime:
     """只归 Worker 进程使用的全部资源与恢复策略。"""
 
     def __init__(

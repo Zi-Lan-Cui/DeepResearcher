@@ -5,7 +5,7 @@ autonomously consumes the durable PostgreSQL queue.
 
 基础设施装配在 ``service.runtime_stack``(与 API runtime 共享,role="worker" 领取
 material/http)。这里保留的 Worker-only 差异:启动恢复持 advisory lock、
-coordinator 的订阅与 shutdown。
+运行时的订阅与 shutdown。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from deepresearcher.config import Settings, get_settings
 from deepresearcher.graph import build_graph
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
-from deepresearcher.service.execution.coordinator import WorkerCoordinator
+from deepresearcher.service.execution.worker_runtime import WorkerRuntime
 from deepresearcher.service.runtime_stack import build_runtime_stack
 from deepresearcher.service.settings import ServiceConfig, get_service_config
 
@@ -57,16 +57,16 @@ async def worker_lifespan(
     config: ServiceConfig | None = None,
     *,
     graph_factory: Callable[..., Any] = build_graph,
-) -> AsyncIterator[WorkerCoordinator]:
+) -> AsyncIterator[WorkerRuntime]:
     """创建一个独立 Worker 进程拥有的全部资源。
 
     返回:
-        WorkerCoordinator: 已进入启动流程的协调器；上下文退出时关闭。
+        WorkerRuntime: 已进入启动流程的 worker 运行时；上下文退出时关闭。
     """
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()
     async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:
-        worker = WorkerCoordinator(
+        worker = WorkerRuntime(
             settings=engine_settings,
             session_factory=stack.session_factory,
             config=service_config,

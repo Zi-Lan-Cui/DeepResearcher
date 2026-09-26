@@ -1,6 +1,6 @@
 """HTTP 控制面的 FastAPI lifespan 装配。
 
-API 永不执行图：``WorkerCoordinator`` 只存在于独立 worker 进程
+API 永不执行图：``WorkerRuntime`` 只存在于独立 worker 进程
 （``python -m deepresearcher.worker``）。本 lifespan 在共享基础设施栈之上
 装配控制面协作者。
 """
