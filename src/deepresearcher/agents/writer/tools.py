@@ -11,6 +11,7 @@ from deepresearcher.agents.writer.state import (
 )
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import format_tool_receipt
+from deepresearcher.schemas.limits import REPORT_TITLE_MAX_CHARS
 
 # 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
 # 决定，差额走 not_read_ids 显式排队。引用总条数刻意不设上限：聚焦度是写作
@@ -32,6 +33,14 @@ class ReadEvidence(BaseModel):
 class CompleteReport(BaseModel):
     """提交一篇带 Evidence 引用标记的 Markdown 草稿。"""
 
+    title: str = Field(
+        min_length=4,
+        max_length=REPORT_TITLE_MAX_CHARS,
+        description=(
+            "为这篇回答拟的文章式标题：提纲挈领，可带文学性，但不夸张；"
+            "纯文本，不含 # [ ] * 等 Markdown 标记与句读结尾。"
+        ),
+    )
     selected_evidence_ids: list[str] = Field(min_length=1)
     markdown: str = Field(min_length=1)
 
@@ -129,6 +138,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         ),
     )
     async def complete_report(
+        title: str,
         selected_evidence_ids: list[str],
         markdown: str,
         runtime: ToolRuntime[WriterLoopContext],
@@ -137,6 +147,11 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         context = runtime.context
         context.last_markdown = markdown
         try:
+            title_text = title.strip().strip("#").strip()
+            if not title_text or any(ch in title_text for ch in "#[]*"):
+                raise ValueError(
+                    "title 必须是纯文本标题（不含 Markdown 标记）；重新拟一个标题再次提交。"
+                )
             if len(markdown) > context.max_markdown_chars:
                 raise ValueError(
                     f"Markdown 共 {len(markdown)} 字符，超过上限 {context.max_markdown_chars} 字符。"
@@ -163,7 +178,9 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
             )
             if not selected:
                 raise ValueError("Writer 没有声明或实际引用任何已读取 Evidence。")
-            context.validated_draft = ValidatedDraft(body, bindings, citations, selected)
+            context.validated_draft = ValidatedDraft(
+                body, bindings, citations, selected, title=title_text
+            )
         except ValueError as exc:
             context.last_error = str(exc)
             context.emit(

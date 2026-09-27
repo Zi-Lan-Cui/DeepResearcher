@@ -141,6 +141,10 @@ class ResearchState(TypedDict, total=False):
     # Writer 产出的 evidence_id 键草稿(含 [[cite:evidence_id]] 标记);
     # 审阅通过后由终检渲染层编号渲染为 report。
     report_draft: str
+    # 两个标题通道:run_headline 是 Clarifier 对问题的一句话浓缩(进历史列表),
+    # report_title 是 Writer 为回答拟的文章标题(进报告 H1)。
+    run_headline: str
+    report_title: str
     paragraph_bindings: list[ParagraphBinding]
     citations: list[Citation]
     report: str

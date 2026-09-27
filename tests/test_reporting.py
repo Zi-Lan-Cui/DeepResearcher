@@ -338,3 +338,25 @@ def test_reference_table_survives_ghost_cite():
     assert "参考来源" in report
     assert "来源1" in report
     assert "来源2" in report  # 幽灵仍占编号位
+
+
+def test_final_report_is_article_shaped_with_model_title():
+    report = render_final_report(
+        clarified_query="A 的性能",
+        current_round=2,
+        evidence_count=3,
+        body="结论句。",
+        citations=[],
+        title="A 的真相",
+    )
+    assert report.startswith("# A 的真相\n")
+    assert "## 研究问题" not in report  # 系统段撤下,正文即文章
+    assert "> 研究问题：A 的性能" in report  # 追溯信息收进文末一行
+    assert "## 参考来源" in report
+
+
+def test_final_report_without_title_falls_back_to_system_heading():
+    report = render_final_report(
+        clarified_query="q", current_round=1, evidence_count=0, body="正文", citations=[]
+    )
+    assert report.startswith("# 研究报告\n")

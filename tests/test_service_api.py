@@ -166,6 +166,9 @@ async def test_run_lifecycle_detail_and_list(client):
 
     body = await wait_status(client, token, run_id, {"completed"})
     assert body["query"] == "研究一下"
+    # 双标题:headline 来自澄清提交(此处由 FakeGraph 终态注入),title 随终态落库。
+    assert body["headline"] == "测试浓缩题"
+    assert body["title"] == "测试报告标题"
     assert body["report_markdown"].startswith("# 研究报告")
     assert body["citations"][0]["id"] == "e1"
     assert (body["evidence_count"], body["source_count"]) == (3, 2)

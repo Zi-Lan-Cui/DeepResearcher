@@ -17,6 +17,7 @@ from deepresearcher.agents.clarifier.constants import (
     MAX_CLARIFICATION_ROUNDS,
 )
 from deepresearcher.agents.clarifier.state import ClarifierAgentState, ClarifierLoopContext
+from deepresearcher.schemas.limits import RUN_HEADLINE_MAX_CHARS
 
 
 def _normalize_string_list(value: object) -> object:
@@ -64,6 +65,14 @@ class AskClarificationArgs(BaseModel):
 
 
 class ClarificationCompleteArgs(BaseModel):
+    headline: str = Field(
+        min_length=2,
+        max_length=RUN_HEADLINE_MAX_CHARS,
+        description=(
+            "把确认后的研究问题浓缩为一行短标题：名词性短语，不带句读结尾与 Markdown 标记；"
+            "它是历史列表里给人看的题目，不是结论。"
+        ),
+    )
     intent_summary: str = Field(
         min_length=1,
         max_length=CLARIFICATION_INTENT_MAX_CHARS,
@@ -133,6 +142,7 @@ def build_clarifier_tools():
 
     @tool("ClarificationComplete", args_schema=ClarificationCompleteArgs)
     async def clarification_complete(
+        headline: str,
         intent_summary: str,
         research_focus: list[str],
         assumptions: list[str],
@@ -145,6 +155,7 @@ def build_clarifier_tools():
         """
         return Command(
             update={
+                "run_headline": headline.strip()[:RUN_HEADLINE_MAX_CHARS],
                 "intent_summary": intent_summary.strip(),
                 "research_focus": [item.strip() for item in research_focus if item.strip()][
                     :CLARIFICATION_FOCUS_LIMIT

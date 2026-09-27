@@ -74,6 +74,7 @@ async def render_final_report_node(state: ResearchState):
                 evidence_count=int(state.get("evidence_count", len(state.get("evidences", [])))),
                 body=draft,
                 citations=citations,
+                title=str(state.get("report_title") or ""),
             )
             return {
                 "report": report + "\n\n[审阅状态：已达到修订上限，按最后一版交付]",
@@ -109,6 +110,7 @@ async def render_final_report_node(state: ResearchState):
             evidence_count=int(state.get("evidence_count", len(state.get("evidences", [])))),
             body=draft,
             citations=citations,
+            title=str(state.get("report_title") or ""),
         ),
         "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REPORT_RENDERED),
     }

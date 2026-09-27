@@ -392,6 +392,7 @@ class RunExecutor:
         """从图流式输出根状态、中断与安全的 token 预览。"""
         final: dict = {}
         interruption: dict | None = None
+        headline_persisted = False
         async for namespace, mode, chunk in graph.astream(
             inputs,
             config={"configurable": {"thread_id": run_id}, "callbacks": callbacks or []},
@@ -401,6 +402,10 @@ class RunExecutor:
             if mode == "values":
                 if namespace == () and isinstance(chunk, dict):
                     final = chunk
+                    headline = str(chunk.get("run_headline") or "")
+                    if headline and not headline_persisted:
+                        await self._persist_headline(run_id, headline)
+                        headline_persisted = True
                 continue
             if mode == "updates" and isinstance(chunk, dict):
                 interrupts = chunk.get("__interrupt__") or ()
@@ -478,6 +483,19 @@ class RunExecutor:
             await self.publish_status(run_id, "running")
         return transitioned
 
+    async def _persist_headline(self, run_id: str, headline: str) -> None:
+        """澄清完成即把历史标题写进行:列表行从原 query 收敛为浓缩标题。
+
+        只写未落过 headline 的行——首个有效标题为准,重复到达幂等丢弃。
+        """
+        async with self._session_factory() as session:
+            await session.execute(
+                update(Run)
+                .where(Run.id == run_id, Run.headline.is_(None))
+                .values(headline=headline[:80])
+            )
+            await session.commit()
+
     async def _persist_awaiting_input(self, run_id: str, *, claim: RunWork | None = None) -> bool:
         if claim is not None:
             async with self._session_factory() as session:
@@ -497,7 +515,7 @@ class RunExecutor:
                 return result.rowcount == 1
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
-            # 对账写(无 claim 的嵌入路径):只受"不覆盖终态"约束,来源不必是
+            # 对账写(不经领取的直连路径):只受"不覆盖终态"约束,来源不必是
             # running——自愈正是为残余竞态窗口准备的,故不走 await_input 迁移。
             if run is None or not may_overwrite(run.status):
                 return False
@@ -520,6 +538,7 @@ class RunExecutor:
         return await self.persist_status(
             run_id,
             status=status,
+            title=result.get("report_title") or None,
             terminal_reason=_field(lifecycle, "terminal_reason", "") or None,
             answer_mode=result.get("answer_mode"),
             report_markdown=result.get("report") or None,

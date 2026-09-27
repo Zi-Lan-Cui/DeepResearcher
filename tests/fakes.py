@@ -133,12 +133,14 @@ class _WriterToolRunnable:
         ):
             return AIMessage(content="报告已提交。")
         draft = await self.draft_factory(object(), MarkdownReportDraft, messages)
+        payload = draft.model_dump()
+        payload.setdefault("title", "测试报告标题")
         return AIMessage(
             content="",
             tool_calls=[
                 {
                     "name": CompleteReport.__name__,
-                    "args": draft.model_dump(),
+                    "args": payload,
                     "id": "complete-1",
                 }
             ],

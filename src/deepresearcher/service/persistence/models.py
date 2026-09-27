@@ -70,11 +70,16 @@ class Run(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     query: Mapped[str] = mapped_column(Text)
+    # 两个标题:headline 由 Clarifier 浓缩问题(历史列表展示),
+    # title 由 Writer 命名回答(报告 H1 与 PDF 文件名)。
+    # create_all 只覆盖新库;既有库各补一次 ALTER TABLE runs ADD COLUMN。
+    headline: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(16), default="queued")
     answer_mode: Mapped[str | None] = mapped_column(String(32))
     terminal_reason: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
     report_markdown: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(160))
     citations_json: Mapped[list | None] = mapped_column(JSON)
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
