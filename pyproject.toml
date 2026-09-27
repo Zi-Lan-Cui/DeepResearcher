@@ -30,6 +30,9 @@ dependencies = [
     "alibabacloud-credentials>=1.0.0",
 ]
 
+[project.optional-dependencies]
+langfuse = ["langfuse>=3.15,<4"]  # 可选观测出口;不装则 executor 静默保持关闭
+
 [dependency-groups]
 dev = [
     "aiosqlite>=0.22.1",

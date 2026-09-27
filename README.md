@@ -66,6 +66,24 @@ SERVICE_REDIS_PREVIEW_ENABLED=true uv run python -m deepresearcher.worker
 - 数据库、Redis 与登录令牌；
 - Token 和费用上限。
 
+## 可选：Langfuse 观测镜像
+
+装了可选依赖、配齐三个环境变量才启用（留空=完全关闭，行为与未安装相同）：
+
+```bash
+uv sync --extra langfuse   # 或 pip install "deepresearcher[langfuse]"
+```
+
+`LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL` 指向你自己的
+Langfuse（云端或自建）后重启 worker 即可。每次 run 会镜像出一份 trace：
+LLM 调用瀑布、token/成本、工具耗时，session 就是 run_id、user 就是用户 id，
+在 Langfuse UI 里按用户和时间窗聚合。
+
+注意内容边界：trace 携带完整 prompt 与补全文本（含报告正文），接到第三方
+即内容出域——与本项目"报告不经外部服务导出"的立场对照后自行取舍。观测出口
+是镜像而非账本：导出失败或后端不可达只影响 Langfuse 侧，不影响 run（有合同
+测试钉住），产品的权威记录仍是 `run_events` 与 `run_usage`。
+
 ## 容量假设
 
 - 事件 Hub 是进程内的:`_OPEN_MAX=2048` 个 open run 登记,超额按插入序回收最早者,
