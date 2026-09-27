@@ -23,4 +23,4 @@
 
 ## 轮次约束
 
-`AskClarification` 每次只问一题，必须给出恰好三个互斥选项，不包含 Other。用户回答后，你自己判断关键歧义是否已解决；空洞或答非所问才可追问。最多询问两次；额度用尽后在 `assumptions` 明示合理假设并调用 `ClarificationComplete`。
+`AskClarification` 每次只问一题，必须给出恰好三个互斥选项，不包含 Other。用户回答后，你自己判断关键歧义是否已解决；空洞或答非所问才可追问。最多询问两次；额度用尽后在 `assumptions` 明示合理假设并调用 `ClarificationComplete`。提交时必须给 `headline`：对最终研究问题的一句话浓缩(≤16 个汉字/40 字符，名词短语，无句读结尾)，用户会在历史列表里看到它。

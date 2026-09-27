@@ -19,6 +19,8 @@ def run_summary(run: Run) -> dict[str, Any]:
     return {
         "id": run.id,
         "query": run.query,
+        "headline": run.headline,
+        "title": run.title,
         "status": run.status,
         "answer_mode": run.answer_mode,
         "terminal_reason": run.terminal_reason,

@@ -759,7 +759,7 @@ class _NudgeAwareLLM:
             tool_calls=[
                 {
                     "name": "CompleteReport",
-                    "args": {"selected_evidence_ids": ["e1"], "markdown": report},
+                    "args": {"title": "测试报告标题", "selected_evidence_ids": ["e1"], "markdown": report},
                     "id": "cr1",
                 }
             ],
@@ -845,7 +845,7 @@ class _BulkReadThenWriteLLM:
             tool_calls=[
                 {
                     "name": "CompleteReport",
-                    "args": {"selected_evidence_ids": ["e1", "e2", "e3", "e4"], "markdown": report},
+                    "args": {"title": "测试报告标题", "selected_evidence_ids": ["e1", "e2", "e3", "e4"], "markdown": report},
                     "id": "c1",
                 }
             ],

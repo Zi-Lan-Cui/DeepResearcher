@@ -441,6 +441,7 @@ class ReportWriter:
         )
         review_attempts = section(state, "review", ReviewProgress).attempts
         return WriterResult(
+            report_title=draft.title,
             report_draft=draft.body,
             citations=draft.citations,
             paragraph_bindings=draft.paragraph_bindings,

@@ -29,3 +29,6 @@ SEARCH_RESULT_TITLE_PREVIEW_CHARS = 160
 # 回合思维链 content_preview 的字符预算:observability 产生端截一次、projector
 # 消费端(deny-by-default,不信任上游)再钳一次,两处共用此常量。
 EVENT_CONTENT_PREVIEW_CHARS = 800
+# 历史标题(clarify 浓缩问题)与报告标题(writer 命名回答)的长度上限。
+RUN_HEADLINE_MAX_CHARS = 40
+REPORT_TITLE_MAX_CHARS = 80

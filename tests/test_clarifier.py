@@ -62,6 +62,7 @@ def test_complete_is_the_only_submission_signal():
 
     command = asyncio.run(
         _tool("ClarificationComplete").coroutine(
+            headline="两方案成本效果对比",
             intent_summary="比较两种方案",
             research_focus=["成本", "效果"],
             assumptions=["按公开资料评估"],
@@ -70,6 +71,7 @@ def test_complete_is_the_only_submission_signal():
     )
 
     assert command.update["clarification_completed"] is True
+    assert command.update["run_headline"] == "两方案成本效果对比"
     assert command.update["intent_summary"] == "比较两种方案"
     assert command.update["research_focus"] == ["成本", "效果"]
 
@@ -77,6 +79,7 @@ def test_complete_is_the_only_submission_signal():
 def test_clarifier_normalizes_string_encoded_list_arguments():
     complete = ClarificationCompleteArgs.model_validate(
         {
+            "headline": "不争思想研究",
             "intent_summary": "研究不争思想",
             "research_focus": '["《道德经》中"不争"思想", "现代应用"]',
             "assumptions": '["采用通行译本"]',

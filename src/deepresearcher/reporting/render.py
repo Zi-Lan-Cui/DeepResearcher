@@ -50,6 +50,7 @@ def render_final_report(
     evidence_count: int,
     body: str,
     citations: list[Citation],
+    title: str | None = None,
 ) -> str:
     """把 evidence_id 键草稿渲染为用户可见的最终报告。
 
@@ -62,18 +63,17 @@ def render_final_report(
     display = {source_id: f"来源{index}" for index, source_id in enumerate(display_order, 1)}
     source_count = len({item.url for item in used_citations if item.url})
 
-    lines = [
-        "# 研究报告",
-        "",
-        "## 研究问题",
-        clarified_query,
-        "",
-        f"> 已完成 {current_round} 轮研究，使用 {source_count} 个来源和 {evidence_count} 条 Evidence。",
-        "> 以下为基于已验证 Evidence 的综合表述；关键事实以 [来源N] 标记可追溯到来源。",
-        "",
-        rendered_body,
-    ]
-    return "\n".join(lines) + _reference_list(display_order, display, by_id)
+    # 文章形:H1 是 Writer 拟的标题(兜底系统题),研究问题与审计信息收在文末一行。
+    heading = (title or "").strip() or "研究报告"
+    footer = (
+        "\n\n---\n\n"
+        f"> 研究问题：{clarified_query}；完成 {current_round} 轮研究，"
+        f"使用 {source_count} 个来源和 {evidence_count} 条 Evidence。"
+        "关键事实以 [来源N] 标记可追溯到来源。"
+    )
+    return f"# {heading}\n\n{rendered_body}{footer}" + _reference_list(
+        display_order, display, by_id
+    )
 
 
 def _render_body_markers(body: str) -> tuple[str, list[str], set[str]]:

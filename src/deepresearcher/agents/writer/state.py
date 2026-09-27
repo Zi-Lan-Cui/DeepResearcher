@@ -65,3 +65,6 @@ class ValidatedDraft:
     paragraph_bindings: list[ParagraphBinding]
     citations: list[Citation]
     selected_evidence_ids: list[str]
+    # 模型为整篇回答拟的文章标题;内联兜底路径没有它,保持空串。
+    # 放最后并带默认值:既有位置参数构造点不受影响。
+    title: str = ""

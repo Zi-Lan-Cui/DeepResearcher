@@ -332,6 +332,7 @@ class WriterResult(BaseModel):
     """Writer 返回给 LangGraph State 的已校验状态增量。"""
 
     report: str | None = None
+    report_title: str | None = None
     citations: list[Citation] | None = None
     paragraph_bindings: list[ParagraphBinding] | None = None
     answer_mode: WriterAnswerMode | None = None

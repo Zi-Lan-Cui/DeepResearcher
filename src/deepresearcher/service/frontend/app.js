@@ -150,7 +150,7 @@ function renderRunsPage() {
     const b = document.createElement("span");
     b.className = "badge " + badge.cls; b.textContent = badge.text;
     const q = document.createElement("span");
-    q.className = "run-q"; q.textContent = run.query; q.title = run.query;
+    q.className = "run-q"; q.textContent = run.headline || run.query; q.title = run.query;
     const counts = document.createElement("span");
     counts.className = "run-counts";
     counts.textContent = (run.evidence_count || run.source_count)
@@ -656,7 +656,10 @@ async function writeClipboard(text) {
 }
 
 function reportPdfFilename() {
-  const query = ($("run-query").textContent || "研究报告")
+  // 报告卡标题优先:它是 Writer 为这篇回答拟的题目;未出报告时回退到 query。
+  const cardTitle = ($("report-card-title").textContent || "").trim();
+  const query = (cardTitle && cardTitle !== "研究报告"
+    ? cardTitle : ($("run-query").textContent || "研究报告"))
     .trim()
     .replace(/[\\/:*?"<>|]/g, "-")
     .replace(/\s+/g, " ")
@@ -858,8 +861,9 @@ async function renderRun(runId) {
   let detail;
   try { detail = await api("/api/runs/" + runId); } catch (e) { progressLine(e.message, true); return; }
   $("run-query").textContent = detail.query;
-  $("run-title").textContent = "研究：" + detail.query;
+  $("run-title").textContent = "研究：" + (detail.headline || detail.query);
   $("run-title").title = detail.query;
+  $("report-card-title").textContent = detail.title || "研究报告";
   setStatus(detail.status, detail);
   if (["completed", "failed", "cancelled"].includes(detail.status)) {
     // 已终结的 run 也要回放事件重建进度（卡片/规划旁白），不能只跳报告。
