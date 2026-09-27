@@ -82,7 +82,49 @@ class SearchTool:
                         missing_queries.append(query)
 
             async def search_one(query: str) -> list[SearchResult]:
-                return list(await self.client.asearch(query))
+                # 逐 query 的起止事件:方向卡在整批 gather 返回前就有滚动进度。
+                if self.event_sink is not None:
+                    self.event_sink.write(
+                        make_tool_event(
+                            "search",
+                            "started",
+                            link=link,
+                            event_name="search_query_started",
+                            payload={**task_context, "query": query},
+                        )
+                    )
+                try:
+                    results = list(await self.client.asearch(query))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if self.event_sink is not None:
+                        self.event_sink.write(
+                            make_tool_event(
+                                "search",
+                                "failed",
+                                link=link,
+                                event_name="search_query_failed",
+                                error=str(exc)[:200],
+                                payload={**task_context, "query": query},
+                            )
+                        )
+                    raise
+                if self.event_sink is not None:
+                    self.event_sink.write(
+                        make_tool_event(
+                            "search",
+                            "completed",
+                            link=link,
+                            event_name="search_query_completed",
+                            payload={
+                                **task_context,
+                                "query": query,
+                                "candidate_count": len(results),
+                            },
+                        )
+                    )
+                return results
 
             if self.trace_recorder is not None:
                 with self.trace_recorder.span("search", kind="tool"):
