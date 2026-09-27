@@ -1,21 +1,20 @@
-"""TraceRecorder 与 OpenTelemetry 的集成:统一 span 树、账本双 id 关联、降级形。
+"""OTel 单引擎终态:span 树、langfuse 属性、账本记录与 span 对象的一致性。
 
-本模块在全进程第一次设置 SDK TracerProvider(一次性 API);更早运行的模块
-(test_observability.py)保持无 provider 形态,由 pytest 的文件序自然保证。
+provider 由 conftest 会话级常驻并挂好 ledger 处理器;本模块另接一个
+InMemorySpanExporter 观察导出的 span 树,用 ledger 注册表收取账本记录。
 """
 
 import asyncio
 import re
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 from opentelemetry import trace as opentelemetry_trace
-from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from deepresearcher.observability.tracing import telemetry_bridge
-from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.observability.tracing import ledger, spans
 
 HEX_TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 HEX_SPAN_ID = re.compile(r"^[0-9a-f]{16}$")
@@ -32,48 +31,61 @@ class _ListSink:
 @pytest.fixture(scope="module")
 def otel_exporter() -> Iterator[InMemorySpanExporter]:
     provider = opentelemetry_trace.get_tracer_provider()
-    if not isinstance(provider, TracerProvider):
-        provider = TracerProvider()
-        opentelemetry_trace.set_tracer_provider(provider)
     exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))  # type: ignore[attr-defined]
     yield exporter
     # 本模块之后其他测试文件仍会向全局 provider 产 span,清空避免跨模块累积。
     exporter.clear()
 
 
-async def _run_tree(recorder: TraceRecorder) -> str:
+@contextmanager
+def _run_sink(run_id: str) -> Iterator[_ListSink]:
+    sink = _ListSink()
+    ledger.attach_run_sink(run_id, sink)
+    try:
+        yield sink
+    finally:
+        ledger.detach_run_sink(run_id)
+
+
+async def _run_tree() -> str:
     """构一棵 根→{supervisor→search 工具, writer(失败), reviewer(取消)} 的树。"""
 
     async def tool_leg() -> None:
-        with recorder.span("search", kind="tool"):
+        with spans.span("search", kind="tool"):
             await asyncio.sleep(0)
 
     async def failing_leg() -> None:
-        with recorder.span("writer"):
+        with spans.span("writer"):
             raise ValueError("boom")
 
     async def cancelled_leg() -> None:
-        with recorder.span("reviewer"):
+        with spans.span("reviewer"):
             raise asyncio.CancelledError
 
-    with recorder.trace(
-        "research_run", run_id="run-tree", session_id="run-tree", metadata={"attempt": 2}
+    with spans.trace(
+        "research_run",
+        run_id="run-tree",
+        session_id="run-tree",
+        metadata={"attempt": 2},
+        input={"query": "自尊的六大支柱"},
     ) as trace_id:
-        with recorder.span("supervisor"):
+        with spans.span("supervisor"):
             await tool_leg()
         # return_exceptions=True:两个分支的异常只用于给 span 定终态,不得逸出 trace 体。
         await asyncio.gather(failing_leg(), cancelled_leg(), return_exceptions=True)
     return trace_id
 
 
+def _spans_in_window(exporter: InMemorySpanExporter, start: int) -> dict:
+    return {span.name: span for span in exporter.get_finished_spans()[start:]}
+
+
 @pytest.mark.asyncio
-async def test_recorder_spans_form_single_otel_tree(otel_exporter):
-    recorder = TraceRecorder(_ListSink())
+async def test_spans_form_single_otel_tree(otel_exporter):
     before = len(otel_exporter.get_finished_spans())
-    await _run_tree(recorder)
-    spans = [span for span in otel_exporter.get_finished_spans()[before:]]
-    by_name = {span.name: span for span in spans}
+    await _run_tree()
+    by_name = _spans_in_window(otel_exporter, before)
 
     root = by_name["research_run"]
     assert root.parent is None
@@ -85,32 +97,26 @@ async def test_recorder_spans_form_single_otel_tree(otel_exporter):
 
 
 @pytest.mark.asyncio
-async def test_otel_spans_carry_langfuse_and_correlation_attributes(otel_exporter):
-    recorder = TraceRecorder(_ListSink())
+async def test_spans_carry_langfuse_and_correlation_attributes(otel_exporter):
     before = len(otel_exporter.get_finished_spans())
-    trace_id = await _run_tree(recorder)
-    by_name = _spans_by_name_in_window(otel_exporter, before)
+    await _run_tree()
+    by_name = _spans_in_window(otel_exporter, before)
 
     root = by_name["research_run"]
     assert root.attributes["langfuse.observation.type"] == "span"
     assert root.attributes["langfuse.observation.metadata.attempt"] == 2
-    assert root.attributes["deepresearcher.trace_id"] == trace_id
+    assert "自尊的六大支柱" in root.attributes["langfuse.observation.input"]
     assert root.attributes["deepresearcher.run_id"] == "run-tree"
     assert by_name["search"].attributes["langfuse.observation.type"] == "tool"
     assert by_name["search"].kind == opentelemetry_trace.SpanKind.CLIENT
     assert by_name["supervisor"].kind == opentelemetry_trace.SpanKind.INTERNAL
 
 
-def _spans_by_name_in_window(exporter: InMemorySpanExporter, start: int) -> dict:
-    return {span.name: span for span in exporter.get_finished_spans()[start:]}
-
-
 @pytest.mark.asyncio
 async def test_failed_and_cancelled_spans_status(otel_exporter):
-    recorder = TraceRecorder(_ListSink())
     before = len(otel_exporter.get_finished_spans())
-    await _run_tree(recorder)
-    by_name = _spans_by_name_in_window(otel_exporter, before)
+    await _run_tree()
+    by_name = _spans_in_window(otel_exporter, before)
 
     failed = by_name["writer"]
     assert failed.status.status_code == opentelemetry_trace.StatusCode.ERROR
@@ -122,45 +128,44 @@ async def test_failed_and_cancelled_spans_status(otel_exporter):
 
 
 @pytest.mark.asyncio
-async def test_ledger_records_link_to_otel_spans_by_hex_ids(otel_exporter):
-    sink = _ListSink()
-    recorder = TraceRecorder(sink)
-    before = len(otel_exporter.get_finished_spans())
-    await _run_tree(recorder)
-    by_name = _spans_by_name_in_window(otel_exporter, before)
+async def test_ledger_records_derive_from_same_span_ids():
+    with _run_sink("run-tree") as sink:
+        await _run_tree()
 
-    completed = [record for record in sink.records if record["event_type"] == "span_completed"]
-    assert completed
-    for record in completed:
-        assert HEX_TRACE_ID.match(record["otel_trace_id"])
-        assert HEX_SPAN_ID.match(record["otel_span_id"])
-        otel_span = by_name[record["name"]]
-        assert record["otel_span_id"] == format(otel_span.context.span_id, "016x")
-        assert record["otel_trace_id"] == format(otel_span.context.trace_id, "032x")
+    started = [record for record in sink.records if record["event_type"] == "trace_started"]
+    assert len(started) == 1
+    root = started[0]
+    assert HEX_TRACE_ID.match(root["trace_id"])
+    assert root["metadata"] == {"attempt": 2}
+    completed = {
+        record["name"]: record
+        for record in sink.records
+        if record["event_type"] == "span_completed"
+    }
+    supervisor_started = next(
+        record
+        for record in sink.records
+        if record.get("name") == "supervisor" and record["event_type"] == "span_started"
+    )
+    assert supervisor_started["span_id"] == completed["supervisor"]["span_id"]
+    # 根现在是真实 span(旧实现里 trace 不带 span),直接子级的父为根的 16 位 hex。
+    assert HEX_SPAN_ID.match(supervisor_started["parent_span_id"])
+    tool = next(
+        record
+        for record in sink.records
+        if record.get("name") == "search" and record["event_type"] == "span_started"
+    )
+    assert tool["trace_id"] == root["trace_id"]
+    assert tool["parent_span_id"] == completed["supervisor"]["span_id"]
+    assert tool["kind"] == "tool"
+    failed = next(record for record in sink.records if record["event_type"] == "span_failed")
+    assert failed["error"] == "boom"
+    cancelled = next(record for record in sink.records if record["event_type"] == "span_cancelled")
+    assert cancelled["error"] == "CancelledError"
 
 
 @pytest.mark.asyncio
-async def test_bridge_disabled_records_match_pre_otel_shape():
-    sink = _ListSink()
-    recorder = TraceRecorder(sink)
-    with telemetry_bridge.override_enabled(False):
-        with recorder.trace("research_run", run_id="run-off") as trace_id:
-            with recorder.span("supervisor"):
-                pass
-    started = sink.records[0]
-    assert started["event_type"] == "trace_started"
-    assert set(started) == {
-        "record_type",
-        "event_type",
-        "trace_id",
-        "run_id",
-        "session_id",
-        "node_id",
-        "name",
-        "metadata",
-    }
-    assert started["trace_id"] == trace_id
-    span_record = sink.records[1]
-    assert "otel_trace_id" not in span_record and "otel_span_id" not in span_record
-    assert span_record["event_type"] == "span_started"
-    assert sink.records[2]["trace_id"] == trace_id  # span 仍认自研父
+async def test_unregistered_run_produces_no_ledger_records():
+    # 账本注册表就是"落账与否"的唯一开关:未注册 run 的 span 不产生任何记录。
+    with spans.span("ephemeral"):
+        pass

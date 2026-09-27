@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import select
 
 from deepresearcher.config import LLMConfig
-from deepresearcher.observability.tracing import TraceRecorder
-from deepresearcher.observability.tracing.context import bind_context
+from deepresearcher.observability.tracing import spans
+from deepresearcher.observability.tracing.context import bind_context, current_span_context
 from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
 from deepresearcher.service.persistence.models import Run, RunUsage, User
 from deepresearcher.service.usage import (
@@ -62,11 +62,10 @@ async def test_usage_store_records_details_and_aggregates(usage_db):
         config=config,
     )
     callback_run_id = uuid4()
-    trace_records: list[dict] = []
-    recorder = TraceRecorder(SimpleNamespace(write=trace_records.append))
-    with recorder.trace("research_run", run_id="run-usage") as trace_id:
-        with recorder.span("router", kind="node") as span_id:
+    with spans.trace("research_run", run_id="run-usage") as trace_id:
+        with spans.span("router", kind="node"):
             with bind_context(node_id="router"):
+                frozen = current_span_context()
                 await callback.on_chat_model_start(
                     {},
                     [[HumanMessage(content="prompt")]],
@@ -115,8 +114,8 @@ async def test_usage_store_records_details_and_aggregates(usage_db):
     ]
     assert records[0].usage_estimated is False
     assert records[0].detail_json["price_version"] == "test-v1"
-    assert records[0].detail_json["trace_id"] == trace_id
-    assert records[0].detail_json["span_id"] == span_id
+    assert records[0].detail_json["trace_id"] == trace_id == frozen.trace_id
+    assert records[0].detail_json["span_id"] == frozen.span_id
     assert records[0].detail_json["node_id"] == "router"
 
 

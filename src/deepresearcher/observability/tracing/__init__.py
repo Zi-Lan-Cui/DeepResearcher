@@ -1,5 +1,5 @@
-"""Trace 和 Span 上下文。"""
+"""追踪:spans(引擎)、ledger(账本处理器)、context(业务标签)。"""
 
-from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.observability.tracing.spans import span, trace
 
-__all__ = ["TraceRecorder"]
+__all__ = ["span", "trace"]

@@ -7,7 +7,7 @@ from typing import cast
 from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
-from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.observability.tracing.spans import span
 from deepresearcher.state import SubTask
 from deepresearcher.tokens import get_token_estimator
 from deepresearcher.tools.errors import (
@@ -43,7 +43,6 @@ class SourceReaderTool:
         self,
         fetcher: FetchService,
         *,
-        trace_recorder: TraceRecorder | None = None,
         event_sink: JsonlSink | None = None,
         fetch_timeout: float = 30.0,
         parse_timeout: float = 20.0,
@@ -55,7 +54,6 @@ class SourceReaderTool:
         if fetcher is None:
             raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchService。")
         self.fetcher = fetcher
-        self.trace_recorder = trace_recorder
         self.event_sink = event_sink
         self.fetch_timeout = fetch_timeout
         self.parse_timeout = parse_timeout
@@ -126,15 +124,8 @@ class SourceReaderTool:
                 )
 
         try:
-            if self.trace_recorder is not None:
-                with self.trace_recorder.span("fetch", kind="tool"):
-                    link = current_span_context()
-                    document = await self.fetcher.afetch(
-                        requested_url,
-                        fetch_timeout=self.fetch_timeout,
-                        parse_timeout=self.parse_timeout,
-                    )
-            else:
+            with span("fetch", kind="tool"):
+                link = current_span_context()
                 document = await self.fetcher.afetch(
                     requested_url,
                     fetch_timeout=self.fetch_timeout,

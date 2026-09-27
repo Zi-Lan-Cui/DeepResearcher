@@ -21,7 +21,7 @@ from deepresearcher.observability.tracing.context import (
     current_span_context,
     new_id,
 )
-from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.observability.tracing.spans import span
 
 
 def instrument_node(
@@ -30,7 +30,6 @@ def instrument_node(
     *,
     logger=None,
     event_sink: JsonlSink | None = None,
-    trace_recorder: TraceRecorder | None = None,
     max_text_chars: int,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """统一记录节点 Log、Event 和 Span。"""
@@ -54,7 +53,7 @@ def instrument_node(
                 )
             try:
                 span_link: SpanContext | None = None
-                with trace_recorder.span(name) if trace_recorder is not None else _null_context():
+                with span(name):
                     # 节点生命周期事件统一归属节点 span;span 进入即冻结身份。
                     span_link = current_span_context()
                     value = node(state)
@@ -194,11 +193,3 @@ def _node_result_summary(result: dict[str, Any], *, max_text_chars: int) -> dict
             for item in result["citation_decisions"][:20]
         ]
     return summary
-
-
-class _null_context:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False

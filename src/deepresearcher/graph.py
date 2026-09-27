@@ -13,7 +13,6 @@ from deepresearcher.config import Settings, get_settings
 from deepresearcher.llm import build_llm
 from deepresearcher.node_runner import execute_node
 from deepresearcher.observability.instrumentation import instrument_node
-from deepresearcher.observability.tracing.recorder import TraceRecorder
 from deepresearcher.reporting import no_evidence_blockers, render_incomplete_report
 from deepresearcher.routing import (
     NodeName,
@@ -39,13 +38,12 @@ from deepresearcher.tools.transport.aliyun import create_aliyun_dts_client
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 
 
-def _guarded_node(name, node, *, event_sink=None, trace_recorder=None, max_text_chars: int):
+def _guarded_node(name, node, *, event_sink=None, max_text_chars: int):
     """组合观测层与节点运行器（node_runner），保持两者职责独立。"""
     observed = instrument_node(
         name,
         node,
         event_sink=event_sink,
-        trace_recorder=trace_recorder,
         max_text_chars=max_text_chars,
     )
 
@@ -61,7 +59,6 @@ def _routed_node(
     route,
     *,
     event_sink=None,
-    trace_recorder=None,
     max_text_chars: int,
 ):
     """执行节点后用 Command 动态跳转，避免条件边的隐式 fan-in 等待。"""
@@ -69,7 +66,6 @@ def _routed_node(
         name,
         node,
         event_sink=event_sink,
-        trace_recorder=trace_recorder,
         max_text_chars=max_text_chars,
     )
 
@@ -87,7 +83,6 @@ def _subgraph_routed_node(
     route,
     *,
     event_sink=None,
-    trace_recorder=None,
     max_text_chars: int,
 ):
     """编译子图以普通节点挂进主图的适配。
@@ -102,7 +97,6 @@ def _subgraph_routed_node(
         name,
         subgraph.ainvoke,
         event_sink=event_sink,
-        trace_recorder=trace_recorder,
         max_text_chars=max_text_chars,
     )
 
@@ -121,7 +115,6 @@ def build_graph(
     *,
     llm: BaseChatModel | None = None,
     event_sink=None,
-    trace_recorder: TraceRecorder | None = None,
     http_client: HttpClient | None = None,
     checkpointer=None,
     material_store=None,
@@ -162,7 +155,6 @@ def build_graph(
             aliyun_client=aliyun_client,
             provider_health=provider_health,
         ),
-        trace_recorder=trace_recorder,
         event_sink=event_sink,
     )
     fetch_providers = []
@@ -177,7 +169,6 @@ def build_graph(
         FetchService(
             fetch_providers,
         ),
-        trace_recorder=trace_recorder,
         event_sink=event_sink,
         fetch_timeout=settings.agent.source_fetch_timeout,
         parse_timeout=settings.agent.source_parse_timeout,
@@ -226,7 +217,6 @@ def build_graph(
             lambda state: nodes.router(state, llm, agent_config=settings.agent),
             route_after_router,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
         destinations=(
@@ -242,7 +232,6 @@ def build_graph(
             clarifier_graph.ainvoke,
             route_after_clarify,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
         # clarification_needed 与 terminal phase 都直落渲染:destinations 是图形状
@@ -256,7 +245,6 @@ def build_graph(
             lambda state: nodes.quick_answer(state, llm),
             route_after_quick_answer,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
         destinations=(NodeName.WRITER, NodeName.RENDER_FINAL_REPORT),
@@ -276,7 +264,6 @@ def build_graph(
             NodeName.RENDER_FINAL_REPORT,
             render_node,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
     )
@@ -287,7 +274,6 @@ def build_graph(
             supervisor.run,
             route_after_supervisor,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
         destinations=(NodeName.WRITER, NodeName.RENDER_FINAL_REPORT),
@@ -299,7 +285,6 @@ def build_graph(
             writer_graph,
             route_after_writer,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
         destinations=(NodeName.REVIEWER, NodeName.RENDER_FINAL_REPORT),
@@ -311,7 +296,6 @@ def build_graph(
             lambda state: nodes.reviewer(state, llm, agent_config=settings.agent),
             route_after_reviewer,
             event_sink=event_sink,
-            trace_recorder=trace_recorder,
             max_text_chars=settings.observability.max_text_chars,
         ),
         destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
