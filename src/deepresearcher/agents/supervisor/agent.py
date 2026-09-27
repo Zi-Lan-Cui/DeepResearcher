@@ -124,8 +124,8 @@ class ResearchSupervisor:
                         model=self.llm,
                         # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
                         # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
-                        # 轮次配额由 remaining_rounds 提示 + services.delegate_research
-                        # 的本地 hard check 执行。
+                        # 轮次预算只由 services.delegate_research 的本地 hard check
+                        # 执行，不提示给模型。
                         max_turns=config.max_subtasks_per_round + 10,
                         context_window_tokens=context_window_tokens,
                         retry_tools=[["ResearchDelegate"]],
@@ -216,12 +216,10 @@ class ResearchSupervisor:
             current_round=round_no,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
+        # 轮次预算不注入观察,由 services.delegate_research 的硬校验在执行越界时以回执告知。
         self._append_research_observation(
             history,
             {
-                "remaining_rounds": max(
-                    0, self.config.max_research_rounds - supervisor_progress.current_round
-                ),
                 "working_set_revision": loop_state.working_set_revision,
                 "working_set": working_set_snapshot(loop_state, include_reserve=False),
                 "research_synthesis": self._research_synthesis_observation(
