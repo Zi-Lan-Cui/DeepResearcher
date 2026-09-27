@@ -81,8 +81,16 @@ LLM 调用瀑布、token/成本、工具耗时，session 就是 run_id、user �
 
 注意内容边界：trace 携带完整 prompt 与补全文本（含报告正文），接到第三方
 即内容出域——与本项目"报告不经外部服务导出"的立场对照后自行取舍。观测出口
-是镜像而非账本：导出失败或后端不可达只影响 Langfuse 侧，不影响 run（有合同
-测试钉住），产品的权威记录仍是 `run_events` 与 `run_usage`。
+是镜像而非账本：导出失败或后端不可达只影响 Langfuse 侧，不影响 run（合同测试
+校验此约束），产品的权威记录仍是 `run_events` 与 `run_usage`。
+
+面板里的树与账本同源：自研 TraceRecorder 每次开合节点/工具 span 时同步创建
+OpenTelemetry span（Langfuse SDK 底层即是 OTel），LLM 调用的 generation 挂在
+节点 span 之下，同一棵树。账本记录因此增补 `otel_trace_id`/`otel_span_id`
+（32/16 位 hex），与 Langfuse 面板的 trace id 相同，可从 `run_events` 行直接
+跳到面板现场；反向凭 span 上的 `deepresearcher.trace_id` 属性回账本。
+不接 Langfuse 时可用 `SERVICE_OTEL_EXPORTER=console` 把同一批 span 打到
+worker stdout 自检；两者都不配则桥静默降级，记录与接入前完全一致。
 
 ## 容量假设
 
