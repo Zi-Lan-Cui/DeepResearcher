@@ -49,6 +49,35 @@ async def test_langfuse_unreachable_still_completes_run(tmp_path):
         await engine.dispose()
 
 
+async def test_otel_console_exporter_completes_run(tmp_path, capsys):
+    """无 langfuse、console 导出:span 打到 stdout,run 照常完成。"""
+    settings = service_settings(tmp_path)
+    config = service_config(tmp_path, worker_poll_seconds=0.01, otel_exporter="console")
+    engine = make_engine(config.database_url)
+    session_factory = make_session_factory(engine)
+    try:
+        async with worker_lifespan(
+            settings, config, graph_factory=lambda **_kwargs: FakeGraph()
+        ) as runtime:
+            assert not runtime.executor.langfuse_enabled()
+            async with session_factory() as session:
+                session.add(User(id=78, email="otel@test.dev", password_hash="h"))
+                session.add(Run(id="run-otel", user_id=78, query="OTel 导出自检", status="queued"))
+                await session.commit()
+            await runtime.wake()
+            async with asyncio.timeout(15):
+                while True:
+                    async with session_factory() as session:
+                        run = await session.get(Run, "run-otel")
+                        if run is not None and run.status in {"completed", "failed"}:
+                            break
+                    await asyncio.sleep(0.02)
+            assert run.status == "completed"
+        assert "research_run" in capsys.readouterr().out
+    finally:
+        await engine.dispose()
+
+
 async def _wait_status(client, token, run_id, expected):
     async with asyncio.timeout(3):
         while True:

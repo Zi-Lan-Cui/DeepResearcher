@@ -64,6 +64,7 @@ class ServiceConfig:
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_base_url: str = ""
+    otel_exporter: str = "none"
 
 
 @lru_cache(maxsize=1)
@@ -129,6 +130,7 @@ def get_service_config() -> ServiceConfig:
         langfuse_public_key=_env("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=_env("LANGFUSE_SECRET_KEY"),
         langfuse_base_url=_env("LANGFUSE_BASE_URL"),
+        otel_exporter=_env("SERVICE_OTEL_EXPORTER", "none").strip().lower(),
     )
 
 

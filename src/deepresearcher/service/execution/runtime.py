@@ -29,6 +29,7 @@ from deepresearcher.service.preview.protocol import EphemeralEventBus
 from deepresearcher.service.runs.transitions import apply_transition
 from deepresearcher.service.runtime_stack import build_runtime_stack
 from deepresearcher.service.settings import ServiceConfig, get_service_config
+from deepresearcher.service.telemetry import configure_tracer_provider, shutdown_tracer_provider
 from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
@@ -245,6 +246,8 @@ async def worker_lifespan(
     """
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()
+    # 先于 RunExecutor(首次 Langfuse())装配全局 provider,让 langfuse 接管同一棵树。
+    configure_tracer_provider(service_config)
     async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:
         pruned = prune_event_jsonl(
             service_config.service_log_dir / "events", service_config.jsonl_retention_days
@@ -285,3 +288,4 @@ async def worker_lifespan(
             stack.signal_bus.unsubscribe("run_available", work_subscription)
             stack.signal_bus.unsubscribe("run_cancel_requested", cancel_subscription)
             await worker.shutdown()
+            shutdown_tracer_provider()
