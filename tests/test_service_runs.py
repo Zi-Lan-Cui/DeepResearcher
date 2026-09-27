@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 import traceback
 from dataclasses import replace
@@ -192,7 +193,6 @@ async def manager(tmp_path):
         *,
         settings,
         event_sink,
-        trace_recorder,
         http_client,
         checkpointer=None,
         material_store=None,
@@ -200,7 +200,6 @@ async def manager(tmp_path):
     ):
         del material_store
         holder["sink"] = event_sink
-        holder["trace_recorder"] = trace_recorder
         holder["checkpointer"] = checkpointer
         graph = holder.get("graph") or FakeGraph()
         graph._sink = event_sink
@@ -358,8 +357,8 @@ async def test_success_persists_terminal_and_injects_run_id(manager):
         )
     assert [event.event_type for event in trace_events] == ["trace_started", "trace_completed"]
     assert trace_events[0].record["trace_id"] == trace_events[1].record["trace_id"]
+    assert re.match(r"^[0-9a-f]{32}$", trace_events[0].record["trace_id"])
     assert trace_events[0].record["metadata"]["resume"] is False
-    assert manager.holder["trace_recorder"] is not None
 
 
 async def test_failure_persists_failed_with_truncated_message(manager):
@@ -908,13 +907,11 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         *,
         settings,
         event_sink,
-        trace_recorder,
         http_client,
         checkpointer=None,
         material_store=None,
         provider_health=None,
     ):
-        del trace_recorder
         del material_store
         graph = FakeGraph(
             result=_completed_result(),

@@ -28,7 +28,7 @@ ALLOWED_KERNEL_IMPORTS = frozenset(
         # 观测与追踪
         "deepresearcher.observability",  # JsonlSink（包口导出）
         "deepresearcher.observability.logging_config",  # get_logger
-        "deepresearcher.observability.tracing",  # TraceRecorder
+        "deepresearcher.observability.tracing",  # spans / ledger
         "deepresearcher.observability.tracing.context",  # current_span_context / new_id
         "deepresearcher.observability.usage_runtime",  # bind/current/enforce/record/reset + 异常与类型
         # 契约与词汇

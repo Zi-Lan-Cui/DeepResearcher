@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from deepresearcher.observability.logging_config import get_logger
+from deepresearcher.observability.tracing import ledger
 from deepresearcher.service.settings import ServiceConfig
 
 logger = get_logger("deepresearcher.service.telemetry")
@@ -33,6 +34,8 @@ def configure_tracer_provider(config: ServiceConfig) -> None:
             # set_tracer_provider 是一次性的;竞态下以先装上的那份为准。
             current = opentelemetry_trace.get_tracer_provider()
             provider = current if isinstance(current, TracerProvider) else created
+        # 账本处理器常驻:span 是唯一的执行记录引擎,run 是否落账由注册表决定。
+        ledger.attach_to_provider(provider)
         if config.otel_exporter == "console":
             # 显式传 out:SDK 默认参数在模块导入时就绑定了 sys.stdout,
             # 测试内的流重定向与装配时刻的终端都要用当下的 stdout。

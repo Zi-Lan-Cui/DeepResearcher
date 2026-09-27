@@ -20,7 +20,7 @@ from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
 from deepresearcher.llm import classify_llm_error
 from deepresearcher.observability import JsonlSink
-from deepresearcher.observability.tracing import TraceRecorder
+from deepresearcher.observability.tracing import ledger, spans
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.sinks import CompositeSink
 from deepresearcher.service.execution.queue import RunWork
@@ -189,17 +189,18 @@ class RunExecutor:
         if self._config.jsonl_events:
             sinks.append(JsonlSink(self._config.service_log_dir / "events" / f"{run_id}.jsonl"))
         sink = CompositeSink(*sinks)
-        trace_recorder = TraceRecorder(sink)
+        ledger.attach_run_sink(run_id, sink)
         flusher = asyncio.create_task(self._periodic_flush(run_id))
         usage_token = bind_usage_runtime(
             UsageRuntime(run_id=run_id, store=self._usage_store, config=self._settings.llm)
         )
         suspended = False
         try:
-            with trace_recorder.trace(
+            with spans.trace(
                 "research_run",
                 run_id=run_id,
                 session_id=run_id,
+                input={"query": query},
                 metadata={
                     "attempt": claim.attempt if claim is not None else 0,
                     "resume": resume,
@@ -211,7 +212,6 @@ class RunExecutor:
                     user_id,
                     query,
                     sink=sink,
-                    trace_recorder=trace_recorder,
                     resume=resume,
                     resume_input=resume_input,
                     claim=claim,
@@ -275,6 +275,7 @@ class RunExecutor:
                 self._hub.close(run_id)
             self._lost_leases.discard(run_id)
             self._cancellation_requests.discard(run_id)
+            ledger.detach_run_sink(run_id)
             reset_usage_runtime(usage_token)
             if self._langfuse_client is not None:
                 try:
@@ -301,7 +302,6 @@ class RunExecutor:
         query: str,
         *,
         sink: CompositeSink,
-        trace_recorder: TraceRecorder,
         resume: bool,
         resume_input: Any,
         claim: RunWork | None,
@@ -321,7 +321,6 @@ class RunExecutor:
         graph = self._graph_factory(
             settings=self._settings_for(user_id),
             event_sink=sink,
-            trace_recorder=trace_recorder,
             http_client=self._http_client,
             checkpointer=self._checkpointer,
             material_store=self._material_store,

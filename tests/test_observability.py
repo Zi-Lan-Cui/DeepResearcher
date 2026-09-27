@@ -10,19 +10,28 @@ from deepresearcher.observability.events import (
     make_node_event,
 )
 from deepresearcher.observability.instrumentation import _node_result_summary
-from deepresearcher.observability.tracing import TraceRecorder
+from deepresearcher.observability.tracing import ledger, spans
 from deepresearcher.service.events.projector import project
+
+
+def _ledger_rows(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 def test_trace_records_nested_spans(tmp_path):
     path = tmp_path / "traces.jsonl"
-    recorder = TraceRecorder(JsonlSink(path))
-    with recorder.trace("test", metadata={"attempt": 2, "resume": True}) as trace_id:
-        with recorder.span("planner") as parent_span_id:
-            with recorder.span("llm", kind="llm"):
-                pass
+    ledger.attach_run_sink("run-nest", JsonlSink(path))
+    try:
+        with spans.trace(
+            "test", run_id="run-nest", metadata={"attempt": 2, "resume": True}
+        ) as trace_id:
+            with spans.span("planner"):
+                with spans.span("llm", kind="llm"):
+                    pass
+    finally:
+        ledger.detach_run_sink("run-nest")
 
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records = _ledger_rows(path)
     assert records[0]["event_type"] == "trace_started"
     assert records[0]["metadata"] == {"attempt": 2, "resume": True}
     assert records[-1]["event_type"] == "trace_completed"
@@ -33,36 +42,41 @@ def test_trace_records_nested_spans(tmp_path):
         if record.get("name") == "llm" and record["event_type"] == "span_started"
     )
     assert child_start["trace_id"] == trace_id
-    assert child_start["parent_span_id"] == parent_span_id
+    planner_start = next(
+        record
+        for record in records
+        if record.get("name") == "planner" and record["event_type"] == "span_started"
+    )
+    assert child_start["parent_span_id"] == planner_start["span_id"]
 
 
-def test_trace_records_cancellation_without_unbound_status(tmp_path):
+def test_trace_records_cancellation_without_error_status(tmp_path):
     path = tmp_path / "traces.jsonl"
-    recorder = TraceRecorder(JsonlSink(path))
+    ledger.attach_run_sink("run-cancel", JsonlSink(path))
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            with spans.trace("cancelled", run_id="run-cancel"):
+                raise asyncio.CancelledError()
+    finally:
+        ledger.detach_run_sink("run-cancel")
 
-    with pytest.raises(asyncio.CancelledError):
-        with recorder.trace("cancelled"):
-            raise asyncio.CancelledError()
-
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records = _ledger_rows(path)
     assert records[-1]["event_type"] == "trace_cancelled"
     assert records[-1]["error"] == "CancelledError"
 
 
 def test_failed_span_terminal_record_is_self_describing(tmp_path):
     path = tmp_path / "traces.jsonl"
-    recorder = TraceRecorder(JsonlSink(path))
+    ledger.attach_run_sink("run-fail", JsonlSink(path))
+    try:
+        with pytest.raises(RuntimeError):
+            with spans.trace("test", run_id="run-fail"):
+                with spans.span("source_fetch", kind="tool"):
+                    raise RuntimeError()
+    finally:
+        ledger.detach_run_sink("run-fail")
 
-    with pytest.raises(RuntimeError):
-        with recorder.trace("test"):
-            with recorder.span("source_fetch", kind="tool"):
-                raise RuntimeError()
-
-    record = next(
-        row
-        for row in (json.loads(line) for line in path.read_text().splitlines())
-        if row["event_type"] == "span_failed"
-    )
+    record = next(row for row in _ledger_rows(path) if row["event_type"] == "span_failed")
     assert record["name"] == "source_fetch"
     assert record["kind"] == "tool"
     assert "parent_span_id" in record

@@ -7,7 +7,7 @@ from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
-from deepresearcher.observability.tracing.recorder import TraceRecorder
+from deepresearcher.observability.tracing.spans import span
 from deepresearcher.schemas.limits import (
     SEARCH_RESULT_TITLE_PREVIEW_CHARS,
     SEARCH_RESULTS_AUDIT_PREVIEW_COUNT,
@@ -31,13 +31,11 @@ class SearchTool:
         self,
         client: SearchService,
         *,
-        trace_recorder: TraceRecorder | None = None,
         event_sink: JsonlSink | None = None,
     ):
         if client is None:
             raise ToolConfigurationError("SearchTool 需要已配置的 SearchService。")
         self.client = client
-        self.trace_recorder = trace_recorder
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.tools.web_search")
         # 实例随 build_graph 每 run 新建:缓存生命周期=单个 run,随 run 结束回收。
@@ -126,16 +124,8 @@ class SearchTool:
                     )
                 return results
 
-            if self.trace_recorder is not None:
-                with self.trace_recorder.span("search", kind="tool"):
-                    link = (
-                        current_span_context()
-                    )  # search 事件归属 tool span,即使写出点在 with 之外
-                    batches = await asyncio.gather(
-                        *(search_one(query) for query in missing_queries),
-                        return_exceptions=True,
-                    )
-            else:
+            with span("search", kind="tool"):
+                link = current_span_context()  # search 事件归属 tool span,即使写出点在 with 之外
                 batches = await asyncio.gather(
                     *(search_one(query) for query in missing_queries),
                     return_exceptions=True,

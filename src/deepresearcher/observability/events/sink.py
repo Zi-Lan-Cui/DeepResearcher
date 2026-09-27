@@ -1,9 +1,15 @@
 import json
 from pathlib import Path
 from threading import Lock
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from pydantic import BaseModel
+
+
+class TraceSink(Protocol):
+    """账本/事件记录的写入端协议;JsonlSink 与 CompositeSink 结构上满足。"""
+
+    def write(self, record: Mapping[str, Any] | Any) -> None: ...
 
 
 class JsonlSink:
