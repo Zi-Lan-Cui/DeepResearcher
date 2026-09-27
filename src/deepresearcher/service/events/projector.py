@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import StopReason
@@ -45,15 +46,27 @@ _STAGE_TITLES: dict[str, str] = {
     NodeName.RENDER_FINAL_REPORT: "生成最终报告",
 }
 
-# 方向卡第二行动作：{event_type: 文案}。
+# 方向卡第二行动作：{event_type: 文案}；带站点/计数的动作在 project() 内逐事件成文。
 _TASK_UPDATES: dict[str, str] = {
-    "source_fetch_started": "读取来源中…",
-    "source_fetch_completed": "来源读取完成",
     "direction_evidence_added": "证据入池 +{accepted_count}",
-    "source_timeout": "来源读取超时",
-    "source_read_failed": "某来源不可读，已跳过",
-    "source_read_skipped": "来源重复，已跳过",
 }
+
+# source_read_skipped 的 reason_code 面向用户措辞；未知码回退通用词，不透出机器码。
+_SOURCE_SKIP_LABELS: dict[str, str] = {
+    "empty_content": "无可读正文",
+    "login_required": "需登录",
+    "access_challenge": "访问被拦截",
+    "fetch_failed": "网络不可达",
+}
+
+
+def _display_host(url: object) -> str:
+    """URL → 展示用主机名：剥协议、路径与查询串，只留可辨认的站点。"""
+    try:
+        host = urlsplit(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+    return host.removeprefix("www.")[:48]
 
 
 @dataclass(frozen=True)
@@ -154,6 +167,39 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         if "{accepted_count}" in text:
             text = text.format(accepted_count=_int(payload.get("accepted_count")))
         return _task("task_update", seq, payload, {"text": text})
+    if event_type == "source_fetch_started":
+        host = _display_host(payload.get("requested_url"))
+        return _task(
+            "task_update",
+            seq,
+            payload,
+            {"text": f"正在读取：{host}" if host else "读取来源中…"},
+        )
+    if event_type == "source_document_registered":
+        host = _display_host(payload.get("final_url") or payload.get("requested_url"))
+        return _task(
+            "task_update",
+            seq,
+            payload,
+            {"text": f"已读取：{host}" if host else "来源已读取"},
+        )
+    if event_type == "source_read_failed":
+        host = _display_host(payload.get("url"))
+        return _task(
+            "task_update",
+            seq,
+            payload,
+            {"text": f"读取失败：{host}" if host else "某来源读取失败"},
+        )
+    if event_type == "source_read_skipped":
+        label = _SOURCE_SKIP_LABELS.get(str(payload.get("reason_code")), "不可读")
+        host = _display_host(payload.get("url"))
+        return _task(
+            "task_update",
+            seq,
+            payload,
+            {"text": f"已跳过：{host}（{label}）" if host else f"来源已跳过（{label}）"},
+        )
     if event_type == "direction_search_completed":
         text = "检索完成：{} 条候选来源".format(_int(payload.get("candidate_count")))
         return _task("task_update", seq, payload, {"text": text})

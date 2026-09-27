@@ -195,8 +195,46 @@ def test_research_task_card_lifecycle():
     assert opened.event == "task_open"
     assert opened.data["task"] == "task-0001"
     assert len(opened.data["title"]) == 140  # 标题截断
-    reading = project(_record("source_fetch_completed", {"task_id": "task-0001"}))
-    assert (reading.event, reading.data["text"]) == ("task_update", "来源读取完成")
+    started = project(
+        _record(
+            "source_fetch_started",
+            {"task_id": "task-0001", "requested_url": "https://www.pku.edu.cn/x?q=SECRET"},
+        )
+    )
+    assert started.data["text"] == "正在读取：pku.edu.cn"
+    registered = project(
+        _record(
+            "source_document_registered",
+            {
+                "task_id": "task-0001",
+                "requested_url": "https://a.example/p",
+                "final_url": "https://b.example/p",
+            },
+        )
+    )
+    assert registered.data["text"] == "已读取：b.example"
+    skipped = project(
+        _record(
+            "source_read_skipped",
+            {
+                "task_id": "task-0001",
+                "url": "https://pay.example/x",
+                "reason_code": "login_required",
+            },
+        )
+    )
+    assert skipped.data["text"] == "已跳过：pay.example（需登录）"
+    unknown_skip = project(
+        _record(
+            "source_read_skipped",
+            {"task_id": "task-0001", "url": "", "reason_code": "some_machine_code"},
+        )
+    )
+    assert unknown_skip.data["text"] == "来源已跳过（不可读）"
+    failed = project(
+        _record("source_read_failed", {"task_id": "task-0001", "url": "https://dead.example"})
+    )
+    assert failed.data["text"] == "读取失败：dead.example"
     extracting = project(
         _record("direction_evidence_added", {"task_id": "task-0001", "accepted_count": 4})
     )
@@ -319,7 +357,10 @@ def test_search_query_progress_becomes_task_update():
         "direction_search_completed",
         "research_round_completed",
         "research_stopped",
-        "source_fetch_completed",
+        "source_fetch_started",
+        "source_document_registered",
+        "source_read_failed",
+        "source_read_skipped",
         "direction_evidence_added",
         "writer_draft_ready",
         "run_status",
