@@ -771,3 +771,52 @@ def test_researcher_agent_crash_passes_through_as_failed_not_dressed_up():
     assert any("direction_agent_failed" in item for item in task_result.failures)
     # 交付层仍拿到降级说明与缺口标注(证据为零时的兜底文案不变)
     assert "未获得可用 Evidence。" in task_result.remaining_gaps
+
+
+def test_search_tool_emits_query_level_progress_events():
+    """方向卡的静默真空期由逐 query 事件填上:每条检索式起止各一条,聚合事件保留。"""
+
+    class Sink:
+        def __init__(self) -> None:
+            self.records = []
+
+        def write(self, record) -> None:
+            self.records.append(record)
+
+    sink = Sink()
+    tool = SearchTool(FakeSearchService(), event_sink=sink)
+    asyncio.run(tool.arun_queries(TASK, queries=["甲", "乙"]))
+
+    query_events = {
+        (record.event_type, record.payload["query"])
+        for record in sink.records
+        if record.event_type.startswith("search_query_")
+    }
+    assert {("search_query_started", "甲"), ("search_query_completed", "甲")} <= query_events
+    assert {("search_query_started", "乙"), ("search_query_completed", "乙")} <= query_events
+    # 整批聚合的 tool_started/tool_completed 仍在:卡的首行与批次行不受影响。
+    assert {r.event_type for r in sink.records} >= {"tool_started", "tool_completed"}
+
+
+def test_search_tool_query_failed_event_reraises():
+    class BoomClient:
+        provider_name = "boom"
+
+        async def asearch(self, _query):
+            raise RuntimeError("上游 5xx")
+
+    class Sink:
+        def __init__(self) -> None:
+            self.records = []
+
+        def write(self, record) -> None:
+            self.records.append(record)
+
+    sink = Sink()
+    tool = SearchTool(BoomClient(), event_sink=sink)
+    result = asyncio.run(tool.arun_queries(TASK, queries=["会失败"]))
+    assert result.status == "failed"
+    assert any(
+        r.event_type == "search_query_failed" and r.payload["query"] == "会失败"
+        for r in sink.records
+    )

@@ -296,6 +296,20 @@ def test_text_delta_whitelist_and_no_seq():
 # 保证即便有代码再投这种帧,投影层也不出口。
 
 
+def test_search_query_progress_becomes_task_update():
+    started = project(_record("search_query_started", {"task_id": "t1", "query": "关键词甲"}))
+    assert (started.event, started.data["text"]) == ("task_update", "正在检索：关键词甲")
+    done = project(
+        _record(
+            "search_query_completed",
+            {"task_id": "t1", "query": "关键词甲", "candidate_count": 12},
+        )
+    )
+    assert done.data["text"] == "关键词甲 → 12 条候选"
+    failed = project(_record("search_query_failed", {"task_id": "t1", "query": "x"}))
+    assert failed.data["text"].startswith("检索失败，已跳过")
+
+
 @pytest.mark.parametrize(
     "event_type",
     [
@@ -311,6 +325,9 @@ def test_text_delta_whitelist_and_no_seq():
         "run_status",
         "run_done",
         "stream_truncated",
+        "search_query_started",
+        "search_query_completed",
+        "search_query_failed",
     ],
 )
 def test_never_leaks_denied_fields(event_type):

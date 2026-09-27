@@ -157,6 +157,28 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == "direction_search_completed":
         text = "检索完成：{} 条候选来源".format(_int(payload.get("candidate_count")))
         return _task("task_update", seq, payload, {"text": text})
+    if event_type == "search_query_started":
+        return _task(
+            "task_update", seq, payload, {"text": f"正在检索：{_text(payload.get('query'), 60)}"}
+        )
+    if event_type == "search_query_completed":
+        return _task(
+            "task_update",
+            seq,
+            payload,
+            {
+                "text": "{} → {} 条候选".format(
+                    _text(payload.get("query"), 60), _int(payload.get("candidate_count"))
+                )
+            },
+        )
+    if event_type == "search_query_failed":
+        return _task(
+            "task_update",
+            seq,
+            payload,
+            {"text": f"检索失败，已跳过：{_text(payload.get('query'), 60)}"},
+        )
 
     # ---- 指标与杂项 ----
     if event_type == "research_round_completed":
