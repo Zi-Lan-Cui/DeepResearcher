@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,34 @@ class RunExecutor:
             if str(getattr(config, "database_url", "")).startswith("postgresql")
             else None
         )
+        # Langfuse 是镜像用的观测出口: callbacks 级挂入,失败或断网不得影响 run
+        # (与预览总线同一合同)。三键缺任一 = 完全关闭;导入失败(未装 extra)同样降级关闭。
+        self._langfuse_client: Any | None = None
+        self._langfuse_handler: Callable[[], Any] | None = None
+        self._langfuse_scope: Callable[..., Any] | None = None
+        if config.langfuse_public_key and config.langfuse_secret_key and config.langfuse_base_url:
+            try:
+                from langfuse import Langfuse, propagate_attributes
+                from langfuse.langchain import CallbackHandler
+
+                self._langfuse_client = Langfuse(
+                    public_key=config.langfuse_public_key,
+                    secret_key=config.langfuse_secret_key,
+                    base_url=config.langfuse_base_url,
+                )
+                public_key = config.langfuse_public_key
+                self._langfuse_handler = lambda: CallbackHandler(public_key=public_key)
+                self._langfuse_scope = lambda run_id, user_id: propagate_attributes(
+                    session_id=run_id,
+                    user_id=str(user_id),
+                    tags=["deepresearcher"],
+                    trace_name="research_run",
+                )
+            except Exception:  # noqa: BLE001 - 观测出口坏了不拦执行
+                logger.warning("langfuse_init_failed", exc_info=True)
+                self._langfuse_client = None
+                self._langfuse_handler = None
+                self._langfuse_scope = None
         self._shutdown_interrupts: set[str] = set()
         self._lost_leases: set[str] = set()
         self._cancellation_requests: set[str] = set()
@@ -247,6 +276,23 @@ class RunExecutor:
             self._lost_leases.discard(run_id)
             self._cancellation_requests.discard(run_id)
             reset_usage_runtime(usage_token)
+            if self._langfuse_client is not None:
+                try:
+                    self._langfuse_client.flush()
+                except Exception:  # noqa: BLE001 - 观测出口不许反噬收尾
+                    logger.debug("langfuse_flush_failed run_id=%s", run_id, exc_info=True)
+
+    def langfuse_enabled(self) -> bool:
+        return self._langfuse_client is not None
+
+    def shutdown_langfuse(self) -> None:
+        """进程退出前把缓冲的 trace 刷出;失败静默(与预览面同一合同)。"""
+        if self._langfuse_client is not None:
+            try:
+                self._langfuse_client.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.debug("langfuse_shutdown_failed", exc_info=True)
+            self._langfuse_client = None
 
     async def _execute_traced(
         self,
@@ -292,7 +338,18 @@ class RunExecutor:
             rate_limiter=self._llm_rate_limiter,
             config=self._settings.llm,
         )
-        result, interruption = await self._run_graph(run_id, graph, inputs, callbacks=[callback])
+        callbacks: list[Any] = [callback]
+        if self._langfuse_handler is not None:
+            callbacks.append(self._langfuse_handler())
+        # propagate_attributes 必须在图执行期间生效,langchain callbacks 生成的
+        # trace 才会带上 session/user 归属。
+        scope = (
+            self._langfuse_scope(run_id=run_id, user_id=user_id)
+            if self._langfuse_scope is not None
+            else nullcontext()
+        )
+        with scope:
+            result, interruption = await self._run_graph(run_id, graph, inputs, callbacks=callbacks)
         if interruption is not None:
             if not await self._persist_awaiting_input(run_id, claim=claim):
                 self.mark_lease_lost(run_id)

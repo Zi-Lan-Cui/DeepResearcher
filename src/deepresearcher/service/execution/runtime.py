@@ -109,6 +109,7 @@ class WorkerRuntime:
 
     async def shutdown(self) -> None:
         await self.worker.shutdown()
+        self.executor.shutdown_langfuse()
 
     async def _settle_cancellations(self) -> None:
         """带取消意图却停在 interrupted 的行:终态化 cancelled 并补 done 帧。

@@ -61,6 +61,9 @@ class ServiceConfig:
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
     jsonl_events: bool = True
     jsonl_retention_days: int = 14
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = ""
 
 
 @lru_cache(maxsize=1)
@@ -123,6 +126,9 @@ def get_service_config() -> ServiceConfig:
         service_log_dir=project_path_env("SERVICE_LOG_DIR", _PROJECT_ROOT / "var" / "service"),
         jsonl_events=_bool_env("SERVICE_JSONL_EVENTS", True),
         jsonl_retention_days=max(0, _int_env("SERVICE_JSONL_RETENTION_DAYS", 14)),
+        langfuse_public_key=_env("LANGFUSE_PUBLIC_KEY"),
+        langfuse_secret_key=_env("LANGFUSE_SECRET_KEY"),
+        langfuse_base_url=_env("LANGFUSE_BASE_URL"),
     )
 
 

@@ -5,9 +5,48 @@ import pytest
 
 from deepresearcher.service.api import create_app
 from deepresearcher.service.execution.runtime import worker_lifespan
+from deepresearcher.service.persistence.database import make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, User
 from fakes_service import FakeGraph, service_config, service_settings
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_langfuse_unreachable_still_completes_run(tmp_path):
+    """观测出口合同:langfuse 后端不可达,run 照常完成,不反噬执行。
+
+    base_url 指向 discard 端口(连接拒绝,立即失败),导出侧没有服务。
+    """
+    settings = service_settings(tmp_path)
+    config = service_config(
+        tmp_path,
+        worker_poll_seconds=0.01,
+        langfuse_public_key="pk-lf-test",
+        langfuse_secret_key="sk-lf-test",
+        langfuse_base_url="http://127.0.0.1:9",
+    )
+    engine = make_engine(config.database_url)
+    session_factory = make_session_factory(engine)
+    try:
+        async with worker_lifespan(
+            settings, config, graph_factory=lambda **_kwargs: FakeGraph()
+        ) as runtime:
+            assert runtime.executor.langfuse_enabled()  # 已装 extra 且三键齐备
+            async with session_factory() as session:
+                session.add(User(id=77, email="lf@test.dev", password_hash="h"))
+                session.add(Run(id="run-lf", user_id=77, query="观测出口可用性", status="queued"))
+                await session.commit()
+            await runtime.wake()
+            async with asyncio.timeout(15):
+                while True:
+                    async with session_factory() as session:
+                        run = await session.get(Run, "run-lf")
+                        if run is not None and run.status in {"completed", "failed"}:
+                            break
+                    await asyncio.sleep(0.02)
+            assert run.status == "completed"
+    finally:
+        await engine.dispose()
 
 
 async def _wait_status(client, token, run_id, expected):
