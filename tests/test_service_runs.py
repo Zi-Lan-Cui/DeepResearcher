@@ -94,12 +94,14 @@ class FakeGraph:
         """复刻官方形态：subgraphs=True 时 yield (namespace, mode, chunk)。
 
         stream_messages 条目 = (namespace, text) 或 (namespace, text, msg_type)，
-        msg_type 默认 "ai"；"tool" 模拟 messages 模式里混入的工具回执。
+        msg_type 默认 "AIMessageChunk"——langchain 1.x 真实流式片段的 .type 就是它，
+        假图若默认成 "ai" 会让执行器闸门与生产脱钩(流式失踪事故的测试盲区)。
+        "tool" 模拟 messages 模式里混入的工具回执。
         """
         self.seen_configs.append(dict(kwargs))  # 记录 config（thread_id 注入断言用）
         for entry in self.stream_messages:
             namespace, text = entry[0], entry[1]
-            msg_type = entry[2] if len(entry) > 2 else "ai"
+            msg_type = entry[2] if len(entry) > 2 else "AIMessageChunk"
             chunk = (
                 SimpleNamespace(type=msg_type, content_blocks=[{"type": "text", "text": text}]),
                 {},
@@ -803,7 +805,12 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         result=_completed_result(),
         gate=gate,
         stream_messages=[
-            (("supervisor:aaa",), "先梳理缺口，"),  # ✓ 唯一放行
+            (("supervisor:aaa",), "先梳理缺口，"),  # ✓ 唯一放行(真实 AIMessageChunk 形态)
+            (
+                ("supervisor:fff",),
+                "旧版聚合消息也放行",
+                "ai",
+            ),  # ✓ 兼容非流式回退的 AIMessage.type
             (("supervisor:aaa", "tools:bbb"), "researcher串流"),  # ✗ 深度>1
             (("writer:ccc",), "writer字幕"),  # ✗ 非白名单
             (("supervisor:ddd",), ""),  # ✗ 空文本
@@ -824,7 +831,10 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
     while not subscription.queue.empty():
         frames.append(subscription.queue.get_nowait())
     deltas = [f for f in frames if f["event_type"] == "text_delta"]
-    assert [d["payload"] for d in deltas] == [{"channel": "supervisor", "text": "先梳理缺口，"}]
+    assert [d["payload"] for d in deltas] == [
+        {"channel": "supervisor", "text": "先梳理缺口，"},
+        {"channel": "supervisor", "text": "旧版聚合消息也放行"},
+    ]
     assert all("seq" not in d for d in deltas)  # ephemeral：不占 seq
     async with manager.session_factory() as session:
         persisted = (

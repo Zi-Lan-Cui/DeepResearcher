@@ -404,8 +404,16 @@ class RunExecutor:
                     final = chunk
                     headline = str(chunk.get("run_headline") or "")
                     if headline and not headline_persisted:
-                        await self._persist_headline(run_id, headline)
                         headline_persisted = True
+                        if await self._persist_headline(run_id, headline):
+                            # 落库成功即推帧:进行中的头部当场从长问题收敛为短题。
+                            self._hub.write(
+                                {
+                                    "run_id": run_id,
+                                    "event_type": "run_headline_updated",
+                                    "payload": {"headline": headline[:80]},
+                                }
+                            )
                 continue
             if mode == "updates" and isinstance(chunk, dict):
                 interrupts = chunk.get("__interrupt__") or ()
@@ -423,7 +431,9 @@ class RunExecutor:
             message, _metadata = chunk
         except (TypeError, ValueError):
             return
-        if getattr(message, "type", None) != "ai":
+        # langchain 1.x 的流式片段 .type 为 "AIMessageChunk" 而非 "ai"——只认 "ai"
+        # 会把全部 token 静默丢掉(流式失踪事故的根因)。
+        if getattr(message, "type", None) not in {"ai", "AIMessageChunk"}:
             return
         channel = self._preview_channel(namespace)
         if channel is None:
@@ -483,18 +493,20 @@ class RunExecutor:
             await self.publish_status(run_id, "running")
         return transitioned
 
-    async def _persist_headline(self, run_id: str, headline: str) -> None:
+    async def _persist_headline(self, run_id: str, headline: str) -> bool:
         """澄清完成即把历史标题写进行:列表行从原 query 收敛为浓缩标题。
 
         只写未落过 headline 的行——首个有效标题为准,重复到达幂等丢弃。
+        返回是否由本次调用写入(决定要不要向 SSE 推更新帧)。
         """
         async with self._session_factory() as session:
-            await session.execute(
+            result = await session.execute(
                 update(Run)
                 .where(Run.id == run_id, Run.headline.is_(None))
                 .values(headline=headline[:80])
             )
             await session.commit()
+            return result.rowcount == 1
 
     async def _persist_awaiting_input(self, run_id: str, *, claim: RunWork | None = None) -> bool:
         if claim is not None:
