@@ -79,7 +79,7 @@
   .clarify-options label { display:flex; gap:9px; align-items:flex-start; padding:9px 11px;
                            border:1px solid var(--bd); border-radius:8px; cursor:pointer; }
   .clarify-options input { width:auto; margin-top:5px; }
-  /* 论文式引用角标：[来源N] → 上标小链接 */
+  /* 论文式引用角标：[证据N] → 上标小链接 */
   #report sup.cite-ref { font-size:11px; line-height:0; }
   #report sup.cite-ref a { color:var(--ac); text-decoration:none; font-weight:600; }
   .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); white-space:nowrap; flex:none; }

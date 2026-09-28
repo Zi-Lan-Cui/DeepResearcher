@@ -1,7 +1,7 @@
 """Report Writer：将 Supervisor 提供的任务书与 Evidence 写成可审阅草稿。
 
 Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引用元数据；
-编号渲染与参考来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
+编号渲染与证据来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
 """
 
 from collections.abc import Callable, Sequence

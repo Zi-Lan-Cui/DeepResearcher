@@ -526,8 +526,8 @@ function renderReportMeta(detail) {
   if (detail.answer_mode === "quick_answer") {
     parts.push("即时回答 · 未联网检索");
   } else {
-    if (detail.evidence_count) parts.push("Evidence " + detail.evidence_count);
-    if (detail.source_count) parts.push("来源 " + detail.source_count);
+    if (detail.evidence_count) parts.push("证据 " + detail.evidence_count);
+    if (detail.source_count) parts.push("来源 " + detail.source_count);  // 来源=去重后的文章数
   }
   if (detail.answer_mode === "review_limited") {
     el.classList.add("warn");
@@ -543,25 +543,26 @@ function renderReportMeta(detail) {
   }
 }
 
-/* 参考来源表由管道生成、编号权威唯一：正文 [来源N] 与表条目一一对应。
-   前端把报告拆成正文/参考表两段——正文链接化渲染，来源面板带序号与锚点 id，
-   点击 [来源N] 即跳转。citations_json 仅作解析失败时的无编号兜底。 */
+/* 证据来源表由管道生成、编号权威唯一：正文 [证据N] 与表条目一一对应。
+   前端把报告拆成正文/表两段——正文链接化渲染，面板带序号与锚点 id，
+   点击 [证据N] 即跳转。citations_json 仅作解析失败时的无编号兜底。
+   存量报告用旧词（[来源N]/参考来源），解析式两种词都收；面板标题随报告原文。 */
 function splitReport(md) {
-  const m = md.match(/^## 参考来源[ \t]*$/m);
-  if (!m) return [md, null];
-  return [md.slice(0, m.index), md.slice(m.index + m[0].length)];
+  const m = md.match(/^## (?:证据来源|参考来源)[ \t]*$/m);
+  if (!m) return [md, null, "证据来源"];
+  return [md.slice(0, m.index), md.slice(m.index + m[0].length), m[0].replace(/^## /, "")];
 }
 
 function parseReferences(refMd) {
   const items = [];
   for (const raw of refMd.split("\n")) {
     const line = raw.trim();
-    let m = line.match(/^- \[(来源(\d+))\]\s*(.*?):\s*(\S+)\s*$/);
+    let m = line.match(/^- \[((?:证据|来源)(\d+))\]\s*(.*?):\s*(\S+)\s*$/);
     if (m) {
       items.push({ label: m[1], num: Number(m[2]), title: m[3], url: m[4], quote: "" });
       continue;
     }
-    m = line.match(/^- \[(来源(\d+))\]\s*(\S+)\s*$/);  // 无标题变体
+    m = line.match(/^- \[((?:证据|来源)(\d+))\]\s*(\S+)\s*$/);  // 无标题变体
     if (m) { items.push({ label: m[1], num: Number(m[2]), title: m[4], url: m[4], quote: "" }); continue; }
     m = line.match(/^>\s*「([\s\S]*)」\s*$/);
     if (m && items.length) items[items.length - 1].quote = m[1];
@@ -571,14 +572,14 @@ function parseReferences(refMd) {
 
 function renderReport(md, fallbackCitations, detail) {
   const stripped = stripReportHead(md);
-  const [bodyMd, refMd] = splitReport(stripped);
+  const [bodyMd, refMd, refHeading] = splitReport(stripped);
   renderReportMeta(detail);
   $("report-actions").classList.toggle("hide", !(detail && detail.report_markdown));
   const reportEl = $("report");
-  // 论文式角标：[来源N] → <sup>[N]</sup> 可点击上标；sup/a/href 均在
-  // DOMPurify 默认白名单内，消毒只滤恶意载荷、不滤这个标记。
+  // 论文式角标：[证据N] → <sup>[N]</sup> 可点击上标（存量报告的 [来源N] 同收）；
+  // sup/a/href 均在 DOMPurify 默认白名单内，消毒只滤恶意载荷、不滤这个标记。
   const linkified = bodyMd.replace(
-    /\[来源(\d+)\]/g,
+    /\[(?:证据|来源)(\d+)\]/g,
     (_s, n) => `<sup class="cite-ref"><a href="#src-${n}">[${n}]</a></sup>`,
   );
   const clean = markdownHtml(linkified);
@@ -605,11 +606,12 @@ function renderReport(md, fallbackCitations, detail) {
     }
     return;
   }
+  $("sources-title").textContent = refHeading;   // 面板标题随报告原文（证据来源/旧词）
   $("sources-title").classList.remove("hide");
   for (const item of items) {
     const div = document.createElement("div");
     div.className = "src-item";
-    div.id = "src-" + item.num;                   // 正文 [来源N] 锚点落点
+    div.id = "src-" + item.num;                   // 正文 [证据N] 锚点落点
     const head = document.createElement("div");
     const label = document.createElement("b"); label.textContent = "[" + item.label + "] ";
     head.appendChild(label);
@@ -633,7 +635,7 @@ function reportExportText() {
   const sources = $("sources").innerText.trim();
   if (body) parts.push(body);
   if (sources && !$("sources-title").classList.contains("hide")) {
-    parts.push("参考来源\n\n" + sources);
+    parts.push($("sources-title").textContent + "\n\n" + sources);
   }
   return parts.join("\n\n");
 }
@@ -903,7 +905,7 @@ $("clarification-submit").onclick = async () => {
   }
 };
 
-/* 正文 [来源N] → 面板条目：不走 hash 导航（会与 #/ 路由打架导致切视图），
+/* 正文 [证据N] → 面板条目：不走 hash 导航（会与 #/ 路由打架导致切视图），
    改为 preventDefault + JS 滚动 + 手动高亮。 */
 $("report").addEventListener("click", (e) => {
   const link = e.target.closest && e.target.closest('a[href^="#src-"]');
