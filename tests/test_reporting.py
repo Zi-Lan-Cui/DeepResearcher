@@ -45,12 +45,12 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
         ],
     )
 
-    # 编号按正文首现顺序：e2 → 来源1，e1 → 来源2
-    assert "[来源1]" in report
-    assert "[来源2]" in report
-    assert report.index("[来源1]") < report.index("[来源2]")
-    assert "## 参考来源" in report
-    # 参考来源表保留可审计 quote，最终交付物不丢 chunk
+    # 编号按正文首现顺序：e2 → 证据1，e1 → 证据2
+    assert "[证据1]" in report
+    assert "[证据2]" in report
+    assert report.index("[证据1]") < report.index("[证据2]")
+    assert "## 证据来源" in report
+    # 证据来源表保留可审计 quote，最终交付物不丢 chunk
     assert "「第二条。」" in report
     assert "「第一条。」" in report
     assert "https://example.com/two" in report
@@ -82,7 +82,7 @@ def test_render_final_report_strips_writer_authored_reference_section():
         ),
         citations=citations,
     )
-    assert report.count("## 参考来源") == 1  # 只剩管道追加的那份
+    assert report.count("## 证据来源") == 1  # 只剩管道追加的那份
     assert "主要参考" not in report
     assert "### " not in report  # 被剥小节的标题也不残留
     assert "「第二条。」" in report  # 正文标记正常入表
@@ -117,7 +117,7 @@ def test_render_final_report_strip_stops_at_next_same_level_heading():
         ],
     )
     assert "这里还要引用" in report  # 误剥会吃掉后文
-    assert report.count("## 参考来源") == 1
+    assert report.count("## 证据来源") == 1  # 旧词"## 参考来源"被剥，只剩管道新表
     # e1 在存活正文中重新出现 → 依然合法入表（编号 2，因 e2 首现更早）
     assert "「第一条。」" in report
     assert report.index("前言") < report.index("这里还要引用")
@@ -153,8 +153,8 @@ def test_render_final_report_ignores_cite_markers_inside_code():
     )
 
     assert "[[cite:e2]]" in report  # 代码块内原样保留
-    assert "[来源1]" in report
-    assert "https://example.com/two" not in report  # 代码里的伪标记不进入参考表
+    assert "[证据1]" in report
+    assert "https://example.com/two" not in report  # 代码里的伪标记不进入证据来源表
 
 
 def test_render_final_report_node_routes_failure_paths():
@@ -207,7 +207,7 @@ def test_render_final_report_node_routes_failure_paths():
     assert result["run"].phase == "completed"
     assert result["run"].terminal_reason == "review_recovery_exhausted"
     assert "A 的平均延迟为 20ms" in result["report"]
-    assert "## 参考来源" in result["report"]
+    assert "## 证据来源" in result["report"]
     assert "已达到修订上限" in result["report"]
 
     # 快乐路径:草稿 + citations → 渲染
@@ -230,8 +230,8 @@ def test_render_final_report_node_routes_failure_paths():
             },
         )
     )
-    assert "[来源1]" in result["report"]
-    assert "## 参考来源" in result["report"]
+    assert "[证据1]" in result["report"]
+    assert "## 证据来源" in result["report"]
     assert "「原文。」" in result["report"]
 
 
@@ -300,7 +300,7 @@ def test_rendered_report_preserves_auditable_quotes_in_reference_list():
         citations=citations,
     )
 
-    assert report.index("[来源1]") < report.index("[来源2]")
+    assert report.index("[证据1]") < report.index("[证据2]")
     assert "「第一条原文。」" in report
     assert "「第二条原文。」" in report
     assert "来源一: https://one.test" in report
@@ -335,9 +335,9 @@ def test_reference_table_survives_ghost_cite():
             Citation(id="e1", url="https://example.com/a", quote="事实一句。", claim="事实一句")
         ],
     )
-    assert "参考来源" in report
-    assert "来源1" in report
-    assert "来源2" in report  # 幽灵仍占编号位
+    assert "证据来源" in report
+    assert "证据1" in report
+    assert "证据2" in report  # 幽灵仍占编号位
 
 
 def test_final_report_is_article_shaped_with_model_title():
@@ -352,7 +352,7 @@ def test_final_report_is_article_shaped_with_model_title():
     assert report.startswith("# A 的真相\n")
     assert "## 研究问题" not in report  # 系统段撤下,正文即文章
     assert "> 研究问题：A 的性能" in report  # 追溯信息收进文末一行
-    assert "## 参考来源" in report
+    assert "## 证据来源" in report
 
 
 def test_final_report_without_title_falls_back_to_system_heading():

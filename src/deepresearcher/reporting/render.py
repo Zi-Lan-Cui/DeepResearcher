@@ -1,8 +1,8 @@
-"""最终报告渲染：按正文首现顺序编号，替换内部标记，生成参考来源表。
+"""最终报告渲染：按正文首现顺序编号，替换内部标记，生成证据来源表。
 
-本模块是 [[cite:evidence_id]] → [来源N] 编号的唯一发生地；审阅通过后
-由终检渲染节点调用一次。参考来源表携带 quote，保证最终交付物保留
-可审计的原文引文，不因渲染而丢失 chunk。
+本模块是 [[cite:evidence_id]] → [证据N] 编号的唯一发生地；审阅通过后
+由终检渲染节点调用一次。编号单位是 Evidence，"来源"一词只用于文章（URL）；
+证据来源表携带 quote，保证最终交付物保留可审计的原文引文，不因渲染而丢失 chunk。
 """
 
 import re
@@ -13,10 +13,10 @@ from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INL
 from deepresearcher.schemas import Citation, ResearchDirectionResult, RunError, SupervisorProgress
 from deepresearcher.state import ResearchState, section
 
-# Writer 提示词禁止自写来源列表，模型违反时也必须程序兜底：整段剥除（连同其中
+# Writer 提示词禁止自写引用列表，模型违反时也必须程序兜底：整段剥除（连同其中
 # [[cite:…]] 标记，避免其抢占首现编号），编号权威只属于本模块的追加段。
 _REFERENCE_HEADING = re.compile(
-    r"^(#{2,3})[ \t]*(?:参考来源|引用来源|参考文献|引用列表|来源列表|参考文档|资料来源"
+    r"^(#{2,3})[ \t]*(?:证据来源|参考来源|引用来源|参考文献|引用列表|来源列表|参考文档|资料来源"
     r"|主要参考(?:资料|文献)?|引用(?:的)?来源|来源参考"
     r"|Sources?(?: and References?)?|References?|Bibliography)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
@@ -54,13 +54,13 @@ def render_final_report(
 ) -> str:
     """把 evidence_id 键草稿渲染为用户可见的最终报告。
 
-    编号按正文首次出现顺序分配；未在正文出现的 citation 不进入参考表
+    编号按正文首次出现顺序分配；未在正文出现的 citation 不进入证据来源表
     （Writer 的声明列表只是工作集提示，不是最终事实绑定）。
     """
     rendered_body, display_order, used_ids = _render_body_markers(_strip_reference_section(body))
     by_id = {item.id: item for item in citations}
     used_citations = [by_id[source_id] for source_id in display_order if source_id in by_id]
-    display = {source_id: f"来源{index}" for index, source_id in enumerate(display_order, 1)}
+    display = {source_id: f"证据{index}" for index, source_id in enumerate(display_order, 1)}
     source_count = len({item.url for item in used_citations if item.url})
 
     # 文章形:H1 是 Writer 拟的标题(兜底系统题),研究问题与审计信息收在文末一行。
@@ -69,7 +69,7 @@ def render_final_report(
         "\n\n---\n\n"
         f"> 研究问题：{clarified_query}；完成 {current_round} 轮研究，"
         f"使用 {source_count} 个来源和 {evidence_count} 条 Evidence。"
-        "关键事实以 [来源N] 标记可追溯到来源。"
+        "关键事实以 [证据N] 标记，可追溯到对应证据及其来源文章。"
     )
     return f"# {heading}\n\n{rendered_body}{footer}" + _reference_list(
         display_order, display, by_id
@@ -93,7 +93,7 @@ def _render_body_markers(body: str) -> tuple[str, list[str], set[str]]:
             if source_id not in used_ids:
                 display_order.append(source_id)
                 used_ids.add(source_id)
-            rendered.append(f"来源{display_order.index(source_id) + 1}")
+            rendered.append(f"证据{display_order.index(source_id) + 1}")
         return " ".join(f"[{item}]" for item in rendered)
 
     def replace_in_prose(prose: str) -> str:
@@ -121,8 +121,8 @@ def _reference_list(
     display: dict[str, str],
     by_id: dict[str, Citation],
 ) -> str:
-    """生成带可审计引文的参考来源表：每行编号 + 标题/URL + 逐字引文。"""
-    lines = ["", "## 参考来源"]
+    """生成带可审计引文的证据来源表：每行编号 + 标题/URL + 逐字引文。"""
+    lines = ["", "## 证据来源"]
     for source_id in display_order:
         citation = by_id.get(source_id)
         if citation is None:

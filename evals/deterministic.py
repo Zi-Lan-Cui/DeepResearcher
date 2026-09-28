@@ -1,7 +1,7 @@
 """确定性 scorer：代码可确证的事绝不交给 LLM。
 
 三类确定性判定：
-1. **引用完整性门**（grounding 维）——正文 `[来源N]` 全部指向 citations_json
+1. **引用完整性门**（grounding 维）——正文 `[证据N]` 全部指向 citations_json
    合法下标、来源条目 url/quote 非空。运行期校验已保证过，评测独立复算是
    双保险，也是外轨报告的"下限不被内容华丽掩盖"的那道闸。
 2. **状态机行为断言**（behavior 维）——澄清流程、run_done 恰好一次、
@@ -20,7 +20,8 @@ from typing import Any, Callable
 
 from evals.schemas import Criterion, CriterionResult
 
-CITATION_MARKER = re.compile(r"\[来源(\d+)\]")
+# 新旧两代报告都认：改名后新产物用 [证据N]，存量结果仍是 [来源N]。
+CITATION_MARKER = re.compile(r"\[(?:证据|来源)(\d+)\]")
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 
@@ -102,7 +103,7 @@ def _result(
 
 
 def check_citation_integrity(artifact: Artifact, criterion: Criterion) -> CriterionResult:
-    """门：正文引用的每个 [来源N] 都有出处，且出处条目自带 url+quote。"""
+    """门：正文引用的每个 [证据N] 都有出处，且出处条目自带 url+quote。"""
     status = artifact.detail.get("status")
     if status != "completed":
         return _result(artifact, criterion, "unknown", f"未到 completed（status={status}）")

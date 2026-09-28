@@ -248,7 +248,7 @@ def test_writer_binds_markdown_cite_to_explicit_evidence():
     # Writer 产出 evidence_id 键的草稿与绑定，不渲染编号
     assert result["paragraph_bindings"] == [_binding("A 的平均延迟为 20ms。", ["e1"])]
     assert "[[cite:e1]]" in result["report_draft"]
-    assert "[来源1]" not in result["report_draft"]
+    assert "[证据1]" not in result["report_draft"]
     assert result["citations"] == [
         _cite(
             "e1",
@@ -759,7 +759,11 @@ class _NudgeAwareLLM:
             tool_calls=[
                 {
                     "name": "CompleteReport",
-                    "args": {"title": "测试报告标题", "selected_evidence_ids": ["e1"], "markdown": report},
+                    "args": {
+                        "title": "测试报告标题",
+                        "selected_evidence_ids": ["e1"],
+                        "markdown": report,
+                    },
                     "id": "cr1",
                 }
             ],
@@ -845,7 +849,11 @@ class _BulkReadThenWriteLLM:
             tool_calls=[
                 {
                     "name": "CompleteReport",
-                    "args": {"title": "测试报告标题", "selected_evidence_ids": ["e1", "e2", "e3", "e4"], "markdown": report},
+                    "args": {
+                        "title": "测试报告标题",
+                        "selected_evidence_ids": ["e1", "e2", "e3", "e4"],
+                        "markdown": report,
+                    },
                     "id": "c1",
                 }
             ],

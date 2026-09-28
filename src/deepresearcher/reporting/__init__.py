@@ -1,7 +1,7 @@
 """报告文本管线：草稿引用协议的校验与最终报告的渲染。
 
-Writer 侧只产出 evidence_id 键的草稿与绑定；编号（[[cite:id]] → [来源N]）
-与参考来源表在审阅通过后的终检渲染层完成，且只发生一次。
+Writer 侧只产出 evidence_id 键的草稿与绑定；编号（[[cite:id]] → [证据N]）
+与证据来源表在审阅通过后的终检渲染层完成，且只发生一次。
 """
 
 from deepresearcher.reporting.render import (

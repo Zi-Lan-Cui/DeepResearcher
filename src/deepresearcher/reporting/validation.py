@@ -12,7 +12,8 @@ _FENCED_CODE = re.compile(
 )
 _INLINE_CODE = re.compile(r"(?P<tick>`+).*?(?P=tick)", re.DOTALL)
 _CITE_MARKER = re.compile(r"\[\[cite:(?P<sources>[^\]\r\n]+)\]\]", re.IGNORECASE)
-_CITATION_MARKER = re.compile(r"\[来源(?P<index>\d+)\]")
+# 手写编号护栏收两种词：旧词"来源"是改名前的模型习惯,残留时必须照样拦。
+_CITATION_MARKER = re.compile(r"\[(?:证据|来源)(?P<index>\d+)\]")
 _MAX_EVIDENCE_IDS_PER_CITATION = 3
 
 
@@ -46,8 +47,8 @@ def validate_and_bind(
     终检渲染层完成。任何协议违反都抛 DraftProtocolError，由 Writer
     在自身有限重试内修复。
     """
-    if re.search(r"^#{1,6}\s*参考来源\b", markdown, re.MULTILINE):
-        raise DraftProtocolError("正文不得自行生成‘参考来源’小节。")
+    if re.search(r"^#{1,6}\s*(?:证据来源|参考来源)\b", markdown, re.MULTILINE):
+        raise DraftProtocolError("正文不得自行生成‘证据来源’小节。")
     _reject_manual_markers(markdown)
     bindings = _extract_bindings(markdown)
     cited = list(dict.fromkeys(source_id for item in bindings for source_id in item.evidence_ids))
@@ -68,7 +69,7 @@ def _reject_manual_markers(markdown: str) -> None:
     text_outside_cites = _CITE_MARKER.sub("", without_code)
     if _CITATION_MARKER.search(text_outside_cites):
         raise DraftProtocolError(
-            "不要手动写 [来源N]；请使用 [[cite:evidence_id]]，由本地程序统一编号。"
+            "不要手动写 [证据N]；请使用 [[cite:evidence_id]]，由本地程序统一编号。"
         )
     if "[[cite:" in text_outside_cites.lower():
         raise DraftProtocolError("cite 标记格式错误；必须写成完整的 [[cite:evidence_id]]。")
