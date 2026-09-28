@@ -125,6 +125,13 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             "error", seq, {"text": f"{node if isinstance(node, str) else '某阶段'} 阶段执行失败"}
         )
     if event_type == "node_cancelled":
+        # 已知阶段用 cancelled 的 stage_done 关框——只发 tick 会让阶段框停在运行中(绿色)。
+        if isinstance(node, str) and node in _STAGE_TITLES:
+            return _frame(
+                "stage_done",
+                seq,
+                {"stage": node, "status": "cancelled", "text": "该阶段已取消"},
+            )
         return _tick(seq, "该阶段已取消")
 
     # ---- Supervisor 决策旁白（plan 帧都带 stage 归属）----

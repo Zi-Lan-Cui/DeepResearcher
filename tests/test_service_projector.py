@@ -76,6 +76,18 @@ def test_node_completed_closes_stage_with_conclusion():
     assert "SECRET" not in json.dumps(done.data, ensure_ascii=False)
 
 
+def test_node_cancelled_closes_known_stage_block():
+    frame = project(_record("node_cancelled", node="supervisor"))
+    assert (frame.event, frame.data["stage"], frame.data["status"]) == (
+        "stage_done",
+        "supervisor",
+        "cancelled",
+    )
+    assert frame.data["text"] == "该阶段已取消"
+    # 未知节点没有阶段框可关，退回全局 tick。
+    assert project(_record("node_cancelled", node="mystery")).event == "tick"
+
+
 def test_run_headline_updated_projects_headline_frame():
     frame = project(_record("run_headline_updated", {"headline": "两方案成本效果对比"}))
     assert frame is not None

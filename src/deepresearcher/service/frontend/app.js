@@ -389,7 +389,12 @@ function handleFrame(event, data) {
   else if (event === "headline") {
     // 澄清完成时刻:头部当场从长问题收敛为浓缩标题（悬停仍是原问题）。
     $("run-title").textContent = "研究：" + data.text;
-  } else if (event === "status") setStatus(data.status);
+  } else if (event === "status") {
+    setStatus(data.status);
+    // 任何非等待状态都收走澄清卡:重放历史帧时,已回答过的问题不能靠
+    // clarification 帧本身决定去留,由后续 status/done 帧裁决。
+    if (data.status !== "awaiting_input") $("clarification-card").classList.add("hide");
+  }
   else if (event === "stats") renderStats(data);
   else if (event === "task_open") ensureCard(data.task, data.title);
   else if (event === "task_update") {
@@ -487,6 +492,24 @@ function setStatus(status, info) {
   $("run-cancel").disabled = ["completed", "failed", "cancelled"].includes(status);
 }
 
+/* 终态兜底清扫:取消/异常路径可能留下从未收到 stage_done/task_done 的运行中
+   块——绿色停在"执行中"。done 之后所有块必须收口,进行中字样一并抹除。 */
+function settleRunningBlocks() {
+  for (const block of stageBlocks.values()) {
+    if (block.classList.contains("running")) {
+      block.classList.remove("running");
+      block.classList.add("done");
+    }
+  }
+  for (const card of taskCards.values()) {
+    if (card.classList.contains("running")) {
+      card.classList.remove("running");
+      card.classList.add("done");
+    }
+  }
+  updateTaskCount();
+}
+
 async function onRunDone(data) {
   if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   $("report-card").classList.remove("hide");
@@ -494,10 +517,12 @@ async function onRunDone(data) {
   try { detail = await api("/api/runs/" + currentRunId); } catch (e) { return; }
   // 用完整 detail 重设徽章：done 帧缺 terminal_reason，只有这里能判"部分报告"。
   setStatus(detail.status, detail);
-  if (detail.status === "awaiting_input" && detail.clarification) {
-    renderClarification(detail.clarification);
+  if (detail.status === "awaiting_input") {
+    if (detail.clarification) renderClarification(detail.clarification);
     return;
   }
+  $("clarification-card").classList.add("hide");
+  if (["completed", "failed", "cancelled"].includes(detail.status)) settleRunningBlocks();
   const md = detail.report_markdown || detail.error_message || "（无报告内容）";
   renderReport(md, detail.citations || [], detail);
 }
