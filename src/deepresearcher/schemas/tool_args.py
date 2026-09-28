@@ -174,7 +174,14 @@ class ReviseResearchSynthesis(BaseModel):
         description="当前工具观察到的 Evidence/任务工作集版本。",
     )
     answer_goal: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
-    overall_summary: str = Field(min_length=1, max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
+    overall_summary: str = Field(
+        min_length=1,
+        max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
+        description=(
+            "证据面现状的描述：answer_goal 之下哪些部分有足够支撑、哪些薄弱或缺失。"
+            "只写现状；判断的根据写 decision_rationale，后续动作写 next_actions。"
+        ),
+    )
     aspects: list[ResearchAspect] = Field(
         min_length=1,
         max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
@@ -194,7 +201,11 @@ class ReviseResearchSynthesis(BaseModel):
     decision_rationale: str = Field(
         min_length=1,
         max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
-        description="只解释当前证据选择、覆盖判断、缺口与冲突；不得引入未经 Evidence 支持的新事实。",
+        description=(
+            "本次修订各判断的根据：为什么这些 aspect 定为 covered/partial/conflicted、"
+            "证据绑定为何取舍、缺口与冲突为何如此记录。不复述 overall_summary 的现状描述；"
+            "不得引入未经 Evidence 支持的新事实。"
+        ),
     )
 
 
