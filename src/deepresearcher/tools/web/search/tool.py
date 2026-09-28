@@ -124,7 +124,11 @@ class SearchTool:
                     )
                 return results
 
-            with span("search", kind="tool"):
+            with span(
+                "search",
+                kind="tool",
+                input={"queries": [query[:80] for query in missing_queries[:10]]},
+            ):
                 link = current_span_context()  # search 事件归属 tool span,即使写出点在 with 之外
                 batches = await asyncio.gather(
                     *(search_one(query) for query in missing_queries),

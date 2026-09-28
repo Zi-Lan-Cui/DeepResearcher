@@ -52,7 +52,7 @@ async def _run_tree() -> str:
     """构一棵 根→{supervisor→search 工具, writer(失败), reviewer(取消)} 的树。"""
 
     async def tool_leg() -> None:
-        with spans.span("search", kind="tool"):
+        with spans.span("search", kind="tool", input={"url": "https://example.org/x"}):
             await asyncio.sleep(0)
 
     async def failing_leg() -> None:
@@ -110,6 +110,8 @@ async def test_spans_carry_langfuse_and_correlation_attributes(otel_exporter):
     assert '"phase": "completed"' in root.attributes["langfuse.observation.output"]
     assert root.attributes["deepresearcher.run_id"] == "run-tree"
     assert by_name["search"].attributes["langfuse.observation.type"] == "tool"
+    # 工具 span 自带输入:面板上点开 fetch/search 必须能看出在读/搜什么。
+    assert "example.org" in by_name["search"].attributes["langfuse.observation.input"]
     assert by_name["search"].kind == opentelemetry_trace.SpanKind.CLIENT
     assert by_name["supervisor"].kind == opentelemetry_trace.SpanKind.INTERNAL
 

@@ -124,7 +124,7 @@ class SourceReaderTool:
                 )
 
         try:
-            with span("fetch", kind="tool"):
+            with span("fetch", kind="tool", input={"url": requested_url}):
                 link = current_span_context()
                 document = await self.fetcher.afetch(
                     requested_url,
