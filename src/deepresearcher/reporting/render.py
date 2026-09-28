@@ -69,7 +69,6 @@ def render_final_report(
         "\n\n---\n\n"
         f"> 研究问题：{clarified_query}；完成 {current_round} 轮研究，"
         f"使用 {source_count} 个来源和 {evidence_count} 条 Evidence。"
-        "关键事实以 [证据N] 标记，可追溯到对应证据及其来源文章。"
     )
     return f"# {heading}\n\n{rendered_body}{footer}" + _reference_list(
         display_order, display, by_id
