@@ -386,7 +386,10 @@ function handleFrame(event, data) {
     block.classList.add(data.status === "failed" ? "failed" : "done");
     stageNote(data.stage, data.text);
   } else if (event === "error") progressLine(data.text, true);
-  else if (event === "status") setStatus(data.status);
+  else if (event === "headline") {
+    // 澄清完成时刻:头部当场从长问题收敛为浓缩标题（悬停仍是原问题）。
+    $("run-title").textContent = "研究：" + data.text;
+  } else if (event === "status") setStatus(data.status);
   else if (event === "stats") renderStats(data);
   else if (event === "task_open") ensureCard(data.task, data.title);
   else if (event === "task_update") {
