@@ -208,20 +208,38 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             {"text": f"已跳过：{host}（{label}）" if host else f"来源已跳过（{label}）"},
         )
     if event_type == "direction_search_completed":
-        text = "检索完成：{} 条候选来源".format(_int(payload.get("candidate_count")))
+        # 批次行只说逐查询行说不出来的事:全批失败时细节行已在场,不再重复下结论;
+        # 无细节可依据的失败(熔断/预检)才留一行,否则那件事就隐身了。
+        candidates = _int(payload.get("candidate_count"))
+        failures = _int(payload.get("failure_count"))
+        status = str(payload.get("status") or "")
+        if status and status != "completed":
+            if failures:
+                return None
+            text = "检索失败"
+        elif failures and candidates:
+            text = "检索完成：{} 条候选来源，其中 {} 个查询失败".format(candidates, failures)
+        elif failures:
+            return None  # 全部查询失败：逐查询的失败行已经逐条说明
+        elif candidates:
+            text = "检索完成：{} 条候选来源".format(candidates)
+        else:
+            text = "检索完成：未找到相关来源"
         return _task("task_update", seq, payload, {"text": text})
     if event_type == "search_query_started":
         return _task(
             "task_update", seq, payload, {"text": f"正在检索：{_text(payload.get('query'), 60)}"}
         )
     if event_type == "search_query_completed":
+        count = _int(payload.get("candidate_count"))
         return _task(
             "task_update",
             seq,
             payload,
             {
-                "text": "{} → {} 条候选".format(
-                    _text(payload.get("query"), 60), _int(payload.get("candidate_count"))
+                "text": "{} → {}".format(
+                    _text(payload.get("query"), 60),
+                    f"{count} 条候选" if count else "未见相关来源",
                 )
             },
         )
