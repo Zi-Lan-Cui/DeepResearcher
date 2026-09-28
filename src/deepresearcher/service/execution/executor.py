@@ -407,6 +407,8 @@ class RunExecutor:
                         headline_persisted = True
                         if await self._persist_headline(run_id, headline):
                             # 落库成功即推帧:进行中的头部当场从长问题收敛为短题。
+                            # 根 values 块在 clarify 那一超步后即携带 run_headline,
+                            # 故本帧在澄清出口、而非 run 结束时发出。
                             self._hub.write(
                                 {
                                     "run_id": run_id,
@@ -414,6 +416,8 @@ class RunExecutor:
                                     "payload": {"headline": headline[:80]},
                                 }
                             )
+                            # 立即 flush 越过 ≤2s 周期:落库→写库→NOTIFY 门铃一次走完。
+                            await self._hub.flush(run_id)
                 continue
             if mode == "updates" and isinstance(chunk, dict):
                 interrupts = chunk.get("__interrupt__") or ()

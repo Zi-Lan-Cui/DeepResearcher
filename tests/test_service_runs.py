@@ -56,6 +56,7 @@ class FakeGraph:
         gate=None,
         emit_events=1,
         stream_messages=(),
+        early_values=None,
         resume_run_id="run-resume",
         interrupt_payload=None,
     ):
@@ -65,6 +66,8 @@ class FakeGraph:
         self.emit_events = emit_events
         self.resume_run_id = resume_run_id
         self.stream_messages = list(stream_messages)  # [(namespace_tuple, text)]
+        # 模拟 clarify 超步后携带 run_headline 的根 values(在结果之前发出)。
+        self.early_values = dict(early_values or {})
         self.ainvoke_inputs: list[dict] = []
         self.seen_configs: list[dict] = []
         self.none_inputs = 0
@@ -99,6 +102,8 @@ class FakeGraph:
         "tool" 模拟 messages 模式里混入的工具回执。
         """
         self.seen_configs.append(dict(kwargs))  # 记录 config（thread_id 注入断言用）
+        if self.early_values:
+            yield (), "values", dict(self.early_values)
         for entry in self.stream_messages:
             namespace, text = entry[0], entry[1]
             msg_type = entry[2] if len(entry) > 2 else "AIMessageChunk"
@@ -778,6 +783,48 @@ async def test_reconcile_startup_converts_stale_rows(manager):
     assert len(orphans) == 2
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
+
+
+async def test_headline_persists_at_clarify_exit_not_at_end(manager):
+    """时机回归:携带 run_headline 的根 values(clarify 超步出口)一到就落库推帧,
+    不等 run 终态;终值再含 headline 也被 CAS 挡成一次。"""
+    gate = asyncio.Event()
+    manager.holder["graph"] = FakeGraph(
+        result=_completed_result(),
+        gate=gate,
+        early_values={"run_headline": "澄清出口即写"},
+    )
+    run_id = await manager.start(USER_ID, "q")
+    async with asyncio.timeout(5):
+        while (await _row(manager, run_id)).headline is None:
+            await asyncio.sleep(0.02)
+    row = await _row(manager, run_id)
+    assert row.headline == "澄清出口即写"
+    assert row.status == "running"  # 还没到终态,标题已在
+    # 帧必须在 gate 打开前就落库——落库→flush→NOTIFY 一次走完,不等 2s 周期。
+    async with manager.session_factory() as session:
+        frames = (
+            await session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "run_headline_updated",
+                )
+            )
+        ).all()
+    assert [f.record["payload"]["headline"] for f in frames] == ["澄清出口即写"]
+    gate.set()
+    await _settle(manager, run_id)
+    # 终值再含 headline 也只此一次:CAS 与 headline_persisted 双重保证不重复推帧。
+    async with manager.session_factory() as session:
+        frames_after = (
+            await session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "run_headline_updated",
+                )
+            )
+        ).all()
+    assert len(frames_after) == 1
 
 
 async def test_run_graph_passes_thread_id_config(manager):
