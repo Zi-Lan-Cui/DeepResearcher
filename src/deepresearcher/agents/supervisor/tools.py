@@ -29,13 +29,19 @@ def build_supervisor_tools() -> list[BaseTool]:
 
     @tool("ResearchDelegate", args_schema=ResearchDelegate)
     async def research_delegate(
+        display_title: str,
         research_topic: str,
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
         """派发一个具体、可验证且与历史互补的研究方向。"""
         ctx = runtime.context
         result = await services.delegate_research(
-            ctx.deps, ctx.loop_state, ctx.scope, ctx.bookkeeping_lock, research_topic
+            ctx.deps,
+            ctx.loop_state,
+            ctx.scope,
+            ctx.bookkeeping_lock,
+            research_topic,
+            display_title,
         )
         return format_tool_receipt(result)
 

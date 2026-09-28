@@ -32,3 +32,5 @@ EVENT_CONTENT_PREVIEW_CHARS = 800
 # 历史标题(clarify 浓缩问题)与报告标题(writer 命名回答)的长度上限。
 RUN_HEADLINE_MAX_CHARS = 40
 REPORT_TITLE_MAX_CHARS = 80
+# 方向卡短题(ResearchDelegate 派发时给出的展示名)上限。
+DIRECTION_TITLE_MAX_CHARS = 40

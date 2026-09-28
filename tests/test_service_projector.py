@@ -213,7 +213,18 @@ def test_research_task_card_lifecycle():
     )
     assert opened.event == "task_open"
     assert opened.data["task"] == "task-0001"
-    assert len(opened.data["title"]) == 140  # 标题截断
+    assert len(opened.data["title"]) == 140  # 无短题的存量事件:回退截断契约
+    titled = project(
+        _record(
+            "research_task_started",
+            {
+                "task_id": "task-0002",
+                "title": "性善论的先验根据",
+                "question": "从孟子四端出发论证性善论的先验根据,并与荀子性恶论划界" + "。" * 200,
+            },
+        )
+    )
+    assert titled.data["title"] == "性善论的先验根据"  # 短题优先,不再展示长契约
     started = project(
         _record(
             "source_fetch_started",

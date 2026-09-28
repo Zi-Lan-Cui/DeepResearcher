@@ -25,10 +25,12 @@ async def delegate_research(
     scope: AgentExecutionScope,
     bookkeeping_lock: asyncio.Lock,
     topic: str,
+    display_title: str = "",
 ) -> dict[str, object]:
     """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号、
     派发 ResearchAgent、吸收结果、返回完整方向报告。
 
+    display_title 是方向卡的展示短题(与 topic 完整契约分离);缺省时前端回退截断 question。
     程序不做主题去重:防重复靠提示词纪律,浪费靠 max_subtasks/轮次预算封顶。
     """
     round_no = loop_state.current_round
@@ -64,6 +66,7 @@ async def delegate_research(
             "id": f"task-{task_index:04d}",
             "run_id": scope.run_id,
             "question": topic,
+            "display_title": display_title.strip()[:40],
             "round": round_no,
             "sequence": task_index,
             "type": "search",
@@ -122,6 +125,7 @@ async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExe
                 **task_context,
                 "task_index": int(task.get("sequence", 0)),
                 "component": "research_agent",
+                "title": str(task.get("display_title") or ""),
                 "question": task["question"][: deps.config.supervisor_preview_chars],
                 "type": task["type"],
             },

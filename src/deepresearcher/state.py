@@ -52,6 +52,8 @@ class SubTask(TypedDict):
     id: str
     run_id: NotRequired[str]
     question: str
+    # 方向卡展示短题(Supervisor 派发时给)；与 question 完整研究契约分离。
+    display_title: NotRequired[str]
     # Evidence 召回可选的内部细分；缺失时以 question 作为唯一检索查询。
     research_direction: NotRequired[str]
     subquestions: NotRequired[list[str]]
