@@ -318,7 +318,7 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
     assert "supervisor" in stage_opens  # 阶段块由 node_started 事件驱动出现
     by_event = {event: data for event, data in frames if event.startswith("task_")}
     assert by_event["task_open"]["title"] == "方向甲的局部事实"
-    assert by_event["task_update"]["text"] == "检索完成：5 条候选来源"
+    assert by_event["task_update"]["text"] == "本批检索完成：5 条候选来源"
     assert by_event["task_done"]["summary"] == "证据 2 · 来源 1"
     assert by_event["task_update"]["task"] == "task-0001"
     seqs = [data["seq"] for _, data in frames]

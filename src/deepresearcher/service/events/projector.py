@@ -184,11 +184,15 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == "source_document_registered":
         host = _display_host(payload.get("final_url") or payload.get("requested_url"))
+        # 材料缓存命中不是重新抓取:如实说"复用",避免同一文章被两方向读取像重复劳动。
+        cached = bool(payload.get("material_cache_hit"))
+        verb = "复用来源" if cached else "已读取"
+        fallback = "复用已读取的来源" if cached else "来源已读取"
         return _task(
             "task_update",
             seq,
             payload,
-            {"text": f"已读取：{host}" if host else "来源已读取"},
+            {"text": f"{verb}：{host}" if host else fallback},
         )
     if event_type == "source_read_failed":
         host = _display_host(payload.get("url"))
@@ -218,13 +222,13 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
                 return None
             text = "检索失败"
         elif failures and candidates:
-            text = "检索完成：{} 条候选来源，其中 {} 个查询失败".format(candidates, failures)
+            text = "本批检索完成：{} 条候选来源，其中 {} 个查询失败".format(candidates, failures)
         elif failures:
             return None  # 全部查询失败：逐查询的失败行已经逐条说明
         elif candidates:
-            text = "检索完成：{} 条候选来源".format(candidates)
+            text = "本批检索完成：{} 条候选来源".format(candidates)
         else:
-            text = "检索完成：未找到相关来源"
+            text = "本批检索完成：未找到相关来源"
         return _task("task_update", seq, payload, {"text": text})
     if event_type == "search_query_started":
         return _task(
