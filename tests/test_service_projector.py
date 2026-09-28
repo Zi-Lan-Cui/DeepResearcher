@@ -388,8 +388,42 @@ def test_search_query_progress_becomes_task_update():
         )
     )
     assert done.data["text"] == "关键词甲 → 12 条候选"
+    empty = project(
+        _record(
+            "search_query_completed", {"task_id": "t1", "query": "关键词甲", "candidate_count": 0}
+        )
+    )
+    assert empty.data["text"] == "关键词甲 → 未见相关来源"  # 查净了没结果,不是失败
     failed = project(_record("search_query_failed", {"task_id": "t1", "query": "x"}))
     assert failed.data["text"].startswith("检索失败，已跳过")
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"candidate_count": 5, "failure_count": 0}, "检索完成：5 条候选来源"),
+        (
+            {"candidate_count": 3, "failure_count": 1},
+            "检索完成：3 条候选来源，其中 1 个查询失败",
+        ),
+        ({"candidate_count": 0, "failure_count": 0}, "检索完成：未找到相关来源"),
+        # 全部查询失败:逐查询行已逐条说明,批次行不再重复下结论。
+        ({"candidate_count": 0, "failure_count": 2}, None),
+        ({"candidate_count": 0, "failure_count": 2, "status": "failed"}, None),
+        # 无逐查询细节可依托的批次失败,必须留一行,否则隐身。
+        ({"candidate_count": 0, "failure_count": 0, "status": "failed"}, "检索失败"),
+    ],
+)
+def test_direction_search_completed_distinguishes_empty_from_failed(payload, expected):
+    """区分度:0 候选不再一律"检索完成";批次行只说细节行说不出来的事。"""
+    frame = project(_record("direction_search_completed", {"task_id": "t1", **payload}))
+    if expected is None:
+        assert frame is None
+    else:
+        assert frame.data["text"] == expected
+    # 存量事件(无 failure_count/status)仍走旧口径,不因新分支变化。
+    legacy = project(_record("direction_search_completed", {"task_id": "t1", "candidate_count": 5}))
+    assert legacy.data["text"] == "检索完成：5 条候选来源"
 
 
 @pytest.mark.parametrize(
