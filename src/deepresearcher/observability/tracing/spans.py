@@ -95,6 +95,17 @@ def _recording(
         span.end()
 
 
+def record_output(value: object) -> None:
+    """把输出写到当前 span;面板 Traces 列表的 Output 列取根 observation 的输出。"""
+    current = opentelemetry_trace.get_current_span()
+    if not current.is_recording():
+        return
+    current.set_attribute(
+        "langfuse.observation.output",
+        value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str),
+    )
+
+
 @contextmanager
 def span(name: str, *, kind: str = "node", input: object = None) -> Iterator[str]:
     """开一个非 trace 根的 span(node/tool);身份与父子关系由 OTel 上下文决定。"""

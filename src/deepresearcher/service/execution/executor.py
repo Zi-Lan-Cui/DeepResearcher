@@ -350,6 +350,7 @@ class RunExecutor:
         with scope:
             result, interruption = await self._run_graph(run_id, graph, inputs, callbacks=callbacks)
         if interruption is not None:
+            spans.record_output({"phase": "awaiting_input"})
             if not await self._persist_awaiting_input(run_id, claim=claim):
                 self.mark_lease_lost(run_id)
                 return False
@@ -362,6 +363,21 @@ class RunExecutor:
             )
             await self.publish_status(run_id, "awaiting_input")
             return True
+        lifecycle = result.get("run") or {}
+        spans.record_output(
+            {
+                "phase": _field(lifecycle, "phase", ""),
+                "terminal_reason": _field(lifecycle, "terminal_reason", ""),
+                "answer_mode": result.get("answer_mode") or "",
+                "report_chars": len(str(result.get("report") or "")),
+                "evidence_count": int(
+                    result.get("evidence_count") or len(result.get("evidences") or [])
+                ),
+                "source_count": int(
+                    result.get("source_count") or len(result.get("source_refs") or [])
+                ),
+            }
+        )
         if not await self._persist_terminal(run_id, result, claim=claim):
             self.mark_lease_lost(run_id)
         return False

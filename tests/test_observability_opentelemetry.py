@@ -74,6 +74,7 @@ async def _run_tree() -> str:
             await tool_leg()
         # return_exceptions=True:两个分支的异常只用于给 span 定终态,不得逸出 trace 体。
         await asyncio.gather(failing_leg(), cancelled_leg(), return_exceptions=True)
+        spans.record_output({"phase": "completed", "report_chars": 42})
     return trace_id
 
 
@@ -106,6 +107,7 @@ async def test_spans_carry_langfuse_and_correlation_attributes(otel_exporter):
     assert root.attributes["langfuse.observation.type"] == "span"
     assert root.attributes["langfuse.observation.metadata.attempt"] == 2
     assert "自尊的六大支柱" in root.attributes["langfuse.observation.input"]
+    assert '"phase": "completed"' in root.attributes["langfuse.observation.output"]
     assert root.attributes["deepresearcher.run_id"] == "run-tree"
     assert by_name["search"].attributes["langfuse.observation.type"] == "tool"
     assert by_name["search"].kind == opentelemetry_trace.SpanKind.CLIENT
