@@ -46,11 +46,6 @@ _STAGE_TITLES: dict[str, str] = {
     NodeName.RENDER_FINAL_REPORT: "生成最终报告",
 }
 
-# 方向卡第二行动作：{event_type: 文案}；带站点/计数的动作在 project() 内逐事件成文。
-_TASK_UPDATES: dict[str, str] = {
-    "direction_evidence_added": "证据入池 +{accepted_count}",
-}
-
 # source_read_skipped 的 reason_code 面向用户措辞；未知码回退通用词，不透出机器码。
 _SOURCE_SKIP_LABELS: dict[str, str] = {
     "empty_content": "无可读正文",
@@ -160,13 +155,14 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == "research_task_failed":
         return _task("task_done", seq, payload, {"status": "failed", "summary": "研究未成功"})
-    if event_type in _TASK_UPDATES:
-        text = _TASK_UPDATES[event_type]
-        if "{candidate_count}" in text:
-            text = text.format(candidate_count=_int(payload.get("candidate_count")))
-        if "{accepted_count}" in text:
-            text = text.format(accepted_count=_int(payload.get("accepted_count")))
-        return _task("task_update", seq, payload, {"text": text})
+    if event_type == "direction_evidence_added":
+        # 该事件是每次 AddEvidence 提交的审计,accepted=0 表示全被退回修正,不是入池。
+        accepted = _int(payload.get("accepted_count"))
+        if accepted > 0:
+            return _task("task_update", seq, payload, {"text": f"证据入池 +{accepted}"})
+        if _int(payload.get("rejected_count")) or _int(payload.get("duplicate_count")):
+            return _task("task_update", seq, payload, {"text": "证据提交未通过，按回执修正中"})
+        return None
     if event_type == "source_fetch_started":
         host = _display_host(payload.get("requested_url"))
         return _task(

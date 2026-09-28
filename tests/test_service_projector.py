@@ -239,6 +239,20 @@ def test_research_task_card_lifecycle():
         _record("direction_evidence_added", {"task_id": "task-0001", "accepted_count": 4})
     )
     assert extracting.data["text"] == "证据入池 +4"
+    all_rejected = project(
+        _record(
+            "direction_evidence_added",
+            {
+                "task_id": "task-0001",
+                "accepted_count": 0,
+                "rejected_count": 3,
+                "duplicate_count": 0,
+            },
+        )
+    )
+    assert all_rejected.data["text"] == "证据提交未通过，按回执修正中"
+    empty_audit = project(_record("direction_evidence_added", {"task_id": "task-0001"}))
+    assert empty_audit is None  # 零入池零退回的审计记录不打扰用户
     done = project(
         _record(
             "research_task_completed",
