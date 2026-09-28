@@ -257,7 +257,7 @@ class SupervisorLLM:
             tool_calls=[
                 {
                     "name": "ResearchDelegate",
-                    "args": {"research_topic": topic},
+                    "args": {"display_title": "测试短题", "research_topic": topic},
                     "id": f"call_{index}",
                 }
                 for index, topic in enumerate(self.delegate_topics)
@@ -497,7 +497,7 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                     tool_calls=[
                         {
                             "name": "ResearchDelegate",
-                            "args": {"research_topic": "新增证据方向"},
+                            "args": {"display_title": "测试短题", "research_topic": "新增证据方向"},
                             "id": "call_delegate",
                         }
                     ],
@@ -646,7 +646,7 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
                     tool_calls=[
                         {
                             "name": "ResearchDelegate",
-                            "args": {"research_topic": "新增证据方向"},
+                            "args": {"display_title": "测试短题", "research_topic": "新增证据方向"},
                             "id": "call_delegate",
                         }
                     ],
@@ -735,7 +735,10 @@ def test_revise_synthesis_rejects_evidence_outside_active_working_set():
                     tool_calls=[
                         {
                             "name": "ResearchDelegate",
-                            "args": {"research_topic": "证据将被释放的方向"},
+                            "args": {
+                                "display_title": "测试短题",
+                                "research_topic": "证据将被释放的方向",
+                            },
                             "id": "call_delegate",
                         }
                     ],
@@ -951,7 +954,7 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
                     tool_calls=[
                         {
                             "name": "ResearchDelegate",
-                            "args": {"research_topic": "补充方向"},
+                            "args": {"display_title": "测试短题", "research_topic": "补充方向"},
                             "id": "call_extra",
                         },
                     ],
@@ -1199,7 +1202,10 @@ class _DelegateUntilBlockedLLM:
             tool_calls=[
                 {
                     "name": "ResearchDelegate",
-                    "args": {"research_topic": f"独立方向{self._index}"},
+                    "args": {
+                        "display_title": "测试短题",
+                        "research_topic": f"独立方向{self._index}",
+                    },
                     "id": f"call_d{self._index}",
                 }
             ],

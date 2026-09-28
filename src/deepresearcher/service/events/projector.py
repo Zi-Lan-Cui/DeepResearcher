@@ -149,7 +149,10 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
     # ---- 方向卡（Supervisor 块内子项）----
     if event_type == "research_task_started":
-        title = _text(payload.get("question") or payload.get("research_direction"), 140)
+        # 短题优先(Supervisor 派发时给出);旧事件无 title 时回退截断契约,兼容存量 run。
+        title = _text(payload.get("title"), 40) or _text(
+            payload.get("question") or payload.get("research_direction"), 140
+        )
         return _task("task_open", seq, payload, {"title": title})
     if event_type == "research_task_completed":
         summary = "证据 {} · 来源 {}".format(

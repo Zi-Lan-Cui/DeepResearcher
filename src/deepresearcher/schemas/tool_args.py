@@ -7,6 +7,7 @@ import json
 from pydantic import BaseModel, Field
 
 from deepresearcher.schemas.limits import (
+    DIRECTION_TITLE_MAX_CHARS,
     EVIDENCE_REFERENCES_HARD_LIMIT,
     SEARCH_QUERIES_PER_CALL,
     SEARCH_RESULTS_PAGE_HARD_LIMIT,
@@ -147,6 +148,14 @@ class ResearchDirectionComplete(BaseModel):
 class ResearchDelegate(BaseModel):
     """派发方向级研究任务的工具调用 Schema；task_id 由本地程序分配，不信任模型。"""
 
+    display_title: str = Field(
+        min_length=2,
+        max_length=DIRECTION_TITLE_MAX_CHARS,
+        description=(
+            "方向卡上给人看的短标题：一个名词短语点明本方向要回答什么，"
+            "不超过约 30 字；research_topic 的截断或复述不算标题。"
+        ),
+    )
     research_topic: str = Field(
         description=(
             "要研究的具体方向。必须包含研究对象、范围、待回答的局部问题、"
