@@ -127,7 +127,7 @@ def test_direction_search_becomes_task_update_without_direction_text():
     )
     assert frame.event == "task_update"
     assert frame.data["task"] == "task-0001"
-    assert frame.data["text"] == "检索完成：5 条候选来源"
+    assert frame.data["text"] == "本批检索完成：5 条候选来源"
     assert "xxxx" not in json.dumps(frame.data, ensure_ascii=False)
 
 
@@ -243,6 +243,18 @@ def test_research_task_card_lifecycle():
         )
     )
     assert registered.data["text"] == "已读取：b.example"
+    cached = project(
+        _record(
+            "source_document_registered",
+            {
+                "task_id": "task-0001",
+                "requested_url": "https://iso25000.com/en/x",
+                "final_url": "https://iso25000.com/en/x",
+                "material_cache_hit": True,
+            },
+        )
+    )
+    assert cached.data["text"] == "复用来源：iso25000.com"  # 缓存命中不是重新抓取
     skipped = project(
         _record(
             "source_read_skipped",
@@ -401,12 +413,12 @@ def test_search_query_progress_becomes_task_update():
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
-        ({"candidate_count": 5, "failure_count": 0}, "检索完成：5 条候选来源"),
+        ({"candidate_count": 5, "failure_count": 0}, "本批检索完成：5 条候选来源"),
         (
             {"candidate_count": 3, "failure_count": 1},
-            "检索完成：3 条候选来源，其中 1 个查询失败",
+            "本批检索完成：3 条候选来源，其中 1 个查询失败",
         ),
-        ({"candidate_count": 0, "failure_count": 0}, "检索完成：未找到相关来源"),
+        ({"candidate_count": 0, "failure_count": 0}, "本批检索完成：未找到相关来源"),
         # 全部查询失败:逐查询行已逐条说明,批次行不再重复下结论。
         ({"candidate_count": 0, "failure_count": 2}, None),
         ({"candidate_count": 0, "failure_count": 2, "status": "failed"}, None),
@@ -415,7 +427,7 @@ def test_search_query_progress_becomes_task_update():
     ],
 )
 def test_direction_search_completed_distinguishes_empty_from_failed(payload, expected):
-    """区分度:0 候选不再一律"检索完成";批次行只说细节行说不出来的事。"""
+    """区分度:0 候选不再一律"完成";;批次行只说细节行说不出来的事。"""
     frame = project(_record("direction_search_completed", {"task_id": "t1", **payload}))
     if expected is None:
         assert frame is None
@@ -423,7 +435,7 @@ def test_direction_search_completed_distinguishes_empty_from_failed(payload, exp
         assert frame.data["text"] == expected
     # 存量事件(无 failure_count/status)仍走旧口径,不因新分支变化。
     legacy = project(_record("direction_search_completed", {"task_id": "t1", "candidate_count": 5}))
-    assert legacy.data["text"] == "检索完成：5 条候选来源"
+    assert legacy.data["text"] == "本批检索完成：5 条候选来源"
 
 
 @pytest.mark.parametrize(
