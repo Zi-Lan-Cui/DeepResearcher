@@ -18,6 +18,7 @@ Supervisor 块的子项。
 - ``task_update`` 方向卡滚动一条动作 {task, text}
 - ``task_done``   方向卡收束 {task, status, summary}
 - ``status``      运行状态变化（服务层合成）
+- ``headline``    浓缩标题落库（服务层合成，进行中的头部即时收敛）
 - ``error``       需要用户知道的异常提示（仅安全文案）
 - ``done``        终态 {status, answer_mode, report_available}
 
@@ -246,6 +247,9 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return SseFrame(event="text_delta", data={"channel": channel, "text": text})
 
     # ---- 服务层合成事件 ----
+    if event_type == "run_headline_updated":
+        headline = _text(payload.get("headline"), 80)
+        return _frame("headline", seq, {"text": headline}) if headline else None
     if event_type == "run_status":
         status = _text(payload.get("status"), 32)
         return _frame("status", seq, {"status": status}) if status else None

@@ -76,6 +76,13 @@ def test_node_completed_closes_stage_with_conclusion():
     assert "SECRET" not in json.dumps(done.data, ensure_ascii=False)
 
 
+def test_run_headline_updated_projects_headline_frame():
+    frame = project(_record("run_headline_updated", {"headline": "两方案成本效果对比"}))
+    assert frame is not None
+    assert (frame.event, frame.data["text"]) == ("headline", "两方案成本效果对比")
+    assert project(_record("run_headline_updated", {"headline": ""})) is None
+
+
 def test_unknown_event_type_returns_none():
     assert project(_record("brand_new_engine_event", {"anything": 1})) is None
 

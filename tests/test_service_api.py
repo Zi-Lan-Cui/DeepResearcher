@@ -173,6 +173,11 @@ async def test_run_lifecycle_detail_and_list(client):
     assert body["citations"][0]["id"] == "e1"
     assert (body["evidence_count"], body["source_count"]) == (3, 2)
 
+    # headline 落库当场推帧:进行中的头部从长问题收敛为短题。
+    frames = await read_sse(client, token, run_id)
+    headline_frames = [data for event, data in frames if event == "headline"]
+    assert [data["text"] for data in headline_frames] == ["测试浓缩题"]
+
     listing = await client.get("/api/runs", headers=_auth(token))
     assert [item["id"] for item in listing.json()] == [run_id]
     assert "report_markdown" not in listing.json()[0]  # 列表不带正文
