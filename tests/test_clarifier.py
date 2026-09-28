@@ -142,6 +142,26 @@ def test_clarifier_graph_preserves_parent_state_contract():
     assert result["research_brief"] == "已确认的研究范围"
 
 
+def test_clarifier_headline_propagates_to_parent_state():
+    """回归锁:run_headline 是 wire 契约通道,漏声明时子图静默丢写、headline 永不落库。"""
+
+    async def scripted_agent(_state):
+        return {
+            "run_headline": "注意力与元认知的把控",
+            "intent_summary": "已确认的研究范围",
+            "clarification_completed": True,
+        }
+
+    parent = StateGraph(ResearchState)
+    parent.add_node("clarifier", build_clarifier_graph(scripted_agent))
+    parent.add_edge(START, "clarifier")
+    parent.add_edge("clarifier", END)
+    result = asyncio.run(
+        parent.compile().ainvoke({"query": "思考混乱的根源", "run_id": "run-headline"})
+    )
+    assert result["run_headline"] == "注意力与元认知的把控"
+
+
 def test_clarifier_subgraph_interrupt_resumes_through_parent_checkpoint():
     async def scripted_agent(state):
         answered = any(

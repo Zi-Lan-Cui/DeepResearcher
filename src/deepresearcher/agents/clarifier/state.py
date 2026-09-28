@@ -42,6 +42,9 @@ class ClarifierDialogue(TypedDict, total=False):
     clarification_rounds: int
     pending_question: str
     pending_options: list[str]
+    # ClarificationComplete 提交的历史浓缩标题;必须在 wire 契约声明,
+    # 否则子图按未声明通道静默丢弃,主图 values 取不到、headline 永不落库。
+    run_headline: str
 
 
 class ClarifierAgentState(AgentState, ClarifierDialogue, total=False):
