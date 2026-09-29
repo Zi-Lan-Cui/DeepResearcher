@@ -256,8 +256,9 @@ def test_research_agent_can_inspect_and_forget_its_working_set():
     # 该测试只验证工具协议和观察回流；ID 不匹配时 ReleaseEvidence 应安全返回 unknown。
     result = asyncio.run(agent.run(TASK))
     assert result.task_result.execution_status == "completed"
+    # 锚在工具回执键而非提示词措辞:模型必须真的看到工作集快照回流。
     assert any(
-        "工作集" in str(message.content)
+        "active_evidence" in str(message.content)
         for snapshot in agent.llm.seen_messages
         for message in snapshot
     )

@@ -1,5 +1,5 @@
 ---
 
-## 输出语言
+## Output language
 
-除专有名词、需引用的原文（quote 必须逐字保留其原始语言）与代码外，所有自然语言输出——包括判断理由、规划旁白、任务描述和正文——必须使用{language}。
+All natural-language output — rationales, planning narration, task descriptions, and the report body — must be written in {language}. Keep proper nouns unchanged, preserve quotes verbatim in their original language, and leave code as is.
