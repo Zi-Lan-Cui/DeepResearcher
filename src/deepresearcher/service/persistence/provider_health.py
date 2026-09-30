@@ -8,13 +8,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from deepresearcher.service.persistence.models import ProviderHealthRecord
+from deepresearcher.service.persistence.models import ProviderHealthRecord, as_utc
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 
 
@@ -29,11 +29,8 @@ class PostgresProviderHealth:
             )
         if row is None:
             return None
-        until = row.open_until
-        # SQLite 回读为 naive datetime，asyncpg 为 aware；统一按 UTC 解释再比较。
-        if until.tzinfo is None:
-            until = until.replace(tzinfo=timezone.utc)
-        return row.reason if until > _utcnow() else None
+        # SQLite 回读 naive、asyncpg aware：as_utc 统一口径再比较。
+        return row.reason if as_utc(row.open_until) > _utcnow() else None
 
     async def trip(self, provider: str, reason: str, seconds: float) -> None:
         # select-then-insert 在多 worker 并发首次写入同一 key 时，后提交方会收到
@@ -54,10 +51,7 @@ class PostgresProviderHealth:
                     )
                 else:
                     # 只延后、不缩短：并发多 worker 撞同一 key 时保留最大恢复窗口。
-                    existing = row.open_until
-                    if existing.tzinfo is None:
-                        existing = existing.replace(tzinfo=timezone.utc)
-                    if until > existing:
+                    if until > as_utc(row.open_until):
                         row.reason = reason
                         row.open_until = until
                         row.updated_at = now

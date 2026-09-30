@@ -16,7 +16,8 @@ from sqlalchemy import case, func, select, update
 
 from deepresearcher.config import LLMConfig
 from deepresearcher.observability.tracing.context import current_span_context, new_id
-from deepresearcher.observability.usage_runtime import (
+from deepresearcher.service.persistence.models import Run, RunUsage
+from deepresearcher.usage_runtime import (
     UsageBudgetExceeded,
     UsageRuntime,
     bind_usage_runtime,
@@ -26,9 +27,8 @@ from deepresearcher.observability.usage_runtime import (
     record_external_request,
     reset_usage_runtime,
 )
-from deepresearcher.service.persistence.models import Run, RunUsage
 
-logger = logging.getLogger("deepresearcher.service.usage")
+logger = logging.getLogger("deepresearcher.service.execution.usage")
 
 __all__ = [
     "CapacityGate",
@@ -175,13 +175,6 @@ class UsageStore:
                     "saved_external_request_count": (
                         Run.saved_external_request_count
                         + int(metrics.get("saved_external_requests", 0) or 0)
-                    ),
-                    "saved_llm_call_count": (
-                        Run.saved_llm_call_count + int(metrics.get("saved_llm_calls", 0) or 0)
-                    ),
-                    "saved_tokens": (Run.saved_tokens + int(metrics.get("saved_tokens", 0) or 0)),
-                    "saved_cost_usd": (
-                        Run.saved_cost_usd + Decimal(str(metrics.get("saved_cost_usd", 0) or 0))
                     ),
                 }
             if values:

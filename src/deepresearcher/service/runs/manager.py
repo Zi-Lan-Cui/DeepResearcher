@@ -11,8 +11,9 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run
+from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run, RunEvent
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.service import QuotaExceededError as QuotaExceededError
 from deepresearcher.service.runs.service import RunService
@@ -41,6 +42,42 @@ class RunManager:
         # 只读句柄:cancel 即时分支要 tail 判终态;投递与 notify 归 Hub 统管。
         self.event_store = hub.store
         self._run_service = RunService(session_factory=session_factory, config=config)
+
+    async def recent_runs(self, user_id: int, limit: int = 50) -> list[Run]:
+        """用户历史列表(倒序):web 层读取 Run 的唯一路径。"""
+        async with self._session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(Run)
+                        .where(Run.user_id == user_id)
+                        .order_by(Run.created_at.desc())
+                        .limit(limit)
+                    )
+                ).all()
+            )
+
+    async def pending_clarification_payload(self, run: Run) -> dict[str, Any] | None:
+        """run 等待输入时返回最近一条 clarification_requested 的 payload;其余状态为 None。
+
+        事件词汇与查询形状收口在此;调用方只把它交给 project_clarification。
+        """
+        if run.status != "awaiting_input":
+            return None
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(RunEvent)
+                .where(
+                    RunEvent.run_id == run.id,
+                    RunEvent.event_type == EventName.CLARIFICATION_REQUESTED,
+                )
+                .order_by(RunEvent.seq.desc())
+                .limit(1)
+            )
+        if row is None:
+            return None
+        payload = row.record.get("payload", {})
+        return payload if isinstance(payload, dict) else None
 
     async def start(self, user_id: int, query: str) -> str:
         """受理新研究问题，创建 queued 行并通知 worker。

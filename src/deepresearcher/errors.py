@@ -1,4 +1,14 @@
-"""跨层共享的应用错误契约。"""
+"""跨层共享的应用错误契约与错误文本钳位。"""
+
+# 错误文本进事件 payload、回执与日志前的统一上限。
+ERROR_CLIP_CHARS = 500
+
+
+def clip_text(text: str | None, limit: int = ERROR_CLIP_CHARS) -> str:
+    """定长截断并留痕:超长时尾部以标记明示,避免读者把片段当全文。"""
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[: limit - 8] + "…[截断]"
 
 
 class AgentError(RuntimeError):

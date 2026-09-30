@@ -1,7 +1,9 @@
 """节点级观测:instrument_node 记录生命周期(started/completed/failed/cancelled)并原样重抛。
 
 本模块只记录、不裁决——失败转 RunStatus 的收口归 node_runner.execute_node;
-两处失败事件的 error/code/retryable 口径共用 failure_event_fields。
+两处失败事件的 error/code/retryable 口径共用 schemas 的 failure_event_fields。
+也不解读业务字段:节点产出的字段摘要由装配层以 summarize 注入,
+缺省只登记 updated_fields。
 """
 
 import asyncio
@@ -12,7 +14,7 @@ from typing import Any
 
 from langgraph.errors import GraphBubbleUp
 
-from deepresearcher.observability.events.models import failure_event_fields, make_node_event
+from deepresearcher.observability.events.models import make_node_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import (
@@ -22,6 +24,7 @@ from deepresearcher.observability.tracing.context import (
     new_id,
 )
 from deepresearcher.observability.tracing.spans import span
+from deepresearcher.schemas import failure_event_fields
 
 
 def instrument_node(
@@ -31,8 +34,10 @@ def instrument_node(
     logger=None,
     event_sink: JsonlSink | None = None,
     max_text_chars: int,
+    summarize: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
-    """统一记录节点 Log、Event 和 Span。"""
+    """统一记录节点 Log、Event 和 Span。业务字段摘要经 summarize 注入,缺省登记 updated_fields。"""
+    summary_of = summarize if summarize is not None else _base_summary
     log = logger or get_logger("deepresearcher.observability.instrumentation")
 
     async def wrapped(state: dict[str, Any]) -> dict[str, Any]:
@@ -61,7 +66,7 @@ def instrument_node(
                         value = await value
                     result = dict(value)
                 duration_ms = (time.perf_counter() - started) * 1000
-                output = _node_result_summary(result, max_text_chars=max_text_chars)
+                output = summary_of(result)
                 log.info(
                     "node_completed duration_ms=%.2f updated_fields=%s summary=%s",
                     duration_ms,
@@ -93,7 +98,7 @@ def instrument_node(
                     node_id=name,
                     duration_ms=duration_ms,
                     error=str(exc),
-                    payload=_node_result_summary(state, max_text_chars=max_text_chars),
+                    payload=summary_of(state),
                 )
                 if event_sink is not None:
                     event_sink.write(event)
@@ -117,79 +122,6 @@ def instrument_node(
     return wrapped
 
 
-def _node_result_summary(result: dict[str, Any], *, max_text_chars: int) -> dict[str, Any]:
-    """记录运行元数据和有界预览；完整正文不进入事件流或普通日志。"""
-    summary: dict[str, Any] = {"updated_fields": sorted(result.keys())}
-    for key in (
-        "route",
-        "answer_mode",
-        "evidence_count",
-        "source_count",
-    ):
-        if key in result:
-            summary[key] = result[key]
-    if "route_reason" in result:
-        summary["route_reason"] = str(result["route_reason"])[:240]
-    if "clarified_query" in result:
-        summary["clarified_query"] = str(result["clarified_query"])[:300]
-    if "research_brief" in result:
-        summary["research_brief"] = str(result["research_brief"])[:max_text_chars]
-    run = result.get("run")
-    if run is not None:
-        summary["phase"] = getattr(run, "phase", None)
-        summary["terminal_reason"] = getattr(run, "terminal_reason", "")
-    for key in ("supervisor", "writer", "review"):
-        section = result.get(key)
-        if section is not None:
-            summary[f"{key}_status"] = getattr(section, "status", None)
-            if key == "supervisor":
-                summary["current_round"] = getattr(section, "current_round", 0)
-            if key in {"writer", "review"}:
-                feedback = getattr(section, "feedback", "")
-                if feedback:
-                    summary[f"{key}_feedback"] = str(feedback)[:500]
-    if "writer_draft" in result:
-        text = str(result["writer_draft"])
-        summary["writer_draft_chars"] = len(text)
-        summary["writer_draft_preview"] = text[:max_text_chars]
-    review = result.get("review")
-    review_issues = getattr(review, "issues", None) if review is not None else None
-    if review_issues:
-        summary["review_issues"] = [
-            {
-                "severity": item.severity,
-                "claim": item.claim[:200],
-                "reason": item.reason[:300],
-            }
-            for item in review_issues
-        ]
-    if "report" in result:
-        text = str(result["report"])
-        summary["report_chars"] = len(text)
-        summary["report_preview"] = text[:max_text_chars]
-    directive_brief = getattr(result.get("writer_directive"), "report_brief", None)
-    if directive_brief is not None:
-        summary["report_brief"] = str(directive_brief)[:max_text_chars]
-    research = result.get("supervisor")
-    coverage_gaps = getattr(research, "coverage_gaps", None) if research is not None else None
-    if coverage_gaps:
-        summary["coverage_gaps"] = list(coverage_gaps)
-    for key in (
-        "citations",
-        "citation_decisions",
-        "task_results",
-        "evidences",
-        "paragraph_bindings",
-    ):
-        if key in result:
-            summary[f"{key}_count"] = len(result[key])
-    if "citation_decisions" in result:
-        summary["citation_decisions"] = [
-            {
-                "id": str(item.get("id", "")),
-                "supported": bool(item.get("supported", False)),
-                "reason": str(item.get("reason", ""))[:240],
-            }
-            for item in result["citation_decisions"][:20]
-        ]
-    return summary
+def _base_summary(value: dict[str, Any]) -> dict[str, Any]:
+    """与业务无关的最小摘要:更新了哪些通道。"""
+    return {"updated_fields": sorted(value.keys())}

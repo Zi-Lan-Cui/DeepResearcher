@@ -30,7 +30,7 @@ _PROJECT_TYPE_PACKAGES = (
 )
 
 
-def project_state_types() -> set[tuple[str, ...]]:
+def projected_type_keys() -> set[tuple[str, ...]]:
     keys: set[tuple[str, ...]] = set()
     for pkg_name in _PROJECT_TYPE_PACKAGES:
         try:
@@ -61,4 +61,4 @@ def project_state_types() -> set[tuple[str, ...]]:
 
 
 def build_checkpointer_serde() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=project_state_types())
+    return JsonPlusSerializer(allowed_msgpack_modules=projected_type_keys())

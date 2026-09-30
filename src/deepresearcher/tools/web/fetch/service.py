@@ -7,6 +7,7 @@
 import asyncio
 
 from deepresearcher.tools.cache_keys import canonical_url, semantic_cache_key
+from deepresearcher.tools.errors import UnsafeUrlError
 from deepresearcher.tools.web.fetch.models import SourceDocument
 from deepresearcher.tools.web.fetch.protocol import FetchProvider
 
@@ -60,6 +61,10 @@ class FetchService:
                     parse_timeout=parse_timeout,
                 )
             except asyncio.CancelledError:
+                raise
+            except UnsafeUrlError:
+                # 公网守卫拒绝是本进程的策略决定，不是某家 provider 的可用性问题；
+                # 降级到不经守卫的 provider（如 aliyun 服务端代取）等于绕过策略。
                 raise
             except Exception as exc:  # Provider 失败由下一项接管；最终仍保留原异常语义。
                 last_error = exc

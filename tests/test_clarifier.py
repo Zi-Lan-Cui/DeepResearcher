@@ -11,11 +11,8 @@ from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
     ClarifierLoopContext,
 )
-from deepresearcher.agents.clarifier.tools import (
-    AskClarificationArgs,
-    ClarificationCompleteArgs,
-    build_clarifier_tools,
-)
+from deepresearcher.agents.clarifier.tools import build_clarifier_tools
+from deepresearcher.schemas import AskClarificationArgs, ClarificationCompleteArgs
 from deepresearcher.state import ResearchState
 
 

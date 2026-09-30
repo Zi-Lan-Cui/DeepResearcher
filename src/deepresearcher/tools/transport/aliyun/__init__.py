@@ -3,7 +3,17 @@
 from deepresearcher.tools.transport.aliyun.client import (
     AliyunDtsApi,
     AliyunDtsClient,
+    AliyunWebFetchBody,
+    AliyunWebSearchBody,
+    AliyunWebSearchItem,
     create_aliyun_dts_client,
 )
 
-__all__ = ["AliyunDtsApi", "AliyunDtsClient", "create_aliyun_dts_client"]
+__all__ = [
+    "AliyunDtsApi",
+    "AliyunDtsClient",
+    "AliyunWebFetchBody",
+    "AliyunWebSearchBody",
+    "AliyunWebSearchItem",
+    "create_aliyun_dts_client",
+]

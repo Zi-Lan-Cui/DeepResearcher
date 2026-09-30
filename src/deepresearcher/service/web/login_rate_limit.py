@@ -7,19 +7,14 @@ import hashlib
 import hmac
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
-from deepresearcher.service.persistence.models import LoginThrottle
+from deepresearcher.service.persistence.models import LoginThrottle, as_utc
 from deepresearcher.service.persistence.models import utcnow as _utcnow
-
-
-def _aware(value: datetime) -> datetime:
-    # SQLite 丢弃时区信息；生产 PostgreSQL 会保留。
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -100,12 +95,12 @@ class LoginRateLimiter:
             row = rows.get(key_hash)
             if row is None:
                 continue
-            if row.blocked_until is not None and _aware(row.blocked_until) > now:
+            if row.blocked_until is not None and as_utc(row.blocked_until) > now:
                 retry_after = max(
                     retry_after,
-                    math.ceil((_aware(row.blocked_until) - now).total_seconds()),
+                    math.ceil((as_utc(row.blocked_until) - now).total_seconds()),
                 )
-            elif now - _aware(row.window_started_at) < self._window and row.attempt_count >= limit:
+            elif now - as_utc(row.window_started_at) < self._window and row.attempt_count >= limit:
                 row.blocked_until = now + self._block
                 row.updated_at = now
                 retry_after = max(retry_after, math.ceil(self._block.total_seconds()))
@@ -123,7 +118,7 @@ class LoginRateLimiter:
                         updated_at=now,
                     )
                 )
-            elif now - _aware(row.window_started_at) >= self._window:
+            elif now - as_utc(row.window_started_at) >= self._window:
                 row.attempt_count = 1
                 row.window_started_at = now
                 row.blocked_until = None

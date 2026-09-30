@@ -926,7 +926,7 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     )
     loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
 
-    result = supervisor._final_update(state, loop_state)
+    result = services.compose_final_update(state, loop_state, supervisor.config)
 
     assert result.run.phase == "writing"
     assert result.supervisor.generation_mode == "partial"
@@ -1300,7 +1300,7 @@ def test_stop_reason_vocabulary_single_source():
     # 描述表全覆盖:漏登记的成员会静默吃兜底句(兜底句对 SUFFICIENT 语义相反)。
     assert set(_STOP_REASON_DESCRIPTIONS) == set(StopReason)
 
-    # 锁定兜底进入部分报告的集合语义（与 _final_update 手工清单行为一致）：
+    # 锁定兜底进入部分报告的集合语义（与 compose_final_update 手工清单行为一致）：
     assert {r for r in StopReason if r.allows_partial_report} == {
         StopReason.ROUND_BUDGET_EXHAUSTED,
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,

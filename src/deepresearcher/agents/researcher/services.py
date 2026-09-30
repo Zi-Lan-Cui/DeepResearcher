@@ -14,13 +14,17 @@ from deepresearcher.agents.researcher.state import (
     ResearcherLoopState,
     evidence_observation_card,
 )
+from deepresearcher.errors import clip_text
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.evidence.validator import (
     collapse_whitespace,
+    nearest_source_passage,
     quote_in_source,
-    quote_matches_ignoring_punctuation,
+    quote_verbatim_span,
     quote_verbatim_strict,
 )
+from deepresearcher.observability.events.names import EventName
+from deepresearcher.schemas import DirectionStopReason
 from deepresearcher.schemas.limits import (
     SEARCH_RESULT_SNIPPET_PREVIEW_CHARS,
     SEARCH_RESULTS_PREVIEW_COUNT,
@@ -67,7 +71,7 @@ async def search_sources(
         f"search query={item.query}: {item.error}" for item in result.failures
     )
     deps.emit(
-        "direction_search_completed",
+        EventName.DIRECTION_SEARCH_COMPLETED,
         {
             **event_context,
             "research_direction": task["question"],
@@ -222,12 +226,12 @@ async def read_sources(
         if isinstance(read_result, Exception):
             loop_state.failures.append(f"{url}: {read_result}")
             deps.emit(
-                "source_read_failed",
+                EventName.SOURCE_READ_FAILED,
                 {
                     **event_context,
                     "research_direction": task["question"],
                     "url": url,
-                    "error": str(read_result)[:500],
+                    "error": clip_text(str(read_result)),
                 },
             )
             continue
@@ -251,7 +255,7 @@ async def read_sources(
             reason_code = result.reason_code or "unknown"
             loop_state.skipped.append(reason_code)
             deps.emit(
-                "source_read_skipped",
+                EventName.SOURCE_READ_SKIPPED,
                 {
                     **event_context,
                     "research_direction": task["question"],
@@ -263,7 +267,7 @@ async def read_sources(
             error = result.error or "read_failed"
             loop_state.failures.append(f"{url}: {error}")
             deps.emit(
-                "source_read_failed",
+                EventName.SOURCE_READ_FAILED,
                 {
                     **event_context,
                     "research_direction": task["question"],
@@ -354,18 +358,19 @@ async def _validate_submissions(
     task: SubTask,
     loop_state: ResearcherLoopState,
     submissions: list[dict[str, object]],
-) -> tuple[list[tuple[int, str, Evidence]], list[dict[str, object]], list[str], int]:
+) -> tuple[list[tuple[int, str, Evidence]], list[dict[str, object]], list[str], int, int]:
     """锁外逐条校验提交：原文读取、引用逐字验证、批内去重、置信度解析。
 
-    返回 (candidates, rejected, duplicates, accepted_via_normalization)。
-    产物只是候选 Evidence 与拒因清单，不触碰 loop_state——入池的并发/容量
-    判断全部留给 add_evidence 的 commit_lock 临界区。
+    返回 (candidates, rejected, duplicates, accepted_via_normalization,
+    accepted_via_punctuation)。产物只是候选 Evidence 与拒因清单，不触碰
+    loop_state——入池的并发/容量判断全部留给 add_evidence 的 commit_lock 临界区。
     """
     rejected: list[dict[str, object]] = []
     duplicates: list[str] = []
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
     accepted_via_normalization = 0  # 逐字比对因连字符/ligature 编码差异失败、归一化后才接受的条数
+    accepted_via_punctuation = 0  # 只差标点样式、由回退定位替换为原文子串后接受的条数
     # 批内 memo：同文档多条引用只取一次原文(Redis 后端下省 N-1 次全量 GET)。
     source_texts: dict[str, str] = {}
     assert deps.material_store is not None  # 调用方已守卫
@@ -386,16 +391,19 @@ async def _validate_submissions(
                 continue
             source_texts[document_id] = source_text
         # 入池不变式：quote 逐字（忽略空白 + 连字符/ligature 编码差异）出现在该来源正文里。
-        # 宽松仍不过时再分一档：只差异标点/引号/破折号（词序列一致）→ quote_format_variant；
-        # 词都不同 → quote_paraphrase。这样能区分"格式导致的误拒"与"模型改述"。
+        # 宽松仍不过时先试标点回退定位：词序列一致、仅标点/引号/破折号样式不同
+        # → 替换为原文严格子串直接入池；词都对不上才是模型改述，回执附最接近的原文句。
         if not quote_in_source(source_text, quote):
-            rejection = (
-                "quote_format_variant"
-                if quote_matches_ignoring_punctuation(source_text, quote)
-                else "quote_paraphrase"
-            )
-            rejected.append({"index": index, "reason": rejection})
-            continue
+            canonical_quote = quote_verbatim_span(source_text, quote)
+            if canonical_quote is None:
+                rejection: dict[str, object] = {"index": index, "reason": "quote_paraphrase"}
+                hint = nearest_source_passage(source_text, quote)
+                if hint is not None:
+                    rejection["nearby_original_text"] = hint
+                rejected.append(rejection)
+                continue
+            quote = canonical_quote
+            accepted_via_punctuation += 1
         if not quote_verbatim_strict(source_text, quote):
             accepted_via_normalization += 1
         digest = hashlib.sha1(
@@ -435,7 +443,7 @@ async def _validate_submissions(
         )
         candidates.append((index, document_id, evidence))
         pending_ids.add(evidence_id)
-    return candidates, rejected, duplicates, accepted_via_normalization
+    return candidates, rejected, duplicates, accepted_via_normalization, accepted_via_punctuation
 
 
 async def add_evidence(
@@ -455,9 +463,13 @@ async def add_evidence(
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     accepted: list[Evidence] = []
-    candidates, rejected, duplicates, accepted_via_normalization = await _validate_submissions(
-        deps, task, loop_state, submissions
-    )
+    (
+        candidates,
+        rejected,
+        duplicates,
+        accepted_via_normalization,
+        accepted_via_punctuation,
+    ) = await _validate_submissions(deps, task, loop_state, submissions)
     ranked = sorted(candidates, key=lambda item: item[2].confidence, reverse=True)
     selected = ranked[: deps.config.evidence_add_batch_size]
     async with commit_lock:
@@ -487,16 +499,18 @@ async def add_evidence(
         key = str(item.get("reason", ""))[:40]
         rejected_reasons[key] = rejected_reasons.get(key, 0) + 1
     deps.emit(
-        "direction_evidence_added",
+        EventName.DIRECTION_EVIDENCE_ADDED,
         {
             **event_context,
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "duplicate_count": len(duplicates),
-            # 直方图归因证据为何被丢；quote_paraphrase=改述（宽松也不过）；
-            # 另有 accepted_via_normalization 记录逐字比对失败、归一化后才接受的条数。
+            # 直方图归因证据为何被丢；quote_paraphrase=改述（标点回退也定位不到）；
+            # accepted_via_normalization=编码归一后才接受，accepted_via_punctuation=
+            # 仅标点样式不同、替换为原文子串后接受。
             "rejected_reasons": rejected_reasons,
             "accepted_via_normalization": accepted_via_normalization,
+            "accepted_via_punctuation": accepted_via_punctuation,
             # 模型提交证据时的理由：留作审计/归因的可解释信号，不再静默丢弃。
             "reason": reason.strip()[:400],
         },
@@ -596,3 +610,43 @@ def _bounded_support(requested: str, ceiling: str) -> str:
     requested_index = levels.index(requested) if requested in levels else 0
     ceiling_index = levels.index(ceiling) if ceiling in levels else 0
     return levels[min(requested_index, ceiling_index)]
+
+
+def complete_direction(
+    loop_state: ResearcherLoopState,
+    reason: str,
+    selected_evidence_ids: list[str],
+    conclusion: str,
+    remaining_gaps: list[str],
+) -> dict[str, object]:
+    """ResearchDirectionComplete 业务:校验选定集、落定 stop_reason,返回完整回执。
+
+    只引用活跃 Evidence;选定即收敛工作集。无活跃证据时按 BLOCKED_WITHOUT_EVIDENCE
+    落定并把 reason 兜底进 remaining_gaps,保证缺口面不为空。
+    """
+    requested = list(dict.fromkeys(selected_evidence_ids))
+    active = set(loop_state.active_evidence_ids)
+    invalid = [item for item in requested if item not in active]
+    if invalid:
+        loop_state.failures.append("completion_unknown_evidence_ids: " + ", ".join(invalid))
+        return {"status": "rejected", "invalid_evidence_ids": invalid}
+    if requested:
+        loop_state.active_evidence_ids = set(requested)
+    active_evidences = loop_state.active_evidences()
+    loop_state.remaining_gaps = list(
+        dict.fromkeys(gap.strip() for gap in remaining_gaps if gap.strip())
+    )
+    if active_evidences:
+        loop_state.conclusion = conclusion.strip()
+        loop_state.stop_reason = DirectionStopReason.COMPLETE
+    else:
+        loop_state.conclusion = ""
+        loop_state.stop_reason = DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE
+        if not loop_state.remaining_gaps:
+            loop_state.remaining_gaps = [reason]
+    loop_state.stop_detail = reason
+    return {
+        "status": "accepted",
+        "stop_reason": loop_state.stop_reason,
+        "selected_evidence_ids": [item.evidence_id for item in active_evidences],
+    }

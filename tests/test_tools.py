@@ -15,9 +15,15 @@ from deepresearcher.tools.errors import (
     ToolConfigurationError,
     ToolParseError,
     ToolRequestError,
+    UnsafeUrlError,
 )
 from deepresearcher.tools.transport import HttpClient
-from deepresearcher.tools.transport.aliyun import AliyunDtsClient
+from deepresearcher.tools.transport.aliyun import (
+    AliyunDtsClient,
+    AliyunWebFetchBody,
+    AliyunWebSearchBody,
+    AliyunWebSearchItem,
+)
 from deepresearcher.tools.web import (
     AliyunFetchProvider,
     DirectHttpFetchProvider,
@@ -265,15 +271,14 @@ def test_search_parses_aliyun_results_through_common_contract():
     class FakeAliyunClient:
         async def web_search(self, query, limit):
             assert (query, limit) == ("Spring Boot", 2)
-            return SimpleNamespace(
-                success=True,
-                search_result=[
-                    SimpleNamespace(
-                        title="Spring Boot",
+            return AliyunWebSearchBody(
+                items=[
+                    AliyunWebSearchItem(
                         url="https://spring.io/projects/spring-boot",
+                        title="Spring Boot",
                         snippet="Production-grade Spring applications.",
                     )
-                ],
+                ]
             )
 
     client = SearchService(
@@ -300,11 +305,29 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
 
         async def web_search_async(self, request):
             self.requests.append(request)
-            return SimpleNamespace(body="search-body")
+            return SimpleNamespace(
+                body=SimpleNamespace(
+                    success=True,
+                    error_message="",
+                    search_result=[SimpleNamespace(url="https://spring.io", title="t", snippet="s")],
+                )
+            )
 
         async def web_fetch_async(self, request):
             self.requests.append(request)
-            return SimpleNamespace(body="fetch-body")
+            return SimpleNamespace(
+                body=SimpleNamespace(
+                    success=True,
+                    error_message="",
+                    content="# md",
+                    title="Example",
+                    content_format="markdown",
+                    url="https://spring.io",
+                    http_status_code=200,
+                    request_id="r-1",
+                    url_type="static_html",
+                )
+            )
 
     sdk = FakeSdkClient()
     client = AliyunDtsClient(
@@ -321,7 +344,9 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
             await client.web_fetch("https://spring.io", "markdown"),
         )
 
-    assert asyncio.run(invoke()) == ("search-body", "fetch-body")
+    search_body, fetch_body = asyncio.run(invoke())
+    assert [item.url for item in search_body.items] == ["https://spring.io"]
+    assert fetch_body.content == "# md" and fetch_body.request_id == "r-1"
     search_request, fetch_request = sdk.requests
     assert search_request.region_id == "cn-beijing"
     assert search_request.agent_name == "deepresearcher-test"
@@ -423,6 +448,36 @@ def test_fetch_rejects_captcha_page_before_evidence_extraction():
     assert exc_info.value.reason_code == "access_challenge"
 
 
+def test_fetch_service_policy_rejection_short_circuits_provider_chain():
+    class GuardedProvider:
+        name = "guarded"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def afetch(self, url, **_kwargs):
+            self.calls += 1
+            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
+
+    class SucceedingProvider:
+        name = "managed"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def afetch(self, url, **_kwargs):
+            self.calls += 1
+            return {"status": "completed", "text": "内网正文", "title": "t"}
+
+    guarded = GuardedProvider()
+    managed = SucceedingProvider()
+    with pytest.raises(UnsafeUrlError, match="不能访问本机"):
+        asyncio.run(FetchService([guarded, managed]).afetch("http://169.254.169.254/meta"))
+    # 策略拒绝不是"这家不行"：下一家（不经公网守卫的服务端代取）必须完全不被触达。
+    assert guarded.calls == 1
+    assert managed.calls == 0
+
+
 def test_fetch_service_falls_back_without_exposing_provider_choice():
     class BlockedProvider:
         name = "blocked"
@@ -457,15 +512,14 @@ def test_aliyun_fetch_normalizes_markdown_into_source_document():
         async def web_fetch(self, url, output_format):
             assert url == "https://example.com/page"
             assert output_format == "markdown"
-            return SimpleNamespace(
-                success=True,
+            return AliyunWebFetchBody(
+                content="# Example\n\nA paragraph.\n\n- One\n- Two",
+                title="Example",
+                content_format="markdown",
+                url=url,
                 http_status_code=200,
                 request_id="request-1",
-                url=url,
                 url_type="static_html",
-                content_format="markdown",
-                title="Example",
-                content="# Example\n\nA paragraph.\n\n- One\n- Two",
             )
 
     document = asyncio.run(

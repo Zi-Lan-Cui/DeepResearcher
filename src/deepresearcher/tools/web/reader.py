@@ -5,6 +5,7 @@ import time
 from typing import cast
 
 from deepresearcher.observability.events import JsonlSink, make_tool_event
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
 from deepresearcher.observability.tracing.spans import span
@@ -93,7 +94,8 @@ class SourceReaderTool:
                 make_tool_event(
                     "fetch",
                     "started",
-                    event_name="source_fetch_started",
+                    component="source_reader",
+                    event_name=EventName.SOURCE_FETCH_STARTED,
                     payload={**task_context, "requested_url": requested_url},
                 )
             )
@@ -150,6 +152,7 @@ class SourceReaderTool:
                         make_tool_event(
                             "fetch",
                             "skipped" if isinstance(exc, SourceUnavailableError) else "failed",
+                            component="source_reader",
                             link=link,
                             error=str(exc),
                             duration_ms=(time.perf_counter() - started) * 1_000,
@@ -225,7 +228,8 @@ class SourceReaderTool:
             make_tool_event(
                 "fetch",
                 "completed",
-                event_name="source_document_registered",
+                component="source_reader",
+                event_name=EventName.SOURCE_DOCUMENT_REGISTERED,
                 link=link,
                 duration_ms=(time.perf_counter() - started) * 1_000,
                 payload={

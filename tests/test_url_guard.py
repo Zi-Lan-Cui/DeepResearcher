@@ -122,6 +122,28 @@ def test_http_client_validates_every_redirect_before_following():
     assert guard.urls == ["https://public.example/start", "http://127.0.0.1/admin"]
 
 
+def test_http_client_reuses_one_impersonate_profile_for_search_requests():
+    class RecordingClient:
+        def __init__(self):
+            self.impersonates: list[str] = []
+
+        async def request(self, method, url, **kwargs):
+            self.impersonates.append(kwargs["impersonate"])
+            if len(self.impersonates) == 1:
+                return httpx.Response(429, request=httpx.Request(method, url))
+            return httpx.Response(200, request=httpx.Request(method, url))
+
+    raw = RecordingClient()
+    client = HttpClient(
+        SearchConfig(retry_attempts=2, retry_initial_seconds=0.0, retry_max_seconds=0.0),
+        raw,  # type: ignore[arg-type]
+    )
+    asyncio.run(client.arequest("GET", "https://api.example/search", request_kind="search"))
+
+    # 共享连接池上重试必须沿用同一指纹，不跨 TLS 上下文复用同一条连接。
+    assert raw.impersonates == [client._pinned_impersonate, client._pinned_impersonate]
+
+
 def test_http_client_rejects_peer_outside_pinned_dns_set():
     class Guard:
         async def resolve(self, url: str) -> ResolvedPublicUrl:

@@ -32,6 +32,27 @@ def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[s
     }
 
 
+def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]:
+    """方向工作集的轻量摘要唯一构造处;与 supervisor 的 working_set_snapshot 对称。"""
+    evidences = loop_state.active_evidences()
+    return {
+        "active_evidence": [
+            {
+                "evidence_id": item.evidence_id,
+                "claim": item.claim,
+                "support": item.support,
+                "confidence": item.confidence,
+            }
+            for item in evidences
+        ],
+        "active_evidence_count": len(evidences),
+        "active_evidence_limit": loop_state.active_evidence_limit,
+        "reserve_evidence_count": len(loop_state.evidences) - len(evidences),
+        "archive_evidence_count": len(loop_state.evidences),
+        "archive_evidence_limit": loop_state.evidence_archive_limit,
+    }
+
+
 @dataclass(frozen=True)
 class ResearcherDeps:
     """ResearchAgent 构造期的稳定零件；跨并发 run 共享、只读(frozen 是纪律载体)。"""

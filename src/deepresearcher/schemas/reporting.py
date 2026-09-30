@@ -161,7 +161,7 @@ class ParagraphBinding(BaseModel):
 
 
 class MarkdownReportDraft(BaseModel):
-    """Writer 的 Markdown 草稿；引用以内部 cite 标签标记。"""
+    """Writer Markdown 草稿的容量口径;测试替身按本形状造草稿,生产提交走 writer 工具的 CompleteReport。"""
 
     markdown: str = Field(default="", max_length=REPORT_MARKDOWN_HARD_LIMIT_CHARS)
     selected_evidence_ids: list[str] = Field(

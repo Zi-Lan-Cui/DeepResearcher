@@ -3,10 +3,9 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
 
 from deepresearcher.service.events.projector import project_clarification
-from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.persistence.models import Run, User
 from deepresearcher.service.runs.service import QuotaExceededError
 from deepresearcher.service.web.dependencies import app_state, current_user, owned_run
 from deepresearcher.service.web.presenters import run_summary
@@ -36,13 +35,7 @@ async def list_runs(
     request: Request,
     user: User = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    state = app_state(request)
-    async with state.session_factory() as session:
-        runs = (
-            await session.scalars(
-                select(Run).where(Run.user_id == user.id).order_by(Run.created_at.desc()).limit(50)
-            )
-        ).all()
+    runs = await app_state(request).manager.recent_runs(user.id)
     return [run_summary(run) for run in runs]
 
 
@@ -51,24 +44,10 @@ async def get_run(
     request: Request,
     run: Run = Depends(owned_run),
 ) -> dict[str, Any]:
-    clarification = None
-    if run.status == "awaiting_input":
-        state = app_state(request)
-        async with state.session_factory() as session:
-            row = await session.scalar(
-                select(RunEvent)
-                .where(
-                    RunEvent.run_id == run.id,
-                    RunEvent.event_type == "clarification_requested",
-                )
-                .order_by(RunEvent.seq.desc())
-                .limit(1)
-            )
-        if row is not None:
-            payload = row.record.get("payload", {})
-            if isinstance(payload, dict):
-                # 与 SSE 共用投影:截断/白名单一处演化,REST 不再抄一份。
-                clarification = project_clarification(payload)
+    # 事件读取与状态判断收口在 manager;这里只做呈现投影与响应组装。
+    payload = await app_state(request).manager.pending_clarification_payload(run)
+    # 与 SSE 共用投影:截断/白名单一处演化,REST 不再抄一份。
+    clarification = project_clarification(payload) if payload is not None else None
     return {
         **run_summary(run),
         "report_markdown": run.report_markdown,

@@ -158,7 +158,6 @@ class SupervisorLoopState:
             if active_ids is not None
             else {item.evidence_id for item in self.evidences}
         )
-        self.released_evidence_ids: set[str] = set()
         self.active_evidence_limit = active_evidence_limit
         self.source_refs = list(state.get("source_refs", []))
         self.task_results = list(state.get("task_results", []))
@@ -239,23 +238,21 @@ class SupervisorLoopState:
         """从 Supervisor 当前工作集释放 Evidence；全量档案仍保留。"""
         existing = self.active_evidence_ids.intersection(evidence_ids)
         self.active_evidence_ids.difference_update(existing)
-        self.released_evidence_ids.update(existing)
         if existing:
             self._bump_working_set()
         return sorted(existing)
 
     def restore_evidence(self, evidence_ids: list[str]) -> list[str]:
         """从全局 Evidence 档案恢复候选，同时遵守活跃工作集上限。"""
-        archived = {item.evidence_id for item in self.evidences}
+        archive_ids = {item.evidence_id for item in self.evidences}
         candidates = [
             item
             for item in dict.fromkeys(evidence_ids)
-            if item in archived and item not in self.active_evidence_ids
+            if item in archive_ids and item not in self.active_evidence_ids
         ]
         slots = max(0, self.active_evidence_limit - len(self.active_evidence_ids))
         restored = candidates[:slots]
         self.active_evidence_ids.update(restored)
-        self.released_evidence_ids.difference_update(restored)
         if restored:
             self._bump_working_set()
         return restored

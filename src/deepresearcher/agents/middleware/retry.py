@@ -11,8 +11,8 @@ from langchain.agents.middleware import (
 from langchain_core.tools import BaseTool
 
 from deepresearcher.llm import LLMConfigurationError, classify_llm_error
-from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 from deepresearcher.tools.errors import ToolError
+from deepresearcher.usage_runtime import UsageBudgetExceeded
 
 
 def retry_on(error: Exception) -> bool:

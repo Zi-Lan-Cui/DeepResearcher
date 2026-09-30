@@ -1,8 +1,11 @@
 """请求路由节点。"""
 
+import logging
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from deepresearcher.config import AgentConfig
+from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.prompts import (
     get_runtime_environment,
     language_directive,
@@ -10,6 +13,9 @@ from deepresearcher.prompts import (
     render_data_section,
 )
 from deepresearcher.schemas import RouteDecision, RunStatus
+from deepresearcher.usage_runtime import UsageBudgetExceeded
+
+logger = logging.getLogger("deepresearcher.nodes.router")
 
 
 async def router(state, llm, *, agent_config: AgentConfig, invoke_structured):
@@ -40,7 +46,11 @@ async def router(state, llm, *, agent_config: AgentConfig, invoke_structured):
             "route_reason": result.reason,
             "run": RunStatus(phase="routing"),
         }
+    except (LLMConfigurationError, UsageBudgetExceeded):
+        # llm.py 契约：账户级不可用与预算耗尽不是路由问题，冒泡给 node_runner 收口。
+        raise
     except Exception:
+        logger.warning("router_model_call_failed query_chars=%d", len(query), exc_info=True)
         return {
             "route": "deep_research",
             "route_reason": "路由模型调用失败；为避免把未核验知识包装为答案，转入深度研究。",

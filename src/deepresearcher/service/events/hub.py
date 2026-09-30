@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.persistence.models import Run
@@ -95,7 +96,7 @@ class RunEventHub:
             return run_id in self._open
 
     async def publish_status(self, run_id: str, status: str) -> None:
-        self.write({"run_id": run_id, "event_type": "run_status", "payload": {"status": status}})
+        self.write({"run_id": run_id, "event_type": EventName.RUN_STATUS, "payload": {"status": status}})
 
     async def publish_done(self, run_id: str) -> None:
         with self._lock:
@@ -110,7 +111,7 @@ class RunEventHub:
         self.write(
             {
                 "run_id": run_id,
-                "event_type": "run_done",
+                "event_type": EventName.RUN_DONE,
                 "payload": {
                     "status": status,
                     "answer_mode": (run.answer_mode if run else None) or "",

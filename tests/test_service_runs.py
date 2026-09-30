@@ -315,13 +315,13 @@ async def test_running_status_is_announced_only_for_user_visible_claim(manager):
     manager.hub.open(silent_id)
     manager.hub.open(announced_id)
 
-    assert await manager.execution.executor._mark_running(  # noqa: SLF001
+    assert await manager.execution.executor._confirm_running(  # noqa: SLF001
         silent_id,
         announce_running=False,
     )
     assert manager.hub._pending.get(silent_id, []) == []  # noqa: SLF001 - 只读 pending 缓冲
 
-    assert await manager.execution.executor._mark_running(  # noqa: SLF001
+    assert await manager.execution.executor._confirm_running(  # noqa: SLF001
         announced_id,
         announce_running=True,
     )
@@ -783,6 +783,11 @@ async def test_reconcile_startup_converts_stale_rows(manager):
     assert len(orphans) == 2
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
+    # done 帧必须经 hub→store 正路:seq 由账本指针分配而非手写 max+1,行号与指针一致。
+    async with manager.session_factory() as session:
+        for event in orphans:
+            run_row = await session.get(Run, event.run_id)
+            assert event.seq == run_row.event_seq
 
 
 async def test_headline_persists_at_clarify_exit_not_at_end(manager):

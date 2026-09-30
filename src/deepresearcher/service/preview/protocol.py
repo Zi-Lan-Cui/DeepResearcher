@@ -13,6 +13,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from deepresearcher.observability.events.names import EventName
+from deepresearcher.routing import PREVIEW_CHANNELS
+
 
 @dataclass
 class EphemeralSubscription:
@@ -53,17 +56,17 @@ def preview_event(value: object, *, run_id: str) -> dict | None:
 
     if not isinstance(value, dict) or value.get("run_id") != run_id:
         return None
-    if value.get("event_type") != "text_delta":
+    if value.get("event_type") != EventName.TEXT_DELTA:
         return None
     payload = value.get("payload")
     if not isinstance(payload, dict):
         return None
     channel = str(payload.get("channel") or "")
     text = str(payload.get("text") or "")[:200]
-    if channel not in {"router", "clarify", "supervisor", "writer"} or not text:
+    if channel not in PREVIEW_CHANNELS or not text:
         return None
     return {
         "run_id": run_id,
-        "event_type": "text_delta",
+        "event_type": EventName.TEXT_DELTA,
         "payload": {"channel": channel, "text": text},
     }

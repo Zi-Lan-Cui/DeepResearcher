@@ -37,7 +37,7 @@ from deepresearcher.schemas import (
     SupervisorProgress,
     WriterProgress,
 )
-from deepresearcher.service.usage import UsageBudgetExceeded
+from deepresearcher.service.execution.usage import UsageBudgetExceeded
 from deepresearcher.state import validate_state_invariants
 from deepresearcher.tools.errors import ToolRequestError
 
@@ -181,8 +181,30 @@ class _ReadyWriter:
         }
 
 
+def test_quick_answer_system_prompt_carries_language_directive():
+    """快答与其余节点同吃输出语言纪律;漏拼时语言配置对 quick_answer 不生效。"""
+    from deepresearcher.prompts import language_directive, load_prompt
+
+    class CapturingLLM(TextLLM):
+        def __init__(self) -> None:
+            self.system_content = ""
+
+        async def ainvoke(self, messages, **_kwargs):
+            self.system_content = messages[0].content
+            return await super().ainvoke(messages)
+
+    probe = CapturingLLM()
+    config = AgentConfig()
+    asyncio.run(nodes.quick_answer({"query": "q"}, probe, agent_config=config))
+    assert probe.system_content == (
+        load_prompt("quick_answer") + "\n" + language_directive(config.output_language)
+    )
+
+
 def test_quick_answer_route_produces_uncited_answer():
-    state = asyncio.run(nodes.quick_answer({"query": "什么是向量数据库"}, TextLLM()))
+    state = asyncio.run(
+        nodes.quick_answer({"query": "什么是向量数据库"}, TextLLM(), agent_config=AgentConfig())
+    )
     writer = ReportWriter(
         TextLLM(),
         AgentConfig(),
@@ -226,6 +248,28 @@ def test_router_model_failure_fails_closed_to_deep_research():
     )
     assert result["route"] == "deep_research"
     assert "调用失败" in result["route_reason"]
+
+
+def test_router_bubbles_fail_fast_signals_instead_of_fallback_routing():
+    """预算耗尽与账户级不可用必须冒泡给 node_runner 收口(llm.py 契约);
+    折成 deep_research 兜底会静默烧掉后续全部模型调用并把真故障伪装成路由决定。"""
+    from deepresearcher.llm import LLMConfigurationError
+    from deepresearcher.usage_runtime import UsageBudgetExceeded
+
+    for expected in (UsageBudgetExceeded("预算耗尽"), LLMConfigurationError("invalid_key")):
+
+        class _BoomLLM:
+            def with_structured_output(self, _schema, **_kwargs):
+                class _Boom:
+                    async def ainvoke(self, _messages, **_kw):
+                        raise expected
+
+                return _Boom()
+
+        with pytest.raises(type(expected)):
+            asyncio.run(
+                nodes.router({"query": "q"}, _BoomLLM(), agent_config=AgentConfig())
+            )
 
 
 def test_top_level_node_failure_becomes_renderable_run_error():
@@ -416,7 +460,7 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
     monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
 
     async def fail_reviewer(_state, _llm, **_kwargs):
-        raise RuntimeError("reflection boom")
+        raise RuntimeError("reviewer boom")
 
     monkeypatch.setattr(graph.nodes, "reviewer", fail_reviewer)
 
@@ -424,9 +468,9 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
         build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
     )
 
-    assert result["run"].error.stage == "reflection"
+    assert result["run"].error.stage == "review"
     assert "执行失败，请稍后重试" in result["report"]
-    assert "reflection boom" not in result["report"]
+    assert "reviewer boom" not in result["report"]
 
 
 def test_compiled_graph_research_exhaustion_renders_incomplete_report(tmp_path, monkeypatch):
@@ -458,11 +502,11 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
     assert type(caught.value).__name__ != "RunError"
 
 
-def test_writer_revisit_overwrites_add_channels_instead_of_folding(tmp_path, monkeypatch):
-    """子图全量回写的回归：add-reducer 通道若不覆写，每次进 Writer 会把已有历史再 fold 一遍。
+def test_writer_revisit_does_not_fold_add_channels(tmp_path, monkeypatch):
+    """Writer 直挂回归:节点 update 只含自身产出,不得携带 add-reducer 通道的历史副本。
 
     脚本：supervisor→writer→reviewer(退回)→supervisor→writer→reviewer(通过)→render，
-    两次访问 WRITER 子图；supervisor_messages 必须按真实回合线性增长，不得翻倍。
+    两次访问 WRITER；supervisor_messages 必须按真实回合线性增长，不得翻倍。
     """
 
     class _TwiceSupervisor:

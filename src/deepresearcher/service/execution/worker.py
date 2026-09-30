@@ -38,10 +38,12 @@ class RunWorker:
     ) -> None:
         self._queue = queue
         self._executor = executor
-        self._max_running = max(1, max_running)
-        self._lease_seconds = max(10, lease_seconds)
+        # 下限钳制住在 settings 加载层;这里只保留 settings 没有的新约束:
+        # 心跳必须严格少于半个租约,否则续约来不及。
+        self._max_running = max_running
+        self._lease_seconds = lease_seconds
         self._heartbeat_seconds = min(max(1, heartbeat_seconds), self._lease_seconds // 2)
-        self._poll_seconds = max(0.05, poll_seconds)
+        self._poll_seconds = poll_seconds
         self._worker_id = worker_id or new_id("worker")
         self._recover_expired = recover_expired
         self._after_reap = after_reap
@@ -167,9 +169,7 @@ class RunWorker:
                 work.query,
                 resume=work.resume,
                 resume_input=(
-                    Command(resume=work.resume_payload)
-                    if work.resume_payload is not None
-                    else work.resume_input
+                    Command(resume=work.resume_payload) if work.resume_payload is not None else None
                 ),
                 claim=work,
             )

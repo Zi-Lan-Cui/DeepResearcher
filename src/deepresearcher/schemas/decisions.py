@@ -1,4 +1,6 @@
-"""模型结构化输出的决策 Schema：路由、澄清、方向探索与整体审阅。"""
+"""模型结构化输出的决策 Schema：路由与整体审阅为生产契约；
+ResearchDirectionDecision 是测试替身(DirectionLLM)的决策输入形状，
+生产路径由工具调用直接表达决策、不构造它。"""
 
 from __future__ import annotations
 

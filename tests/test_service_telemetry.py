@@ -1,4 +1,4 @@
-"""service.telemetry 的全局 provider 装配:复用、幂等与非法值降级。"""
+"""service.execution.telemetry 的全局 provider 装配:复用、幂等与非法值降级。"""
 
 import logging
 
@@ -6,7 +6,7 @@ import pytest
 from opentelemetry import trace as opentelemetry_trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from deepresearcher.service.telemetry import configure_tracer_provider
+from deepresearcher.service.execution.telemetry import configure_tracer_provider
 from fakes_service import service_config
 
 
@@ -23,7 +23,7 @@ def test_configure_creates_or_reuses_single_sdk_provider(tmp_path, caplog):
 
 
 def test_unknown_exporter_value_warns_and_behaves_as_none(tmp_path, caplog):
-    with caplog.at_level(logging.WARNING, logger="deepresearcher.service.telemetry"):
+    with caplog.at_level(logging.WARNING, logger="deepresearcher.service.execution.telemetry"):
         configure_tracer_provider(service_config(tmp_path, otel_exporter="jaeger-ish"))
     assert any("SERVICE_OTEL_EXPORTER" in record.getMessage() for record in caplog.records)
     assert isinstance(opentelemetry_trace.get_tracer_provider(), TracerProvider)

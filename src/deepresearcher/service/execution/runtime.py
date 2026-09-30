@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from deepresearcher.config import Settings, get_settings
 from deepresearcher.graph import build_graph
@@ -21,16 +21,19 @@ from deepresearcher.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.execution.executor import RunExecutor, prune_event_jsonl
 from deepresearcher.service.execution.queue import PostgresRunQueue, RunWork
+from deepresearcher.service.execution.telemetry import (
+    configure_tracer_provider,
+    shutdown_tracer_provider,
+)
+from deepresearcher.service.execution.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepresearcher.service.execution.worker import RunWorker
 from deepresearcher.service.persistence.advisory_lock import held_session_lock
-from deepresearcher.service.persistence.models import Run, RunEvent
+from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.preview.protocol import EphemeralEventBus
 from deepresearcher.service.runs.transitions import apply_transition
 from deepresearcher.service.runtime_stack import build_runtime_stack
 from deepresearcher.service.settings import ServiceConfig, get_service_config
-from deepresearcher.service.telemetry import configure_tracer_provider, shutdown_tracer_provider
-from deepresearcher.service.usage import CapacityGate, ProviderRateLimiter, UsageStore
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 logger = get_logger("deepresearcher.service.execution.runtime")
@@ -132,6 +135,7 @@ class WorkerRuntime:
                 (判死行数, 可续跑的 (run_id, user_id, query) 列表)。
         """
         resumable: list[tuple[str, int, str]] = []
+        dead_run_ids: list[str] = []
         killed = 0
         await self.queue.reap_expired()
         await self._settle_cancellations()
@@ -154,29 +158,15 @@ class WorkerRuntime:
                 killed += 1
                 apply_transition(run, "recover_dead", now=_utcnow())
                 run.error_message = "进程重启导致运行中断，请重新发起。"
-                max_seq = await session.scalar(
-                    select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id)
-                )
-                done_record = {
-                    "run_id": run.id,
-                    "event_type": "run_done",
-                    "seq": int(max_seq or 0) + 1,
-                    "payload": {
-                        "status": "failed",
-                        "answer_mode": run.answer_mode or "",
-                        "report_available": False,
-                    },
-                }
-                session.add(
-                    RunEvent(
-                        run_id=run.id,
-                        seq=done_record["seq"],
-                        event_type="run_done",
-                        record=done_record,
-                    )
-                )
-                run.event_seq = done_record["seq"]
+                dead_run_ids.append(run.id)
             await session.commit()
+        # done 帧走唯一投递路径(hub→store→NOTIFY),与 _settle_cancellations 同形;
+        # publish_done 在事务提交后读行,状态即终态 failed。
+        for run_id in dead_run_ids:
+            self._hub.open(run_id)
+            await self.executor.publish_done(run_id)
+            await self.executor.flush_events(run_id)
+            self._hub.close(run_id)
         return killed, resumable
 
     async def _has_checkpoint(self, run_id: str) -> bool:
@@ -277,7 +267,7 @@ async def worker_lifespan(
                 resumed = await worker.resume_runs(resumable)
             await worker.start()
             logger.info(
-                "worker_started worker_id=%s reconciled=%d resumed=%d",
+                "worker_started worker_id=%s killed=%d resumed=%d",
                 worker.worker_id,
                 killed,
                 resumed,

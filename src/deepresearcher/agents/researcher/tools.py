@@ -4,10 +4,13 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from deepresearcher.agents.researcher import services
-from deepresearcher.agents.researcher.state import ResearcherLoopContext, ResearcherLoopState
+from deepresearcher.agents.researcher.state import (
+    ResearcherLoopContext,
+    working_set_snapshot,
+)
+from deepresearcher.agents.working_set import release_working_set, restore_working_set
 from deepresearcher.schemas import (
     AddEvidence,
-    DirectionStopReason,
     DocumentLineRange,
     EvidenceSubmission,
     GrepDocument,
@@ -21,26 +24,6 @@ from deepresearcher.schemas import (
     SearchSources,
     format_tool_receipt,
 )
-
-
-def _working_set_snapshot(loop_state: ResearcherLoopState) -> dict[str, object]:
-    evidences = loop_state.active_evidences()
-    return {
-        "active_evidence": [
-            {
-                "evidence_id": item.evidence_id,
-                "claim": item.claim,
-                "support": item.support,
-                "confidence": item.confidence,
-            }
-            for item in evidences
-        ],
-        "active_evidence_count": len(evidences),
-        "active_evidence_limit": loop_state.active_evidence_limit,
-        "reserve_evidence_count": len(loop_state.evidences) - len(evidences),
-        "archive_evidence_count": len(loop_state.evidences),
-        "archive_evidence_limit": loop_state.evidence_archive_limit,
-    }
 
 
 def build_researcher_tools() -> list[BaseTool]:
@@ -150,7 +133,7 @@ def build_researcher_tools() -> list[BaseTool]:
     ) -> str:
         """查看当前方向工作集的轻量摘要。"""
         del reason
-        return format_tool_receipt(_working_set_snapshot(runtime.context.loop_state))
+        return format_tool_receipt(working_set_snapshot(runtime.context.loop_state))
 
     @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
     async def release_evidence(
@@ -161,20 +144,10 @@ def build_researcher_tools() -> list[BaseTool]:
         """从当前方向工作集释放 Evidence，但不删除全局档案。"""
         del reason
         loop_state = runtime.context.loop_state
-        requested = list(dict.fromkeys(evidence_ids))
-        released = loop_state.release_evidence(requested)
-        archived = {item.evidence_id for item in loop_state.evidences}
         return format_tool_receipt(
-            {
-                "released_evidence_ids": released,
-                # 重复释放同一 id ≠ 编造:档案在而工作集无,单列一键;
-                # unknown 只留给真不在档案的 id——与 Restore 的两键形状对齐。
-                "not_in_working_set_ids": [
-                    item for item in requested if item in archived and item not in released
-                ],
-                "unknown_evidence_ids": [item for item in requested if item not in archived],
-                **_working_set_snapshot(loop_state),
-            }
+            release_working_set(
+                loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
+            )
         )
 
     @tool("RestoreEvidence", args_schema=RestoreEvidence)
@@ -186,16 +159,10 @@ def build_researcher_tools() -> list[BaseTool]:
         """从方向候选档案恢复 Evidence；不会超过活跃工作集上限。"""
         del reason
         loop_state = runtime.context.loop_state
-        requested = list(dict.fromkeys(evidence_ids))
-        archived = {item.evidence_id for item in loop_state.evidences}
-        restored = loop_state.restore_evidence(requested)
         return format_tool_receipt(
-            {
-                "restored_evidence_ids": restored,
-                "not_restored_evidence_ids": [item for item in requested if item not in restored],
-                "unknown_evidence_ids": [item for item in requested if item not in archived],
-                **_working_set_snapshot(loop_state),
-            }
+            restore_working_set(
+                loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
+            )
         )
 
     # 不设 return_direct:边级终结只看工具名、不看回执内容——被拒的提交也会
@@ -210,34 +177,14 @@ def build_researcher_tools() -> list[BaseTool]:
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
         """提交当前方向的最终局部结果；被拒则按回执修正后重提。"""
-        loop_state = runtime.context.loop_state
-        requested = list(dict.fromkeys(selected_evidence_ids))
-        active = set(loop_state.active_evidence_ids)
-        invalid = [item for item in requested if item not in active]
-        if invalid:
-            loop_state.failures.append("completion_unknown_evidence_ids: " + ", ".join(invalid))
-            return format_tool_receipt({"status": "rejected", "invalid_evidence_ids": invalid})
-        if requested:
-            loop_state.active_evidence_ids = set(requested)
-        active_evidences = loop_state.active_evidences()
-        loop_state.remaining_gaps = list(
-            dict.fromkeys(gap.strip() for gap in remaining_gaps if gap.strip())
-        )
-        if active_evidences:
-            loop_state.conclusion = conclusion.strip()
-            loop_state.stop_reason = DirectionStopReason.COMPLETE
-        else:
-            loop_state.conclusion = ""
-            loop_state.stop_reason = DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE
-            if not loop_state.remaining_gaps:
-                loop_state.remaining_gaps = [reason]
-        loop_state.stop_detail = reason
         return format_tool_receipt(
-            {
-                "status": "accepted",
-                "stop_reason": loop_state.stop_reason,
-                "selected_evidence_ids": [item.evidence_id for item in active_evidences],
-            }
+            services.complete_direction(
+                runtime.context.loop_state,
+                reason,
+                selected_evidence_ids,
+                conclusion,
+                remaining_gaps,
+            )
         )
 
     return [

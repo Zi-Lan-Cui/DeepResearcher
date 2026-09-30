@@ -272,7 +272,6 @@ def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "llm_call_count": sum(int(r.get("llm_call_count") or 0) for r in rows),
         "external_request_count": sum(int(r.get("external_request_count") or 0) for r in rows),
         "cache_hit_count": sum(int(r.get("cache_hit_count") or 0) for r in rows),
-        "saved_tokens": sum(int(r.get("saved_tokens") or 0) for r in rows),
         "mean_total_tokens_per_run": round((total_in + total_out) / len(rows)),
         "mean_elapsed_ms": round(sum(int(r.get("elapsed_ms") or 0) for r in rows) / len(rows)),
         "estimated_cost_usd": round(sum(float(r.get("estimated_cost_usd") or 0) for r in rows), 6),

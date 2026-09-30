@@ -3,13 +3,12 @@ import json
 
 import pytest
 
+from deepresearcher.graph import summarize_node_result
 from deepresearcher.observability.events import (
     JsonlSink,
-    make_artifact_event,
     make_audit_event,
     make_node_event,
 )
-from deepresearcher.observability.instrumentation import _node_result_summary
 from deepresearcher.observability.tracing import ledger, spans
 from deepresearcher.service.events.projector import project
 
@@ -104,7 +103,7 @@ def test_node_event_accepts_summary_payload():
 
 
 def test_clarifier_summary_survives_instrumentation_and_projection():
-    payload = _node_result_summary(
+    payload = summarize_node_result(
         {
             "clarified_query": "Redis 有什么作用？",
             "research_brief": "比较 Redis 在后端与 Agent 系统中的职责和知识要求",
@@ -125,7 +124,7 @@ def test_clarifier_summary_survives_instrumentation_and_projection():
     assert frame.data["text"] == payload["research_brief"]
 
 
-def test_events_and_artifacts_have_separate_records_and_correlation():
+def test_node_event_carries_correlation_fields():
     event = make_node_event(
         "writer",
         "completed",
@@ -134,19 +133,8 @@ def test_events_and_artifacts_have_separate_records_and_correlation():
         node_id="writer",
         payload={"report_chars": 5000, "report_preview": "..."},
     )
-    artifact = make_artifact_event(
-        "output",
-        "完整报告",
-        name="writer_report",
-        run_id="run-1",
-        session_id="session-1",
-        node_id="writer",
-    )
 
     assert event.run_id == "run-1"
     assert event.session_id == "session-1"
     assert event.node_id == "writer"
     assert event.payload["report_chars"] == 5000
-    assert artifact["record_type"] == "artifact"
-    assert artifact["content"] == "完整报告"
-    assert artifact["run_id"] == "run-1"

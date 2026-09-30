@@ -309,7 +309,4 @@ def researcher_agent(config, decisions, reader=None):
 TASK: SubTask = {
     "id": "r1-1",
     "question": "验证一个具体研究方向",
-    "type": "search",
-    "status": "pending",
-    "assigned_agent": "research_agent",
 }

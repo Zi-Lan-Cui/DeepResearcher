@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from deepresearcher.agents.writer import ReportWriter
+from deepresearcher.agents.writer import ReportWriter, services
 from deepresearcher.config import AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink
@@ -63,7 +63,7 @@ def test_writer_exposes_published_at_as_metadata_but_not_locator() -> None:
     )
     evidence.published_at = "2026-07-04"
 
-    catalogue = ReportWriter._evidence_catalogue({"e1": evidence})
+    catalogue = services.evidence_catalogue({"e1": evidence})
 
     assert "published_at=2026-07-04(搜索元信息)" in catalogue
     assert "start_line" not in catalogue
@@ -96,7 +96,7 @@ def test_writer_catalogue_preserves_topic_assignments_and_deduplicates_cards() -
         }
     )
 
-    catalogue = ReportWriter._evidence_catalogue({"e1": first, "e2": second}, brief)
+    catalogue = services.evidence_catalogue({"e1": first, "e2": second}, brief)
 
     assert "[写作主题] 主题 A" in catalogue
     assert "[写作主题] 主题 B" in catalogue
@@ -421,7 +421,7 @@ def test_writer_surfaces_last_cite_validation_diagnostic():
     assert result["writer"].status == "exhausted"
     assert result["writer"].failure_kind == "citation_protocol"
     assert "不存在的来源" in result["writer"].feedback
-    assert "[[cite:不存在的来源]]" in result["writer_draft"]
+    assert "[[cite:不存在的来源]]" in result["rejected_draft"]
 
 
 def test_writer_does_not_decide_to_restart_research():
@@ -715,7 +715,7 @@ def test_writer_rejects_invalid_inline_draft_but_keeps_text(tmp_path):
     result = asyncio.run(writer.run(state))
 
     assert result["writer"].status == "exhausted"
-    assert len(result["writer_draft"]) > 300
+    assert len(result["rejected_draft"]) > 300
     assert "引用校验" in result["writer"].feedback or "不存在" in result["writer"].feedback
 
 

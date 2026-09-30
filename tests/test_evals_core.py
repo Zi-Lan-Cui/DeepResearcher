@@ -272,7 +272,6 @@ def test_process_metrics_carries_cache_and_token_fields():
             "input_tokens": 1000,
             "output_tokens": 100,
             "cached_input_tokens": 800,
-            "saved_tokens": 5000,
             "saved_external_request_count": 7,
             "external_request_count": 59,
             "llm_call_count": 93,
@@ -283,7 +282,6 @@ def test_process_metrics_carries_cache_and_token_fields():
     )
     metrics = process_metrics(art)
     assert metrics["cached_input_tokens"] == 800
-    assert metrics["saved_tokens"] == 5000
     assert metrics["saved_external_request_count"] == 7
     agg = aggregate.summarize_metrics([metrics, metrics])
     assert agg["cached_input_tokens"] == 1600 and agg["llm_call_count"] == 186

@@ -40,7 +40,6 @@ class RunWork:
     user_id: int
     query: str
     resume: bool = False
-    resume_input: Any = None
     resume_payload: dict[str, Any] | None = None
     lease_owner: str | None = None
     attempt: int = 0
@@ -65,9 +64,8 @@ class PostgresRunQueue:
         self, session_factory: Callable[[], Any], *, max_global_running: int | None = None
     ) -> None:
         self._session_factory = session_factory
-        self._max_global_running = (
-            max(1, max_global_running) if max_global_running is not None else None
-        )
+        # 下限钳制住在 settings 加载层;None 表示不设全局上限。
+        self._max_global_running = max_global_running
         self._claim_lock = asyncio.Lock()
 
     async def claim(

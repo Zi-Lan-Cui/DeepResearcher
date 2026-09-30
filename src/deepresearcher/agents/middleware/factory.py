@@ -35,6 +35,7 @@ from deepresearcher.agents.middleware.tool_loop_guard import (
     ToolLoopGuardMiddleware,
 )
 from deepresearcher.observability.events import AgentEmit
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.tokens import get_token_estimator
 
 _TOKEN_ESTIMATOR = get_token_estimator()
@@ -68,7 +69,7 @@ class ObservableSummarizationMiddleware(SummarizationMiddleware):
             if removed is not None:
                 kept = [message for message in update["messages"] if message is not removed]
                 self._emit(
-                    "context_compacted",
+                    EventName.CONTEXT_COMPACTED,
                     {
                         "agent": self._agent_name,
                         "before_tokens": count_message_tokens(messages),

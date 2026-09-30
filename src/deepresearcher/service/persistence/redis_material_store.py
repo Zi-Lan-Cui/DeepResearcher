@@ -7,7 +7,6 @@ import logging
 import zlib
 from typing import Any
 
-from deepresearcher.observability.usage_runtime import record_cache_event
 from deepresearcher.tools.web.documents import (
     DocumentOutlineItem,
     DocumentReadRange,
@@ -21,6 +20,7 @@ from deepresearcher.tools.web.materials import (
 )
 from deepresearcher.tools.web.materials.models import build_stored_document
 from deepresearcher.tools.web.materials.store import grep_lines, read_lines
+from deepresearcher.usage_runtime import record_cache_event
 from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
 logger = logging.getLogger("deepresearcher.service.persistence.redis_material_store")
