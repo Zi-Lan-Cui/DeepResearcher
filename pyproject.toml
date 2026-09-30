@@ -39,6 +39,8 @@ langfuse = ["langfuse>=3.15,<4"]  # 可选观测出口;不装则 executor 静默
 dev = [
     "aiosqlite>=0.22.1",
     "coverage[toml]>=7.6.0",
+    # 开发环境常驻观测出口,使类型检查与测试覆盖可选接线;生产仍按 extra 可选安装。
+    "langfuse>=3.15,<4",
     "httpx>=0.28.1",
     "pre-commit>=4.0.0",
     "pyright>=1.1.390",
@@ -108,5 +110,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deepresearcher"]
-# 提示词外置层是随包分发的数据文件（importlib.resources 读取），强制打入 wheel。
 artifacts = ["src/deepresearcher/prompts/*.md"]
