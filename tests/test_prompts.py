@@ -39,7 +39,8 @@ def test_researcher_prompt_teaches_early_evidence_submission_with_examples():
 
     assert "before the next search, page, or widening" in prompt
     assert "Do not call `AddEvidence` per sentence or per window" in prompt
-    assert "never guesses and never trims characters on your behalf" in prompt
+    assert "never guesses and never strips markers on your behalf" in prompt
+    assert "nearby_original_text" in prompt
     assert prompt.count("### Example") == 3
     assert '"quote":"The system remained stable for 50 hours."' in prompt
     assert '"quote":"L18:' not in prompt

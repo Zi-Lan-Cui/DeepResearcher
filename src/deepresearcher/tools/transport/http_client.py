@@ -15,9 +15,10 @@ from curl_cffi.requests.exceptions import RequestException, Timeout
 from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI
 
 from deepresearcher.config import SearchConfig
-from deepresearcher.observability.usage_runtime import record_external_request
+from deepresearcher.timing import elapsed_ms
 from deepresearcher.tools.errors import ProviderExhaustedError, ToolRequestError
 from deepresearcher.tools.transport.url_guard import PublicUrlGuard
+from deepresearcher.usage_runtime import record_external_request
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # 429/503 是“配额/限流”型失败：除了退避重试，还要给调用方留下跨请求的恢复点。
@@ -70,6 +71,10 @@ class HttpClient:
         self.config = config
         self.client = client or AsyncSession(timeout=config.timeout)
         self._owns_client = client is None
+        # 同一长连接上轮换浏览器指纹会让连接携带与新建时不同的 TLS 上下文，
+        # search/generic 走共享连接池、对端是自家 API，进程级固定一档即可；
+        # fetch 每跳独立短会话，逐请求轮换不构成连接复用问题，保持随机。
+        self._pinned_impersonate = random.choice(_IMPERSONATE_TARGETS)
         self._url_guard = url_guard or PublicUrlGuard()
         self._capacity = {
             "search": asyncio.Semaphore(config.max_concurrent_requests),
@@ -109,14 +114,14 @@ class HttpClient:
                         await record_external_request(
                             category=request_kind,
                             status="failed",
-                            duration_ms=round((time.monotonic() - started) * 1000),
+                            duration_ms=elapsed_ms(started),
                             detail={"attempt": attempt + 1},
                         )
                         raise
                 await record_external_request(
                     category=request_kind,
                     status="completed" if response.status_code < 400 else "failed",
-                    duration_ms=round((time.monotonic() - started) * 1000),
+                    duration_ms=elapsed_ms(started),
                     detail={"attempt": attempt + 1, "status_code": response.status_code},
                 )
                 if response.status_code in _RETRYABLE_STATUS:
@@ -186,6 +191,7 @@ class HttpClient:
                 headers=headers,
                 timeout=timeout,
                 allow_redirects=True,
+                impersonate=self._pinned_impersonate,
             )
 
         current_url = url
@@ -212,6 +218,7 @@ class HttpClient:
                         headers=headers,
                         timeout=timeout,
                         allow_redirects=False,
+                        impersonate=random.choice(_IMPERSONATE_TARGETS),
                     )
             else:
                 # 注入的客户端供确定性测试使用；
@@ -225,6 +232,7 @@ class HttpClient:
                     headers=headers,
                     timeout=timeout,
                     allow_redirects=False,
+                    impersonate=random.choice(_IMPERSONATE_TARGETS),
                 )
 
             primary_ip = str(getattr(response, "primary_ip", "") or "")
@@ -261,6 +269,7 @@ class HttpClient:
         headers: Mapping | None,
         timeout: float | None,
         allow_redirects: bool,
+        impersonate: str,
     ) -> Response:
         # curl_cffi 的 stub 暴露的类型比本边界刻意接受的更窄。
         request = cast(Any, client.request)
@@ -272,7 +281,7 @@ class HttpClient:
             headers=headers,
             timeout=timeout,
             allow_redirects=allow_redirects,
-            impersonate=random.choice(_IMPERSONATE_TARGETS),
+            impersonate=impersonate,
         )
 
     async def aclose(self) -> None:

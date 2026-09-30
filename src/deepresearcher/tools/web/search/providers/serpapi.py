@@ -1,6 +1,7 @@
 """SerpAPI 搜索 SearchProvider。"""
 
 from deepresearcher.config import SearchConfig
+from deepresearcher.errors import clip_text
 from deepresearcher.tools.errors import ToolParseError, ToolRequestError
 from deepresearcher.tools.transport.http_client import HttpClient
 from deepresearcher.tools.web.search.models import SearchResult
@@ -26,7 +27,7 @@ class SerpApiSearchProvider:
             data = response.json()
             if data.get("error"):
                 raise ToolRequestError(
-                    f"SerpAPI 返回错误：{str(data['error'])[:500]}", retryable=False
+                    f"SerpAPI 返回错误：{clip_text(str(data['error']))}", retryable=False
                 )
             return [
                 {

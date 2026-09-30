@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from deepresearcher.errors import AgentError
+from deepresearcher.errors import AgentError, clip_text
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas.limits import RUN_ERROR_TEXT_HARD_LIMIT_CHARS
@@ -30,7 +30,6 @@ class StopReason(StrEnum):
 
     SUFFICIENT = "supervisor_sufficient"
     SUBMITTED_WITH_GAPS = "supervisor_submitted_with_gaps"
-    SUFFICIENT_WITHOUT_EVIDENCE = "sufficient_without_evidence"
     ROUND_BUDGET_EXHAUSTED = "round_budget_exhausted"
     GLOBAL_ROUND_BUDGET_EXHAUSTED = "global_round_budget_exhausted"
     MODEL_CALL_LIMIT_EXCEEDED = "supervisor_model_call_limit_exceeded"
@@ -77,7 +76,6 @@ _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
     # 全覆盖由 test_sections 锁定:缺描述会静默落到语义相反的兜底句。
     StopReason.SUFFICIENT: "Supervisor 确认现有材料足以形成完整研究报告。",
     StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
-    StopReason.SUFFICIENT_WITHOUT_EVIDENCE: "充分性决策与 Evidence 状态矛盾。",
     StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过天花板）。",
@@ -90,7 +88,6 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
     StopReason.ROUND_BUDGET_EXHAUSTED: 20,
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: 25,
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: 30,
-    StopReason.SUFFICIENT_WITHOUT_EVIDENCE: 40,
     StopReason.AGENT_FAILED: 45,
     StopReason.SUBMITTED_WITH_GAPS: 50,
     StopReason.SUFFICIENT: 60,
@@ -123,9 +120,9 @@ class RunError(BaseModel):
     def _clip_long_text(cls, value: object) -> object:
         # 校验器只截断不抛错:错误处理路径自身绝不允许因超长文本再造异常。
         text = str(value)
-        if len(text) > RUN_ERROR_TEXT_HARD_LIMIT_CHARS:
-            return text[: RUN_ERROR_TEXT_HARD_LIMIT_CHARS - 8] + "…[截断]"
-        return value
+        if len(text) <= RUN_ERROR_TEXT_HARD_LIMIT_CHARS:
+            return value
+        return clip_text(text, RUN_ERROR_TEXT_HARD_LIMIT_CHARS)
 
     @classmethod
     def from_exception(cls, stage: str, error: Exception) -> "RunError":
@@ -145,6 +142,17 @@ class RunError(BaseModel):
             retryable=False,
             detail=error.__class__.__name__,
         )
+
+
+def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str, Any]]:
+    """失败事件与失败状态的公共字段单源:node_runner(状态侧)与
+    instrumentation(sink 侧)由同一 RunError 构造,error/code/retryable 不再两处各自演化;
+    link/duration 等场景专有字段由调用方自行补进 make_node_event。"""
+    error = RunError.from_exception(stage, exc)
+    return error, {
+        "error": error.message,
+        "payload": {"code": error.code, "retryable": error.retryable},
+    }
 
 
 class RenderOutcome(StrEnum):
@@ -342,7 +350,7 @@ class WriterResult(BaseModel):
     run: RunStatus | None = None
     writer: WriterProgress | None = None
     review: ReviewProgress | None = None
-    writer_draft: str | None = None
+    rejected_draft: str | None = None
     report_draft: str | None = None
     writer_selected_evidence_ids: list[str] | None = None
 

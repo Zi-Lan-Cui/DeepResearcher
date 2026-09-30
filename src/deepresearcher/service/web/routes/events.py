@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.service.events.projector import project
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.web.dependencies import app_state, owned_run
@@ -76,11 +77,13 @@ async def run_events(
             terminal = await state.manager.terminal_state(run.id)
             if terminal is None:
                 return frames, False
+            # 合成号必须严格大于最后已投帧:前端按 seq 水位去重,
+            # 同号帧会被当作回放丢弃,兜底 done 反而永远到不了客户端。
             synthesized = project(
                 {
                     "run_id": run.id,
-                    "event_type": "run_done",
-                    "seq": last_seq,
+                    "event_type": EventName.RUN_DONE,
+                    "seq": last_seq + 1,
                     "payload": terminal,
                 }
             )
@@ -137,10 +140,11 @@ async def run_events(
                         yield ": ping\n\n"
                     continue
                 for item in items:
-                    if item.get("event_type") == "text_delta":
-                        frame = project(item)
-                        if frame is not None:
-                            yield _sse(frame)
+                    # 预览总线只投 text_delta(preview_event 白名单闸保证);
+                    # project() 默认拒绝,非白名单帧自然为 None。
+                    frame = project(item)
+                    if frame is not None:
+                        yield _sse(frame)
         finally:
             state.manager.signal_bus.unsubscribe("event_committed", notify_key)
             if preview_subscription is not None:

@@ -19,6 +19,7 @@ from deepresearcher.agents.middleware import (
     build_agent_middleware,
 )
 from deepresearcher.agents.researcher import ResearchAgent
+from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
     SupervisorDeps,
     SupervisorLoopContext,
@@ -30,9 +31,9 @@ from deepresearcher.agents.supervisor.tools import (
     build_supervisor_tools,
 )
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
-from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.prompts import (
@@ -41,30 +42,18 @@ from deepresearcher.prompts import (
     load_prompt,
     render_data_section,
 )
-from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
-    CoveredTopic,
     RenderOutcome,
-    ReportBrief,
-    ResearchAspect,
-    ResearchDirectionResult,
-    ResearchSynthesis,
     ReviewProgress,
     RunStatus,
     StopReason,
     SupervisorProgress,
     SupervisorStateUpdate,
-    WriterDirective,
     WriterProgress,
-)
-from deepresearcher.schemas.limits import (
-    EVIDENCE_REFERENCES_HARD_LIMIT,
-    STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
 )
 from deepresearcher.state import ResearchState, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
-_FALLBACK_SUMMARY_CLAIM_LIMIT = 6
 
 
 # 天花板消息恒在会话尾部数条内;窗口留一小段冗余防 after-hook 顺序变化。
@@ -122,10 +111,6 @@ class ResearchSupervisor:
                         agent_name="Supervisor",
                         event_slug="supervisor",
                         model=self.llm,
-                        # 一次节点访问 = 一轮；ModelCallLimit 只是防失控天花板：
-                        # 一轮最多 max_subtasks_per_round 次委托 + 读工作集/决策/收尾的余量。
-                        # 轮次预算只由 services.delegate_research 的本地 hard check
-                        # 执行，不提示给模型。
                         max_turns=config.max_subtasks_per_round + 10,
                         context_window_tokens=context_window_tokens,
                         retry_tools=[["ResearchDelegate"]],
@@ -137,8 +122,6 @@ class ResearchSupervisor:
                             "ResearchComplete",
                         },
                         tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
-                        # ResearchComplete 接受、综合稿落盘后由 SubmittedExitMiddleware
-                        # 在下一跳静默出环;循环终结不交给 return_direct/Command。
                         exit_probe=lambda ctx, _state: bool(
                             ctx is not None and ctx.loop_state.completed_synthesis is not None
                         ),
@@ -153,7 +136,7 @@ class ResearchSupervisor:
     def _supervisor_history_from_state(
         state: ResearchState,
     ) -> list[BaseMessage]:
-        """从图 State 恢复 Supervisor 私有上下文；首次运行时写入初始委托。"""
+        """从图 State 恢复 Supervisor 私有上下文；历史为空时以初始委托构造首个列表。"""
         history = list(state.get("supervisor_messages", []))
         if history:
             return history
@@ -222,9 +205,7 @@ class ResearchSupervisor:
             {
                 "working_set_revision": loop_state.working_set_revision,
                 "working_set": working_set_snapshot(loop_state, include_reserve=False),
-                "research_synthesis": self._research_synthesis_observation(
-                    loop_state.research_synthesis
-                ),
+                "research_synthesis": synthesis_card(loop_state.research_synthesis),
             },
         )
 
@@ -263,7 +244,7 @@ class ResearchSupervisor:
             loop_state,
             outcome=loop_state.stop_reason or "agent_loop_completed",
         )
-        return self._final_update(state, loop_state)
+        return services.compose_final_update(state, loop_state, self.config)
 
     def _append_review_rejection(self, state: ResearchState, history: list[BaseMessage]) -> None:
         """把审阅拒绝作为消息注入历史；如何响应留给工具循环里的模型。"""
@@ -293,7 +274,7 @@ class ResearchSupervisor:
         history: list[BaseMessage],
         payload: dict[str, object],
     ) -> None:
-        """把轮次预算等管理信息作为轻量观察写入 Supervisor 历史。"""
+        """把当前工作集与综合稿快照作为轮次观察追加进 Supervisor 历史。"""
         history.append(HumanMessage(content=render_data_section("研究管理观察", payload)))
 
     def _emit_round_completed(
@@ -305,7 +286,7 @@ class ResearchSupervisor:
         outcome: str,
     ) -> None:
         self._emit_audit_event(
-            "research_round_completed",
+            EventName.RESEARCH_ROUND_COMPLETED,
             {
                 "round": round_no,
                 "task_count": task_count,
@@ -330,219 +311,6 @@ class ResearchSupervisor:
                 "total_evidence_count": len(loop_state.evidences),
             },
         )
-
-    def _final_update(
-        self,
-        state: ResearchState,
-        loop_state: SupervisorLoopState,
-    ) -> SupervisorStateUpdate:
-        """把工作状态转为 State 增量与路由决策。"""
-        # 默认终态只是兜底,不是优先级判断:整轮没产生任何信号时才补。
-        # 保持 `is None` + 直接赋值:地板不参与 rank 竞争,任何已采纳的终态
-        # (哪怕权威度更低)都不该被"预算耗尽"的猜测覆盖。
-        if not loop_state.sufficient and loop_state.stop_reason is None:
-            loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
-        full_synthesis = loop_state.completed_synthesis
-        latest_synthesis = loop_state.research_synthesis
-        partial_synthesis = (
-            self._partial_synthesis(loop_state, latest_synthesis)
-            if loop_state.stop_reason is not None and loop_state.stop_reason.allows_partial_report
-            else None
-        )
-        selected_synthesis = full_synthesis or partial_synthesis
-        can_write = selected_synthesis is not None
-        writer_directive = (
-            self._build_writer_directive(state, loop_state, selected_synthesis)
-            if selected_synthesis is not None
-            else None
-        )
-        research_status = "completed" if loop_state.sufficient else "incomplete"
-        generation_mode = (
-            "full" if loop_state.sufficient else "partial" if can_write else "not_ready"
-        )
-        can_continue_to_writer = can_write
-        # evidences / source_refs / task_results 的 reducer 幂等(merge_evidences /
-        # merge_task_results / merge_unique),直接把 SupervisorLoopState 全量副本交给 channel;
-        # reducer 按 id 折回原样,等价于只发新增。
-        return SupervisorStateUpdate(
-            evidences=cast(list[Evidence], loop_state.evidences),
-            source_refs=cast(list[str], loop_state.source_refs),
-            task_results=cast(list[ResearchDirectionResult], loop_state.task_results),
-            working_set_revision=loop_state.working_set_revision,
-            research_synthesis=loop_state.research_synthesis,
-            writer_directive=writer_directive,
-            active_evidence_ids=sorted(loop_state.active_evidence_ids),
-            run=RunStatus(
-                phase="writing" if can_continue_to_writer else "rendering",
-                terminal_reason="" if can_continue_to_writer else str(loop_state.stop_reason or ""),
-            ),
-            supervisor=SupervisorProgress(
-                status=research_status,
-                current_round=loop_state.current_round,
-                coverage_gaps=loop_state.coverage_gaps,
-                generation_mode=generation_mode,
-                is_sufficient=loop_state.sufficient,
-            ),
-            writer=WriterProgress(
-                status="not_started",
-                feedback=(
-                    ""
-                    if loop_state.sufficient
-                    else self._describe_research_stop(
-                        loop_state.stop_reason,
-                        loop_state.coverage_gaps,
-                        loop_state.failure_details,
-                    )
-                ),
-            ),
-            supervisor_next=NodeName.WRITER if can_write else NodeName.RENDER_FINAL_REPORT,
-        )
-
-    def _partial_synthesis(
-        self,
-        loop_state: SupervisorLoopState,
-        latest: ResearchSynthesis | None,
-    ) -> ResearchSynthesis | None:
-        """选择可部分交付的最新综合稿；无综合稿时生成最小固定版。"""
-        active_ids = set(loop_state.active_evidence_ids)
-        if latest is not None and latest.selected_evidence_ids:
-            if set(latest.selected_evidence_ids).issubset(active_ids):
-                return latest
-        evidences = loop_state.active_evidences()
-        if not evidences:
-            return None
-        selected_ids = [item.evidence_id for item in evidences]
-        claims = list(dict.fromkeys(item.claim.strip() for item in evidences if item.claim.strip()))
-        summary = (
-            "；".join(claims[:_FALLBACK_SUMMARY_CLAIM_LIMIT])
-            or "已收集可追溯 Evidence，但未形成模型综合结论。"
-        )
-        gap = "研究未达到完整标准；报告只能陈述已验证材料及其适用边界。"
-        return ResearchSynthesis(
-            revision=(latest.revision + 1 if latest is not None else 1),
-            based_on_working_set_revision=loop_state.working_set_revision,
-            answer_goal=loop_state.research_query or "回答用户的研究问题",
-            overall_summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
-            aspects=[
-                ResearchAspect(
-                    aspect_id="fallback-evidence",
-                    topic="已验证材料",
-                    role="保守回应用户问题",
-                    status="partial",
-                    summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
-                    evidence_ids=selected_ids[:EVIDENCE_REFERENCES_HARD_LIMIT],
-                    remaining_gap=gap,
-                )
-            ],
-            selected_evidence_ids=selected_ids,
-            open_gaps=[gap],
-            conflicts=[],
-            next_actions=[],
-            decision_rationale="系统在研究结束时基于当前活跃 Evidence 生成最小可交付综合稿。",
-        )
-
-    def _build_writer_directive(
-        self,
-        state: ResearchState,
-        loop_state: SupervisorLoopState,
-        synthesis: ResearchSynthesis,
-    ) -> WriterDirective:
-        """从冻结综合版本派生 Writer 唯一可见的写作指令。
-
-        ReportBrief 在指令内部构造、随指令一起交接；State 顶层不再有平行的第二副本。
-        """
-        report_brief = self._report_brief_from_synthesis(synthesis)
-        review = section(state, "review", ReviewProgress)
-        previous_draft = str(state.get("report_draft") or state.get("writer_draft") or "")
-        revision_instructions = (
-            [
-                *([review.feedback] if review.feedback else []),
-                *(f"修复缺口：{gap}" for gap in review.gaps),
-            ]
-            if review.status == "rejected"
-            else []
-        )
-        evidence_ids = list(
-            dict.fromkeys(
-                evidence_id
-                for topic in report_brief.covered_topics
-                for evidence_id in topic.evidence_ids
-            )
-        )
-        if not evidence_ids:
-            # 旧 checkpoint 的 CoveredTopic 没有 evidence_ids，保留冻结综合稿的选择集。
-            evidence_ids = list(synthesis.selected_evidence_ids)
-        return WriterDirective(
-            query=str(state.get("clarified_query") or state.get("query") or ""),
-            report_brief=report_brief,
-            research_status="completed" if loop_state.sufficient else "incomplete",
-            generation_mode="full" if loop_state.sufficient else "partial",
-            evidence_ids=evidence_ids,
-            known_gaps=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
-                : self.config.report_max_caveats
-            ],
-            revision_instructions=revision_instructions,
-            previous_draft=previous_draft,
-        )
-
-    @staticmethod
-    def _research_synthesis_observation(
-        synthesis: ResearchSynthesis | None,
-    ) -> dict[str, object] | None:
-        """每轮固定注入当前综合稿，避免上下文压缩后丢失研究认知。"""
-        return synthesis_card(synthesis)
-
-    def _report_brief_from_synthesis(self, synthesis: ResearchSynthesis) -> ReportBrief:
-        """从冻结综合版本派生报告任务书，避免 Complete 再提交第二事实源。"""
-        topics = [
-            CoveredTopic(
-                topic=aspect.topic,
-                role=aspect.role,
-                reason=aspect.summary or aspect.remaining_gap,
-                required=aspect.required,
-                evidence_ids=list(aspect.evidence_ids),
-            )
-            for aspect in synthesis.aspects
-        ]
-        return ReportBrief(
-            answer_goal=synthesis.answer_goal,
-            covered_topics=topics,
-            required_points=[aspect.topic for aspect in synthesis.aspects if aspect.required],
-            caveats=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
-                : self.config.report_max_caveats
-            ],
-        )
-
-    @staticmethod
-    def _describe_research_stop(
-        stop_reason: StopReason | None,
-        coverage_gaps: list[str],
-        failure_details: list[str],
-    ) -> str:
-        """把研究无法继续的原因保留给最终不完整报告与事件诊断。
-
-        文案单一来源在 ``StopReason.description``；这里只补充逐次运行的
-        具体细节，不再各自维护字符串清单。执行失败（AGENT_FAILED）取
-        failure_details，其余取 coverage_gaps——两条通道不互串内容。
-        """
-        if stop_reason is StopReason.AGENT_FAILED:
-            detail = next(
-                (item for item in reversed(failure_details) if item.strip()),
-                "未记录到异常详情，详见运行事件流。",
-            )
-            return f"{stop_reason.description} {detail}"
-        # 诊断优先取研究内容缺口;无缺口可报时退回执行/协议尾注——failure_details
-        # 只进诊断文案,不进报告"未闭合缺口"清单,两通道规矩不变。
-        detail = next(
-            (item for item in reversed([*coverage_gaps, *failure_details]) if item.strip()),
-            "未形成可验证的完整覆盖。",
-        )
-        prefix = (
-            stop_reason.description
-            if stop_reason
-            else "Supervisor 未确认现有材料足以形成完整研究报告。"
-        )
-        return f"{prefix} {detail}"
 
     def _emit_audit_event(
         self,

@@ -92,7 +92,6 @@ def make_current_user(codec: TokenCodec, session_factory: Callable[[], Any]):
             user = await session.get(User, user_id)
         if user is None:
             raise HTTPException(status_code=401, detail="请先登录。")
-        request.state.user = user  # 下游路由复用，避免二次查表
         return user
 
     return current_user

@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_trace
 
+from deepresearcher.errors import clip_text
 from deepresearcher.observability.tracing.context import bind_context, current_context
 
 # OTel 语义惯例:出站依赖调用(工具触网)用 CLIENT,图内编排节点用 INTERNAL。
@@ -85,7 +86,7 @@ def _recording(
             span.set_attribute("deepresearcher.status", "cancelled")
             span.set_attribute("deepresearcher.error", type(exc).__name__)
         else:
-            error = (str(exc).strip() or type(exc).__name__)[:500]
+            error = clip_text(str(exc).strip() or type(exc).__name__)
             span.set_status(opentelemetry_trace.StatusCode.ERROR, error)
             span.set_attribute("langfuse.observation.level", "ERROR")
             span.set_attribute("langfuse.observation.status_message", error)

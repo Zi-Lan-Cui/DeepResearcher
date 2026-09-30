@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 
 import pytest
@@ -585,6 +586,103 @@ def test_add_evidence_validates_before_ranking_by_confidence():
     assert any(
         item["reason"] == "quote_paraphrase" for item in result["rejected"]
     )  # 宽松归一仍不过 → 判定为模型改述
+
+
+def test_add_evidence_repairs_punctuation_only_quote_against_source():
+    # 账本实测过半拒绝只差标点样式：回退定位到原文子串直接入池，不再烧模型回合改抄。
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(
+            text='报告称“非常稳健”，通过验收。其余正文。',
+            title="标点修复",
+            source_url="https://example.com/repair",
+        )
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
+    loop_state.documents[document.document_id] = document
+    events: list[dict[str, object]] = []
+
+    def capture_emit(event_type: str, payload: dict[str, object], **kwargs: object) -> None:
+        del kwargs
+        if event_type == "direction_evidence_added":
+            events.append(payload)
+
+    deps = dataclasses.replace(agent._deps, emit=capture_emit)
+    result = asyncio.run(
+        services.add_evidence(
+            deps,
+            TASK,
+            loop_state,
+            {},
+            asyncio.Lock(),
+            [
+                {
+                    "document_id": document.document_id,
+                    "claim": "系统被认定稳健。",
+                    # 词序列与原文一致，仅引号/逗号样式不同。
+                    "quote": "报告称'非常稳健',通过验收",
+                    "confidence": 0.9,
+                }
+            ],
+            "标点变体提交",
+        )
+    )
+
+    assert len(result["accepted"]) == 1
+    assert loop_state.evidences[0].quote == "报告称“非常稳健”，通过验收"
+    assert events[0]["accepted_via_punctuation"] == 1
+    assert events[0]["rejected_count"] == 0
+
+
+def test_add_evidence_paraphrase_receipt_carries_nearest_source_sentence():
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(
+            text="The system remained stable for 50 hours. Another matter entirely here.",
+            title="改述提示",
+            source_url="https://example.com/hint",
+        )
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
+    loop_state.documents[document.document_id] = document
+
+    result = asyncio.run(
+        services.add_evidence(
+            agent._deps,
+            TASK,
+            loop_state,
+            {},
+            asyncio.Lock(),
+            [
+                {
+                    "document_id": document.document_id,
+                    "claim": "系统稳定运行两天。",
+                    "quote": "The system stayed up for two days.",
+                    "confidence": 0.9,
+                }
+            ],
+            "改述提交",
+        )
+    )
+
+    assert result["rejected"][0]["reason"] == "quote_paraphrase"
+    assert result["rejected"][0]["nearby_original_text"] == (
+        "The system remained stable for 50 hours"
+    )
 
 
 def test_concurrent_add_evidence_commits_under_one_source_limit():

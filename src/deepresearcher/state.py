@@ -13,7 +13,6 @@ from collections.abc import MutableMapping
 from operator import add
 from typing import (
     Annotated,
-    Literal,
     NotRequired,
     TypedDict,
     TypeVar,
@@ -56,12 +55,8 @@ class SubTask(TypedDict):
     display_title: NotRequired[str]
     # Evidence 召回可选的内部细分；缺失时以 question 作为唯一检索查询。
     research_direction: NotRequired[str]
-    subquestions: NotRequired[list[str]]
     round: NotRequired[int]
     sequence: NotRequired[int]
-    type: Literal["search", "rag", "read", "memory"]
-    status: Literal["pending", "failed"]
-    assigned_agent: str
     worker_id: NotRequired[str]
     worker_index: NotRequired[int]
     parent_task_id: NotRequired[str]
@@ -123,7 +118,6 @@ class ResearchState(TypedDict, total=False):
     route_reason: str
     answer_mode: AnswerMode
     research_brief: str
-    clarification_question: str
     draft_answer: str
 
     supervisor_messages: Annotated[list[BaseMessage], add]
@@ -139,7 +133,9 @@ class ResearchState(TypedDict, total=False):
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
     supervisor_next: NodeName
 
-    writer_draft: str
+    # Writer 未通过校验的兜底草稿(exhausted/citation_protocol 失败时写入);
+    # 与 report_draft 语义相反,rejection 回流时作为 Supervisor 的修订底稿。
+    rejected_draft: str
     # Writer 产出的 evidence_id 键草稿(含 [[cite:evidence_id]] 标记);
     # 审阅通过后由终检渲染层编号渲染为 report。
     report_draft: str
@@ -161,16 +157,6 @@ class ResearchState(TypedDict, total=False):
 _OPTIONAL_SCALAR_KEYS = frozenset(
     key for key, hint in get_type_hints(ResearchState).items() if type(None) in get_args(hint)
 )
-
-# operator.add 归约的通道集合(fold 累加、不幂等)。编译子图以普通节点挂进
-# 主图时,其终态携带全部通道,这些键必须整额覆写回主图——见 graph.py 的
-# _subgraph_routed_node;merge_* 家族重放同值无副作用,add 不能。
-ADD_REDUCER_KEYS = frozenset(
-    key
-    for key, hint in get_type_hints(ResearchState, include_extras=True).items()
-    if add in get_args(hint)[1:]
-)
-
 
 def restore_state_models(state: dict[str, object]) -> None:
     """恢复 JSON checkpoint 中被还原为 dict 的嵌套模型。"""

@@ -146,6 +146,32 @@ def test_preview_event_rejects_business_events_and_unknown_channels():
     )
 
 
+def test_preview_channel_whitelist_single_source_across_gates():
+    """总线闸与投影闸同读 PREVIEW_CHANNELS:任何一边私设的通道集合漂移,
+    都会在这里表现为"某通道在两道闸结论不同"而被抓住。"""
+    from deepresearcher.service.events.projector import project
+    from deepresearcher.service.preview.protocol import PREVIEW_CHANNELS
+
+    for channel in ("router", "clarify", "writer", "secret"):
+        record = {
+            "run_id": "run-1",
+            "event_type": "text_delta",
+            "seq": 1,
+            "payload": {"channel": channel, "text": "x"},
+        }
+        assert preview_event(record, run_id="run-1") is None
+        assert project(record) is None
+    assert PREVIEW_CHANNELS == frozenset({"supervisor"})
+    allowed = {
+        "run_id": "run-1",
+        "event_type": "text_delta",
+        "seq": 1,
+        "payload": {"channel": "supervisor", "text": "正在规划"},
+    }
+    assert preview_event(allowed, run_id="run-1") is not None
+    assert project(allowed) is not None
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     not os.getenv("SERVICE_TEST_REDIS_URL"),

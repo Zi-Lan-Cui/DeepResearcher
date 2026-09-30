@@ -94,7 +94,7 @@ $("query").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("submit").click();
 });
 
-function fmtAgo(iso) {
+function formatElapsedAgo(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   const s = (Date.now() - d.getTime()) / 1000;
@@ -156,7 +156,7 @@ function renderRunsPage() {
     counts.textContent = (run.evidence_count || run.source_count)
       ? "证据 " + run.evidence_count + " · 来源 " + run.source_count : "";
     const time = document.createElement("span");
-    time.className = "run-time"; time.textContent = fmtAgo(run.created_at);
+    time.className = "run-time"; time.textContent = formatElapsedAgo(run.created_at);
     row.append(b, q, counts, time);
     row.onclick = () => { location.hash = "#/run/" + run.id; };
     list.appendChild(row);
@@ -523,15 +523,15 @@ async function onRunDone(data) {
   }
   $("clarification-card").classList.add("hide");
   if (["completed", "failed", "cancelled"].includes(detail.status)) settleRunningBlocks();
-  const md = detail.report_markdown || detail.error_message || "（无报告内容）";
-  renderReport(md, detail.citations || [], detail);
+  const reportMarkdown = detail.report_markdown || detail.error_message || "（无报告内容）";
+  renderReport(reportMarkdown, detail.citations || [], detail);
 }
 
 /* 渲染器拼在 markdown 里的报告头（# 研究报告 / ## 研究问题 / > 横幅）与页面
    头部卡片信息重复——剥出正文，统计信息改为独立的元提示栏（数字取 detail 字段）。 */
-function stripReportHead(md) {
-  const lines = md.split("\n");
-  if (!/^#\s*研究报告/.test(lines[0] || "")) return md;
+function stripReportHead(markdownText) {
+  const lines = markdownText.split("\n");
+  if (!/^#\s*研究报告/.test(lines[0] || "")) return markdownText;
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
   if (/^##\s*研究问题/.test(lines[i] || "")) {
@@ -575,15 +575,15 @@ function renderReportMeta(detail) {
    前端把报告拆成正文/表两段——正文链接化渲染，面板带序号与锚点 id，
    点击 [证据N] 即跳转。citations_json 仅作解析失败时的无编号兜底。
    存量报告用旧词（[来源N]/参考来源），解析式两种词都收；面板标题随报告原文。 */
-function splitReport(md) {
-  const m = md.match(/^## (?:证据来源|参考来源)[ \t]*$/m);
-  if (!m) return [md, null, "证据来源"];
-  return [md.slice(0, m.index), md.slice(m.index + m[0].length), m[0].replace(/^## /, "")];
+function splitReport(markdownText) {
+  const m = markdownText.match(/^## (?:证据来源|参考来源)[ \t]*$/m);
+  if (!m) return [markdownText, null, "证据来源"];
+  return [markdownText.slice(0, m.index), markdownText.slice(m.index + m[0].length), m[0].replace(/^## /, "")];
 }
 
-function parseReferences(refMd) {
+function parseReferences(referencesMarkdown) {
   const items = [];
-  for (const raw of refMd.split("\n")) {
+  for (const raw of referencesMarkdown.split("\n")) {
     const line = raw.trim();
     let m = line.match(/^- \[((?:证据|来源)(\d+))\]\s*(.*?):\s*(\S+)\s*$/);
     if (m) {
@@ -598,15 +598,15 @@ function parseReferences(refMd) {
   return items;
 }
 
-function renderReport(md, fallbackCitations, detail) {
-  const stripped = stripReportHead(md);
-  const [bodyMd, refMd, refHeading] = splitReport(stripped);
+function renderReport(markdownText, fallbackCitations, detail) {
+  const stripped = stripReportHead(markdownText);
+  const [bodyMarkdown, referencesMarkdown, refHeading] = splitReport(stripped);
   renderReportMeta(detail);
   $("report-actions").classList.toggle("hide", !(detail && detail.report_markdown));
   const reportEl = $("report");
   // 论文式角标：[证据N] → <sup>[N]</sup> 可点击上标（存量报告的 [来源N] 同收）；
   // sup/a/href 均在 DOMPurify 默认白名单内，消毒只滤恶意载荷、不滤这个标记。
-  const linkified = bodyMd.replace(
+  const linkified = bodyMarkdown.replace(
     /\[(?:证据|来源)(\d+)\]/g,
     (_s, n) => `<sup class="cite-ref"><a href="#src-${n}">[${n}]</a></sup>`,
   );
@@ -620,7 +620,7 @@ function renderReport(md, fallbackCitations, detail) {
 
   const sourcesEl = $("sources");
   sourcesEl.innerHTML = "";
-  const items = refMd ? parseReferences(refMd) : [];
+  const items = referencesMarkdown ? parseReferences(referencesMarkdown) : [];
   if (!items.length) {
     $("sources-title").classList.toggle("hide", !fallbackCitations.length);
     for (const c of fallbackCitations) {          // 兜底：老数据无表格式时列原始引用

@@ -19,13 +19,19 @@ class NodeName(StrEnum):
     QUICK_ANSWER = "quick_answer"
     SUPERVISOR = "supervisor"
     WRITER = "writer"
-    REVIEWER = "reflection"
+    REVIEWER = "review"
     RENDER_FINAL_REPORT = "render_final_report"
 
 
 # failed：node_runner 接管；rendering：节点自行宣告的提前终止（预算耗尽、
 # 即时回答、证据不足、写作失败）；completed：防御性收束。
 TERMINAL_PHASES = frozenset({"failed", "rendering", "completed"})
+
+# 可丢弃预览通道的白名单唯一事实源:值是产出方的节点名(astream 的 ns 头)。
+# executor(生产)、preview 总线闸、projector(投影闸)三处同读这一处,放开新通道
+# 只改这里;持久事件面与预览面互不 import 的守卫(tests/test_service_architecture)
+# 决定了常量必须住在两面都可达的中性词表模块。
+PREVIEW_CHANNELS = frozenset({NodeName.SUPERVISOR})
 
 
 def _field(state: Mapping[str, object], name: str, field: str, default: str) -> str:

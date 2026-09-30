@@ -37,6 +37,11 @@ ALL_STATUSES = (
     *TERMINAL_STATUSES,
 )
 
+# 用户已受理且未完成的行——per-user 并发配额计数的唯一词表。
+# awaiting_input 必须计入:answer_resume 把它 CAS 回 queued 时不重过准入闸,
+# 不计则可先攒一批待澄清行、再逐一回答绕过上限。
+OUTSTANDING_STATUSES = tuple(sorted(frozenset(ALL_STATUSES) - frozenset(TERMINAL_STATUSES)))
+
 
 @dataclass(frozen=True)
 class Transition:

@@ -13,9 +13,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
-from deepresearcher.observability.usage_runtime import enforce_usage_budget
 from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
 from deepresearcher.schemas.tool_args import TOOL_RECEIPT_PREFIX
+from deepresearcher.timing import elapsed_ms
+from deepresearcher.usage_runtime import enforce_usage_budget
 
 LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 _ERROR_PREVIEW_CHARS = 400
@@ -82,7 +83,6 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             {
                 **self._event_context(runtime),
                 "turn": turn,
-                "model_call_count": turn,
                 "run_limit": self.run_limit,
                 "tool_names": [str(call.get("name", "")) for call in last.tool_calls or []],
                 "content_chars": len(content),
@@ -168,7 +168,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
 
     @staticmethod
     def _duration_ms(started_at: float) -> int:
-        return max(0, round((monotonic() - started_at) * 1_000))
+        return elapsed_ms(started_at)
 
     @classmethod
     def _result_summary(cls, result: Any, *, redact: bool = False) -> dict[str, object]:

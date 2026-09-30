@@ -1,22 +1,53 @@
 from deepresearcher.evidence.validator import (
     collapse_whitespace,
+    nearest_source_passage,
     quote_in_source,
-    quote_matches_ignoring_punctuation,
+    quote_verbatim_span,
     quote_verbatim_strict,
 )
 
 
-def test_punctuation_only_diff_is_format_variant_not_paraphrase():
-    # 源用弯引号/破折号，模型写成直引号/连字符：词序列一致 → 格式变体（第三档能命中）。
-    source = "The report — “very robust” — passed."
+def test_punctuation_only_diff_repairs_to_source_span():
+    # 源用弯引号/破折号，模型写成直引号/连字符：词序列一致 → 回退定位到原文子串。
+    source = "引言。The report — “very robust” — passed. 结尾"
     quote = 'The report - "very robust" - passed.'
-    assert quote_matches_ignoring_punctuation(source, quote)
     assert not quote_in_source(source, quote)  # 连字符/引号样式差异，第二档仍不过
+    assert quote_verbatim_span(source, quote) == "The report — “very robust” — passed"
+
+
+def test_verbatim_span_returns_strict_source_substring():
+    # 修复产物必须过最严逐字口径，下游校验视同直接引用。
+    source = "报告称“非常稳健”，通过验收。其余正文。"
+    repaired = quote_verbatim_span(source, "报告称'非常稳健',通过验收")
+    assert repaired == "报告称“非常稳健”，通过验收"
+    assert quote_verbatim_strict(source, repaired)
+
+
+def test_verbatim_span_rejects_paraphrase():
+    source = "The system remained stable for 50 hours."
+    assert quote_verbatim_span(source, "The device stayed up two days") is None
+
+
+def test_verbatim_span_rejects_empty_or_punctuation_only_quote():
+    assert quote_verbatim_span("已有正文", "") is None
+    assert quote_verbatim_span("已有正文", "—…—") is None  # 归一后为空串不算命中
+
+
+def test_nearest_passage_points_at_the_overlapping_sentence():
+    source = "The system remained stable for 50 hours. Another matter entirely here."
+    hint = nearest_source_passage(source, "The system stayed stable for two days")
+    assert hint == "The system remained stable for 50 hours"
+
+
+def test_nearest_passage_returns_none_when_nothing_is_similar():
+    source = "完全不同的一句话。Another matter entirely."
+    assert nearest_source_passage(source, "quantum tunneling in semiconductors") is None
 
 
 def test_reworded_quote_is_paraphrase_across_all_tiers():
     source = "The system remained stable for 50 hours."
-    assert not quote_matches_ignoring_punctuation(source, "The device stayed up two days")
+    assert quote_verbatim_span(source, "The device stayed up two days") is None
+    assert not quote_in_source(source, "The device stayed up two days")
 
 
 def test_encoding_variants_rescued_by_loose_but_rejected_by_strict():

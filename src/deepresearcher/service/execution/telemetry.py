@@ -21,7 +21,7 @@ from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing import ledger
 from deepresearcher.service.settings import ServiceConfig
 
-logger = get_logger("deepresearcher.service.telemetry")
+logger = get_logger("deepresearcher.service.execution.telemetry")
 
 
 def configure_tracer_provider(config: ServiceConfig) -> None:

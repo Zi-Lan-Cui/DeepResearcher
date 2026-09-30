@@ -25,9 +25,6 @@ def _real_researcher_context() -> ResearcherLoopContext:
         "id": "task-0001",
         "run_id": "run-1",
         "question": "Redis 恢复",
-        "type": "search",
-        "status": "pending",
-        "assigned_agent": "research_agent",
     }
     return ResearcherLoopContext(
         deps=ResearcherDeps(

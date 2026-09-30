@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from deepresearcher.schemas import StopReason
 from deepresearcher.service.events.projector import project
 
 # 每个用例都会把 SECRET 塞进这些被禁字段，任何一帧的输出 JSON 里都不许出现。
@@ -69,7 +68,7 @@ def test_node_completed_closes_stage_with_conclusion():
         _record("node_completed", {"current_round": 2, "evidences_count": 49}, node="supervisor")
     )
     assert sup.data["text"] == "规划完成 · 第 2 轮 · 本次新增证据 49"
-    reviewer = project(_record("node_completed", {"review_status": "approved"}, node="reflection"))
+    reviewer = project(_record("node_completed", {"review_status": "approved"}, node="review"))
     assert reviewer.data["text"] == "审阅通过"
     # 未注册的收尾事件保持安静；SECRET 类字段无一透入
     assert project(_record("node_completed", node="unknown_node")) is None
@@ -104,14 +103,21 @@ def test_unmapped_model_turn_agent_returns_none():
 
 
 def test_node_failed_uses_safe_text_only():
-    frame = project(_record("node_failed", node="reflection"))
+    frame = project(_record("node_failed", node="review"))
     # 已知节点：失败也必须关框（红点收束），绝不停留在 running
     assert (frame.event, frame.data["stage"], frame.data["status"]) == (
         "stage_done",
-        "reflection",
+        "review",
         "failed",
     )
     assert "Reviewer" in frame.data["text"] and "执行失败" in frame.data["text"]
+
+
+def test_legacy_reflection_node_replays_as_review():
+    # 枚举改值前的存量 DB 行 node="reflection":必须归一到当前审阅节点、投出同样的关框帧。
+    frame = project(_record("node_completed", {"review_status": "approved"}, node="reflection"))
+    assert frame.data["stage"] == "review"
+    assert frame.data["text"] == "审阅通过"
     assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
     # 未知节点退回全局错误行
     assert project(_record("node_failed", node="mystery")).event == "error"
@@ -153,17 +159,6 @@ def test_research_round_completed_maps_to_stats_frame():
     assert frame.data["round"] == 2
     assert (frame.data["tasks_completed"], frame.data["tasks_total"]) == (3, 4)
     assert (frame.data["evidence_added"], frame.data["evidence_total"]) == (6, 14)
-
-
-def test_research_stopped_maps_stop_reason_description():
-    frame = project(_record("research_stopped", {"reason": str(StopReason.ROUND_BUDGET_EXHAUSTED)}))
-    assert frame.event == "plan" and frame.data["stage"] == "supervisor"
-    assert StopReason.ROUND_BUDGET_EXHAUSTED.description in frame.data["text"]
-
-
-def test_research_stopped_tolerates_unknown_reason():
-    frame = project(_record("research_stopped", {"reason": "made-up"}))
-    assert frame.data["text"].endswith("made-up")
 
 
 @pytest.mark.parametrize("event_type", ["writer_model_turn", "researcher_model_turn"])
@@ -446,7 +441,7 @@ def test_direction_search_completed_distinguishes_empty_from_failed(payload, exp
         "node_cancelled",
         "direction_search_completed",
         "research_round_completed",
-        "research_stopped",
+        "research_stopped",  # 无生产者的历史事件名:必须仍默认拒绝
         "source_fetch_started",
         "source_document_registered",
         "source_read_failed",

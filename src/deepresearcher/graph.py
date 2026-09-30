@@ -2,14 +2,14 @@
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 
 from deepresearcher import nodes
 from deepresearcher.agents import Clarifier, ReportWriter, ResearchAgent
 from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.supervisor import ResearchSupervisor
-from deepresearcher.agents.writer.graph import build_writer_graph
 from deepresearcher.config import Settings, get_settings
+from deepresearcher.errors import clip_text
 from deepresearcher.llm import build_llm
 from deepresearcher.node_runner import execute_node
 from deepresearcher.observability.instrumentation import instrument_node
@@ -23,7 +23,7 @@ from deepresearcher.routing import (
     route_after_supervisor,
     route_after_writer,
 )
-from deepresearcher.state import ADD_REDUCER_KEYS, ResearchState
+from deepresearcher.state import ResearchState
 from deepresearcher.tools import (
     AliyunFetchProvider,
     DirectHttpFetchProvider,
@@ -38,6 +38,78 @@ from deepresearcher.tools.transport.aliyun import create_aliyun_dts_client
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 
 
+def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
+    """记录运行元数据和有界预览；完整正文不进入事件流或普通日志。
+
+    这里认识的是 State 通道词表(装配层职责)，观测层 instrumentation 不解读业务字段;
+    projector 的面向用户帧从这里登记的键读取。
+    """
+    summary: dict = {"updated_fields": sorted(result.keys())}
+    for key in (
+        "route",
+        "answer_mode",
+        "evidence_count",
+        "source_count",
+    ):
+        if key in result:
+            summary[key] = result[key]
+    if "route_reason" in result:
+        summary["route_reason"] = str(result["route_reason"])[:240]
+    if "clarified_query" in result:
+        summary["clarified_query"] = str(result["clarified_query"])[:300]
+    if "research_brief" in result:
+        summary["research_brief"] = str(result["research_brief"])[:max_text_chars]
+    run = result.get("run")
+    if run is not None:
+        summary["phase"] = getattr(run, "phase", None)
+        summary["terminal_reason"] = getattr(run, "terminal_reason", "")
+    for key in ("supervisor", "writer", "review"):
+        section_value = result.get(key)
+        if section_value is not None:
+            summary[f"{key}_status"] = getattr(section_value, "status", None)
+            if key == "supervisor":
+                summary["current_round"] = getattr(section_value, "current_round", 0)
+            if key in {"writer", "review"}:
+                feedback = getattr(section_value, "feedback", "")
+                if feedback:
+                    summary[f"{key}_feedback"] = clip_text(str(feedback))
+    if "rejected_draft" in result:
+        text = str(result["rejected_draft"])
+        summary["rejected_draft_chars"] = len(text)
+        summary["rejected_draft_preview"] = text[:max_text_chars]
+    review = result.get("review")
+    review_issues = getattr(review, "issues", None) if review is not None else None
+    if review_issues:
+        summary["review_issues"] = [
+            {
+                "severity": item.severity,
+                "claim": item.claim[:200],
+                "reason": item.reason[:300],
+            }
+            for item in review_issues
+        ]
+    if "report" in result:
+        text = str(result["report"])
+        summary["report_chars"] = len(text)
+        summary["report_preview"] = text[:max_text_chars]
+    directive_brief = getattr(result.get("writer_directive"), "report_brief", None)
+    if directive_brief is not None:
+        summary["report_brief"] = str(directive_brief)[:max_text_chars]
+    research = result.get("supervisor")
+    coverage_gaps = getattr(research, "coverage_gaps", None) if research is not None else None
+    if coverage_gaps:
+        summary["coverage_gaps"] = list(coverage_gaps)
+    for key in (
+        "citations",
+        "task_results",
+        "evidences",
+        "paragraph_bindings",
+    ):
+        if key in result:
+            summary[f"{key}_count"] = len(result[key])
+    return summary
+
+
 def _guarded_node(name, node, *, event_sink=None, max_text_chars: int):
     """组合观测层与节点运行器（node_runner），保持两者职责独立。"""
     observed = instrument_node(
@@ -45,6 +117,7 @@ def _guarded_node(name, node, *, event_sink=None, max_text_chars: int):
         node,
         event_sink=event_sink,
         max_text_chars=max_text_chars,
+        summarize=lambda value: summarize_node_result(value, max_text_chars=max_text_chars),
     )
 
     async def guarded(state):
@@ -76,38 +149,6 @@ def _routed_node(
 
     return routed
 
-
-def _subgraph_routed_node(
-    name,
-    subgraph,
-    route,
-    *,
-    event_sink=None,
-    max_text_chars: int,
-):
-    """编译子图以普通节点挂进主图的适配。
-
-    子图 ainvoke 返回的是全通道终态(输入被逐通道播种);直接作为主图
-    update,operator.add 通道会把主图已有的整段历史再 fold 一遍、每访问
-    翻倍。故在观测层补记事件之后、回写之前,把 ADD_REDUCER_KEYS
-    覆写成 Overwrite(子图终态即全量,语义正确)。merge_* 通道幂等,
-    无需适配;普通通道 last-write-wins,回写同值亦无副作用。
-    """
-    guarded = _guarded_node(
-        name,
-        subgraph.ainvoke,
-        event_sink=event_sink,
-        max_text_chars=max_text_chars,
-    )
-
-    async def routed(state):
-        update = await guarded(state)
-        target = route({**state, **update})
-        for key in ADD_REDUCER_KEYS & update.keys():
-            update[key] = Overwrite(update[key])
-        return Command(update=update, goto=target)
-
-    return routed
 
 
 def build_graph(
@@ -192,7 +233,6 @@ def build_graph(
         artifact_max_text_chars=settings.observability.max_text_chars,
         context_window_tokens=settings.llm.context_window_tokens,
     )
-    writer_graph = build_writer_graph(writer_agent.run)
     research_agent = ResearchAgent(
         llm,
         settings.agent,
@@ -242,7 +282,7 @@ def build_graph(
         NodeName.QUICK_ANSWER,
         _routed_node(
             NodeName.QUICK_ANSWER,
-            lambda state: nodes.quick_answer(state, llm),
+            lambda state: nodes.quick_answer(state, llm, agent_config=settings.agent),
             route_after_quick_answer,
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
@@ -280,9 +320,9 @@ def build_graph(
     )
     graph.add_node(
         NodeName.WRITER,
-        _subgraph_routed_node(
+        _routed_node(
             NodeName.WRITER,
-            writer_graph,
+            writer_agent.run,
             route_after_writer,
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,

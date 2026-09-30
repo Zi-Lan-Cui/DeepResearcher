@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from deepresearcher.routing import NodeName
-from deepresearcher.schemas import StopReason
-from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
+from deepresearcher.observability.events.names import EventName
+from deepresearcher.routing import PREVIEW_CHANNELS, NodeName
+from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS, RUN_HEADLINE_MAX_CHARS
 
 _STAGE_TITLES: dict[str, str] = {
     NodeName.ROUTER: "理解问题 · Router",
@@ -97,13 +97,17 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         payload = {}
     seq = record.get("seq")
     node = record.get("node")
+    # 审阅节点历史 wire 值为 "reflection"(枚举改值前的存量 DB 行),归一到当前值,
+    # 让旧 run 回放仍投出对应阶段帧;新事件的 node 已是 "review",不受影响。
+    if node == "reflection":
+        node = NodeName.REVIEWER
 
     # ---- 阶段生命周期 ----
-    if event_type == "node_started":
+    if event_type == EventName.NODE_STARTED:
         if not isinstance(node, str) or node not in _STAGE_TITLES:
             return _tick(seq, f"{node} 开始" if isinstance(node, str) else None)
         return _frame("stage_open", seq, {"stage": node, "title": _STAGE_TITLES[node]})
-    if event_type == "node_completed":
+    if event_type == EventName.NODE_COMPLETED:
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
                 "stage_done",
@@ -111,7 +115,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
                 {"stage": node, "status": "done", "text": _stage_conclusion(node, payload)},
             )
         return None
-    if event_type == "node_failed":
+    if event_type == EventName.NODE_FAILED:
         # 只说哪个阶段失败：内部异常文本永远不出网关（完整信息在 RunEvent/日志）。
         # 已知节点必须用 failed 的 stage_done 关框——否则阶段框停在"运行中"
         # 的阶段框永远停在运行中（见 reviewer content_filter 事故），未知节点退回全局错误行。
@@ -124,7 +128,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return _frame(
             "error", seq, {"text": f"{node if isinstance(node, str) else '某阶段'} 阶段执行失败"}
         )
-    if event_type == "node_cancelled":
+    if event_type == EventName.NODE_CANCELLED:
         # 已知阶段用 cancelled 的 stage_done 关框——只发 tick 会让阶段框停在运行中(绿色)。
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
@@ -135,26 +139,20 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return _tick(seq, "该阶段已取消")
 
     # ---- Supervisor 决策旁白（plan 帧都带 stage 归属）----
-    if event_type == "research_stopped":
-        return _plan(
-            seq, NodeName.SUPERVISOR, f"研究提前结束：{_stop_reason_text(payload.get('reason'))}"
-        )
-    if event_type == "delegate_completed":
+    if event_type == EventName.DELEGATE_COMPLETED:
         status = str(payload.get("status", ""))
         if status == "blocked":
             return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，开始收束")
         return None
-    if event_type == "supervisor_model_turn":
+    if event_type == EventName.SUPERVISOR_MODEL_TURN:
         thought = _text(payload.get("content_preview"), EVENT_CONTENT_PREVIEW_CHARS)
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
     # ---- 方向卡（Supervisor 块内子项）----
-    if event_type == "research_task_started":
+    if event_type == EventName.RESEARCH_TASK_STARTED:
         # 短题优先(Supervisor 派发时给出);旧事件无 title 时回退截断契约,兼容存量 run。
-        title = _text(payload.get("title"), 40) or _text(
-            payload.get("question") or payload.get("research_direction"), 140
-        )
+        title = _text(payload.get("title"), 40) or _text(payload.get("question"), 140)
         return _task("task_open", seq, payload, {"title": title})
-    if event_type == "research_task_completed":
+    if event_type == EventName.RESEARCH_TASK_COMPLETED:
         summary = "证据 {} · 来源 {}".format(
             _int(payload.get("evidence_count")), _int(payload.get("source_count"))
         )
@@ -164,9 +162,9 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             payload,
             {"status": _text(payload.get("execution_status"), 16) or "done", "summary": summary},
         )
-    if event_type == "research_task_failed":
+    if event_type == EventName.RESEARCH_TASK_FAILED:
         return _task("task_done", seq, payload, {"status": "failed", "summary": "研究未成功"})
-    if event_type == "direction_evidence_added":
+    if event_type == EventName.DIRECTION_EVIDENCE_ADDED:
         # 该事件是每次 AddEvidence 提交的审计,accepted=0 表示全被退回修正,不是入池。
         accepted = _int(payload.get("accepted_count"))
         if accepted > 0:
@@ -174,7 +172,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         if _int(payload.get("rejected_count")) or _int(payload.get("duplicate_count")):
             return _task("task_update", seq, payload, {"text": "证据提交未通过，按回执修正中"})
         return None
-    if event_type == "source_fetch_started":
+    if event_type == EventName.SOURCE_FETCH_STARTED:
         host = _display_host(payload.get("requested_url"))
         return _task(
             "task_update",
@@ -182,7 +180,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             payload,
             {"text": f"正在读取：{host}" if host else "读取来源中…"},
         )
-    if event_type == "source_document_registered":
+    if event_type == EventName.SOURCE_DOCUMENT_REGISTERED:
         host = _display_host(payload.get("final_url") or payload.get("requested_url"))
         # 材料缓存命中不是重新抓取:如实说"复用",避免同一文章被两方向读取像重复劳动。
         cached = bool(payload.get("material_cache_hit"))
@@ -194,7 +192,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             payload,
             {"text": f"{verb}：{host}" if host else fallback},
         )
-    if event_type == "source_read_failed":
+    if event_type == EventName.SOURCE_READ_FAILED:
         host = _display_host(payload.get("url"))
         return _task(
             "task_update",
@@ -202,7 +200,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             payload,
             {"text": f"读取失败：{host}" if host else "某来源读取失败"},
         )
-    if event_type == "source_read_skipped":
+    if event_type == EventName.SOURCE_READ_SKIPPED:
         label = _SOURCE_SKIP_LABELS.get(str(payload.get("reason_code")), "不可读")
         host = _display_host(payload.get("url"))
         return _task(
@@ -211,7 +209,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             payload,
             {"text": f"已跳过：{host}（{label}）" if host else f"来源已跳过（{label}）"},
         )
-    if event_type == "direction_search_completed":
+    if event_type == EventName.DIRECTION_SEARCH_COMPLETED:
         # 批次行只说逐查询行说不出来的事:全批失败时细节行已在场,不再重复下结论;
         # 无细节可依据的失败(熔断/预检)才留一行,否则那件事就隐身了。
         candidates = _int(payload.get("candidate_count"))
@@ -230,11 +228,11 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         else:
             text = "本批检索完成：未找到相关来源"
         return _task("task_update", seq, payload, {"text": text})
-    if event_type == "search_query_started":
+    if event_type == EventName.SEARCH_QUERY_STARTED:
         return _task(
             "task_update", seq, payload, {"text": f"正在检索：{_text(payload.get('query'), 60)}"}
         )
-    if event_type == "search_query_completed":
+    if event_type == EventName.SEARCH_QUERY_COMPLETED:
         count = _int(payload.get("candidate_count"))
         return _task(
             "task_update",
@@ -247,7 +245,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
                 )
             },
         )
-    if event_type == "search_query_failed":
+    if event_type == EventName.SEARCH_QUERY_FAILED:
         return _task(
             "task_update",
             seq,
@@ -256,7 +254,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
 
     # ---- 指标与杂项 ----
-    if event_type == "research_round_completed":
+    if event_type == EventName.RESEARCH_ROUND_COMPLETED:
         return _frame(
             "stats",
             seq,
@@ -268,27 +266,26 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
                 "evidence_total": _int(payload.get("total_evidence_count")),
             },
         )
-    if event_type == "text_delta":
+    if event_type == EventName.TEXT_DELTA:
         # 生产者是 RunExecutor 对官方 astream(subgraphs=True) messages 的 ns 路由；
-        # 这里仍做第二道校验：只放行 supervisor。writer 正文走工具参数、
-        # reviewer 是结构化调用——两者只应看到最终聚合结果。
+        # 通道白名单与总线闸同读 routing.PREVIEW_CHANNELS,此处为投影侧复核。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)
-        if channel != "supervisor" or not text:
+        if channel not in PREVIEW_CHANNELS or not text:
             return None
-        return SseFrame(event="text_delta", data={"channel": channel, "text": text})
+        return SseFrame(event=EventName.TEXT_DELTA, data={"channel": channel, "text": text})
 
     # ---- 服务层合成事件 ----
-    if event_type == "run_headline_updated":
-        headline = _text(payload.get("headline"), 80)
+    if event_type == EventName.RUN_HEADLINE_UPDATED:
+        headline = _text(payload.get("headline"), RUN_HEADLINE_MAX_CHARS)
         return _frame("headline", seq, {"text": headline}) if headline else None
-    if event_type == "run_status":
+    if event_type == EventName.RUN_STATUS:
         status = _text(payload.get("status"), 32)
         return _frame("status", seq, {"status": status}) if status else None
-    if event_type == "clarification_requested":
+    if event_type == EventName.CLARIFICATION_REQUESTED:
         clarification = project_clarification(payload)
         return _frame("clarification", seq, clarification) if clarification else None
-    if event_type == "run_done":
+    if event_type == EventName.RUN_DONE:
         return _frame(
             "done",
             seq,
@@ -371,10 +368,3 @@ def _int(value: Any) -> int:
         return 0
 
 
-def _stop_reason_text(value: Any) -> str:
-    if isinstance(value, str) and value:
-        try:
-            return StopReason(value).description
-        except ValueError:
-            return value[:60]
-    return "未知原因"

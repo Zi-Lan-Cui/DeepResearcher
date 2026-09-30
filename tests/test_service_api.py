@@ -251,6 +251,31 @@ async def test_quota_blocks_third_concurrent_run(client):
     await wait_status(client, token, second, {"completed", "failed", "cancelled"})
 
 
+async def test_awaiting_input_runs_occupy_user_quota(client):
+    """answer_resume 把 awaiting_input 直接 CAS 回 queued、不再过准入闸:
+    待澄清行必须计入 per-user 并发配额,否则可先攒一批待澄清再逐一回答绕过上限。"""
+    token = await register(client)
+    me = await client.get("/api/me", headers=_auth(token))
+    user_id = me.json()["id"]
+
+    from deepresearcher.service.persistence.models import Run
+
+    async with client.app.state.session_factory() as session:
+        for seed_index in range(2):  # 测试配置 per-user 上限为 2
+            session.add(
+                Run(
+                    id=f"run-await-seed-{seed_index}",
+                    user_id=user_id,
+                    query="待澄清占位",
+                    status="awaiting_input",
+                )
+            )
+        await session.commit()
+
+    response = await client.post("/api/runs", json={"query": "q3"}, headers=_auth(token))
+    assert response.status_code == 429
+
+
 async def test_cancel_endpoint_converges_to_cancelled(client):
     token = await register(client)
     gate = asyncio.Event()
@@ -463,13 +488,42 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
 
     from sqlalchemy import delete
 
+    from deepresearcher.service.events.projector import project
     from deepresearcher.service.persistence.models import RunEvent
 
     async with client.app.state.session_factory() as session:
         await session.execute(
             delete(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
         )
+        # 复刻最坏形态:done 整批丢失、且最后落库的一行本身就是会被投出的帧
+        # ——合成帧与最后已投帧同号,修复前恰好被前端水位吞掉。
+        from sqlalchemy import select
+
+        rows = (
+            await session.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+            )
+        ).all()
+        last_projected = max(
+            (row.seq for row in rows if project(row.record) is not None),
+            default=0,
+        )
+        await session.execute(
+            delete(RunEvent).where(
+                RunEvent.run_id == run_id, RunEvent.seq > last_projected
+            )
+        )
         await session.commit()
+    assert last_projected > 0
+
+    frames = await read_sse(client, token, run_id, timeout=8.0)
+    events = [event for event, _ in frames]
+    assert events[-1] == "done"  # 兜底帧把流收口,而不是让连接重连转圈
+    done_seq = frames[-1][1]["seq"]
+    delivered_seqs = [payload.get("seq", 0) for _, payload in frames[:-1]]
+    # 前端按水位去重(seq <= lastSeq 即丢,app.js handleFrame):
+    # 合成帧与最后已投帧同号会被吞掉——兜底必须在唯一要兜的场景里真的生效。
+    assert all(done_seq > last for last in delivered_seqs)
 
 
 async def test_sse_idle_survives_poll_timeout_and_sends_heartbeat(client, monkeypatch):

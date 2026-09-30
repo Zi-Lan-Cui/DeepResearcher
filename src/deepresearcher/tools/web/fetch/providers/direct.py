@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 from bs4 import BeautifulSoup
 
 from deepresearcher.config import SearchConfig
+from deepresearcher.errors import clip_text
 from deepresearcher.tools.errors import SourceUnavailableError
 from deepresearcher.tools.transport.http_client import HttpClient
 from deepresearcher.tools.web.fetch.models import SourceDocument
@@ -113,7 +114,7 @@ class DirectHttpFetchProvider:
                 "status_code": 0,
                 "status": "failed",
                 "error_code": "fetch_parse_error",
-                "error": str(exc)[:500],
+                "error": clip_text(str(exc)),
             }
 
     @staticmethod

@@ -38,17 +38,22 @@ from deepresearcher.schemas.sections import (
     SupervisorStateUpdate,
     WriterProgress,
     WriterResult,
+    failure_event_fields,
     terminal_reason_text,
 )
 from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.schemas.tool_args import (
     TOOL_RECEIPT_PREFIX,
     AddEvidence,
+    AskClarificationArgs,
+    ClarificationCompleteArgs,
+    CompleteReport,
     DocumentLineRange,
     EvidenceSubmission,
     GrepDocument,
     ListSearchResults,
     ReadDocument,
+    ReadEvidence,
     ReadSources,
     ReadWorkingSet,
     ReleaseEvidence,
@@ -63,6 +68,9 @@ from deepresearcher.schemas.tool_args import (
 
 __all__ = [
     "AddEvidence",
+    "AskClarificationArgs",
+    "ClarificationCompleteArgs",
+    "CompleteReport",
     "format_tool_receipt",
     "TOOL_RECEIPT_PREFIX",
     "Citation",
@@ -77,6 +85,7 @@ __all__ = [
     "ReadSources",
     "ReadDocument",
     "ReadWorkingSet",
+    "ReadEvidence",
     "ReviewDecision",
     "RenderOutcome",
     "ReportBrief",
@@ -95,6 +104,7 @@ __all__ = [
     "ReviewProgress",
     "RouteDecision",
     "RunError",
+    "failure_event_fields",
     "RunStatus",
     "SearchSources",
     "DirectionStopReason",

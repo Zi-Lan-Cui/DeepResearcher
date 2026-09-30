@@ -32,5 +32,16 @@ EVENT_CONTENT_PREVIEW_CHARS = 800
 # 历史标题(clarify 浓缩问题)与报告标题(writer 命名回答)的长度上限。
 RUN_HEADLINE_MAX_CHARS = 40
 REPORT_TITLE_MAX_CHARS = 80
+
+# Clarifier 交互协议边界(原 agents/clarifier/constants.py,wire 容量在本模块登记)。
+MAX_CLARIFICATION_ROUNDS = 2
+CLARIFICATION_QUESTION_MAX_CHARS = 500
+CLARIFICATION_OPTION_COUNT = 3
+CLARIFICATION_INTENT_MAX_CHARS = 1_000
+CLARIFICATION_FOCUS_LIMIT = 4
+CLARIFICATION_ASSUMPTION_LIMIT = 3
+# ReadEvidence 一次可请求的窗口(防失控的宽松值);每轮实际交付量由
+# writer_read_batch_size 决定,差额走 not_read_ids 显式排队。
+READ_EVIDENCE_REQUEST_WINDOW_IDS = 50
 # 方向卡短题(ResearchDelegate 派发时给出的展示名)上限。
 DIRECTION_TITLE_MAX_CHARS = 40

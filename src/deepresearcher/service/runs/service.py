@@ -16,6 +16,7 @@ from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.coordination import RUN_ADMISSION_LOCK_ID
 from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
 from deepresearcher.service.persistence.models import Run
+from deepresearcher.service.runs.transitions import OUTSTANDING_STATUSES
 from deepresearcher.service.settings import ServiceConfig
 
 
@@ -50,7 +51,7 @@ class RunService:
                     .select_from(Run)
                     .where(
                         Run.user_id == user_id,
-                        Run.status.in_(("queued", "running", "interrupted")),
+                        Run.status.in_(OUTSTANDING_STATUSES),
                     )
                 )
                 if (outstanding or 0) >= self._config.max_concurrent_runs_per_user:

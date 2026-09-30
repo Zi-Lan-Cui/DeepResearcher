@@ -58,16 +58,12 @@ class AliyunFetchProvider:
         except asyncio.TimeoutError as exc:
             raise ToolRequestError("阿里云 WebFetch 请求超时。") from exc
         fetch_duration_ms = (asyncio.get_running_loop().time() - started) * 1000
-        if not body or not bool(getattr(body, "success", False)):
-            message = getattr(body, "error_message", "") if body else "空响应"
-            raise ToolRequestError(f"阿里云 WebFetch 返回失败：{message or '未知错误'}")
-
-        content = str(getattr(body, "content", "") or "")
+        content = body.content
         if not content.strip():
             raise ToolRequestError("阿里云 WebFetch 未返回可读取正文。", retryable=False)
-        title = str(getattr(body, "title", "") or "")
+        title = body.title
         self._ensure_readable(title, content)
-        content_format = str(getattr(body, "content_format", "") or "").lower()
+        content_format = body.content_format
         data = content.encode("utf-8")
         parse_started = asyncio.get_running_loop().time()
         try:
@@ -80,7 +76,7 @@ class AliyunFetchProvider:
         except asyncio.TimeoutError as exc:
             raise ToolParseError("阿里云 WebFetch 正文解析超时。") from exc
         parse_duration_ms = (asyncio.get_running_loop().time() - parse_started) * 1000
-        final_url = str(getattr(body, "url", "") or url)
+        final_url = body.url or url
         title = title or parsed_title
         return {
             "source_url": url,
@@ -94,11 +90,11 @@ class AliyunFetchProvider:
             "text": text,
             "blocks": blocks,
             "raw_bytes": len(data),
-            "status_code": int(getattr(body, "http_status_code", 200) or 200),
+            "status_code": body.http_status_code,
             "content_hash": hashlib.sha256(data).hexdigest(),
             "retrieval_method": RETRIEVAL_ALIYUN_WEB_FETCH,
-            "provider_request_id": str(getattr(body, "request_id", "") or ""),
-            "url_type": str(getattr(body, "url_type", "") or ""),
+            "provider_request_id": body.request_id,
+            "url_type": body.url_type,
             "fetch_duration_ms": fetch_duration_ms,
             "parse_duration_ms": parse_duration_ms,
         }

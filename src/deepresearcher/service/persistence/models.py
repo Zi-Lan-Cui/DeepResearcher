@@ -21,6 +21,15 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: datetime) -> datetime:
+    """SQLite 回读 naive、asyncpg 回读 aware:naive 一律按 UTC 补齐再比较。
+
+    方言中立模型层(迁移不加时区约束)的固有易错点,单源在此;
+    散落各处的重复转换漏一处就是静默的过期判断错误。
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -102,10 +111,9 @@ class Run(Base):
     peak_llm_concurrency: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     cache_hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 缓存节省只计"少出网的外部请求"一条真实口径;saved_llm_calls/tokens/cost
+    # 三个估计键因无生产者而删,评测不得拿恒零字段下结论。
     saved_external_request_count: Mapped[int] = mapped_column(Integer, default=0)
-    saved_llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
-    saved_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    saved_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
 
     user: Mapped["User"] = relationship(back_populates="runs")
     events: Mapped[list["RunEvent"]] = relationship(

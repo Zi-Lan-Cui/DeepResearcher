@@ -3,6 +3,7 @@
 import re
 
 from deepresearcher.config import SearchConfig
+from deepresearcher.errors import clip_text
 from deepresearcher.tools.errors import ToolParseError, ToolRequestError
 from deepresearcher.tools.transport.http_client import HttpClient
 from deepresearcher.tools.web.search.models import SearchResult
@@ -42,7 +43,7 @@ class BaiduSearchProvider:
             data = response.json()
             if data.get("code") or (data.get("message") and "references" not in data):
                 detail = data.get("message") or f"code={data.get('code')}"
-                raise ToolRequestError(f"百度搜索返回错误：{str(detail)[:500]}", retryable=False)
+                raise ToolRequestError(f"百度搜索返回错误：{clip_text(str(detail))}", retryable=False)
             references = data.get("references", [])
             if not isinstance(references, list):
                 raise TypeError("references 不是列表")

@@ -6,10 +6,10 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from deepresearcher.agents.clarifier.constants import CLARIFICATION_OPTION_COUNT
 from deepresearcher.agents.clarifier.state import ClarifierGraphState
 from deepresearcher.prompts import get_runtime_environment, render_data_section
 from deepresearcher.schemas import RunStatus
+from deepresearcher.schemas.limits import CLARIFICATION_OPTION_COUNT
 
 ClarifierAgentNode = Callable[[ClarifierGraphState], Awaitable[dict[str, object]]]
 

@@ -11,9 +11,7 @@ from sqlalchemy import select
 from deepresearcher.config import LLMConfig
 from deepresearcher.observability.tracing import spans
 from deepresearcher.observability.tracing.context import bind_context, current_span_context
-from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunUsage, User
-from deepresearcher.service.usage import (
+from deepresearcher.service.execution.usage import (
     CapacityGate,
     ProviderRateLimiter,
     RunUsageCallback,
@@ -24,6 +22,8 @@ from deepresearcher.service.usage import (
     record_external_request,
     reset_usage_runtime,
 )
+from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
+from deepresearcher.service.persistence.models import Run, RunUsage, User
 
 pytestmark = pytest.mark.asyncio
 

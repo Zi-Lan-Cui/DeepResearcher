@@ -1,9 +1,9 @@
 from deepresearcher.schemas import ResearchDirectionResult
-from deepresearcher.service.checkpoint_serde import build_checkpointer_serde, project_state_types
+from deepresearcher.service.checkpoint_serde import build_checkpointer_serde, projected_type_keys
 
 
 def test_allowlist_covers_our_state_types():
-    keys = project_state_types()
+    keys = projected_type_keys()
     # 触发过告警的三个类型都必须在允许清单里（否则恢复在严格模式下会炸）。
     assert ("deepresearcher.schemas.sections", "ResearchDirectionResult") in keys
 
@@ -51,7 +51,7 @@ def test_every_state_channel_model_is_allowlisted():
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             yield annotation
 
-    keys = project_state_types()
+    keys = projected_type_keys()
     for name, annotation in get_type_hints(ResearchState).items():
         for model_cls in model_types(annotation):
             if not model_cls.__module__.startswith("deepresearcher"):

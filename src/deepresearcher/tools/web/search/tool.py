@@ -3,7 +3,9 @@
 import asyncio
 import time
 
+from deepresearcher.errors import clip_text
 from deepresearcher.observability.events import JsonlSink, make_tool_event
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
@@ -65,6 +67,7 @@ class SearchTool:
                 make_tool_event(
                     "search",
                     "started",
+                    component="search_tool",
                     payload={**task_context, "queries": search_queries},
                 )
             )
@@ -86,8 +89,9 @@ class SearchTool:
                         make_tool_event(
                             "search",
                             "started",
+                            component="search_tool",
                             link=link,
-                            event_name="search_query_started",
+                            event_name=EventName.SEARCH_QUERY_STARTED,
                             payload={**task_context, "query": query},
                         )
                     )
@@ -101,8 +105,9 @@ class SearchTool:
                             make_tool_event(
                                 "search",
                                 "failed",
+                                component="search_tool",
                                 link=link,
-                                event_name="search_query_failed",
+                                event_name=EventName.SEARCH_QUERY_FAILED,
                                 error=str(exc)[:200],
                                 payload={**task_context, "query": query},
                             )
@@ -113,8 +118,9 @@ class SearchTool:
                         make_tool_event(
                             "search",
                             "completed",
+                            component="search_tool",
                             link=link,
-                            event_name="search_query_completed",
+                            event_name=EventName.SEARCH_QUERY_COMPLETED,
                             payload={
                                 **task_context,
                                 "query": query,
@@ -137,7 +143,7 @@ class SearchTool:
             if any(isinstance(item, asyncio.CancelledError) for item in batches):
                 raise asyncio.CancelledError()
             failures = [
-                SearchFailure(query=query, error=str(batch)[:500])
+                SearchFailure(query=query, error=clip_text(str(batch)))
                 for query, batch in zip(missing_queries, batches, strict=True)
                 if isinstance(batch, BaseException)
             ]
@@ -173,6 +179,7 @@ class SearchTool:
                     make_tool_event(
                         "search",
                         "completed",
+                        component="search_tool",
                         link=link,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         payload={
@@ -209,6 +216,7 @@ class SearchTool:
                     make_tool_event(
                         "search",
                         "failed",
+                        component="search_tool",
                         link=link,
                         error=str(exc),
                         duration_ms=(time.perf_counter() - started) * 1000,

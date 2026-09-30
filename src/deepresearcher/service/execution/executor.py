@@ -20,10 +20,23 @@ from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
 from deepresearcher.llm import classify_llm_error
 from deepresearcher.observability import JsonlSink
+from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.tracing import ledger, spans
+from deepresearcher.routing import PREVIEW_CHANNELS
+from deepresearcher.schemas.limits import RUN_HEADLINE_MAX_CHARS
 from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.sinks import CompositeSink
 from deepresearcher.service.execution.queue import RunWork
+from deepresearcher.service.execution.usage import (
+    CapacityGate,
+    ProviderRateLimiter,
+    RunUsageCallback,
+    UsageBudgetExceeded,
+    UsageRuntime,
+    UsageStore,
+    bind_usage_runtime,
+    reset_usage_runtime,
+)
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
@@ -35,16 +48,6 @@ from deepresearcher.service.runs.transitions import (
     transition_for,
 )
 from deepresearcher.service.settings import ServiceConfig
-from deepresearcher.service.usage import (
-    CapacityGate,
-    ProviderRateLimiter,
-    RunUsageCallback,
-    UsageBudgetExceeded,
-    UsageRuntime,
-    UsageStore,
-    bind_usage_runtime,
-    reset_usage_runtime,
-)
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 logger = logging.getLogger("deepresearcher.service.execution.executor")
@@ -117,7 +120,7 @@ class RunExecutor:
         # 搜索提供方账户级健康跨 worker 共享（PG）；非 PG（测试/SQLite）用 SearchService 的内存默认。
         self._provider_health = (
             PostgresProviderHealth(session_factory)
-            if str(getattr(config, "database_url", "")).startswith("postgresql")
+            if config.database_url.startswith("postgresql")
             else None
         )
         # Langfuse 是镜像用的观测出口: callbacks 级挂入,失败或断网不得影响 run
@@ -174,9 +177,10 @@ class RunExecutor:
         resume_input: Any = None,
         claim: RunWork | None = None,
     ) -> None:
-        # Worker 可能与受理该 Run 的 API 不在同一进程；执行面必须
-        # 自行打开本地 sink，不能依赖 API 进程中的 hub.open().
         """执行一个已领取的 run 直至终态或挂起。
+
+        Worker 可能与受理该 Run 的 API 不在同一进程,执行面必须自行打开本地
+        sink,不依赖 API 进程中的 hub.open()。
 
         参数:
             run_id/user_id/query: run 身份与研究问题。
@@ -275,6 +279,7 @@ class RunExecutor:
                 self._hub.close(run_id)
             self._lost_leases.discard(run_id)
             self._cancellation_requests.discard(run_id)
+            self._shutdown_interrupts.discard(run_id)
             ledger.detach_run_sink(run_id)
             reset_usage_runtime(usage_token)
             if self._langfuse_client is not None:
@@ -310,7 +315,7 @@ class RunExecutor:
         # 系统重启续跑已经播报 resuming，保持该状态直到后续阶段事件；
         # 人工澄清恢复则必须在 Worker 真正 claim 后从 queued 切到 running。
         announce_running = not resume or resume_input is not None
-        if not await self._mark_running(
+        if not await self._confirm_running(
             run_id,
             announce_running=announce_running,
             claim=claim,
@@ -319,7 +324,7 @@ class RunExecutor:
                 self.mark_lease_lost(run_id)
             return False
         graph = self._graph_factory(
-            settings=self._settings_for(user_id),
+            settings=self._settings,
             event_sink=sink,
             http_client=self._http_client,
             checkpointer=self._checkpointer,
@@ -357,7 +362,7 @@ class RunExecutor:
             self._hub.write(
                 {
                     "run_id": run_id,
-                    "event_type": "clarification_requested",
+                    "event_type": EventName.CLARIFICATION_REQUESTED,
                     "payload": interruption,
                 }
             )
@@ -381,10 +386,6 @@ class RunExecutor:
         if not await self._persist_terminal(run_id, result, claim=claim):
             self.mark_lease_lost(run_id)
         return False
-
-    def _settings_for(self, user_id: int) -> Settings:
-        """BYO-keys 预留缝：未来可按用户返回 replace(...) 的 Settings。"""
-        return self._settings
 
     async def _run_graph(
         self, run_id: str, graph: Any, inputs: Any, *, callbacks: list[Any] | None = None
@@ -412,8 +413,8 @@ class RunExecutor:
                             self._hub.write(
                                 {
                                     "run_id": run_id,
-                                    "event_type": "run_headline_updated",
-                                    "payload": {"headline": headline[:80]},
+                                    "event_type": EventName.RUN_HEADLINE_UPDATED,
+                                    "payload": {"headline": headline[:RUN_HEADLINE_MAX_CHARS]},
                                 }
                             )
                             # 立即 flush 越过 ≤2s 周期:落库→写库→NOTIFY 门铃一次走完。
@@ -450,7 +451,7 @@ class RunExecutor:
                 continue
             event = {
                 "run_id": run_id,
-                "event_type": "text_delta",
+                "event_type": EventName.TEXT_DELTA,
                 "payload": {"channel": channel, "text": text[:200]},
             }
             try:
@@ -466,15 +467,20 @@ class RunExecutor:
         if not isinstance(namespace, tuple) or len(namespace) != 1:
             return None
         head = str(namespace[0]).split(":", 1)[0]
-        return head if head == "supervisor" else None
+        return head if head in PREVIEW_CHANNELS else None
 
-    async def _mark_running(
+    async def _confirm_running(
         self,
         run_id: str,
         *,
         announce_running: bool = True,
         claim: RunWork | None = None,
     ) -> bool:
+        """确认该行处于 running 且仍由本次执行持有,否则返回 False。
+
+        claim 路径:领取的 UPDATE 已把行置为 running,这里只核实租约与 attempt;
+        直连路径(claim=None):按 mark_running 迁移把行写进 running。
+        """
         transitioned = False
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
@@ -507,7 +513,7 @@ class RunExecutor:
             result = await session.execute(
                 update(Run)
                 .where(Run.id == run_id, Run.headline.is_(None))
-                .values(headline=headline[:80])
+                .values(headline=headline[:RUN_HEADLINE_MAX_CHARS])
             )
             await session.commit()
             return result.rowcount == 1

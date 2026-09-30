@@ -5,6 +5,7 @@ from typing import Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field
 
+from deepresearcher.errors import clip_text
 from deepresearcher.schemas.sources import SourceProfile, source_domain
 from deepresearcher.state import SubTask
 
@@ -205,7 +206,7 @@ def failed_search(
     """构造失败结果，同时保留已知的逐查询错误。"""
     search_queries = queries or [task["question"]]
     details = failures or [
-        SearchFailure(query=query, error=str(error)[:500]) for query in search_queries
+        SearchFailure(query=query, error=clip_text(str(error))) for query in search_queries
     ]
     from deepresearcher.tools.errors import ProviderExhaustedError
 
@@ -215,7 +216,7 @@ def failed_search(
         status="failed",
         queries=search_queries,
         failures=details,
-        error=str(error)[:500],
+        error=clip_text(str(error)),
         provider_exhausted=exhausted,
         provider_user_code=getattr(error, "user_code", "") if exhausted else "",
     )

@@ -6,12 +6,13 @@ import pytest
 
 from deepresearcher.agents.middleware.retry import (
     ToolErrorNormalizerMiddleware,
+    _failure_message,
     retry_on,
     tool_retry_on,
 )
 from deepresearcher.llm import LLMConfigurationError
-from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 from deepresearcher.tools.errors import ToolError, ToolRequestError
+from deepresearcher.usage_runtime import UsageBudgetExceeded
 
 
 def test_model_retry_predicate():
@@ -76,3 +77,12 @@ async def test_normalizer_never_swallows_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         await normalizer.awrap_tool_call(_Request(), cancelled)
+
+
+def test_failure_message_carries_the_guard_marker() -> None:
+    """ToolLoopGuard 靠 MODEL_FAILURE_MARKER 把"后端故障引导"从协议违规里分出来:
+    _failure_message 的模板一旦绕过该符号拼文案,软文案会被误判并退整轮重试。"""
+    from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
+
+    text = _failure_message("ResearchAgent")(RuntimeError("boom"))
+    assert MODEL_FAILURE_MARKER in text

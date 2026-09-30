@@ -2,7 +2,6 @@
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
 
 from deepresearcher.agents.writer.state import (
     ValidatedDraft,
@@ -10,41 +9,13 @@ from deepresearcher.agents.writer.state import (
     evidence_detail_card,
 )
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
-from deepresearcher.schemas import format_tool_receipt
-from deepresearcher.schemas.limits import REPORT_TITLE_MAX_CHARS
+from deepresearcher.schemas import CompleteReport, ReadEvidence, format_tool_receipt
+from deepresearcher.schemas.limits import READ_EVIDENCE_REQUEST_WINDOW_IDS
+
 
 # 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
 # 决定，差额走 not_read_ids 显式排队。引用总条数刻意不设上限：聚焦度是写作
 # 质量问题，交给提示词引导、已读校验与审阅把关；硬上限只会催生为凑数而选。
-REQUEST_WINDOW_IDS = 50
-
-
-class ReadEvidence(BaseModel):
-    """读取目录中 Evidence 的原文与紧凑来源信息，以便引用可验证细节。"""
-
-    evidence_ids: list[str] = Field(
-        min_length=1,
-        max_length=REQUEST_WINDOW_IDS,
-        description="要读取的 evidence_id 列表；引用前必须先读取。",
-    )
-    reason: str = Field(min_length=1)
-
-
-class CompleteReport(BaseModel):
-    """提交一篇带 Evidence 引用标记的 Markdown 草稿。"""
-
-    title: str = Field(
-        min_length=4,
-        max_length=REPORT_TITLE_MAX_CHARS,
-        description=(
-            "为这篇回答拟的文章式标题：提纲挈领，可带文学性，但不夸张；"
-            "纯文本，不含 # [ ] * 等 Markdown 标记与句读结尾。"
-        ),
-    )
-    selected_evidence_ids: list[str] = Field(min_length=1)
-    markdown: str = Field(min_length=1)
-
-
 def build_writer_tools(*, turn_budget: int, read_batch: int):
     """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。
 
@@ -59,7 +30,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         description=(
             "获取目录中 Evidence 的原文与引用所需来源信息，并加入已读集。"
             f"用法：先从目录选定要引用的条目，用一次调用批量读取全部"
-            f"（一次可请求至多 {REQUEST_WINDOW_IDS} 条，每轮交付 {read_batch} 条，"
+            f"（一次可请求至多 {READ_EVIDENCE_REQUEST_WINDOW_IDS} 条，每轮交付 {read_batch} 条，"
             "未交付的会列在 not_read_ids 中，下一轮补齐；不要按个位数小口读取）；"
             f"工具轮次预算约 {turn_budget} 轮，读取应占 1-2 轮，其余留给写作与修正。"
             "只有本工具返回过的 evidence_id 才能引用。"

@@ -1,8 +1,9 @@
 """顶层节点的统一运行器。
 
 观测层只记录节点生命周期；本模块负责把未处理的节点异常转换成
-可供 LangGraph 继续收束的运行状态。这样错误处理不会反向依赖日志或
-报告渲染实现，也不会让每个节点各自复制一套 try/except。
+可供 LangGraph 继续收束的运行状态：失败收口在此产出降级报告
+（render_incomplete_report / render_error_report），终点渲染节点对
+failed 分支只透传。各节点因此不必各自复制一套 try/except。
 """
 
 import asyncio
@@ -12,12 +13,11 @@ from typing import Any, cast
 
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
-from deepresearcher.observability.events.models import failure_event_fields
-from deepresearcher.observability.usage_runtime import UsageBudgetExceeded
 from deepresearcher.reporting import render_error_report, render_incomplete_report
 from deepresearcher.routing import NodeName
-from deepresearcher.schemas import RunError, RunStatus
+from deepresearcher.schemas import RunError, RunStatus, failure_event_fields
 from deepresearcher.state import ResearchState, restore_state_models, validate_state_invariants
+from deepresearcher.usage_runtime import UsageBudgetExceeded
 
 
 async def execute_node(

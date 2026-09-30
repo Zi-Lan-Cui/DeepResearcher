@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from deepresearcher.config import LLMConfig
 from deepresearcher.observability.logging_config import get_logger
 
-logger = get_logger("deepresearcher.observability.usage_runtime")
+logger = get_logger("deepresearcher.usage_runtime")
 
 
 class UsageRecorder(Protocol):

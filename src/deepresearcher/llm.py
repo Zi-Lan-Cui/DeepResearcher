@@ -28,7 +28,7 @@ from pydantic import BaseModel, SecretStr, ValidationError
 
 from deepresearcher.config import Settings, get_settings
 from deepresearcher.errors import AgentError
-from deepresearcher.observability.usage_runtime import enforce_usage_budget
+from deepresearcher.usage_runtime import enforce_usage_budget
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 STRUCTURED_ERRORS = (OutputParserException, ValidationError, ValueError)
