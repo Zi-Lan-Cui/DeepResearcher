@@ -309,7 +309,9 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
                 body=SimpleNamespace(
                     success=True,
                     error_message="",
-                    search_result=[SimpleNamespace(url="https://spring.io", title="t", snippet="s")],
+                    search_result=[
+                        SimpleNamespace(url="https://spring.io", title="t", snippet="s")
+                    ],
                 )
             )
 

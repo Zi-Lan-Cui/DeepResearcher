@@ -158,6 +158,7 @@ _OPTIONAL_SCALAR_KEYS = frozenset(
     key for key, hint in get_type_hints(ResearchState).items() if type(None) in get_args(hint)
 )
 
+
 def restore_state_models(state: dict[str, object]) -> None:
     """恢复 JSON checkpoint 中被还原为 dict 的嵌套模型。"""
     scalar_models = (

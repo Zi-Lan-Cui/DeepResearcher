@@ -150,9 +150,7 @@ class ReportWriter:
                 loop_context.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
             )
         if loop_context.validated_draft is None:
-            services.recover_inline_draft(
-                loop_context, result.get("messages", []), emit=self._emit
-            )
+            services.recover_inline_draft(loop_context, result.get("messages", []), emit=self._emit)
         if loop_context.validated_draft is None:
             return services.state_update_for_exhausted_result(
                 state,

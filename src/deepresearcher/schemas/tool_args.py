@@ -238,7 +238,6 @@ def format_tool_receipt(payload: object) -> str:
     return f"{TOOL_RECEIPT_PREFIX}；不是用户补充】\n{body}"
 
 
-
 def _normalize_string_list(value: object) -> object:
     """修复模型把 JSON 字符串数组再次编码成字符串的常见偏差。"""
     if not isinstance(value, str):

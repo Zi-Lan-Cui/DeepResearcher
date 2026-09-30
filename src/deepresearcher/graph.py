@@ -150,7 +150,6 @@ def _routed_node(
     return routed
 
 
-
 def build_graph(
     settings: Settings | None = None,
     *,

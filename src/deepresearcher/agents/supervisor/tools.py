@@ -53,9 +53,7 @@ def build_supervisor_tools() -> list[BaseTool]:
     ) -> str:
         """冻结最新且未过期的研究综合稿；被拒则按回执修正后重提。"""
         return format_tool_receipt(
-            services.freeze_synthesis(
-                runtime.context.loop_state, synthesis_revision, reason
-            )
+            services.freeze_synthesis(runtime.context.loop_state, synthesis_revision, reason)
         )
 
     @tool("ReviseResearchSynthesis", args_schema=ReviseResearchSynthesis)

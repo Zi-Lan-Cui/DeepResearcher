@@ -118,8 +118,12 @@ class AliyunDtsClient:
     def _require_success(category: str, body: Any) -> None:
         """业务级失败门(SDK 未抛异常但 success=false):两家 provider 共用同一文案与分类。"""
         if body is None or not bool(getattr(body, "success", False)):
-            message = str(getattr(body, "error_message", "") or "") if body is not None else "空响应"
-            raise ToolRequestError(f"阿里云 Web{category.title()} 返回失败：{message or '未知错误'}")
+            message = (
+                str(getattr(body, "error_message", "") or "") if body is not None else "空响应"
+            )
+            raise ToolRequestError(
+                f"阿里云 Web{category.title()} 返回失败：{message or '未知错误'}"
+            )
 
     async def _call(self, category: str, request: Any) -> Any:
         started = time.monotonic()

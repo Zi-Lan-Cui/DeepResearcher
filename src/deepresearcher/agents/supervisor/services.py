@@ -217,10 +217,7 @@ def freeze_synthesis(
     if accepted:
         assert synthesis is not None  # accepted 已包含该条件,供静态类型收窄。
         loop_state.sufficient = (
-            all(
-                not aspect.required or aspect.status == "covered"
-                for aspect in synthesis.aspects
-            )
+            all(not aspect.required or aspect.status == "covered" for aspect in synthesis.aspects)
             and not synthesis.open_gaps
             and not synthesis.conflicts
         )
@@ -481,9 +478,7 @@ def build_writer_directive(
     )
 
 
-def report_brief_from_synthesis(
-    synthesis: ResearchSynthesis, *, max_caveats: int
-) -> ReportBrief:
+def report_brief_from_synthesis(synthesis: ResearchSynthesis, *, max_caveats: int) -> ReportBrief:
     """从冻结综合版本派生报告任务书，避免 Complete 再提交第二事实源。"""
     topics = [
         CoveredTopic(

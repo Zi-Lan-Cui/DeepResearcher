@@ -43,7 +43,9 @@ class BaiduSearchProvider:
             data = response.json()
             if data.get("code") or (data.get("message") and "references" not in data):
                 detail = data.get("message") or f"code={data.get('code')}"
-                raise ToolRequestError(f"百度搜索返回错误：{clip_text(str(detail))}", retryable=False)
+                raise ToolRequestError(
+                    f"百度搜索返回错误：{clip_text(str(detail))}", retryable=False
+                )
             references = data.get("references", [])
             if not isinstance(references, list):
                 raise TypeError("references 不是列表")

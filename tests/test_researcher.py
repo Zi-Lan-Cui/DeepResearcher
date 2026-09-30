@@ -593,7 +593,7 @@ def test_add_evidence_repairs_punctuation_only_quote_against_source():
     store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
-            text='报告称“非常稳健”，通过验收。其余正文。',
+            text="报告称“非常稳健”，通过验收。其余正文。",
             title="标点修复",
             source_url="https://example.com/repair",
         )
