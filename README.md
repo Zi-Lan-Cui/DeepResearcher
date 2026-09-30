@@ -1,110 +1,106 @@
 # DeepResearcher
 
-DeepResearcher 是一个可本地部署的深度研究服务。它会围绕用户的复杂问题自动检索、阅读和组织公开资料，生成附带可追溯引用的研究报告。
+[![quality](https://github.com/Zi-Lan-Cui/deepresearcher/actions/workflows/quality.yml/badge.svg)](https://github.com/Zi-Lan-Cui/deepresearcher/actions/workflows/quality.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 
-## 主要功能
+可自部署的深度研究服务:围绕一个复杂问题,自动完成澄清、检索、精读、证据整理、撰写与审阅,交付一份每条关键结论都能查到出处的研究报告。
 
-- 在问题范围不明确时向用户发起澄清，并根据回答继续研究。
-- 自动完成多轮搜索、网页阅读、资料比较和证据整理。
-- 为关键结论绑定原文证据，在报告末尾生成参考来源。
-- 实时展示研究进度，支持任务排队、取消、中断恢复和历史查看。
-- 支持多用户 Web 使用，报告可一键复制或下载为 PDF。
+## 为什么
+
+多数"AI 深度研究"的产物是一段读起来可信、查起来无门的文字。这个项目把两件小事做实:**过程看得见**(此刻在检索什么、读哪个网站、攒了多少证据,实时推送),**结论查得回去**(报告用上标编号,文末逐条给出证据的标题、链接和支撑它的原文句子)。全部组件自托管:任务记录、证据和报告都留在你自己的数据库里,出网的只有你配置的模型与搜索调用。
+
+## 特性
+
+- 问题含糊时先澄清再开工,提交后关掉页面也没关系:排队、取消、断点续跑;
+- 多个研究方向并行推进,互不依赖的检索同批发出;
+- 证据必须逐字来自读过的原文,系统校验通过才算数;审阅不通过的稿件自动回流重写,证据不足则交付标注缺口的部分报告;
+- 报告可一键复制,PDF 在浏览器本地生成;
+- 多用户隔离,并发、token 与费用都有配额;
+- 运行记录完整落库,网页、评测、回放读同一份数据;可选镜像到 Langfuse 看执行时间线。
 
 ## 快速开始
 
-### 1. 准备环境
-
-需要 Python 3.12+、[uv](https://docs.astral.sh/uv/) 和 Docker。
-
-~~~bash
-uv sync
-cp env/.env.example env/.env
-~~~
-
-编辑 env/.env，至少配置：
-
-- LLM_API_KEY
-- LLM_BASE_URL
-- LLM_MODEL_ID
-- 一个搜索服务：百度、Tavily、SerpAPI，或使用默认凭据链的阿里云 DTS AI
-
-### 2. 启动依赖服务
-
-~~~bash
-docker compose up -d postgres redis
-~~~
-
-### 3. 启动 DeepResearcher
-
-打开两个终端，分别运行：
-
-~~~bash
-SERVICE_REDIS_PREVIEW_ENABLED=true uv run python server.py
-~~~
-
-~~~bash
-SERVICE_REDIS_PREVIEW_ENABLED=true uv run python -m deepresearcher.worker
-~~~
-
-默认访问地址：<http://127.0.0.1:8080>
-
-## 使用方法
-
-1. 在网页中注册并登录。
-2. 输入需要深入研究的问题，点击“开始研究”。
-3. 如果系统需要确认研究范围，选择选项或输入补充说明。
-4. 在任务详情页查看实时进度。离开页面不会终止任务。
-5. 研究完成后阅读报告与参考来源，或使用“复制”和“下载 PDF”导出结果。
-
-## 配置
-
-所有可配置项及默认值见 [env/.env.example](env/.env.example)。常用配置包括：
-
-- 模型、搜索服务和超时时间；
-- 单次研究轮数与证据数量；
-- 用户和服务的并发上限；
-- 数据库、Redis 与登录令牌；
-- Token 和费用上限。
-
-## 可选：Langfuse 观测镜像
-
-装了可选依赖、配齐三个环境变量才启用（留空=完全关闭，行为与未安装相同）：
+前置:Python ≥ 3.12、[uv](https://docs.astral.sh/uv/)、Docker。
 
 ```bash
-uv sync --extra langfuse   # 或 pip install "deepresearcher[langfuse]"
+git clone https://github.com/Zi-Lan-Cui/deepresearcher.git
+cd deepresearcher
+uv sync
+cp env/.env.example env/.env
 ```
 
-`LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL` 指向你自己的
-Langfuse（云端或自建）后重启 worker 即可。每次 run 会镜像出一份 trace：
-LLM 调用瀑布、token/成本、工具耗时，session 就是 run_id、user 就是用户 id，
-在 Langfuse UI 里按用户和时间窗聚合。
+编辑 `env/.env`,填入模型三件套(`LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_ID`,OpenAI 兼容接口均可)和至少一个搜索服务(百度 / Tavily / SerpAPI / 阿里云)。然后起依赖与两个进程:
 
-注意内容边界：trace 携带完整 prompt 与补全文本（含报告正文），接到第三方
-即内容出域——与本项目"报告不经外部服务导出"的立场对照后自行取舍。观测出口
-是镜像而非账本：导出失败或后端不可达只影响 Langfuse 侧，不影响 run（合同测试
-校验此约束），产品的权威记录仍是 `run_events` 与 `run_usage`。
+```bash
+docker compose up -d postgres redis
+uv run python server.py                 # Web 服务,终端 1
+uv run python -m deepresearcher.worker  # 研究执行进程,终端 2
+```
 
-面板里的树与账本同源：OpenTelemetry span 是唯一的执行记录引擎。节点/工具
-span 开合时，LedgerSpanProcessor 把 `*_started/completed/failed/cancelled`
-写入账本（`run_events`/JSONL），Langfuse 的 LLM generation 经同一个
-provider 挂在节点 span 之下——一棵树、一套 id。账本记录的 `trace_id`/
-`span_id` 即面板的 32/16 位 hex，可从 `run_events` 行直接跳到面板现场；
-反向凭 span 的 `deepresearcher.run_id`/`node_id` 属性回账本。Langfuse 整体
-缺席时账本不受影响（处理器与导出面独立）；不接 Langfuse 时可用
-`SERVICE_OTEL_EXPORTER=console` 把同一批 span 打到 worker stdout 自检。
+打开 <http://127.0.0.1:8080> 注册提问。所有可调项在 [env/.env.example](env/.env.example) 逐项注释,包括研究轮数、各类预算和可选的流式进度开关。
 
-## 容量假设
+## 使用示例
 
-- 事件 Hub 是进程内的:`_OPEN_MAX=2048` 个 open run 登记,超额按插入序回收最早者,
-  未落库的 pending 会丢弃并记 `run_event_pending_dropped_on_evict` warning(已落库的
-  不受影响)。前提是单进程(API 或 worker)并发 run 数远小于该值。
-- `run_done` 幂等去重只覆盖同进程;API 与 worker 各持一个 hub,同一 run 理论上可能
-  落库两条 done,SSE 首条 done 即终止,客户端无感。
-- `ProviderRateLimiter` 的 RPM/TPM 窗口是 per-worker 的,按估算 token 记账、不与实际
-  返回对账:多 worker 时有效限额约为配置值 x N。单 worker 部署不受影响;多 worker 请
-  按 worker 数折算配置,或替换为共享计数实现。
-- 搜索查询结果缓存(`SearchTool._query_cache`)随 run 结束整体回收,不设进程级上限。
+### 网页
 
-## 公网部署
+注册登录后输入问题;若系统对研究边界有疑义会弹出一组选项,回答后开始研究;详情页实时滚动进度;完成后直接阅读报告、复制或导出 PDF。
 
-默认配置只监听本机地址。如果需要公网访问，请在应用前配置 HTTPS 反向代理，并使用强随机 SERVICE_JWT_SECRET；不要将开发配置直接暴露到公网。
+### API
+
+服务本身是一组普通 HTTP 接口,网页只是第一个客户端:
+
+```bash
+# 注册并拿到访问令牌
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"me@example.com","password":"<好密码>"}' | jq -r .token)
+
+# 提出研究问题,返回任务 id(HTTP 202,后台执行)
+curl -s -X POST http://127.0.0.1:8080/api/runs \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"query":"对比 Redis 与 MongoDB 在缓存场景下的取舍"}'
+
+# 进度与结果:SSE 事件流(阶段、检索、证据计数……直到 done)
+curl -N http://127.0.0.1:8080/api/runs/<run_id>/events \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+另有 `GET /api/runs` 历史列表、`POST /api/runs/{id}/resume` 回答澄清、`POST /api/runs/{id}/cancel` 取消。
+
+## 项目结构
+
+```
+server.py                 开发入口(API 进程)
+src/deepresearcher/
+├── graph.py、nodes/、routing.py   LangGraph 流水线:路由→澄清→规划→写作→审阅
+├── agents/               五个角色各自的工具、状态与子图(supervisor、researcher、writer…)
+├── service/              对外一侧:API、worker、队列、持久化、事件流、前端
+├── observability/        事件记录、OTel 引擎与运行日志
+├── prompts/              各角色的系统提示词,外置成 Markdown
+└── evidence/、reporting/、schemas/   证据模型、引用校验与渲染、数据契约
+tests/                    单元与集成测试(make test)
+evals/                    质量基准与行为断言两套评测(见 evals/README.md)
+docs/                     技术报告与演进计划
+docker/、docker-compose.yml         本地依赖与可选的自建观测栈
+env/.env.example          全部配置项与注释
+```
+
+执行面只有一种形态:API 受理任务、worker 消费执行,两者只通过数据库交互,worker 可增减可重启。
+
+## 开发
+
+```bash
+make quality    # lint、类型、测试、覆盖率(CI 每次推送跑同一套)
+make verify-m8  # 真起 API 与 worker 双进程做集成验证,不产生模型费用
+```
+
+提交前跑 `make quality` 即可,没有额外的格式仪式;测试不依赖外部网络。
+
+## 贡献
+
+项目处于个人快速迭代期,暂无正式的贡献流程:遇到问题请开 issue,带上复现步骤和 `run_id` 更好;欢迎直接对文档和测试的改进。合并前以 `make quality` 全绿为门槛。
+
+## 许可
+
+[MIT](LICENSE) © 2026 Pan GuoDong
