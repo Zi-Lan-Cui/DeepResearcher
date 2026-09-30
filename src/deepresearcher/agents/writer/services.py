@@ -115,9 +115,7 @@ def recover_inline_draft(
             return
         cited = extract_cite_ids(text)
         selected = [
-            item
-            for item in dict.fromkeys(sorted(cited))
-            if item in loop_context.read_evidence_ids
+            item for item in dict.fromkeys(sorted(cited)) if item in loop_context.read_evidence_ids
         ]
         if not selected:
             loop_context.last_error = "模型直接输出的正文未引用任何已读取 Evidence。"
@@ -181,9 +179,7 @@ def evidence_catalogue(
     for evidence_id in ordered_ids:
         card = evidence_index_card(evidence_by_id[evidence_id])
         published_metadata = (
-            f" | published_at={card['published_at']}(搜索元信息)"
-            if "published_at" in card
-            else ""
+            f" | published_at={card['published_at']}(搜索元信息)" if "published_at" in card else ""
         )
         entries.append(
             f"- evidence_id={evidence_id} | "
@@ -203,9 +199,7 @@ def prepare_evidence(
 ) -> PreparedEvidence:
     """过滤不满足可信等级的材料，并建立稳定的 Evidence ID 索引。"""
     usable = [item for item in evidences if meets_minimum_support(config, item.support)]
-    by_id = {
-        str(item.evidence_id or f"来源{index}"): item for index, item in enumerate(usable, 1)
-    }
+    by_id = {str(item.evidence_id or f"来源{index}"): item for index, item in enumerate(usable, 1)}
     return PreparedEvidence(
         by_id=by_id,
         catalogue=evidence_catalogue(by_id, report_brief),
@@ -235,8 +229,7 @@ def build_generation_messages(
     if directive.revision_instructions:
         feedback = "；".join(directive.revision_instructions)[:writer_feedback_chars]
         revision_feedback = (
-            "以下意见已由 Supervisor 判定为应通过改写处理；"
-            f"必须修正其中的 fatal 问题：{feedback}"
+            f"以下意见已由 Supervisor 判定为应通过改写处理；必须修正其中的 fatal 问题：{feedback}"
         )
     report_context = {
         "原问题（必须直接回答）": directive.query,

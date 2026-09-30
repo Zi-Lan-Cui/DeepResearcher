@@ -267,9 +267,7 @@ def test_router_bubbles_fail_fast_signals_instead_of_fallback_routing():
                 return _Boom()
 
         with pytest.raises(type(expected)):
-            asyncio.run(
-                nodes.router({"query": "q"}, _BoomLLM(), agent_config=AgentConfig())
-            )
+            asyncio.run(nodes.router({"query": "q"}, _BoomLLM(), agent_config=AgentConfig()))
 
 
 def test_top_level_node_failure_becomes_renderable_run_error():

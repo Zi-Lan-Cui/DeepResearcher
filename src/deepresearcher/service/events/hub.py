@@ -96,7 +96,9 @@ class RunEventHub:
             return run_id in self._open
 
     async def publish_status(self, run_id: str, status: str) -> None:
-        self.write({"run_id": run_id, "event_type": EventName.RUN_STATUS, "payload": {"status": status}})
+        self.write(
+            {"run_id": run_id, "event_type": EventName.RUN_STATUS, "payload": {"status": status}}
+        )
 
     async def publish_done(self, run_id: str) -> None:
         with self._lock:

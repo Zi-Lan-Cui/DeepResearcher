@@ -49,17 +49,13 @@ def test_release_receipt_has_three_keys_and_post_mutation_snapshot():
 
 def test_duplicate_and_unknown_ids_classified_consistently_on_both_ops():
     release_state = FakeWorkingSet(["e1"], ["e1"])
-    receipt = release_working_set(
-        release_state, ["e1", "e1", "ghost"], snapshot=lambda: {}
-    )
+    receipt = release_working_set(release_state, ["e1", "e1", "ghost"], snapshot=lambda: {})
     # 请求按序去重:重复 id 不在任何键里出现两次;ghost 不在档案 → unknown。
     assert receipt["released_evidence_ids"] == ["e1"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]
 
     restore_state = FakeWorkingSet(["e1"], [])
-    receipt = restore_working_set(
-        restore_state, ["e1", "e1", "ghost"], snapshot=lambda: {}
-    )
+    receipt = restore_working_set(restore_state, ["e1", "e1", "ghost"], snapshot=lambda: {})
     assert receipt["restored_evidence_ids"] == ["e1"]
     assert receipt["not_restored_evidence_ids"] == ["ghost"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]

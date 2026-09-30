@@ -509,9 +509,7 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
             default=0,
         )
         await session.execute(
-            delete(RunEvent).where(
-                RunEvent.run_id == run_id, RunEvent.seq > last_projected
-            )
+            delete(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq > last_projected)
         )
         await session.commit()
     assert last_projected > 0
