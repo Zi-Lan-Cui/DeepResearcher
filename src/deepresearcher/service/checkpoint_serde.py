@@ -19,7 +19,8 @@ from enum import Enum
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel
 
-# 可能出现在 ResearchState 通道里的类型所在包。
+# 可能出现在 State 或内层循环通道里的类型所在包。除业务 State 通道外,还包括通道化后
+# 进入 researcher/writer 内层通道的类型:SearchCandidate、DocumentRef、ValidatedDraft。
 _PROJECT_TYPE_PACKAGES = (
     "deepresearcher.schemas",
     "deepresearcher.evidence",
@@ -27,6 +28,9 @@ _PROJECT_TYPE_PACKAGES = (
     "deepresearcher.state",
     "deepresearcher.routing",
     "deepresearcher.reporting",
+    "deepresearcher.tools.web.search",
+    "deepresearcher.tools.web.documents",
+    "deepresearcher.agents",
 )
 
 

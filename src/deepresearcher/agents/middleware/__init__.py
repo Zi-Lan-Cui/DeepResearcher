@@ -12,12 +12,14 @@ from deepresearcher.agents.middleware.observability import (
 )
 from deepresearcher.agents.middleware.retry import model_retry, tool_retry
 from deepresearcher.agents.middleware.serial_tools import SerialToolMiddleware
+from deepresearcher.agents.middleware.state_rebuild import LoopStateRebuildMiddleware
 from deepresearcher.agents.middleware.tool_loop_guard import ToolLoopGuardMiddleware
 
 __all__ = [
     "AGENT_RECURSION_LIMIT",
     "AgentObservabilityMiddleware",
     "LIMIT_MESSAGE_MARKER",
+    "LoopStateRebuildMiddleware",
     "MiddlewareProfile",
     "SerialToolMiddleware",
     "SubmissionGuard",
