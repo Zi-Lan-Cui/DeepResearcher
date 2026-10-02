@@ -1,11 +1,22 @@
-"""ResearchAgent 的标准工具注册表。"""
+"""ResearchAgent 的标准工具注册表。
+
+写状态的工具在出口把回执写进 messages、业务增量写进 ResearcherAgentState 通道:并发工具
+(AddEvidence/ReadSources)只交合并语义差量,串行工具(SearchSources/Release/Restore/
+ResearchDirectionComplete)交定向的整字段快照。回执文本逐字节不变。
+"""
+
+from typing import Any
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
+from langgraph.types import Command
 
 from deepresearcher.agents.researcher import services
 from deepresearcher.agents.researcher.state import (
     ResearcherLoopContext,
+    _candidate_channel_entry,
+    _document_channel_entry,
     working_set_snapshot,
 )
 from deepresearcher.agents.working_set import release_working_set, restore_working_set
@@ -26,6 +37,28 @@ from deepresearcher.schemas import (
 )
 
 
+def _channel_command(
+    runtime: ToolRuntime[ResearcherLoopContext],
+    payload: dict[str, object],
+    *,
+    tool_name: str,
+    channel_update: dict[str, Any],
+) -> Command:
+    """把回执(ToolMessage)与通道增量合并进同一个 Command。"""
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    format_tool_receipt(payload),
+                    tool_call_id=runtime.tool_call_id,
+                    name=tool_name,
+                )
+            ],
+            **channel_update,
+        }
+    )
+
+
 def build_researcher_tools() -> list[BaseTool]:
     """创建一套绑定到 ResearcherLoopContext 的方向级工具。"""
 
@@ -34,26 +67,61 @@ def build_researcher_tools() -> list[BaseTool]:
         reason: str,
         queries: list[str],
         runtime: ToolRuntime[ResearcherLoopContext],
-    ) -> str:
+    ) -> Command:
         """发现当前研究方向的候选来源；不会自动读取网页。"""
         ctx = runtime.context
+        candidate_keys_before = set(ctx.loop_state.candidates)
         result = await services.search_sources(
             ctx.deps, ctx.task, ctx.loop_state, ctx.event_context, queries, reason
         )
-        return format_tool_receipt(result)
+        new_candidates = {
+            key: _candidate_channel_entry(value)
+            for key, value in ctx.loop_state.candidates.items()
+            if key not in candidate_keys_before
+        }
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="SearchSources",
+            channel_update={
+                "queries": list(ctx.loop_state.queries),
+                "search_batches": dict(ctx.loop_state.search_batches),
+                "candidates": new_candidates,
+                "failures": list(ctx.loop_state.failures),
+                "provider_exhausted": ctx.loop_state.provider_exhausted,
+            },
+        )
 
     @tool("ReadSources", args_schema=ReadSources)
     async def read_sources(
         candidate_ids: list[str],
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
-    ) -> str:
+    ) -> Command:
         """抓取模型选中的来源；短文内联，长文返回可按行读取的句柄。"""
         ctx = runtime.context
+        document_keys_before = set(ctx.loop_state.documents)
         result = await services.read_sources(
             ctx.deps, ctx.task, ctx.loop_state, ctx.event_context, candidate_ids, reason
         )
-        return format_tool_receipt(result)
+        new_documents = {
+            key: _document_channel_entry(value)
+            for key, value in ctx.loop_state.documents.items()
+            if key not in document_keys_before
+        }
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ReadSources",
+            channel_update={
+                "read_urls": list(ctx.loop_state.read_urls),
+                "source_refs": list(ctx.loop_state.source_refs),
+                "documents": new_documents,
+                "selected_candidate_ids": sorted(ctx.loop_state.selected_candidate_ids),
+                "skipped": list(ctx.loop_state.skipped),
+                "failures": list(ctx.loop_state.failures),
+            },
+        )
 
     @tool("ListSearchResults", args_schema=ListSearchResults)
     async def list_search_results(
@@ -109,13 +177,16 @@ def build_researcher_tools() -> list[BaseTool]:
         evidences: list[EvidenceSubmission],
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
-    ) -> str:
+    ) -> Command:
         """批量提交 Evidence；只有能在已登记原文中复算的引用才会入池。"""
         ctx = runtime.context
+        loop_state = ctx.loop_state
+        evidence_ids_before = {item.evidence_id for item in loop_state.evidences}
+        active_before = loop_state.capture_active()
         result = await services.add_evidence(
             ctx.deps,
             ctx.task,
-            ctx.loop_state,
+            loop_state,
             ctx.event_context,
             ctx.commit_lock,
             [
@@ -124,7 +195,18 @@ def build_researcher_tools() -> list[BaseTool]:
             ],
             reason,
         )
-        return format_tool_receipt(result)
+        new_evidences = [
+            item for item in loop_state.evidences if item.evidence_id not in evidence_ids_before
+        ]
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="AddEvidence",
+            channel_update={
+                "evidences": new_evidences,
+                "active_evidence_ops": loop_state.active_op_since(active_before),
+            },
+        )
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
     async def read_working_set(
@@ -140,14 +222,19 @@ def build_researcher_tools() -> list[BaseTool]:
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
-    ) -> str:
+    ) -> Command:
         """从当前方向工作集释放 Evidence，但不删除全局档案。"""
         del reason
         loop_state = runtime.context.loop_state
-        return format_tool_receipt(
-            release_working_set(
-                loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
-            )
+        active_before = loop_state.capture_active()
+        result = release_working_set(
+            loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
+        )
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ReleaseEvidence",
+            channel_update={"active_evidence_ops": loop_state.active_op_since(active_before)},
         )
 
     @tool("RestoreEvidence", args_schema=RestoreEvidence)
@@ -155,19 +242,23 @@ def build_researcher_tools() -> list[BaseTool]:
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
-    ) -> str:
+    ) -> Command:
         """从方向候选档案恢复 Evidence；不会超过活跃工作集上限。"""
         del reason
         loop_state = runtime.context.loop_state
-        return format_tool_receipt(
-            restore_working_set(
-                loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
-            )
+        active_before = loop_state.capture_active()
+        result = restore_working_set(
+            loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
+        )
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="RestoreEvidence",
+            channel_update={"active_evidence_ops": loop_state.active_op_since(active_before)},
         )
 
-    # 不设 return_direct:边级终结只看工具名、不看回执内容——被拒的提交也会
-    # 当场终结循环,模型失去改正引用窗口。接受后 stop_reason 落定,由
-    # SubmittedExitMiddleware 在下一跳静默出环(与 Supervisor/Writer 同构)。
+    # 不设 return_direct:被拒的提交也须留在循环内改正引用;接受后由 SubmittedExitMiddleware
+    # 依 stop_reason 在下一跳退出(与 Supervisor/Writer 同构)。
     @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
     async def complete_direction(
         reason: str,
@@ -175,16 +266,34 @@ def build_researcher_tools() -> list[BaseTool]:
         conclusion: str,
         remaining_gaps: list[str],
         runtime: ToolRuntime[ResearcherLoopContext],
-    ) -> str:
+    ) -> Command:
         """提交当前方向的最终局部结果；被拒则按回执修正后重提。"""
-        return format_tool_receipt(
-            services.complete_direction(
-                runtime.context.loop_state,
-                reason,
-                selected_evidence_ids,
-                conclusion,
-                remaining_gaps,
+        ctx = runtime.context
+        loop_state = ctx.loop_state
+        active_before = loop_state.capture_active()
+        result = services.complete_direction(
+            loop_state,
+            reason,
+            selected_evidence_ids,
+            conclusion,
+            remaining_gaps,
+        )
+        # 被拒不落通道(无 stop_reason 变化、无活跃集变化),只回一份纠错回执。
+        if result.get("status") != "accepted":
+            return _channel_command(
+                runtime, result, tool_name="ResearchDirectionComplete", channel_update={}
             )
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ResearchDirectionComplete",
+            channel_update={
+                "remaining_gaps": list(loop_state.remaining_gaps),
+                "conclusion": loop_state.conclusion,
+                "stop_reason": loop_state.stop_reason,
+                "stop_detail": loop_state.stop_detail,
+                "active_evidence_ops": loop_state.active_op_since(active_before),
+            },
         )
 
     return [

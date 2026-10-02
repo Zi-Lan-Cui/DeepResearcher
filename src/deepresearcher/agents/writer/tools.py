@@ -1,7 +1,16 @@
-"""Writer 的标准工具注册表。"""
+"""Writer 的标准工具注册表。
+
+写状态的工具在出口把回执写进 messages、簿记增量写进 WriterAgentState 通道:ReadEvidence
+交本批新增的 read_evidence_ids;CompleteReport 串行写 validated_draft/last_error/last_markdown。
+回执文本逐字节不变。
+"""
+
+from typing import Any
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
+from langgraph.types import Command
 
 from deepresearcher.agents.writer.state import (
     ValidatedDraft,
@@ -11,6 +20,22 @@ from deepresearcher.agents.writer.state import (
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
 from deepresearcher.schemas import CompleteReport, ReadEvidence, format_tool_receipt
 from deepresearcher.schemas.limits import READ_EVIDENCE_REQUEST_WINDOW_IDS
+
+
+def _writer_command(
+    runtime: ToolRuntime[WriterLoopContext],
+    content: str,
+    *,
+    tool_name: str,
+    channel_update: dict[str, Any],
+) -> Command:
+    """把回执文本 content 与通道增量合并进同一个 Command。"""
+    return Command(
+        update={
+            "messages": [ToolMessage(content, tool_call_id=runtime.tool_call_id, name=tool_name)],
+            **channel_update,
+        }
+    )
 
 
 # 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
@@ -41,7 +66,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[WriterLoopContext],
-    ) -> str:
+    ) -> Command:
         # 模型可见契约在上方 description=(args_schema 在场时 docstring 不进 prompt)。
         del reason
         context = runtime.context
@@ -95,7 +120,12 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
                 "truncated_ids": not_read,
             },
         )
-        return format_tool_receipt(payload)
+        return _writer_command(
+            runtime,
+            format_tool_receipt(payload),
+            tool_name="ReadEvidence",
+            channel_update={"read_evidence_ids": list(ids)},
+        )
 
     @tool(
         "CompleteReport",
@@ -113,7 +143,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         selected_evidence_ids: list[str],
         markdown: str,
         runtime: ToolRuntime[WriterLoopContext],
-    ) -> str:
+    ) -> Command:
         # 模型可见契约在上方 description=;校验失败文本即下一轮修正指令。
         context = runtime.context
         context.last_markdown = markdown
@@ -158,10 +188,25 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
                 "writer_citation_validation_failed",
                 {"error": str(exc), "markdown": markdown},
             )
-            return (
+            return _writer_command(
+                runtime,
                 f"提交校验失败：{exc}。"
-                "只能引用已经由 ReadEvidence 返回的 evidence_id；修正 Markdown 后再次调用 CompleteReport。"
+                "只能引用已经由 ReadEvidence 返回的 evidence_id；修正 Markdown 后再次调用 CompleteReport。",
+                tool_name="CompleteReport",
+                channel_update={
+                    "last_error": context.last_error,
+                    "last_markdown": markdown,
+                },
             )
-        return "报告草稿已通过本地引用校验。请停止调用工具并结束回复。"
+        return _writer_command(
+            runtime,
+            "报告草稿已通过本地引用校验。请停止调用工具并结束回复。",
+            tool_name="CompleteReport",
+            channel_update={
+                "validated_draft": context.validated_draft,
+                "last_error": "",
+                "last_markdown": markdown,
+            },
+        )
 
     return [read_evidence, complete_report]

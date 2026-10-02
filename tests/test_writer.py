@@ -1,8 +1,19 @@
 import asyncio
+from types import SimpleNamespace
+from typing import Annotated, get_args, get_origin, get_type_hints
 
 import pytest
 
+from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
 from deepresearcher.agents.writer import ReportWriter, services
+from deepresearcher.agents.writer.agent import WRITER_SERIAL_TOOLS
+from deepresearcher.agents.writer.state import (
+    ValidatedDraft,
+    WriterAgentState,
+    WriterLoopContext,
+)
+from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink
@@ -895,3 +906,57 @@ def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
     assert reads[0]["payload"]["unknown_ids"] == ["ghost-1"]  # 编造 id 被点名
     assert reads[0]["payload"]["read_ids"] == ["e1", "e2"]  # 未知 id 不占配额
     assert result["writer"].status == "completed"  # 两步内自愈
+
+
+# --- 通道化不变式(§5 分类 + 通道回环 + 批重建) --------------------------------
+
+
+def _non_concurrency_safe_channels(state_cls) -> set[str]:
+    hints = get_type_hints(state_cls, include_extras=True)
+    unsafe = {replace_channel, retain_if_absent}
+    result = set()
+    for name, hint in hints.items():
+        if get_origin(hint) is Annotated:
+            reducers = [arg for arg in get_args(hint)[1:] if callable(arg)]
+            if any(reducer in unsafe for reducer in reducers):
+                result.add(name)
+    return result
+
+
+def test_writer_only_complete_report_is_serial():
+    """§5 分类守卫:写 replace/retain 通道的 CompleteReport 串行;ReadEvidence 走 merge_unique 可并发。"""
+    names = {item.name for item in build_writer_tools(turn_budget=8, read_batch=6)}
+    assert names - set(WRITER_SERIAL_TOOLS) == {"ReadEvidence"}
+
+
+def test_writer_selection_channels_are_serial_only():
+    assert _non_concurrency_safe_channels(WriterAgentState) == {
+        "validated_draft",
+        "last_error",
+        "last_markdown",
+    }
+
+
+def test_writer_rebuild_discards_uncommitted_memory():
+    """每模型回合从通道重建:未经 Command 提交的内存草稿改动在下一回合被丢弃。"""
+
+    class _Runtime:
+        def __init__(self, context):
+            self.context = context
+
+    committed = WriterLoopContext(
+        scope=SimpleNamespace(),
+        evidence_by_id={},
+        read_evidence_ids={"e1"},
+        read_batch_size=6,
+        max_markdown_chars=10_000,
+        emit=lambda *_a, **_k: None,
+    )
+    channels = committed.initial_channel_state()
+    committed.read_evidence_ids.add("e-uncommitted")
+    committed.validated_draft = ValidatedDraft("x", [], [], ["e1"])
+
+    asyncio.run(LoopStateRebuildMiddleware().abefore_model(channels, _Runtime(committed)))
+    # 通道里只有 e1、无草稿:重建后未提交的 e-uncommitted 与野草稿都应消失。
+    assert committed.read_evidence_ids == {"e1"}
+    assert committed.validated_draft is None

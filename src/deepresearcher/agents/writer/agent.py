@@ -14,12 +14,14 @@ from langgraph.errors import GraphRecursionError
 
 from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
+    LoopStateRebuildMiddleware,
     MiddlewareProfile,
     SubmissionGuard,
     build_agent_middleware,
 )
 from deepresearcher.agents.writer import services
 from deepresearcher.agents.writer.state import (
+    WriterAgentState,
     WriterLoopContext,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
@@ -35,6 +37,10 @@ from deepresearcher.prompts import language_directive, load_prompt
 from deepresearcher.state import ResearchState
 
 _WRITER_SYSTEM_PROMPT = load_prompt("writer")
+
+# CompleteReport 写 replace/retain 语义通道(草稿/错误/底稿),必须串行完成。
+# 约束由 tests/test_writer.py 的静态守卫测试锁定(§5)。
+WRITER_SERIAL_TOOLS: frozenset[str] = frozenset({"CompleteReport"})
 
 
 class ReportWriter:
@@ -73,37 +79,42 @@ class ReportWriter:
             + "\n"
             + language_directive(config.output_language),
             context_schema=WriterLoopContext,
+            state_schema=WriterAgentState,
             middleware=cast(
                 Any,
-                build_agent_middleware(
-                    MiddlewareProfile(
-                        agent_name="Writer",
-                        event_slug="writer",
-                        model=self.llm,
-                        max_turns=self.config.writer_max_turns,
-                        context_window_tokens=context_window_tokens,
-                        # 提交前输出纯文本不算结束：退回重试，耗尽后由 recover_inline_draft 兜底。
-                        submission_guard=SubmissionGuard(
-                            nudge_message=(
-                                "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
-                                "请立即调用 CompleteReport，把完整 Markdown 正文作为参数提交，"
-                                "并在 selected_evidence_ids 填入真正支撑正文的已读 evidence_id。"
+                [
+                    LoopStateRebuildMiddleware(),
+                    *build_agent_middleware(
+                        MiddlewareProfile(
+                            agent_name="Writer",
+                            event_slug="writer",
+                            model=self.llm,
+                            max_turns=self.config.writer_max_turns,
+                            context_window_tokens=context_window_tokens,
+                            serial_tools=set(WRITER_SERIAL_TOOLS),
+                            # 提交前输出纯文本不算结束：退回重试，耗尽后由 recover_inline_draft 兜底。
+                            submission_guard=SubmissionGuard(
+                                nudge_message=(
+                                    "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
+                                    "请立即调用 CompleteReport，把完整 Markdown 正文作为参数提交，"
+                                    "并在 selected_evidence_ids 填入真正支撑正文的已读 evidence_id。"
+                                ),
+                                submitted_probe=lambda ctx: (
+                                    getattr(ctx, "validated_draft", None) is not None
+                                ),
+                                max_nudges=self.config.finalization_attempts,
                             ),
-                            submitted_probe=lambda ctx: (
+                            # 草稿落定后下一跳退出循环:不再依赖模型多跑一轮,也关掉"提交后仍可再调工具"的窗口。
+                            exit_probe=lambda ctx, _state: (
                                 getattr(ctx, "validated_draft", None) is not None
                             ),
-                            max_nudges=self.config.finalization_attempts,
-                        ),
-                        # 校验通过的草稿落定后下一跳静默出环:收场不再依赖
-                        # 模型多跑一轮自由文本,也关掉"提交后仍可再调工具"的窗口。
-                        exit_probe=lambda ctx, _state: (
-                            getattr(ctx, "validated_draft", None) is not None
-                        ),
-                        emit=self._emit,
-                    )
-                ),
+                            emit=self._emit,
+                        )
+                    ),
+                ],
             ),
             name="writer",
+            # 业务状态已并入通道,翻回继承:崩溃重放从最后一个已提交 superstep 续跑。
         )
 
     async def run(self, state: ResearchState) -> dict[str, object]:
@@ -139,8 +150,8 @@ class ReportWriter:
             writer_feedback_chars=self.config.writer_feedback_chars,
         )
         try:
-            result = await self._agent_loop.ainvoke(
-                cast(Any, {"messages": messages}),
+            result = await cast(Any, self._agent_loop).ainvoke(
+                cast(Any, {"messages": messages, **loop_context.initial_channel_state()}),
                 context=loop_context,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
@@ -149,6 +160,9 @@ class ReportWriter:
             loop_context.last_error = (
                 loop_context.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
             )
+        else:
+            # 从通道现值回填簿记:崩溃重放时上下文未经批重建,以通道为准才不会把已提交草稿读成 None。
+            loop_context.rebuild_loop_state(result)
         if loop_context.validated_draft is None:
             services.recover_inline_draft(loop_context, result.get("messages", []), emit=self._emit)
         if loop_context.validated_draft is None:

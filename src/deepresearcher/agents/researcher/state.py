@@ -2,7 +2,17 @@
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Annotated, Any
 
+from langchain.agents import AgentState
+
+from deepresearcher.agents.channels import (
+    append_ops,
+    merge_dict_by_key,
+    merge_or,
+    replace_channel,
+    retain_if_absent,
+)
 from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
@@ -10,11 +20,47 @@ from deepresearcher.observability.events import AgentEmit
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import DirectionStopReason
 from deepresearcher.schemas.sources import source_domain
-from deepresearcher.state import SubTask
+from deepresearcher.state import SubTask, merge_evidences, merge_unique
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.web.documents import DocumentRef
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 from deepresearcher.tools.web.search.models import SearchCandidate
+
+
+def _candidate_channel_entry(candidate: SearchCandidate) -> SearchCandidate:
+    """进通道的候选去掉 raw_content:正文留在材料缓存,检查点只存可重取的引用形。"""
+    return candidate.model_copy(update={"raw_content": ""})
+
+
+def _document_channel_entry(view: DocumentRef) -> DocumentRef:
+    """文档进通道降为 DocumentRef:剥 content/inline,grep/read 经 material_store 现取。"""
+    return DocumentRef.model_validate(view.model_dump())
+
+
+class ResearcherAgentState(AgentState):
+    """ResearchAgent 内层图的 state_schema:方向业务状态的持久化载体。
+
+    AddEvidence/ReadSources 并发,只写合并语义通道;SearchSources/Release/Restore/
+    ResearchDirectionComplete 串行,replace 通道(conclusion/remaining_gaps/stop_detail)
+    由它们写。active 工作集存有序 op 流水;候选与文档进通道时剥正文。
+    """
+
+    evidences: Annotated[list[Evidence], merge_evidences]
+    active_evidence_ops: Annotated[list[dict], append_ops]
+    source_refs: Annotated[list[str], merge_unique]
+    queries: Annotated[list[str], merge_unique]
+    read_urls: Annotated[list[str], merge_unique]
+    skipped: Annotated[list[str], merge_unique]
+    failures: Annotated[list[str], merge_unique]
+    candidates: Annotated[dict[str, SearchCandidate], merge_dict_by_key]
+    search_batches: Annotated[dict[str, list[str]], merge_dict_by_key]
+    documents: Annotated[dict[str, DocumentRef], merge_dict_by_key]
+    selected_candidate_ids: Annotated[list[str], merge_unique]
+    remaining_gaps: Annotated[list[str], replace_channel]
+    conclusion: Annotated[str, replace_channel]
+    stop_reason: Annotated[DirectionStopReason | None, retain_if_absent]
+    stop_detail: Annotated[str, replace_channel]
+    provider_exhausted: Annotated[bool, merge_or]
 
 
 def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[str, object]:
@@ -90,6 +136,15 @@ class ResearcherLoopContext:
     commit_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
 
+    def rebuild_loop_state(self, values: dict[str, Any]) -> None:
+        """每次模型回合前从通道现值重建 loop_state;两个上限按本轮 config 现取,不进通道。"""
+        config = self.deps.config
+        self.loop_state = ResearcherLoopState.from_channel_values(
+            values,
+            active_evidence_limit=config.research_agent_max_evidences_per_direction,
+            evidence_archive_limit=config.research_agent_max_evidence_candidates_per_direction,
+        )
+
 
 @dataclass
 class ResearcherLoopState:
@@ -144,3 +199,98 @@ class ResearcherLoopState:
         restored = candidates[:slots]
         self.active_evidence_ids.update(restored)
         return restored
+
+    # --- 通道往返:loop_state ⇄ ResearcherAgentState -------------------------------
+
+    def capture_active(self) -> set[str]:
+        """并发工具执行前的活跃集快照,出口据此算 add/remove 差量。"""
+        return set(self.active_evidence_ids)
+
+    def active_op_since(self, before: set[str]) -> list[dict[str, list[str]]]:
+        """把本批活跃集变化折成一条 op,只经 active_evidence_ops 通道提交。"""
+        return [
+            {
+                "add": sorted(self.active_evidence_ids - before),
+                "remove": sorted(before - self.active_evidence_ids),
+            }
+        ]
+
+    def initial_channel_state(self) -> dict[str, Any]:
+        """把当前 loop_state 一次性种进内层通道,作 ainvoke 入口 input。"""
+        return {
+            "evidences": list(self.evidences),
+            "active_evidence_ops": [{"add": sorted(self.active_evidence_ids), "remove": []}],
+            "source_refs": list(self.source_refs),
+            "queries": list(self.queries),
+            "read_urls": list(self.read_urls),
+            "skipped": list(self.skipped),
+            "failures": list(self.failures),
+            "candidates": {
+                key: _candidate_channel_entry(value) for key, value in self.candidates.items()
+            },
+            "search_batches": dict(self.search_batches),
+            "documents": {
+                key: _document_channel_entry(value) for key, value in self.documents.items()
+            },
+            "selected_candidate_ids": sorted(self.selected_candidate_ids),
+            "remaining_gaps": list(self.remaining_gaps),
+            "conclusion": self.conclusion,
+            "stop_reason": self.stop_reason,
+            "stop_detail": self.stop_detail,
+            "provider_exhausted": self.provider_exhausted,
+        }
+
+    @classmethod
+    def from_channel_values(
+        cls,
+        values: dict[str, Any],
+        *,
+        active_evidence_limit: int,
+        evidence_archive_limit: int,
+    ) -> "ResearcherLoopState":
+        """从内层通道现值重建 loop_state;缺席键回落空态默认。"""
+        view = cls(
+            active_evidence_limit=active_evidence_limit,
+            evidence_archive_limit=evidence_archive_limit,
+        )
+        if "evidences" in values:
+            view.evidences = [
+                item if isinstance(item, Evidence) else Evidence.model_validate(item)
+                for item in values["evidences"]
+            ]
+        if "active_evidence_ops" in values:
+            active: set[str] = set()
+            for op in values["active_evidence_ops"]:
+                active.update(op.get("add", []))
+                active.difference_update(op.get("remove", []))
+            view.active_evidence_ids = active
+        for key in ("source_refs", "queries", "read_urls", "skipped", "failures", "remaining_gaps"):
+            if key in values:
+                setattr(view, key, list(values[key] or []))
+        if "candidates" in values:
+            view.candidates = {
+                key: value
+                if isinstance(value, SearchCandidate)
+                else SearchCandidate.model_validate(value)
+                for key, value in (values["candidates"] or {}).items()
+            }
+        if "search_batches" in values:
+            view.search_batches = {
+                key: list(value) for key, value in (values["search_batches"] or {}).items()
+            }
+        if "documents" in values:
+            view.documents = {
+                key: value if isinstance(value, DocumentRef) else DocumentRef.model_validate(value)
+                for key, value in (values["documents"] or {}).items()
+            }
+        if "selected_candidate_ids" in values:
+            view.selected_candidate_ids = set(values["selected_candidate_ids"] or [])
+        if "conclusion" in values:
+            view.conclusion = str(values["conclusion"] or "")
+        if "stop_detail" in values:
+            view.stop_detail = str(values["stop_detail"] or "")
+        if values.get("stop_reason") is not None:
+            view.stop_reason = DirectionStopReason(values["stop_reason"])
+        if "provider_exhausted" in values:
+            view.provider_exhausted = bool(values["provider_exhausted"])
+        return view

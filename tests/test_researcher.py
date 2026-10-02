@@ -1,12 +1,22 @@
 import asyncio
 import dataclasses
 import hashlib
+from types import SimpleNamespace
+from typing import Annotated, get_args, get_origin, get_type_hints
 
 import pytest
 from langchain_core.messages import AIMessage
 
+from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
 from deepresearcher.agents.researcher import ResearchAgent, services
-from deepresearcher.agents.researcher.state import ResearcherLoopState
+from deepresearcher.agents.researcher.agent import RESEARCHER_SERIAL_TOOLS
+from deepresearcher.agents.researcher.state import (
+    ResearcherAgentState,
+    ResearcherLoopContext,
+    ResearcherLoopState,
+)
+from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.llm import LLMConfigurationError
@@ -15,14 +25,18 @@ from deepresearcher.schemas import (
     ResearchDirectionResult,
 )
 from deepresearcher.schemas.limits import SEARCH_RESULTS_PREVIEW_COUNT
+from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.errors import SourceUnavailableError
+from deepresearcher.tools.web.documents import DocumentRef, DocumentView
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
+from deepresearcher.tools.web.search.models import SearchCandidate
 from fakes import (
     TASK,
     DirectionLLM,
     FakeReader,
     FakeSearchService,
+    make_evidence,
     researcher_agent,
 )
 
@@ -919,3 +933,131 @@ def test_search_tool_query_failed_event_reraises():
         r.event_type == "search_query_failed" and r.payload["query"] == "会失败"
         for r in sink.records
     )
+
+
+# --- 通道化不变式(§5 硬点 + 通道往返 + ref 化 + 批重建 + serde) -----------------
+
+
+def _non_concurrency_safe_channels(state_cls) -> set[str]:
+    """replace / retain-if-absent 语义的通道:整字段快照,只许 serial 工具写。"""
+    hints = get_type_hints(state_cls, include_extras=True)
+    unsafe = {replace_channel, retain_if_absent}
+    result = set()
+    for name, hint in hints.items():
+        if get_origin(hint) is Annotated:
+            reducers = [arg for arg in get_args(hint)[1:] if callable(arg)]
+            if any(reducer in unsafe for reducer in reducers):
+                result.add(name)
+    return result
+
+
+def test_researcher_concurrent_tools_are_known_merge_writers():
+    """§5 分类守卫:非串行工具恰为已知的合并语义写者;新增并发工具必须显式归类。"""
+    names = {item.name for item in build_researcher_tools()}
+    concurrent = names - set(RESEARCHER_SERIAL_TOOLS)
+    assert concurrent == {
+        "AddEvidence",
+        "ReadSources",
+        "ListSearchResults",
+        "GrepDocument",
+        "ReadDocument",
+    }
+
+
+def test_researcher_selection_channels_are_serial_only():
+    """非并发安全通道 = 方向收尾(ResearchDirectionComplete,串行)独写集。"""
+    assert _non_concurrency_safe_channels(ResearcherAgentState) == {
+        "remaining_gaps",
+        "conclusion",
+        "stop_reason",
+        "stop_detail",
+    }
+
+
+def test_researcher_channel_round_trip_strips_bodies():
+    """initial_channel_state → from_channel_values 等价;候选去 raw_content、文档降 DocumentRef。"""
+    state = ResearcherLoopState(active_evidence_limit=6, evidence_archive_limit=12)
+    state.candidates["c-1"] = SearchCandidate(
+        candidate_id="c-1",
+        url="https://a",
+        title="标题",
+        snippet="摘要",
+        raw_content="这是一大段不应进通道的正文",
+        score=1.0,
+    )
+    state.documents["d-1"] = DocumentView(
+        document_id="d-1",
+        source_url="https://a",
+        title="标题",
+        content_hash="h",
+        line_count=3,
+        token_count=10,
+        inline=True,
+        content="文档正文也不进通道",
+    )
+    state.add_evidences([make_evidence("e1", "事实")])
+    state.selected_candidate_ids.add("c-1")
+    state.read_urls.append("https://a")
+
+    channels = state.initial_channel_state()
+    # ref 化纪律:通道里既无候选正文,也无文档正文。
+    assert channels["candidates"]["c-1"].raw_content == ""
+    assert "content" not in channels["documents"]["d-1"].model_dump()
+    assert isinstance(channels["documents"]["d-1"], DocumentRef)
+
+    restored = ResearcherLoopState.from_channel_values(
+        channels, active_evidence_limit=6, evidence_archive_limit=12
+    )
+    assert restored.candidates["c-1"].url == "https://a"
+    assert restored.candidates["c-1"].snippet == "摘要"
+    assert set(restored.documents) == {"d-1"}
+    assert restored.documents["d-1"].source_url == "https://a"
+    assert restored.selected_candidate_ids == {"c-1"}
+    assert [item.evidence_id for item in restored.evidences] == ["e1"]
+    assert restored.active_evidence_ids == state.active_evidence_ids
+    assert restored.read_urls == ["https://a"]
+
+
+def test_researcher_rebuild_discards_uncommitted_memory():
+    """每模型回合从通道重建:未经 Command 提交的内存改动被丢弃。"""
+
+    class _Runtime:
+        def __init__(self, context):
+            self.context = context
+
+    committed = ResearcherLoopState(active_evidence_limit=6, evidence_archive_limit=12)
+    committed.conclusion = "已提交结论"
+    channels = committed.initial_channel_state()
+    context = ResearcherLoopContext(
+        deps=SimpleNamespace(config=AgentConfig()),
+        scope=SimpleNamespace(),
+        task=TASK,
+        loop_state=committed,
+    )
+    context.loop_state.conclusion = "未提交的内存改动"
+
+    asyncio.run(LoopStateRebuildMiddleware().abefore_model(channels, _Runtime(context)))
+    assert context.loop_state.conclusion == "已提交结论"
+
+
+def test_researcher_candidate_channel_survives_msgpack():
+    """进通道的候选/文档 ref 形经检查点 serde 往返,类型受白名单放行、正文保持剥离。"""
+    serde = build_checkpointer_serde()
+    payload = {
+        "candidates": {
+            "c-1": SearchCandidate(candidate_id="c-1", url="https://a", snippet="摘要", score=1.0)
+        },
+        "documents": {
+            "d-1": DocumentRef(
+                document_id="d-1",
+                source_url="https://a",
+                content_hash="h",
+                line_count=1,
+                token_count=1,
+            )
+        },
+    }
+    restored = serde.loads_typed(serde.dumps_typed(payload))
+    assert isinstance(restored["candidates"]["c-1"], SearchCandidate)
+    assert isinstance(restored["documents"]["d-1"], DocumentRef)
+    assert restored["candidates"]["c-1"] == payload["candidates"]["c-1"]

@@ -1,12 +1,18 @@
-"""Writer 的内部准备态和校验结果。"""
+"""Writer 的内部准备态、校验结果与内层 agent 的状态通道。"""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Annotated, Any
 
+from langchain.agents import AgentState
+
+from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import Citation, ParagraphBinding
 from deepresearcher.schemas.sources import source_domain
+from deepresearcher.state import merge_unique
 
 
 def evidence_index_card(evidence: Evidence) -> dict[str, object]:
@@ -37,9 +43,30 @@ def evidence_detail_card(evidence: Evidence) -> dict[str, object]:
     }
 
 
+def _restore_draft(value: "ValidatedDraft | dict[str, Any] | None") -> "ValidatedDraft | None":
+    """通道现值恢复草稿:同 run 与 serde 往返均已还原为 ValidatedDraft 实例;dict 兜底。"""
+    if value is None or isinstance(value, ValidatedDraft):
+        return value
+    return ValidatedDraft(**value)
+
+
+class WriterAgentState(AgentState):
+    """ReportWriter 内层图的 state_schema:草稿循环业务状态的持久化载体。
+
+    read_evidence_ids 走 merge_unique(并发 ReadEvidence 各交本批新增、按值折重);
+    validated_draft/last_error/last_markdown 由串行 CompleteReport 写(replace / retain)。
+    evidence_by_id 是 run 入口从外层 State 派生的只读目录,不进通道。
+    """
+
+    read_evidence_ids: Annotated[list[str], merge_unique]
+    validated_draft: Annotated["ValidatedDraft | None", retain_if_absent]
+    last_error: Annotated[str, replace_channel]
+    last_markdown: Annotated[str, replace_channel]
+
+
 @dataclass
 class WriterLoopContext:
-    """不进入 State 的 Writer 运行时依赖。"""
+    """Writer 一次草稿循环的注入载荷:只读依赖留本对象,可变簿记进通道。"""
 
     scope: AgentExecutionScope
     evidence_by_id: dict[str, Evidence]
@@ -51,6 +78,27 @@ class WriterLoopContext:
     last_error: str = ""
     last_markdown: str = ""
     artifact_max_text_chars: int = 1_000
+    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
+
+    def initial_channel_state(self) -> dict[str, Any]:
+        """构造 ainvoke 入口 input:当前簿记一次性种进内层通道。"""
+        return {
+            "read_evidence_ids": sorted(self.read_evidence_ids),
+            "validated_draft": self.validated_draft,
+            "last_error": self.last_error,
+            "last_markdown": self.last_markdown,
+        }
+
+    def rebuild_loop_state(self, values: dict[str, Any]) -> None:
+        """每次模型回合前从通道现值回填四项可变簿记;只读依赖不动。"""
+        if "read_evidence_ids" in values:
+            self.read_evidence_ids = set(values["read_evidence_ids"] or [])
+        if "validated_draft" in values:
+            self.validated_draft = _restore_draft(values["validated_draft"])
+        if "last_error" in values:
+            self.last_error = str(values["last_error"] or "")
+        if "last_markdown" in values:
+            self.last_markdown = str(values["last_markdown"] or "")
 
 
 @dataclass(frozen=True)

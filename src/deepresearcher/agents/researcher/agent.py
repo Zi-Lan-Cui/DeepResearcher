@@ -14,11 +14,13 @@ from langgraph.errors import GraphRecursionError
 
 from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
+    LoopStateRebuildMiddleware,
     MiddlewareProfile,
     SubmissionGuard,
     build_agent_middleware,
 )
 from deepresearcher.agents.researcher.state import (
+    ResearcherAgentState,
     ResearcherDeps,
     ResearcherLoopContext,
     ResearcherLoopState,
@@ -45,6 +47,19 @@ from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 _RESEARCHER_SYSTEM_PROMPT = load_prompt("researcher")
+
+# revision/replace 敏感或改变活跃集的串行工具:逐个完成,避免并发整字段快照互相覆盖。
+# AddEvidence/ReadSources 是唯一被允许同批并发的写通道工具,只提交合并语义差量。
+# 约束由 tests/test_researcher.py 的静态守卫测试锁定(§5)。
+RESEARCHER_SERIAL_TOOLS: frozenset[str] = frozenset(
+    {
+        "SearchSources",
+        "ReadWorkingSet",
+        "ReleaseEvidence",
+        "RestoreEvidence",
+        "ResearchDirectionComplete",
+    }
+)
 
 
 class ResearchAgent:
@@ -87,60 +102,59 @@ class ResearchAgent:
             + "\n"
             + language_directive(config.output_language),
             context_schema=ResearcherLoopContext,
+            state_schema=ResearcherAgentState,
             middleware=cast(
                 Any,
-                build_agent_middleware(
-                    MiddlewareProfile(
-                        agent_name="ResearchAgent",
-                        event_slug="researcher",
-                        model=self.llm,
-                        # +1:步数预算走完后再给一次不带工具的收尾回合。
-                        max_turns=self.config.research_agent_max_turns + 1,
-                        context_window_tokens=context_window_tokens,
-                        retry_tools=[["SearchSources"], ["ReadSources"]],
-                        serial_tools={
-                            "SearchSources",
-                            "ReadWorkingSet",
-                            "ReleaseEvidence",
-                            "RestoreEvidence",
-                            "ResearchDirectionComplete",
-                        },
-                        submission_guard=SubmissionGuard(
-                            nudge_message=(
-                                "你还没有调用 ResearchDirectionComplete。"
-                                "普通文本不是有效收尾；请继续研究，或立即调用该工具提交。"
+                [
+                    LoopStateRebuildMiddleware(),
+                    *build_agent_middleware(
+                        MiddlewareProfile(
+                            agent_name="ResearchAgent",
+                            event_slug="researcher",
+                            model=self.llm,
+                            # +1:步数预算走完后再给一次不带工具的收尾回合。
+                            max_turns=self.config.research_agent_max_turns + 1,
+                            context_window_tokens=context_window_tokens,
+                            retry_tools=[["SearchSources"], ["ReadSources"]],
+                            serial_tools=set(RESEARCHER_SERIAL_TOOLS),
+                            submission_guard=SubmissionGuard(
+                                nudge_message=(
+                                    "你还没有调用 ResearchDirectionComplete。"
+                                    "普通文本不是有效收尾；请继续研究，或立即调用该工具提交。"
+                                ),
+                                submitted_probe=lambda ctx: (
+                                    getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
+                                    in {
+                                        DirectionStopReason.COMPLETE,
+                                        DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+                                    }
+                                ),
+                                max_nudges=self.config.finalization_attempts,
+                                reminder_turns=4,
+                                reminder_message=(
+                                    "【剩余回合提醒】当前仅剩 {remaining_turns} 个模型回合。"
+                                    "停止扩展范围、翻页或重复搜索。请立即将已读取且可逐字定位的"
+                                    "原文批量提交给 AddEvidence；如被拒绝，只修正引用，不再搜索。"
+                                    "随后调用 "
+                                    "ResearchDirectionComplete 诚实提交已覆盖内容和剩余缺口。"
+                                ),
                             ),
-                            submitted_probe=lambda ctx: (
+                            # 与 submitted_probe 同一信号:方向结果落定(stop_reason 收口)
+                            # 后下一跳静默出环;被拒回执不写 stop_reason,模型留环改正。
+                            exit_probe=lambda ctx, _state: (
                                 getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
                                 in {
                                     DirectionStopReason.COMPLETE,
                                     DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
                                 }
                             ),
-                            max_nudges=self.config.finalization_attempts,
-                            reminder_turns=4,
-                            reminder_message=(
-                                "【剩余回合提醒】当前仅剩 {remaining_turns} 个模型回合。"
-                                "停止扩展范围、翻页或重复搜索。请立即将已读取且可逐字定位的"
-                                "原文批量提交给 AddEvidence；如被拒绝，只修正引用，不再搜索。"
-                                "随后调用 "
-                                "ResearchDirectionComplete 诚实提交已覆盖内容和剩余缺口。"
-                            ),
-                        ),
-                        # 与 submitted_probe 同一信号:方向结果落定(stop_reason 收口)
-                        # 后下一跳静默出环;被拒回执不写 stop_reason,模型留环改正。
-                        exit_probe=lambda ctx, _state: (
-                            getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
-                            in {
-                                DirectionStopReason.COMPLETE,
-                                DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
-                            }
-                        ),
-                        emit=self._emit,
-                    )
-                ),
+                            emit=self._emit,
+                        )
+                    ),
+                ],
             ),
             name="researcher",
+            # 业务状态已并入通道,翻回继承:崩溃重放从最后一个已提交 superstep 续跑。
         )
 
     async def run(self, task: SubTask) -> ResearchAgentResult:
@@ -167,24 +181,34 @@ class ResearchAgent:
         messages = self._initial_messages(task)
         status: Literal["completed", "failed", "cancelled"] = "completed"
         try:
-            await self._agent_loop.ainvoke(
-                cast(Any, {"messages": messages}),
+            result = await cast(Any, self._agent_loop).ainvoke(
+                cast(Any, {"messages": messages, **loop_state.initial_channel_state()}),
                 context=loop_context,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
         except GraphRecursionError:
+            loop_state = loop_context.loop_state
             loop_state.stop_reason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
             loop_state.stop_detail = "方向级 Agent 回合预算已耗尽。"
         except asyncio.CancelledError:
             status = "cancelled"
+            loop_state = loop_context.loop_state
             loop_state.stop_reason = DirectionStopReason.CANCELLED
             loop_state.stop_detail = "方向级 Agent 被取消。"
             raise
         except Exception as exc:
             status = "failed"
+            loop_state = loop_context.loop_state
             loop_state.failures.append(f"direction_agent_failed: {exc}")
             loop_state.stop_reason = DirectionStopReason.DIRECTION_AGENT_FAILED
             loop_state.stop_detail = str(exc)
+        else:
+            # 正常收尾从通道现值重建 loop_state,通道为唯一事实源。
+            loop_state = ResearcherLoopState.from_channel_values(
+                result if isinstance(result, dict) else {},
+                active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
+                evidence_archive_limit=self.config.research_agent_max_evidence_candidates_per_direction,
+            )
         # 凡未正常收尾的,一律套用最小保守结果保住已验证证据、补降级标注。
         # 它只改写**交付**语义(conclusion/gaps);执行真相由 status/stop_reason
         # 如实记录——崩溃的方向就是 failed,不得标成 completed+fallback。
