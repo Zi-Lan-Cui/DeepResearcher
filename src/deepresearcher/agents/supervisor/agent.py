@@ -15,12 +15,14 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
     LIMIT_MESSAGE_MARKER,
+    LoopStateRebuildMiddleware,
     MiddlewareProfile,
     build_agent_middleware,
 )
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
+    SupervisorAgentState,
     SupervisorDeps,
     SupervisorLoopContext,
     SupervisorLoopState,
@@ -54,6 +56,18 @@ from deepresearcher.schemas import (
 from deepresearcher.state import ResearchState, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
+
+# 除 ResearchDelegate 外的写通道工具(及只读 ReadWorkingSet)一律串行,避免并发整字段
+# 快照互相覆盖。约束由 tests/test_supervisor.py 的静态守卫测试锁定。
+SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
+    {
+        "ReadWorkingSet",
+        "ReleaseEvidence",
+        "RestoreEvidence",
+        "ReviseResearchSynthesis",
+        "ResearchComplete",
+    }
+)
 
 
 # 天花板消息恒在会话尾部数条内;窗口留一小段冗余防 after-hook 顺序变化。
@@ -104,30 +118,29 @@ class ResearchSupervisor:
             + "\n"
             + language_directive(config.output_language),
             context_schema=SupervisorLoopContext,
+            state_schema=SupervisorAgentState,
             middleware=cast(
                 Any,
-                build_agent_middleware(
-                    MiddlewareProfile(
-                        agent_name="Supervisor",
-                        event_slug="supervisor",
-                        model=self.llm,
-                        max_turns=config.max_subtasks_per_round + 10,
-                        context_window_tokens=context_window_tokens,
-                        retry_tools=[["ResearchDelegate"]],
-                        serial_tools={
-                            "ReadWorkingSet",
-                            "ReleaseEvidence",
-                            "RestoreEvidence",
-                            "ReviseResearchSynthesis",
-                            "ResearchComplete",
-                        },
-                        tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
-                        exit_probe=lambda ctx, _state: bool(
-                            ctx is not None and ctx.loop_state.completed_synthesis is not None
-                        ),
-                        emit=self._emit_audit_event,
-                    )
-                ),
+                [
+                    LoopStateRebuildMiddleware(),
+                    *build_agent_middleware(
+                        MiddlewareProfile(
+                            agent_name="Supervisor",
+                            event_slug="supervisor",
+                            model=self.llm,
+                            max_turns=config.max_subtasks_per_round + 10,
+                            context_window_tokens=context_window_tokens,
+                            retry_tools=[["ResearchDelegate"]],
+                            serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
+                            tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
+                            # 收束信号读通道 completed_synthesis,与崩溃恢复共用同一事实源。
+                            exit_probe=lambda _ctx, state: bool(
+                                state.get("completed_synthesis") is not None
+                            ),
+                            emit=self._emit_audit_event,
+                        )
+                    ),
+                ],
             ),
             name="supervisor",
         )
@@ -199,7 +212,9 @@ class ResearchSupervisor:
             current_round=round_no,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
-        # 轮次预算不注入观察,由 services.delegate_research 的硬校验在执行越界时以回执告知。
+        # research_query 派生一次即定;批重建循环只需它作标量,不再持有整份外层 State。
+        research_query = loop_state.research_query
+        # 轮次预算不注入观察:由 services.delegate_research 的执行越界硬校验以回执告知。
         self._append_research_observation(
             history,
             {
@@ -216,17 +231,23 @@ class ResearchSupervisor:
             ),
             deps=self._deps,
             loop_state=loop_state,
+            research_query=research_query,
+            current_round=round_no,
+            active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
         prepared = history
         try:
             result = await cast(Any, self._agent_loop).ainvoke(
-                cast(Any, {"messages": prepared}),
+                cast(Any, {"messages": prepared, **loop_state.initial_channel_state()}),
                 context=loop_context,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            # 异常路径拿不到通道现值(没有返回 result),按最后一个批内对象收口;
+            # 该对象含上一批合并后的状态与本批已完成工具的改动。
+            loop_state = loop_context.loop_state
             loop_state.set_stop_reason(StopReason.AGENT_FAILED)
             # 异常文本进 failure_details 而非 coverage_gaps：后者会被渲染为用户报告的
             # "未闭合缺口"，执行故障不得伪装成研究缺口；原文上限走截断配置。
@@ -234,6 +255,12 @@ class ResearchSupervisor:
         else:
             generated = result.get("messages", []) if isinstance(result, dict) else []
             history.extend(generated[len(prepared) :])
+            loop_state = SupervisorLoopState.from_channel_values(
+                result if isinstance(result, dict) else {},
+                research_query=research_query,
+                current_round=round_no,
+                active_evidence_limit=self.config.supervisor_max_active_evidences,
+            )
             if not loop_state.sufficient and _model_call_limit_hit(generated):
                 # 真实终止原因是模型调用天花板；set_stop_reason 的声明式 rank 保证它压过
                 # 更弱的预算类信号，又不会盖过模型的显式收尾决定。

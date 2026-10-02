@@ -1,7 +1,16 @@
-"""Supervisor 的标准工具注册表。"""
+"""Supervisor 的标准工具注册表。
+
+写状态的工具在出口把回执写进 messages、业务增量写进 SupervisorAgentState 通道:并发工具
+(ResearchDelegate)只交合并语义差量,串行工具(Release/Restore/Revise/Complete)交定向
+的整字段快照。
+"""
+
+from typing import Any
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
+from langgraph.types import Command
 
 from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
@@ -21,6 +30,28 @@ from deepresearcher.schemas import (
 )
 
 
+def _channel_command(
+    runtime: ToolRuntime[SupervisorLoopContext],
+    payload: dict[str, object],
+    *,
+    tool_name: str,
+    channel_update: dict[str, Any],
+) -> Command:
+    """回执与通道增量同批提交:模型读到的回执即通道将落盘的状态。"""
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    format_tool_receipt(payload),
+                    tool_call_id=runtime.tool_call_id,
+                    name=tool_name,
+                )
+            ],
+            **channel_update,
+        }
+    )
+
+
 def build_supervisor_tools() -> list[BaseTool]:
     """创建绑定到 SupervisorLoopContext 的工具集合。"""
 
@@ -29,9 +60,10 @@ def build_supervisor_tools() -> list[BaseTool]:
         display_title: str,
         research_topic: str,
         runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> str:
+    ) -> Command:
         """派发一个具体、可验证且与历史互补的研究方向。"""
         ctx = runtime.context
+        marker = ctx.loop_state.marker_for_increment()
         result = await services.delegate_research(
             ctx.deps,
             ctx.loop_state,
@@ -40,7 +72,12 @@ def build_supervisor_tools() -> list[BaseTool]:
             research_topic,
             display_title,
         )
-        return format_tool_receipt(result)
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ResearchDelegate",
+            channel_update=ctx.loop_state.delegate_increment(marker),
+        )
 
     # 不设 return_direct、不用 Command 做循环控制(实测 Command(goto) 会跳过中间件
     # 流水线,反复拒绝时撞 recursion wall):两个分支都回 plain 回执,默认边天然
@@ -50,10 +87,19 @@ def build_supervisor_tools() -> list[BaseTool]:
         synthesis_revision: int,
         reason: str,
         runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> str:
-        """冻结最新且未过期的研究综合稿；被拒则按回执修正后重提。"""
-        return format_tool_receipt(
-            services.freeze_synthesis(runtime.context.loop_state, synthesis_revision, reason)
+    ) -> Command:
+        """冻结最新且未过期的研究综合稿；被拒则按回执 rejection_cause 处理。"""
+        ctx = runtime.context
+        result = services.freeze_synthesis(ctx.loop_state, synthesis_revision, reason)
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ResearchComplete",
+            channel_update={
+                "completed_synthesis": ctx.loop_state.completed_synthesis,
+                "sufficient": ctx.loop_state.sufficient,
+                "stop_reason": ctx.loop_state.stop_reason,
+            },
         )
 
     @tool("ReviseResearchSynthesis", args_schema=ReviseResearchSynthesis)
@@ -68,7 +114,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         next_actions: list[str],
         decision_rationale: str,
         runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> str:
+    ) -> Command:
         """用最新方向结果修订当前唯一的研究综合稿；不会结束研究。
 
         仅当新的研究结果实质改变结论、Evidence 选择、缺口、冲突、下一步或
@@ -77,19 +123,24 @@ def build_supervisor_tools() -> list[BaseTool]:
         evidence_ids 稳定推导总选择集。调用 ResearchComplete 前必须先让本综合稿
         对齐最新 working_set_revision。
         """
-        return format_tool_receipt(
-            services.revise_synthesis(
-                runtime.context.loop_state,
-                expected_revision=expected_revision,
-                expected_working_set_revision=expected_working_set_revision,
-                answer_goal=answer_goal,
-                overall_summary=overall_summary,
-                aspects=aspects,
-                open_gaps=open_gaps,
-                conflicts=conflicts,
-                next_actions=next_actions,
-                decision_rationale=decision_rationale,
-            )
+        ctx = runtime.context
+        result = services.revise_synthesis(
+            ctx.loop_state,
+            expected_revision=expected_revision,
+            expected_working_set_revision=expected_working_set_revision,
+            answer_goal=answer_goal,
+            overall_summary=overall_summary,
+            aspects=aspects,
+            open_gaps=open_gaps,
+            conflicts=conflicts,
+            next_actions=next_actions,
+            decision_rationale=decision_rationale,
+        )
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ReviseResearchSynthesis",
+            channel_update={"research_synthesis": ctx.loop_state.research_synthesis},
         )
 
     @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
@@ -106,14 +157,22 @@ def build_supervisor_tools() -> list[BaseTool]:
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> str:
+    ) -> Command:
         """释放当前工作集中的 Evidence，但不删除全局 Evidence。"""
         del reason
-        loop_state = runtime.context.loop_state
-        return format_tool_receipt(
-            release_working_set(
-                loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
-            )
+        ctx = runtime.context
+        loop_state = ctx.loop_state
+        result = release_working_set(
+            loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
+        )
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="ReleaseEvidence",
+            channel_update={
+                "active_evidence_ops": [{"add": [], "remove": result["released_evidence_ids"]}],
+                "working_set_revision": loop_state.working_set_revision,
+            },
         )
 
     @tool("RestoreEvidence", args_schema=RestoreEvidence)
@@ -121,14 +180,22 @@ def build_supervisor_tools() -> list[BaseTool]:
         evidence_ids: list[str],
         reason: str,
         runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> str:
+    ) -> Command:
         """从全局 Evidence 档案恢复候选，不超过活跃工作集上限。"""
         del reason
-        loop_state = runtime.context.loop_state
-        return format_tool_receipt(
-            restore_working_set(
-                loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
-            )
+        ctx = runtime.context
+        loop_state = ctx.loop_state
+        result = restore_working_set(
+            loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
+        )
+        return _channel_command(
+            runtime,
+            result,
+            tool_name="RestoreEvidence",
+            channel_update={
+                "active_evidence_ops": [{"add": result["restored_evidence_ids"], "remove": []}],
+                "working_set_revision": loop_state.working_set_revision,
+            },
         )
 
     return [

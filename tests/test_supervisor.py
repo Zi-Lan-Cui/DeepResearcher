@@ -1,19 +1,29 @@
 import asyncio
 import json
 import re
+from types import SimpleNamespace
+from typing import Annotated, get_args, get_origin, get_type_hints
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
+from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
 from deepresearcher.agents.supervisor import ResearchSupervisor, services
+from deepresearcher.agents.supervisor.agent import SUPERVISOR_SERIAL_TOOLS
 from deepresearcher.agents.supervisor.state import (
+    SupervisorAgentState,
+    SupervisorLoopContext,
     SupervisorLoopState,
+    TaskExecution,
     evidence_card,
     synthesis_snapshot,
 )
+from deepresearcher.agents.supervisor.tools import build_supervisor_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
+    DirectionStopReason,
     ResearchAgentResult,
     ResearchAspect,
     ResearchDirectionResult,
@@ -21,7 +31,7 @@ from deepresearcher.schemas import (
     ReviseResearchSynthesis,
     StopReason,
 )
-from fakes import evidence
+from fakes import evidence, make_evidence
 
 
 def test_synthesis_arguments_leave_selected_evidence_union_to_handler():
@@ -1327,6 +1337,9 @@ def test_stop_reason_rank_is_a_declared_total_order():
     # 全局轮次预算强于单轮，且都低于天花板命中。
     assert StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank > StopReason.ROUND_BUDGET_EXHAUSTED.rank
     assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank
+    # 账户级熔断认证介于天花板与真实异常之间。
+    assert StopReason.PROVIDER_EXHAUSTED.rank > StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank
+    assert StopReason.AGENT_FAILED.rank > StopReason.PROVIDER_EXHAUSTED.rank
 
 
 def test_loop_state_set_stop_reason_adopts_by_rank():
@@ -1457,3 +1470,214 @@ def test_render_outcome_vocabulary_and_user_text_lookup():
     # 第三域:lifecycle 字符串原样透传(自有包装点)。
     assert terminal_reason_text("user_cancelled") == "user_cancelled"
     assert terminal_reason_text("") == "研究未完成。"
+
+
+def _exhausted_direction_execution() -> TaskExecution:
+    """账户级熔断的已认证方向结果:execution_status=failed 仅表达研究未完成。"""
+    return TaskExecution(
+        task_result=ResearchDirectionResult(
+            task_id="task-0001",
+            round=1,
+            task_index=1,
+            question="检索方向",
+            research_direction="检索方向",
+            execution_status="failed",
+            coverage_status="insufficient",
+            evidence_count=0,
+            source_count=0,
+            failures=["tavily: quota_exhausted"],
+            remaining_gaps=["搜索账户级不可用，未获取任何材料。"],
+            stop_reason=DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+            stop_detail="搜索熔断",
+            provider_exhausted=True,
+        ),
+        evidences=[],
+        selected_evidence_ids=[],
+        source_refs=[],
+    )
+
+
+def _blank_loop_state() -> SupervisorLoopState:
+    return SupervisorLoopState(
+        {"query": "研究问题", "clarified_query": "研究问题", "evidences": []},
+        current_round=1,
+        active_evidence_limit=30,
+    )
+
+
+def _blank_state() -> dict:
+    return {"query": "研究问题", "clarified_query": "研究问题", "evidences": []}
+
+
+def _revise_evidenceless(loop_state: SupervisorLoopState) -> dict:
+    current = loop_state.research_synthesis
+    return services.revise_synthesis(
+        loop_state,
+        expected_revision=current.revision if current else 0,
+        expected_working_set_revision=loop_state.working_set_revision,
+        answer_goal="回答研究问题",
+        overall_summary="搜索供应商账户级不可用,无任何证据。",
+        aspects=[
+            ResearchAspect(
+                aspect_id="core",
+                topic="核心结论",
+                role="主线",
+                required=True,
+                status="uncovered",
+                remaining_gap="无法获取材料。",
+            )
+        ],
+        open_gaps=["无法获取材料。"],
+        conflicts=[],
+        next_actions=[],
+        decision_rationale="执行故障收束。",
+    )
+
+
+def test_freeze_synthesis_rejects_evidenceless_without_certification():
+    """零证据综合稿默认不可接受,防"空稿逃逸";拒绝回执必须带可行动原因。"""
+    loop_state = _blank_loop_state()
+    assert _revise_evidenceless(loop_state)["status"] == "accepted"
+
+    receipt = services.freeze_synthesis(loop_state, 1, "请求无证据提交")
+
+    assert receipt["status"] == "rejected"
+    assert "Evidence" in str(receipt["rejection_cause"])
+    assert loop_state.completed_synthesis is None
+    assert loop_state.stop_reason is None
+
+
+def test_absorb_certifies_provider_exhaustion_then_freeze_accepts_evidenceless():
+    """链路:方向结果带熔断标志 → absorb 认证 → ResearchComplete 接受零证据稿并记专用终态。"""
+    loop_state = _blank_loop_state()
+    loop_state.absorb(_exhausted_direction_execution())
+    assert loop_state.provider_exhausted is True
+
+    assert _revise_evidenceless(loop_state)["status"] == "accepted"
+    receipt = services.freeze_synthesis(loop_state, 1, "熔断认证后无证据收束")
+
+    assert receipt["status"] == "accepted"
+    assert loop_state.completed_synthesis is not None
+    assert loop_state.sufficient is False
+    assert loop_state.stop_reason is StopReason.PROVIDER_EXHAUSTED
+
+
+def test_compose_floor_uses_certified_execution_fault_not_round_budget():
+    """默认兜底不冒名:认证后直接结束记 PROVIDER_EXHAUSTED;未认证仍记 ROUND_BUDGET_EXHAUSTED。"""
+    unproven = _blank_loop_state()
+    services.compose_final_update(_blank_state(), unproven, AgentConfig())
+    assert unproven.stop_reason is StopReason.ROUND_BUDGET_EXHAUSTED
+
+    certified = _blank_loop_state()
+    certified.absorb(_exhausted_direction_execution())
+    update = services.compose_final_update(_blank_state(), certified, AgentConfig())
+
+    assert certified.stop_reason is StopReason.PROVIDER_EXHAUSTED
+    assert update.run.terminal_reason == "supervisor_provider_exhausted"
+    # 零证据进不了正文写作:直送终局渲染,诊断文案取自熔断事实而非轮次预算。
+    assert update.supervisor_next == "render_final_report"
+    assert "账户级不可用" in update.writer.feedback
+
+
+# --- 通道化不变式(§5 硬点 + 批重建合同) --------------------------------------
+
+
+def _reducer_of(hint):
+    if get_origin(hint) is Annotated:
+        metadata = get_args(hint)[1:]
+        return next((arg for arg in metadata if callable(arg)), None)
+    return None
+
+
+def _replace_semantics_channels() -> set[str]:
+    """last-write / retain-if-absent 语义的通道:并发整字段快照会互相覆盖,禁止并发写。"""
+    hints = get_type_hints(SupervisorAgentState, include_extras=True)
+    replace_reducers = {replace_channel, retain_if_absent}
+    return {name for name, hint in hints.items() if _reducer_of(hint) in replace_reducers}
+
+
+def test_only_research_delegate_is_concurrent():
+    """§5 静态守卫:除 ResearchDelegate 外的每个工具都必须落在串行名单内。"""
+    tool_names = {item.name for item in build_supervisor_tools()}
+    assert tool_names - set(SUPERVISOR_SERIAL_TOOLS) == {"ResearchDelegate"}
+
+
+def test_concurrent_delegate_never_snapshots_replace_channels():
+    """并发工具 ResearchDelegate 的增量只能落在合并语义通道,绝不写 replace 语义通道。"""
+    loop_state = SupervisorLoopState(
+        {"query": "q", "evidences": []}, current_round=1, active_evidence_limit=6
+    )
+    marker = loop_state.marker_for_increment()
+    written = set(loop_state.delegate_increment(marker))
+    assert written & _replace_semantics_channels() == set()
+
+
+def test_loop_state_round_trips_through_channels():
+    """initial_channel_state → from_channel_values 与源对象逐字段等价:通道是唯一事实源。"""
+    source = SupervisorLoopState(
+        {"query": "问题", "clarified_query": "问题", "evidences": []},
+        current_round=1,
+        active_evidence_limit=6,
+    )
+    source.absorb(
+        TaskExecution(
+            task_result=ResearchDirectionResult(
+                task_id="task-0001",
+                round=1,
+                task_index=1,
+                question="方向",
+                research_direction="方向",
+                execution_status="completed",
+                coverage_status="sufficient",
+                evidence_count=1,
+                source_count=1,
+                stop_reason="complete",
+            ),
+            evidences=[make_evidence("e1", "事实")],
+            selected_evidence_ids=["e1"],
+            source_refs=["https://a"],
+        )
+    )
+    source.set_stop_reason(StopReason.SUFFICIENT)
+
+    restored = SupervisorLoopState.from_channel_values(
+        source.initial_channel_state(),
+        research_query=source.research_query,
+        current_round=source.current_round,
+        active_evidence_limit=source.active_evidence_limit,
+    )
+    assert [item.evidence_id for item in restored.evidences] == ["e1"]
+    assert restored.active_evidence_ids == source.active_evidence_ids
+    assert restored.source_refs == source.source_refs
+    assert [item.task_id for item in restored.task_results] == ["task-0001"]
+    assert restored.working_set_revision == source.working_set_revision
+    assert restored.stop_reason is source.stop_reason
+
+
+def test_rebuild_middleware_discards_uncommitted_memory():
+    """批重建只认通道:未经 Command 提交的内存改动在下一模型回合被替换掉。"""
+
+    class _Runtime:
+        def __init__(self, context):
+            self.context = context
+
+    committed = SupervisorLoopState(
+        {"query": "q", "evidences": []}, current_round=1, active_evidence_limit=6
+    )
+    # abefore_model 只触 loop_state 与三个标量,scope/deps 用占位对象即可。
+    context = SupervisorLoopContext(
+        scope=SimpleNamespace(),
+        deps=SimpleNamespace(),
+        loop_state=committed,
+        research_query="q",
+        current_round=1,
+        active_evidence_limit=6,
+    )
+    # 先固化已提交通道,再对内存对象做未 Command 提交的改动:重建只认前者。
+    committed_channels = committed.initial_channel_state()
+    context.loop_state.provider_exhausted = True
+    context.loop_state.working_set_revision = 99
+
+    asyncio.run(LoopStateRebuildMiddleware().abefore_model(committed_channels, _Runtime(context)))
+    assert context.loop_state.provider_exhausted is False
+    assert context.loop_state.working_set_revision == 0

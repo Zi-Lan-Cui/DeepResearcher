@@ -202,9 +202,11 @@ def freeze_synthesis(
 ) -> dict[str, object]:
     """ResearchComplete 业务:冻结最新且未过期的研究综合稿,返回给模型的完整回执。
 
-    拒绝回执自带 requested vs current 两个 revision 与综合稿快照,模型同回合
-    修正后重提即可;不写 failure_details——自愈的协议失误不是执行故障,
-    反复不成时终局归属模型调用天花板。接受时 completed_synthesis 已落盘,
+    拒绝回执自带 rejection_cause 与 requested vs current 两个 revision:协议
+    漂移(版本过期)修正后重提即可,模型同回合自愈;不写 failure_details——
+    自愈的协议失误不是执行故障,反复不成时终局归属模型调用天花板。无证据的
+    综合稿仅经 absorb 认证账户级熔断(loop_state.provider_exhausted)后接受,
+    终态记 StopReason.PROVIDER_EXHAUSTED。接受时 completed_synthesis 已落盘,
     SubmittedExitMiddleware 在下一跳静默出环。
     """
     synthesis = loop_state.research_synthesis
@@ -212,7 +214,7 @@ def freeze_synthesis(
         synthesis is not None
         and synthesis.revision == synthesis_revision
         and loop_state.synthesis_is_fresh(synthesis)
-        and synthesis.selected_evidence_ids
+        and (synthesis.selected_evidence_ids or loop_state.provider_exhausted)
     )
     if accepted:
         assert synthesis is not None  # accepted 已包含该条件,供静态类型收窄。
@@ -222,16 +224,49 @@ def freeze_synthesis(
             and not synthesis.conflicts
         )
         loop_state.completed_synthesis = synthesis
-        loop_state.set_stop_reason(
-            StopReason.SUFFICIENT if loop_state.sufficient else StopReason.SUBMITTED_WITH_GAPS
-        )
-    return {
+        if not synthesis.selected_evidence_ids:
+            loop_state.set_stop_reason(StopReason.PROVIDER_EXHAUSTED)
+        else:
+            loop_state.set_stop_reason(
+                StopReason.SUFFICIENT if loop_state.sufficient else StopReason.SUBMITTED_WITH_GAPS
+            )
+    receipt: dict[str, object] = {
         "status": "accepted" if accepted else "rejected",
         "reason": reason,
         "requested_revision": synthesis_revision,
         "current_working_set_revision": loop_state.working_set_revision,
         **synthesis_snapshot(synthesis),
     }
+    if not accepted:
+        receipt["rejection_cause"] = _freeze_rejection_cause(
+            loop_state, synthesis, synthesis_revision
+        )
+    return receipt
+
+
+def _freeze_rejection_cause(
+    loop_state: SupervisorLoopState,
+    synthesis: ResearchSynthesis | None,
+    synthesis_revision: int,
+) -> str:
+    """按 freeze_synthesis 的接受条件逆序给出拒绝原因,让模型拿到可行动的下一步。
+
+    缺原因时模型只能从 revision 数字猜测拒绝理由,倾向于再派发新方向碰运气,
+    反而推翻熔断回执中的停止派发指令。
+    """
+    if synthesis is None:
+        return "尚无研究综合稿；先调用 ReviseResearchSynthesis 产出综合稿，再冻结。"
+    if synthesis.revision != synthesis_revision:
+        return (
+            f"synthesis_revision 不一致：当前综合稿为 {synthesis.revision}，"
+            "按 current_synthesis_revision 对齐后重提。"
+        )
+    if not loop_state.synthesis_is_fresh(synthesis):
+        return "综合稿基于已过期的工作集版本；先按当前 working set 修订，再冻结。"
+    return (
+        "研究综合稿未引用任何活跃 Evidence。未认证账户级搜索故障时无证据不可冻结："
+        "继续派发研究，或若研究已无法进行，直接结束本轮（不调用工具），系统按 partial 交付。"
+    )
 
 
 def revise_synthesis(
@@ -323,11 +358,14 @@ def compose_final_update(
     sufficient 只在本次计算读一次,派生 research_status/generation_mode 与
     WriterDirective 的两个映射,不再各算各的。
     """
-    # 默认终态只是兜底,不是优先级判断:整轮没产生任何信号时才补。
-    # 保持 `is None` + 直接赋值:地板不参与 rank 竞争,任何已采纳的终态
-    # (哪怕权威度更低)都不该被"预算耗尽"的猜测覆盖。
+    # 默认终态只在整轮无任何信号时补,不参与 rank 竞争:任何已采纳的终态(哪怕权威度
+    # 更低)都不该被"预算耗尽"覆盖。且不得冒名:账户级熔断已认证时故障本身即终态事实。
     if not loop_state.sufficient and loop_state.stop_reason is None:
-        loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
+        loop_state.stop_reason = (
+            StopReason.PROVIDER_EXHAUSTED
+            if loop_state.provider_exhausted
+            else StopReason.ROUND_BUDGET_EXHAUSTED
+        )
     full_synthesis = loop_state.completed_synthesis
     latest_synthesis = loop_state.research_synthesis
     partial = (

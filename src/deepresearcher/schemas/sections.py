@@ -33,6 +33,7 @@ class StopReason(StrEnum):
     ROUND_BUDGET_EXHAUSTED = "round_budget_exhausted"
     GLOBAL_ROUND_BUDGET_EXHAUSTED = "global_round_budget_exhausted"
     MODEL_CALL_LIMIT_EXCEEDED = "supervisor_model_call_limit_exceeded"
+    PROVIDER_EXHAUSTED = "supervisor_provider_exhausted"
     AGENT_FAILED = "supervisor_agent_failed"
 
     @property
@@ -65,6 +66,8 @@ class StopReason(StrEnum):
         - 轮次预算 (ROUND < GLOBAL) 表示"没做完但到点了",低于天花板命中,
           因为后者是"到点前就被强行掐掉"这一更强的终止事实。
         - 模型调用天花板 (MODEL_CALL_LIMIT) 表示"根本没机会收尾"。
+        - 账户级熔断认证 (PROVIDER_EXHAUSTED) 介于天花板与异常之间:模型确为
+          显式收尾,但动因是系统性不可用;若同一轮再撞出真实异常,异常更硬。
         - 异常 (AGENT_FAILED) 高于以上,基础设施失败要显式暴露。
         - 两个显式决定 (SUBMITTED_WITH_GAPS < SUFFICIENT) 最高——模型自己
           说了"就这样收尾",压过一切基础设施信号;SUFFICIENT 再强于带缺口。
@@ -79,6 +82,7 @@ _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
     StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过天花板）。",
+    StopReason.PROVIDER_EXHAUSTED: "搜索供应商已被认证账户级不可用（额度耗尽或密钥无效），无法再获取任何新 Evidence，Supervisor 无证据收束本轮研究。",
     StopReason.AGENT_FAILED: "Supervisor 本轮执行失败，未能完成研究。",
 }
 
@@ -88,6 +92,7 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
     StopReason.ROUND_BUDGET_EXHAUSTED: 20,
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: 25,
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: 30,
+    StopReason.PROVIDER_EXHAUSTED: 40,
     StopReason.AGENT_FAILED: 45,
     StopReason.SUBMITTED_WITH_GAPS: 50,
     StopReason.SUFFICIENT: 60,

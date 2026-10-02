@@ -1,8 +1,18 @@
-"""Supervisor 的运行态辅助对象。"""
+"""Supervisor 的运行态辅助对象与内层 agent 的状态通道。"""
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Annotated, Any
 
+from langchain.agents import AgentState
+
+from deepresearcher.agents.channels import (
+    append_ops,
+    merge_monotonic,
+    merge_or,
+    replace_channel,
+    retain_if_absent,
+)
 from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.config import AgentConfig
@@ -17,7 +27,47 @@ from deepresearcher.schemas import (
     SupervisorProgress,
 )
 from deepresearcher.schemas.sources import source_domain
-from deepresearcher.state import ResearchState, SubTask, section
+from deepresearcher.state import (
+    ResearchState,
+    SubTask,
+    merge_evidences,
+    merge_task_results,
+    merge_unique,
+    section,
+)
+
+
+def _merge_stop_reason_by_rank(
+    current: StopReason | None, incoming: StopReason | None
+) -> StopReason | None:
+    if current is None:
+        return incoming
+    if incoming is None:
+        return current
+    return incoming if incoming.rank >= current.rank else current
+
+
+class SupervisorAgentState(AgentState):
+    """Supervisor 内层图的 state_schema:循环业务状态的持久化载体。
+
+    reducer 按工具并发身份选择(共用 reducer 见 agents/channels.py):ResearchDelegate
+    同批并发,只写合并语义通道;Release/Restore/Revise/ResearchComplete 串行,可写
+    replace 通道。active 工作集存有序 op 流水而非列表,以避开并发整字段快照互相覆盖。
+    """
+
+    evidences: Annotated[list[Evidence], merge_evidences]
+    active_evidence_ops: Annotated[list[dict], append_ops]
+    source_refs: Annotated[list[str], merge_unique]
+    task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
+    coverage_gaps: Annotated[list[str], merge_unique]
+    failure_details: Annotated[list[str], merge_unique]
+    working_set_revision: Annotated[int, merge_monotonic]
+    research_synthesis: Annotated[ResearchSynthesis | None, replace_channel]
+    completed_synthesis: Annotated[ResearchSynthesis | None, retain_if_absent]
+    sufficient: Annotated[bool, merge_or]
+    provider_exhausted: Annotated[bool, merge_or]
+    stop_reason: Annotated[StopReason | None, _merge_stop_reason_by_rank]
+    task_index_counter: Annotated[int, merge_monotonic]
 
 
 def evidence_card(evidence: Evidence) -> dict[str, object]:
@@ -72,18 +122,17 @@ class SupervisorDeps:
 
 @dataclass
 class SupervisorLoopContext:
-    """Supervisor 一次工具 loop 的注入载荷:全部名词,没有动词。
+    """Supervisor 一次工具 loop 的注入载荷。
 
-    deps 是共享零件;loop_state 是本轮业务工作副本;scope 供观测归属。
-    仅活在一次 loop 内,不作为 LangGraph 顶层 State 持久化。当前轮次唯一
-    来源是 ``loop_state.current_round``。实现住在 services.py,tools.py 从
-    本对象转交参数;本清单之外,工具对 supervisor 内部一无所知。
+    loop_state 是当前工具批的可变状态:每次模型回合前由 rebuild_loop_state 从通道重建,
+    批内工具共享同一对象,工具出口把改动作为 Command 增量写回通道;它不进 checkpoint,
+    持久状态以通道为准。research_query/current_round/active_evidence_limit 是重建所需的
+    标量。业务实现住在 services.py,tools.py 从本对象转交参数。
 
     读者含中间件(删改字段前先 grep agents/middleware/):
-      scope        → observability:事件归因
-      tool_gate    → serial_tools:读写栅栏(Revise/Complete 等 exclusive,
-                     与在飞 ResearchDelegate 互斥——消灭"完结后状态仍变"竞态)
-      bookkeeping_lock → 业务锁:services.delegate_research 的编号/absorb 临界区
+      scope            → observability:事件归因
+      tool_gate        → serial_tools:串行调度门,exclusive 工具与在飞 ResearchDelegate 互斥
+      bookkeeping_lock → services.delegate_research 的编号分配/absorb 临界区
     """
 
     scope: AgentExecutionScope
@@ -91,6 +140,22 @@ class SupervisorLoopContext:
     loop_state: "SupervisorLoopState"
     bookkeeping_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
+    research_query: str = ""
+    current_round: int = 0
+    active_evidence_limit: int = 0
+
+    def rebuild_loop_state(self, values: dict[str, Any]) -> None:
+        """每次模型回合前从通道现值重建状态对象,替代上一批的内存对象。
+
+        外层 State 的业务资产已在入口经 initial_channel_state 种进通道,重建只需
+        三个标量加通道现值,不再持有整份 ResearchState。
+        """
+        self.loop_state = SupervisorLoopState.from_channel_values(
+            values,
+            research_query=self.research_query,
+            current_round=self.current_round,
+            active_evidence_limit=self.active_evidence_limit,
+        )
 
 
 @dataclass
@@ -132,16 +197,11 @@ class TaskExecution:
 
 
 class SupervisorLoopState:
-    """Supervisor 单次工具循环内的可变业务状态（非全局 State、非某 ResearchAgent 状态）。
+    """Supervisor 工具循环的可变业务状态:证据聚合、active 工作集、task result、
+    coverage/failure、research synthesis、working_set_revision、stop reason、熔断认证位、轮次。
 
-    从顶层 ResearchState 载入初始数据，仅在本次 loop 内修改，不直接进入 LangGraph
-    State；loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。职责：Evidence
-    聚合、active 工作集、task result、coverage gaps、failure details、
-    research synthesis、working_set_revision、stop reason、当前轮次。
-
-    节点结束时把整份副本交给幂等 reducer 合并（merge_evidences / merge_task_results /
-    merge_unique），reducer 按 id 折回原样——不手工拆增量,以免把不变式拆成
-    多处平行簿记而静默丢字段。
+    持久化由 SupervisorAgentState 通道承担:每次模型回合前从通道重建,工具批内原地改、
+    出口经 Command 增量写回通道,loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。
     """
 
     def __init__(
@@ -175,6 +235,10 @@ class SupervisorLoopState:
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
         self.completed_synthesis: ResearchSynthesis | None = None
         self.stop_reason: StopReason | None = None
+        # 账户级熔断认证位:absorb 见到任何带该标志的方向结果即置真——这类故障是
+        # 系统性不可用而非方向偶发,单个方向足以为全局认证。ResearchComplete 据
+        # 此放行无证据收束,执行故障轮不再被迫记成预算耗尽。
+        self.provider_exhausted = False
 
         self._task_counter: int = 0
 
@@ -185,6 +249,121 @@ class SupervisorLoopState:
         if isinstance(value, ResearchSynthesis):
             return value
         return ResearchSynthesis.model_validate(value)
+
+    @classmethod
+    def from_channel_values(
+        cls,
+        values: dict[str, Any],
+        *,
+        research_query: str,
+        current_round: int,
+        active_evidence_limit: int,
+    ) -> "SupervisorLoopState":
+        """从内层通道现值重建状态对象:仅依赖三个标量与通道,不持有外层 State。
+
+        缺席键回落到空态默认(等同尚无工具写入的新建状态)。
+        """
+        # 传新建空 dict:__init__ 里的 section(...) 会就地写入入参,复用常量会被交叉污染。
+        view = cls(
+            {},
+            current_round=current_round,
+            active_evidence_limit=active_evidence_limit,
+        )
+        view.research_query = research_query
+        if "evidences" in values:
+            view.evidences = [
+                item if isinstance(item, Evidence) else Evidence.model_validate(item)
+                for item in values["evidences"]
+            ]
+        if "active_evidence_ops" in values:
+            # 按序折叠 op 流水重建活跃集;并发 add 与串行 remove 折叠后与执行史等价。
+            active: set[str] = set()
+            for op in values["active_evidence_ops"]:
+                active.update(op.get("add", []))
+                active.difference_update(op.get("remove", []))
+            view.active_evidence_ids = active
+        if "source_refs" in values:
+            view.source_refs = list(values["source_refs"])
+        if "task_results" in values:
+            view.task_results = [
+                item
+                if isinstance(item, ResearchDirectionResult)
+                else ResearchDirectionResult.model_validate(item)
+                for item in values["task_results"]
+            ]
+        if "coverage_gaps" in values:
+            view.coverage_gaps = list(values["coverage_gaps"])
+        if "failure_details" in values:
+            view.failure_details = list(values["failure_details"])
+        if "working_set_revision" in values:
+            view.working_set_revision = int(values["working_set_revision"] or 0)
+        if "research_synthesis" in values:
+            view.research_synthesis = cls._restore_synthesis(values["research_synthesis"])
+        if "completed_synthesis" in values:
+            view.completed_synthesis = cls._restore_synthesis(values["completed_synthesis"])
+        if "sufficient" in values:
+            view.sufficient = bool(values["sufficient"])
+        if "provider_exhausted" in values:
+            view.provider_exhausted = bool(values["provider_exhausted"])
+        if values.get("stop_reason") is not None:
+            view.stop_reason = StopReason(values["stop_reason"])
+        if "task_index_counter" in values:
+            view._task_counter = max(int(values["task_index_counter"] or 0), view._task_counter)
+        return view
+
+    def initial_channel_state(self) -> dict[str, Any]:
+        """构造 ainvoke 的入口 input:外层 State 资产一次性种进内层通道。"""
+        return {
+            "evidences": list(self.evidences),
+            "active_evidence_ops": [{"add": sorted(self.active_evidence_ids), "remove": []}],
+            "source_refs": list(self.source_refs),
+            "task_results": list(self.task_results),
+            "coverage_gaps": list(self.coverage_gaps),
+            "failure_details": list(self.failure_details),
+            "working_set_revision": self.working_set_revision,
+            "research_synthesis": self.research_synthesis,
+            "completed_synthesis": self.completed_synthesis,
+            "sufficient": self.sufficient,
+            "provider_exhausted": self.provider_exhausted,
+            "stop_reason": self.stop_reason,
+            "task_index_counter": self._task_counter,
+        }
+
+    def marker_for_increment(self) -> dict[str, Any]:
+        """并发工具(ResearchDelegate)执行前的计数标记,出口据此写差量。"""
+        return {
+            "evidences": len(self.evidences),
+            "source_refs": len(self.source_refs),
+            "task_results": len(self.task_results),
+            "coverage_gaps": len(self.coverage_gaps),
+            "failure_details": len(self.failure_details),
+            "active_evidence_ids": set(self.active_evidence_ids),
+        }
+
+    def delegate_increment(self, marker: dict[str, Any]) -> dict[str, Any]:
+        """并发安全的通道增量:全部 merge 语义字段,不含任何 replace 快照。
+
+        与同伴工具在批内交错时,列表尾差量可能多包含对方刚追加的条目——
+        merge_evidences/merge_unique 按 id 折重,超集无害;漏集不可能,
+        因为差量以本对象当前长度为界。
+        """
+        return {
+            "evidences": self.evidences[marker["evidences"] :],
+            "source_refs": self.source_refs[marker["source_refs"] :],
+            "task_results": self.task_results[marker["task_results"] :],
+            "coverage_gaps": self.coverage_gaps[marker["coverage_gaps"] :],
+            "failure_details": self.failure_details[marker["failure_details"] :],
+            "active_evidence_ops": [
+                {
+                    "add": sorted(self.active_evidence_ids - marker["active_evidence_ids"]),
+                    "remove": [],
+                }
+            ],
+            "working_set_revision": self.working_set_revision,
+            "task_index_counter": self._task_counter,
+            "provider_exhausted": self.provider_exhausted,
+            "stop_reason": self.stop_reason,
+        }
 
     def set_stop_reason(self, reason: StopReason) -> None:
         """按 `StopReason.rank` 采纳终止原因；低权威度不覆盖已采纳的高权威度。
@@ -230,6 +409,8 @@ class SupervisorLoopState:
         self.active_evidence_ids.update(selected[:slots])
         self.source_refs.extend(execution.source_refs)
         self.task_results.append(execution.task_result)
+        if execution.task_result.provider_exhausted:
+            self.provider_exhausted = True
         self.coverage_gaps.extend(execution.task_result.remaining_gaps)
         self.coverage_gaps = list(dict.fromkeys(gap for gap in self.coverage_gaps if gap.strip()))
         self._bump_working_set()
