@@ -1,24 +1,24 @@
 """Run 生命周期迁移的唯一事实来源（service 外壳层）。
 
-行按"命名迁移"组织:键是动因的名字(claim、settle_cancelled…),值是
-合法来源集合 -> 目标状态 -> 固定原因。同为落到 running 的动因,合法来源并不
-相同(claim 不得触碰 awaiting_input 行,生命周期自愈可以),所以"来源->目标"
-的二元表装不下这种区别,必须逐个动因命名。
+行按命名迁移组织：键是动因的名字（claim、settle_cancelled 等），值是
+合法来源集合 -> 目标状态 -> 固定原因。同为落到 running 的动因，合法来源并不
+相同：claim 不得触碰 awaiting_input 行，生命周期自愈可以。"来源->目标"
+的二元表无法表达这种区别，必须逐个动因命名。
 
-两种执行机制共用这份数据:
+两种执行机制共用这份数据：
 
-- 条件 UPDATE(claim/resume 等竞争路径):从表取来源喂 WHERE,写与判定仍在
-  同一条语句内原子完成,本模块不接管执行;
-- 锁内 ORM 写(settle/reap/cancel 等):apply_transition 在已加载行上按该迁移
-  自己的来源集校验再赋值——校验严于"目标并集",用错迁移名同样炸。
+- 条件 UPDATE（claim/resume 等竞争路径）：从表取来源写入 WHERE 条件，写与
+  判定仍在同一条语句内原子完成，本模块不接管执行；
+- 锁内 ORM 写（settle/reap/cancel 等）：apply_transition 在已加载行上按该迁移
+  自己的来源集校验再赋值，校验严于目标并集，用错迁移名同样报错。
 
-side_effects 只收"目标状态唯一决定的值"(lease/finished_at/resume_payload);
-terminal_reason 只在它由动因纯决定时随迁移行固定——reap 与 release 是同一条
-边、仅 reason 不同,恰为反例证明 reason 不是 f(状态)。引擎产出的动态原因
-(finish/fail)与用户文案(error_message)不经表,由调用点覆写。两类东西
-刻意不进表:所有权谓词(lease_owner/attempt)回答"谁能推",不是"能
-不能推";无 claim 的对账写(执行器把状态机真相回写行里)只受 may_overwrite
-"不得覆盖终态"约束——那不是命名迁移。
+side_effects 只收目标状态唯一决定的值（lease/finished_at/resume_payload）；
+terminal_reason 只在它由动因纯决定时随迁移行固定：reap 与 release 是同一条
+边、仅 reason 不同，可见 reason 无法由目标状态单独推出。引擎产出的动态原因
+（finish/fail）与用户文案（error_message）不经表，由调用点覆写。
+两类内容刻意不进表：lease_owner 与 attempt 是所有权谓词，回答谁能推进而非
+能否推进；无 claim 的对账写（执行器把状态机真相回写进行）只受 may_overwrite
+的不覆盖终态约束，不属于命名迁移。
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ ALL_STATUSES = (
     *TERMINAL_STATUSES,
 )
 
-# 用户已受理且未完成的行——per-user 并发配额计数的唯一词表。
-# awaiting_input 必须计入:answer_resume 把它 CAS 回 queued 时不重过准入闸,
-# 不计则可先攒一批待澄清行、再逐一回答绕过上限。
+# per-user 并发配额计数的状态集合：用户已受理且未完成的行。
+# awaiting_input 必须计入：answer_resume 把它 CAS 回 queued 时不重过准入闸，
+# 不计入则可以先建立一批待澄清行、再逐一回答来绕过上限。
 OUTSTANDING_STATUSES = tuple(sorted(frozenset(ALL_STATUSES) - frozenset(TERMINAL_STATUSES)))
 
 
@@ -57,8 +57,8 @@ TRANSITIONS: dict[str, Transition] = {
     # 领取:FIFO 只动 queued;resume 领取额外允许被 reap 的 interrupted。
     "claim": Transition("running", frozenset({"queued"})),
     "claim_resume": Transition("running", frozenset({"queued", "interrupted"})),
-    # 生命周期自愈:执行器无 claim 地把行拉回 running(awaiting_input 仅在
-    # 与用户回答竞态的残余窗口里出现,claim 路径永远看不到它)。
+    # 生命周期自愈：执行器无 claim 地把行拉回 running。awaiting_input 只在
+    # 与用户回答竞态的残余窗口出现，claim 路径不会命中该状态。
     "mark_running": Transition("running", frozenset({"queued", "interrupted", "awaiting_input"})),
     # 引擎暂停等待澄清:释放租约但保留行,等待 answer_resume。
     "await_input": Transition("awaiting_input", frozenset({"running"})),

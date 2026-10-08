@@ -22,7 +22,7 @@ async def _get_message(queue, timeout=1.0):
 
 
 class FakeStore:
-    """模拟 RunEventStore:append 分配 seq;after 供 tail。"""
+    """模拟 RunEventStore:append 分配 seq;after 作为 SSE 尾读接口。"""
 
     def __init__(self, log: list[str]):
         self.batches: list[list[dict]] = []
@@ -99,9 +99,6 @@ async def preview_bus():
     await bus.close()
 
 
-# ---------- Hub：收（write/open 登记） ----------
-
-
 async def test_write_drops_unrouted_without_open_seat(hub):
     hub.write({"event_type": "x"})  # 无 run_id
     hub.write({"run_id": "never-opened", "event_type": "x"})
@@ -151,12 +148,9 @@ async def test_open_bounded_evicts_oldest(store, signal):
     hub.open("run-new")  # 超限:run-old 按插入序出局
     assert not hub.is_open("run-old")
     assert hub.is_open("run-mid") and hub.is_open("run-new")
-    hub.write({"run_id": "run-old", "event_type": "late", "payload": {}})  # 静默丢弃不炸
+    hub.write({"run_id": "run-old", "event_type": "late", "payload": {}})  # 静默丢弃,不抛错
     await hub.flush("run-old")
     assert store.batches == []
-
-
-# ---------- Hub：放（flush 编排与失败语义） ----------
 
 
 async def test_flush_orders_append_then_notify(hub, store, log):
@@ -207,9 +201,6 @@ async def test_close_drops_seat_and_late_writes_drop(hub, store):
     assert store.batches == []
 
 
-# ---------- Hub：服务合成帧 ----------
-
-
 async def test_publish_status_then_flush_persists_frame(hub, store):
     hub.open("run-8")
     await hub.publish_status("run-8", "queued")
@@ -224,9 +215,6 @@ async def test_publish_done_is_idempotent_per_process(hub, store):
     await hub.flush("run-9")
     assert [r["event_type"] for b in store.batches for r in b] == ["run_done"]
     assert store.batches[0][0]["payload"]["status"] == "failed"  # 无行时的安全兜底
-
-
-# ---------- LocalPreviewBus：EphemeralEventBus 的同环实现 ----------
 
 
 async def test_local_bus_satisfies_protocol():
@@ -265,7 +253,7 @@ async def test_publish_whitelist_and_no_seq(preview_bus):
 
 
 async def test_overflow_drops_oldest_without_marker():
-    """预览可丢:队满丢最旧,不注入截断标记——已提交帧根本不走这条通道。"""
+    """预览帧允许丢弃:队满丢最旧,且不插入截断标记;已提交帧不走这条通道。"""
     bus = LocalPreviewBus(queue_maxsize=2)
     subscription = await bus.subscribe("run-3")
     for index in range(4):
@@ -313,9 +301,6 @@ async def test_bus_close_releases_all_and_shuts_publish(preview_bus):
     assert subscription.queue.empty()
 
 
-# ---------- JSONL retention ----------
-
-
 async def test_prune_event_jsonl_by_mtime(tmp_path):
     import os
     import time as _time
@@ -334,11 +319,8 @@ async def test_prune_event_jsonl_by_mtime(tmp_path):
 
     assert prune_event_jsonl(events, retention_days=14) == 1
     assert not old_log.exists() and fresh_log.exists() and other.exists()
-    assert prune_event_jsonl(events, retention_days=0) == 0  # 关闭
+    assert prune_event_jsonl(events, retention_days=0) == 0  # 0 表示关闭清理
     assert prune_event_jsonl(tmp_path / "missing", retention_days=14) == 0
-
-
-# ---------- CompositeSink ----------
 
 
 async def test_composite_sink_isolates_member_failures():

@@ -1,13 +1,13 @@
 """事件 → 客户端安全帧 的纯函数投影。
 
-**默认拒绝**：只处理映射表里显式列出的 event_type，未知类型返回 None——
-引擎将来新增事件不会悄悄把 payload 漏到浏览器。每一帧都逐字段新建 dict，
-绝不整包转发 payload；``error``/``*_preview``/``prompt`` 等敏感键在代码层面
+默认拒绝：只处理映射表里显式列出的 event_type，未知类型返回 None，
+引擎将来新增事件不会自动把 payload 带到浏览器。每一帧逐字段新建 dict，
+不整包转发 payload；``error``/``*_preview``/``prompt`` 等敏感键在代码层面
 就没有进入路径。
 
-SSE 帧词汇表（与前端、服务层合成事件共用）。呈现原则：管线每个阶段是
-一个阶段块（出现即开始、完成即灰化），阶段自己的判断文本进该块；方向卡是
-Supervisor 块的子项。
+下列 SSE 帧词汇表与前端、服务层合成事件共用。呈现原则：管线每个阶段
+对应一个阶段块，出现即开始、完成即灰化，阶段自己的判断文本进该块；
+方向卡是 Supervisor 块的子项。
 
 - ``stage_open``  阶段开始 {stage, title}
 - ``plan``        阶段旁白一行 {stage, text}（规划理由/决策/跳过原因）
@@ -47,7 +47,7 @@ _STAGE_TITLES: dict[str, str] = {
     NodeName.RENDER_FINAL_REPORT: "生成最终报告",
 }
 
-# source_read_skipped 的 reason_code 面向用户措辞；未知码回退通用词，不透出机器码。
+# source_read_skipped 的 reason_code 对应的用户可见措辞；未知码回退通用词，不透出机器码。
 _SOURCE_SKIP_LABELS: dict[str, str] = {
     "empty_content": "无可读正文",
     "login_required": "需登录",
@@ -74,8 +74,8 @@ class SseFrame:
 def project_clarification(payload: Mapping[str, Any]) -> dict[str, Any] | None:
     """clarification_requested 载荷 → 客户端可见的 {question, options};空 question 不成帧。
 
-    截断上限(options≤3 条、每条 120 字;question≤500 字)是敏感文案的白名单出口,
-    SSE 与 REST 两条通道共用此一处——改规则只改这里,不再两处各演化一份漂移。
+    截断上限为 options 最多 3 条、每条 120 字，question 最多 500 字。这是敏感
+    文案的白名单出口，SSE 与 REST 两条通道共用此一处，改动不得另起一份副本。
     """
     question = _text(payload.get("question"), 500)
     raw_options = payload.get("options")
@@ -97,12 +97,12 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         payload = {}
     seq = record.get("seq")
     node = record.get("node")
-    # 审阅节点历史 wire 值为 "reflection"(枚举改值前的存量 DB 行),归一到当前值,
-    # 让旧 run 回放仍投出对应阶段帧;新事件的 node 已是 "review",不受影响。
+    # 审阅节点历史 wire 值是 "reflection"：枚举改值前的存量 DB 行仍带旧值。
+    # 归一到当前值，让旧 run 回放仍能投出对应阶段帧；新事件的 node 已是 "review"。
     if node == "reflection":
         node = NodeName.REVIEWER
 
-    # ---- 阶段生命周期 ----
+    # 阶段生命周期
     if event_type == EventName.NODE_STARTED:
         if not isinstance(node, str) or node not in _STAGE_TITLES:
             return _tick(seq, f"{node} 开始" if isinstance(node, str) else None)
@@ -116,9 +116,9 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             )
         return None
     if event_type == EventName.NODE_FAILED:
-        # 只说哪个阶段失败：内部异常文本永远不出网关（完整信息在 RunEvent/日志）。
-        # 已知节点必须用 failed 的 stage_done 关框——否则阶段框停在"运行中"
-        # 的阶段框永远停在运行中（见 reviewer content_filter 事故），未知节点退回全局错误行。
+        # 只说哪个阶段失败，内部异常文本不出网关，完整信息在 RunEvent 与日志。
+        # 已知节点必须用 failed 的 stage_done 关框，否则阶段框停在"运行中"，
+        # reviewer content_filter 事故即由此而来；未知节点退回全局错误行。
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
                 "stage_done",
@@ -129,7 +129,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             "error", seq, {"text": f"{node if isinstance(node, str) else '某阶段'} 阶段执行失败"}
         )
     if event_type == EventName.NODE_CANCELLED:
-        # 已知阶段用 cancelled 的 stage_done 关框——只发 tick 会让阶段框停在运行中(绿色)。
+        # 已知阶段用 cancelled 的 stage_done 关框；只发 tick 会让阶段框停在运行中。
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
                 "stage_done",
@@ -138,7 +138,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             )
         return _tick(seq, "该阶段已取消")
 
-    # ---- Supervisor 决策旁白（plan 帧都带 stage 归属）----
+    # Supervisor 决策旁白：plan 帧都带 stage 归属
     if event_type == EventName.DELEGATE_COMPLETED:
         status = str(payload.get("status", ""))
         if status == "blocked":
@@ -147,9 +147,9 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == EventName.SUPERVISOR_MODEL_TURN:
         thought = _text(payload.get("content_preview"), EVENT_CONTENT_PREVIEW_CHARS)
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
-    # ---- 方向卡（Supervisor 块内子项）----
+    # 方向卡：Supervisor 块内子项
     if event_type == EventName.RESEARCH_TASK_STARTED:
-        # 短题优先(Supervisor 派发时给出);旧事件无 title 时回退截断契约,兼容存量 run。
+        # 优先用 Supervisor 派发时给出的短题；旧事件无 title，回退到截断后的 question，兼容存量 run。
         title = _text(payload.get("title"), 40) or _text(payload.get("question"), 140)
         return _task("task_open", seq, payload, {"title": title})
     if event_type == EventName.RESEARCH_TASK_COMPLETED:
@@ -182,7 +182,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == EventName.SOURCE_DOCUMENT_REGISTERED:
         host = _display_host(payload.get("final_url") or payload.get("requested_url"))
-        # 材料缓存命中不是重新抓取:如实说"复用",避免同一文章被两方向读取像重复劳动。
+        # 材料缓存命中不是重新抓取，单独标成"复用"，避免同一来源被两个方向读取时被看成重复抓取。
         cached = bool(payload.get("material_cache_hit"))
         verb = "复用来源" if cached else "已读取"
         fallback = "复用已读取的来源" if cached else "来源已读取"
@@ -210,8 +210,9 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             {"text": f"已跳过：{host}（{label}）" if host else f"来源已跳过（{label}）"},
         )
     if event_type == EventName.DIRECTION_SEARCH_COMPLETED:
-        # 批次行只说逐查询行说不出来的事:全批失败时细节行已在场,不再重复下结论;
-        # 无细节可依据的失败(熔断/预检)才留一行,否则那件事就隐身了。
+        # 批次行只报逐查询行覆盖不到的信息：全批失败时逐查询失败行已在场，
+        # 批次行不再重复下结论；熔断、预检这类不产生逐查询行的失败要留一行，
+        # 否则这条信息到不了用户。
         candidates = _int(payload.get("candidate_count"))
         failures = _int(payload.get("failure_count"))
         status = str(payload.get("status") or "")
@@ -253,7 +254,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             {"text": f"检索失败，已跳过：{_text(payload.get('query'), 60)}"},
         )
 
-    # ---- 指标与杂项 ----
+    # 指标与杂项
     if event_type == EventName.RESEARCH_ROUND_COMPLETED:
         return _frame(
             "stats",
@@ -267,15 +268,15 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             },
         )
     if event_type == EventName.TEXT_DELTA:
-        # 生产者是 RunExecutor 对官方 astream(subgraphs=True) messages 的 ns 路由；
-        # 通道白名单与总线闸同读 routing.PREVIEW_CHANNELS,此处为投影侧复核。
+        # 生产者是 RunExecutor 把 astream(subgraphs=True) 的 messages 按命名空间路由；
+        # 通道白名单与总线闸读同一份 routing.PREVIEW_CHANNELS，此处是投影侧的再次校验。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)
         if channel not in PREVIEW_CHANNELS or not text:
             return None
         return SseFrame(event=EventName.TEXT_DELTA, data={"channel": channel, "text": text})
 
-    # ---- 服务层合成事件 ----
+    # 服务层合成事件
     if event_type == EventName.RUN_HEADLINE_UPDATED:
         headline = _text(payload.get("headline"), RUN_HEADLINE_MAX_CHARS)
         return _frame("headline", seq, {"text": headline}) if headline else None
@@ -299,7 +300,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
 
 
 def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
-    """阶段完成时的人话结论——只读取白名单键（各键均为有界标量）。"""
+    """生成阶段完成时用户可见的结论文本；只读白名单键，各键均已截断到有界长度。"""
     if node == NodeName.ROUTER:
         route = str(payload.get("route", ""))
         label = {"deep_research": "进入深度研究", "quick_answer": "按即时回答处理"}.get(
@@ -314,8 +315,8 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
             payload.get("clarified_query"), 300
         )
     if node == NodeName.SUPERVISOR:
-        # 注意键名：节点产出的 evidences 列表增量在 summary 里是 evidences_count；
-        # evidence_count 是 writer 才写的累计字段，supervisor 节点里恒为 0（曾致误报）。
+        # 注意键名：本节点新增的证据数是 evidences_count；evidence_count 是 writer
+        # 才写的累计字段，supervisor 节点里恒为 0，误用它曾产生错误汇报。
         return "规划完成 · 第 {} 轮 · 本次新增证据 {}".format(
             _int(payload.get("current_round")), _int(payload.get("evidences_count"))
         )

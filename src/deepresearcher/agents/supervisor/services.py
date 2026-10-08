@@ -1,9 +1,8 @@
-"""Supervisor 业务实现:不感知 langgraph 的纯函数(async 与否按是否需要等待)。
+"""Supervisor 业务实现:不感知 langgraph 的纯函数,async 与否按是否需要等待。
 
-delegate_research 执行一次 ResearchDelegate 工具请求:预算 hard check、任务
-编号、派发 ResearchAgent、吸收结果,返回给模型的完整方向报告 dict;
-工具回执与消息配对留在协议层(tools.py),本模块不认识 ToolMessage。
-簿记并发由 bookkeeping_lock 保护,实际子 Agent 并发受 deps.worker_limit 限制。
+工具回执的字符串协议与消息配对留在协议层 tools.py,本模块只回 dict,不构造
+ToolMessage。簿记并发由 bookkeeping_lock 保护,实际子 Agent 并发受
+deps.worker_limit 限制。
 """
 
 import asyncio
@@ -57,17 +56,17 @@ async def delegate_research(
     topic: str,
     display_title: str = "",
 ) -> dict[str, object]:
-    """执行一次 ResearchDelegate 工具请求:预算 hard check、任务编号、
+    """执行一次 ResearchDelegate 工具请求:预算硬校验、任务编号、
     派发 ResearchAgent、吸收结果、返回完整方向报告。
 
-    display_title 是方向卡的展示短题(与 topic 完整契约分离);缺省时前端回退截断 question。
-    程序不做主题去重:防重复靠提示词纪律,浪费靠 max_subtasks/轮次预算封顶。
+    display_title 是方向卡的展示短题,topic 仍承载完整契约;缺省时前端回退截断 question。
+    程序不做主题去重:防重复交给提示词纪律,重复调用的浪费由 max_subtasks 与轮次预算封顶。
     """
     round_no = loop_state.current_round
 
     def reported(result: dict[str, object]) -> dict[str, object]:
-        # 规划器的工具调用若被静默消化（blocked），事件流里只会
-        # 看到连续两个 model_turn——delegate_started/completed 让“空轮次”可解释。
+        # 被预算拒绝的工具调用不产生工具事件,事件流里只剩连续两个 model_turn;
+        # 补发 delegate_started/completed,让这类无产出轮次可解释。
         deps.emit(
             EventName.DELEGATE_COMPLETED,
             {
@@ -124,7 +123,7 @@ async def delegate_research(
         ],
     }
     if execution.task_result.provider_exhausted:
-        # 数据提示（无分支控制流）：让 Supervisor 模型读到系统性不可用后自然停止派发、收尾。
+        # 只给数据、不加控制流分支:Supervisor 模型读到系统性不可用后自然停止派发、收尾。
         direction_report["provider_exhausted"] = True
         direction_report["instruction"] = (
             "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
@@ -158,8 +157,8 @@ async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExe
         )
         try:
             result = await deps.research_agent.run(task)
-            # 研究员是子 Agent 边界：在写入审计事件或 State 前先验证结果契约；
-            # 同 run 内已是模型时零开销，防御性恢复覆盖跨进程 checkpoint。
+            # 子 Agent 边界:结果写入审计事件或 State 前先过契约校验;
+            # 同 run 内已是实例时不花校验开销,跨进程 checkpoint 恢复的 dict 由校验重建。
             agent_result = (
                 result
                 if isinstance(result, ResearchAgentResult)
@@ -202,12 +201,12 @@ def freeze_synthesis(
 ) -> dict[str, object]:
     """ResearchComplete 业务:冻结最新且未过期的研究综合稿,返回给模型的完整回执。
 
-    拒绝回执自带 rejection_cause 与 requested vs current 两个 revision:协议
-    漂移(版本过期)修正后重提即可,模型同回合自愈;不写 failure_details——
-    自愈的协议失误不是执行故障,反复不成时终局归属模型调用天花板。无证据的
-    综合稿仅经 absorb 认证账户级熔断(loop_state.provider_exhausted)后接受,
-    终态记 StopReason.PROVIDER_EXHAUSTED。接受时 completed_synthesis 已落盘,
-    SubmittedExitMiddleware 在下一跳静默出环。
+    拒绝回执附 rejection_cause 与 requested、current 两个 revision:版本过期这类
+    协议漂移由模型同回合修正后重提即可,不写 failure_details——能自纠的协议失误不是
+    执行故障,反复不成立时终局落在模型调用上限。无证据的综合稿仅在 absorb 认证过账户级
+    熔断、即 loop_state.provider_exhausted 为真时接受,终态记
+    StopReason.PROVIDER_EXHAUSTED。接受时 completed_synthesis 已写入通道,
+    SubmittedExitMiddleware 在下一跳直接退出循环。
     """
     synthesis = loop_state.research_synthesis
     accepted = bool(
@@ -249,9 +248,9 @@ def _freeze_rejection_cause(
     synthesis: ResearchSynthesis | None,
     synthesis_revision: int,
 ) -> str:
-    """按 freeze_synthesis 的接受条件逆序给出拒绝原因,让模型拿到可行动的下一步。
+    """对照 freeze_synthesis 的接受条件逐项给出拒绝原因,让模型拿到可行动的下一步。
 
-    缺原因时模型只能从 revision 数字猜测拒绝理由,倾向于再派发新方向碰运气,
+    缺原因时模型只能从 revision 数字猜拒绝理由,倾向再派新方向重试,
     反而推翻熔断回执中的停止派发指令。
     """
     if synthesis is None:
@@ -295,7 +294,7 @@ def revise_synthesis(
     ):
         return {
             "status": "stale",
-            # 回执给的是系统当前值;与入参 expected_* 方向相反,键名必须区分两域。
+            # 回执给的是系统当前值,与模型提交的 expected_* 分属两域,键名必须区分开。
             "current_synthesis_revision": current_revision,
             "current_working_set_revision": loop_state.working_set_revision,
         }
@@ -353,13 +352,13 @@ def compose_final_update(
     loop_state: SupervisorLoopState,
     config: AgentConfig,
 ) -> SupervisorStateUpdate:
-    """把工作状态转为 State 增量与路由决策(终局合成的唯一出口)。
+    """把工作状态转为 State 增量与路由决策,是终局合成的唯一出口。
 
-    sufficient 只在本次计算读一次,派生 research_status/generation_mode 与
-    WriterDirective 的两个映射,不再各算各的。
+    sufficient 只在这里判定一次,research_status、generation_mode 与
+    WriterDirective 的相关字段都由它派生。
     """
-    # 默认终态只在整轮无任何信号时补,不参与 rank 竞争:任何已采纳的终态(哪怕权威度
-    # 更低)都不该被"预算耗尽"覆盖。且不得冒名:账户级熔断已认证时故障本身即终态事实。
+    # 默认终态只在整轮没有任何信号时补写,不参与 rank 竞争:已采纳的终态即便权威度更低,
+    # 也不该被"预算耗尽"覆盖。账户级熔断已认证时终态记故障本身,不能误标成预算耗尽。
     if not loop_state.sufficient and loop_state.stop_reason is None:
         loop_state.stop_reason = (
             StopReason.PROVIDER_EXHAUSTED
@@ -386,9 +385,9 @@ def compose_final_update(
     research_status = "completed" if sufficient else "incomplete"
     generation_mode = "full" if sufficient else "partial" if can_write else "not_ready"
     can_continue_to_writer = can_write
-    # evidences / source_refs / task_results 的 reducer 幂等(merge_evidences /
-    # merge_task_results / merge_unique),直接把 SupervisorLoopState 全量副本交给 channel;
-    # reducer 按 id 折回原样,等价于只发新增。
+    # evidences、source_refs、task_results 的 reducer 即 merge_evidences、merge_unique、
+    # merge_task_results,都按 id 折重、幂等,所以直接把 SupervisorLoopState 全量副本交给
+    # channel,效果等价于只发新增。
     return SupervisorStateUpdate(
         evidences=cast(list[Evidence], loop_state.evidences),
         source_refs=cast(list[str], loop_state.source_refs),
@@ -477,8 +476,8 @@ def build_writer_directive(
 ) -> WriterDirective:
     """从冻结综合版本派生 Writer 唯一可见的写作指令。
 
-    ReportBrief 在指令内部构造、随指令一起交接；State 顶层不再有平行的第二副本。
-    sufficient 由调用方(compose_final_update)一次判定后传入。
+    ReportBrief 在指令内部构造、随指令一起交接,State 顶层不保留平行的第二副本。
+    sufficient 由调用方 compose_final_update 判定一次后传入。
     """
     report_brief = report_brief_from_synthesis(synthesis, max_caveats=config.report_max_caveats)
     review = section(state, "review", ReviewProgress)
@@ -517,7 +516,7 @@ def build_writer_directive(
 
 
 def report_brief_from_synthesis(synthesis: ResearchSynthesis, *, max_caveats: int) -> ReportBrief:
-    """从冻结综合版本派生报告任务书，避免 Complete 再提交第二事实源。"""
+    """从冻结综合版本派生报告任务书,避免 ResearchComplete 再提交第二事实源。"""
     topics = [
         CoveredTopic(
             topic=aspect.topic,
@@ -543,9 +542,8 @@ def describe_research_stop(
 ) -> str:
     """把研究无法继续的原因保留给最终不完整报告与事件诊断。
 
-    文案单一来源在 ``StopReason.description``；这里只补充逐次运行的
-    具体细节，不再各自维护字符串清单。执行失败（AGENT_FAILED）取
-    failure_details，其余取 coverage_gaps——两条通道不互串内容。
+    文案单一来源是 ``StopReason.description``,这里只补本次运行的具体细节。
+    AGENT_FAILED 取 failure_details 的详情,其余原因取 coverage_gaps,两条通道不互串内容。
     """
     if stop_reason is StopReason.AGENT_FAILED:
         detail = next(
@@ -553,8 +551,8 @@ def describe_research_stop(
             "未记录到异常详情，详见运行事件流。",
         )
         return f"{stop_reason.description} {detail}"
-    # 诊断优先取研究内容缺口;无缺口可报时退回执行/协议尾注——failure_details
-    # 只进诊断文案,不进报告"未闭合缺口"清单,两通道规矩不变。
+    # 诊断细节取 coverage_gaps 与 failure_details 并集的最后一条非空项;
+    # failure_details 只进诊断文案,不进报告"未闭合缺口"清单,两通道各守边界。
     detail = next(
         (item for item in reversed([*coverage_gaps, *failure_details]) if item.strip()),
         "未形成可验证的完整覆盖。",

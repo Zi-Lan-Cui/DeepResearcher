@@ -1,9 +1,9 @@
 """worker 执行面 runtime:进程装配、启动恢复与生命周期。
 
-API 拥有 HTTP/鉴权/SSE;本模块拥有图执行资源,并自主消费持久队列。
-基础设施装配在 ``service.runtime_stack``(与 API runtime 共享,role="worker"
-领取 material/http)。这里保留的 Worker-only 差异:启动恢复持 advisory lock、
-运行时的信号订阅与 shutdown。
+API 拥有 HTTP、鉴权与 SSE；本模块拥有图执行资源，并自主消费持久队列。
+基础设施装配在 ``service.runtime_stack``，与 API runtime 共享，material_store 与
+http_client 仅 role="worker" 时创建。本文件保留的 Worker 独有差异：启动恢复
+持 advisory lock、运行时的信号订阅与 shutdown。
 """
 
 from __future__ import annotations
@@ -118,8 +118,8 @@ class WorkerRuntime:
     async def _settle_cancellations(self) -> None:
         """带取消意图却停在 interrupted 的行:终态化 cancelled 并补 done 帧。
 
-        取消意图的落地不依赖 executor 活着——claim/reap 永远跳过带 flag 的行,
-        没有这一步,那些 run 会停在 interrupted 直到用户再次取消。
+        取消意图的执行不依赖 executor 存活：claim/reap 始终跳过带取消标记的行，
+        没有这一步，那些 run 会停在 interrupted 直到用户再次取消。
         """
         for settled in await self.queue.settle_cancellations():
             self._hub.open(settled.run_id)
@@ -131,8 +131,7 @@ class WorkerRuntime:
         """在自主轮询开始前归类 queued/interrupted/孤儿 run。
 
         返回:
-            tuple[int, list[tuple[str, int, str]]]:
-                (判死行数, 可续跑的 (run_id, user_id, query) 列表)。
+            判死的行数，以及可续跑的 (run_id, user_id, query) 列表。
         """
         resumable: list[tuple[str, int, str]] = []
         dead_run_ids: list[str] = []
@@ -160,8 +159,8 @@ class WorkerRuntime:
                 run.error_message = "进程重启导致运行中断，请重新发起。"
                 dead_run_ids.append(run.id)
             await session.commit()
-        # done 帧走唯一投递路径(hub→store→NOTIFY),与 _settle_cancellations 同形;
-        # publish_done 在事务提交后读行,状态即终态 failed。
+        # done 帧走 hub → store → NOTIFY 这条唯一投递路径，open/publish/flush/close
+        # 次序与 _settle_cancellations 相同；publish_done 在事务提交后读行，状态已是终态 failed。
         for run_id in dead_run_ids:
             self._hub.open(run_id)
             await self.executor.publish_done(run_id)
@@ -180,8 +179,8 @@ class WorkerRuntime:
     async def _recover_expired(self, work: RunWork) -> RunWork | None:
         self._hub.open(work.run_id)
         if await self._has_checkpoint(work.run_id):
-            # "resuming" 帧改由 worker 在 claim 成功后发:此处广播会给
-            # 被取消 flag 排除、或被他 worker 抢走的行会收到误报的恢复提示。
+            # 不在此处广播 "resuming" 帧，由 worker claim 成功后发：此处广播会让
+            # 被取消标记排除、或被他 worker 抢走的行收到误报的恢复提示。
             return RunWork(
                 run_id=work.run_id,
                 user_id=work.user_id,
@@ -232,7 +231,7 @@ async def worker_lifespan(
     """创建一个独立 Worker 进程拥有的全部资源。
 
     返回:
-        WorkerRuntime: 已进入启动流程的 worker 运行时；上下文退出时关闭。
+        已进入启动流程的 worker 运行时，上下文退出时释放。
     """
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()

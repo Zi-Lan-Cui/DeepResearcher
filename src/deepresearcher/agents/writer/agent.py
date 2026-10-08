@@ -2,7 +2,7 @@
 
 Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引用元数据；
 编号渲染与证据来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
-业务实现住在 services.py，本模块只做装配、loop 控制与事件发射。
+业务实现在 services.py，本模块只做装配、loop 控制与事件发射。
 """
 
 from collections.abc import Callable
@@ -38,8 +38,8 @@ from deepresearcher.state import ResearchState
 
 _WRITER_SYSTEM_PROMPT = load_prompt("writer")
 
-# CompleteReport 写 replace/retain 语义通道(草稿/错误/底稿),必须串行完成。
-# 约束由 tests/test_writer.py 的静态守卫测试锁定(§5)。
+# CompleteReport 写 replace/retain 语义通道,即草稿、错误、底稿,必须串行完成。
+# 名单约束由 tests/test_writer.py 的静态守卫测试校验(方案 §5 分类守卫)。
 WRITER_SERIAL_TOOLS: frozenset[str] = frozenset({"CompleteReport"})
 
 
@@ -92,7 +92,7 @@ class ReportWriter:
                             max_turns=self.config.writer_max_turns,
                             context_window_tokens=context_window_tokens,
                             serial_tools=set(WRITER_SERIAL_TOOLS),
-                            # 提交前输出纯文本不算结束：退回重试，耗尽后由 recover_inline_draft 兜底。
+                            # 提交前输出纯文本不算结束:退回重试,退回次数耗尽后由 recover_inline_draft 兜底。
                             submission_guard=SubmissionGuard(
                                 nudge_message=(
                                     "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
@@ -104,7 +104,7 @@ class ReportWriter:
                                 ),
                                 max_nudges=self.config.finalization_attempts,
                             ),
-                            # 草稿落定后下一跳退出循环:不再依赖模型多跑一轮,也关掉"提交后仍可再调工具"的窗口。
+                            # 草稿落定后下一跳退出循环:不依赖模型多跑一轮,提交后模型也没有继续调用工具的机会。
                             exit_probe=lambda ctx, _state: (
                                 getattr(ctx, "validated_draft", None) is not None
                             ),
@@ -114,7 +114,7 @@ class ReportWriter:
                 ],
             ),
             name="writer",
-            # 业务状态已并入通道,翻回继承:崩溃重放从最后一个已提交 superstep 续跑。
+            # 业务状态经通道持久化,崩溃重放从最后一个已提交 superstep 续跑。
         )
 
     async def run(self, state: ResearchState) -> dict[str, object]:
@@ -161,7 +161,7 @@ class ReportWriter:
                 loop_context.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
             )
         else:
-            # 从通道现值回填簿记:崩溃重放时上下文未经批重建,以通道为准才不会把已提交草稿读成 None。
+            # 从通道现值回填簿记:崩溃重放时上下文未经批重建,以通道为准可避免把已提交草稿读成 None。
             loop_context.rebuild_loop_state(result)
         if loop_context.validated_draft is None:
             services.recover_inline_draft(loop_context, result.get("messages", []), emit=self._emit)

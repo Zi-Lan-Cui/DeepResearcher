@@ -111,8 +111,7 @@ class Run(Base):
     peak_llm_concurrency: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     cache_hit_count: Mapped[int] = mapped_column(Integer, default=0)
-    # 缓存节省只计"少出网的外部请求"一条真实口径;saved_llm_calls/tokens/cost
-    # 三个估计键因无生产者而删,评测不得拿恒零字段下结论。
+    # 缓存节省只计"少出网的外部请求"这一条口径；评测不得拿恒零的估计字段下结论。
     saved_external_request_count: Mapped[int] = mapped_column(Integer, default=0)
 
     user: Mapped["User"] = relationship(back_populates="runs")

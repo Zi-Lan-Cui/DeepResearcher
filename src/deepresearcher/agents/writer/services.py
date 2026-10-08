@@ -1,7 +1,7 @@
 """Writer 业务实现:不感知 langgraph 的纯函数。
 
-装配与 loop 控制留在 agent.py,工具回执留在 tools.py;本模块所需全部经参数
-注入(state/config/emit/render_incomplete),模型可见事件经 emit 回调发射。
+装配与 loop 控制留在 agent.py,工具回执留在 tools.py;本模块所需全部经参数注入,
+包括 state、config、emit、render_incomplete,模型可见事件经 emit 回调发射。
 """
 
 from collections.abc import Callable, Sequence
@@ -319,8 +319,8 @@ def state_update_for_exhausted_result(
             selected_evidence_ids=[],
         ),
         rejected_draft=last_markdown,
-        # 新草稿开启下一次审阅，但不得清零跨草稿的累计次数；
-        # 否则 Supervisor 的审阅恢复上限永远无法生效。
+        # 新草稿开启下一次审阅,但 attempts 保留跨草稿的累计值、不清零,
+        # 否则 Supervisor 的审阅恢复上限会失效。
         review=ReviewProgress(status="pending", attempts=review_attempts),
     ).state_update()
 

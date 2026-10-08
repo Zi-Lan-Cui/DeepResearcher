@@ -44,7 +44,7 @@ def evidence_detail_card(evidence: Evidence) -> dict[str, object]:
 
 
 def _restore_draft(value: "ValidatedDraft | dict[str, Any] | None") -> "ValidatedDraft | None":
-    """通道现值恢复草稿:同 run 与 serde 往返均已还原为 ValidatedDraft 实例;dict 兜底。"""
+    """从通道现值恢复草稿:同 run 与 checkpoint serde 往返后都已是 ValidatedDraft 实例,dict 只是防御性兜底。"""
     if value is None or isinstance(value, ValidatedDraft):
         return value
     return ValidatedDraft(**value)
@@ -53,9 +53,10 @@ def _restore_draft(value: "ValidatedDraft | dict[str, Any] | None") -> "Validate
 class WriterAgentState(AgentState):
     """ReportWriter 内层图的 state_schema:草稿循环业务状态的持久化载体。
 
-    read_evidence_ids 走 merge_unique(并发 ReadEvidence 各交本批新增、按值折重);
-    validated_draft/last_error/last_markdown 由串行 CompleteReport 写(replace / retain)。
-    evidence_by_id 是 run 入口从外层 State 派生的只读目录,不进通道。
+    read_evidence_ids 走 merge_unique:并发 ReadEvidence 各交本批新增,按值折重。
+    validated_draft、last_error、last_markdown 只由串行 CompleteReport 写,
+    reducer 是 replace 或 retain。evidence_by_id 是 run 入口从外层 State 派生的
+    只读目录,不进通道。
     """
 
     read_evidence_ids: Annotated[list[str], merge_unique]

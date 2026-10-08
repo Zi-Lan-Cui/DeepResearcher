@@ -5,8 +5,8 @@
 - ``tool_args``  工具调用入参与工具结果
 - ``decisions``  模型结构化输出的决策 Schema
 
-外部一律 ``from deepresearcher.schemas import X``，不直接 import 子模块，
-拆分对调用方保持零改动。
+外部一律 ``from deepresearcher.schemas import X``，不直接 import 子模块；
+聚合导出使调用方不受包内部拆分影响。
 """
 
 from deepresearcher.schemas.decisions import (

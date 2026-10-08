@@ -17,7 +17,7 @@ def _evidence(evidence_id: str) -> Evidence:
 
 
 class FakeWorkingSet:
-    """最小 LoopState 替身:档案与活跃集、两转移方法。"""
+    """最小 LoopState 替身:只含档案与活跃集,提供 release/restore 两个转移方法。"""
 
     def __init__(self, archive_ids: list[str], active_ids: list[str]) -> None:
         self.evidences = [_evidence(item) for item in archive_ids]
@@ -50,7 +50,7 @@ def test_release_receipt_has_three_keys_and_post_mutation_snapshot():
 def test_duplicate_and_unknown_ids_classified_consistently_on_both_ops():
     release_state = FakeWorkingSet(["e1"], ["e1"])
     receipt = release_working_set(release_state, ["e1", "e1", "ghost"], snapshot=lambda: {})
-    # 请求按序去重:重复 id 不在任何键里出现两次;ghost 不在档案 → unknown。
+    # 请求按序去重,重复 id 不在任何键里出现两次;ghost 不在档案中,归入 unknown。
     assert receipt["released_evidence_ids"] == ["e1"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]
 

@@ -1,15 +1,15 @@
-"""确定性 scorer：代码可确证的事绝不交给 LLM。
+"""确定性 scorer：代码可确证的判定不交给 LLM judge。
 
 三类确定性判定：
-1. **引用完整性门**（grounding 维）——正文 `[证据N]` 全部指向 citations_json
-   合法下标、来源条目 url/quote 非空。运行期校验已保证过，评测独立复算是
-   双保险，也是外轨报告的"下限不被内容华丽掩盖"的那道闸。
-2. **状态机行为断言**（behavior 维）——澄清流程、run_done 恰好一次、
-   seq 连续、恢复接管（attempt/lease 直读 DB，评测 harness 是特权操作者
-   视图；产品 API 保持用户最小面）。
-3. **过程指标**只记录不判分（成本/时长/缓存命中随 artifact 落盘）。
+1. 引用完整性门,grounding 维:正文每个 [证据N] 都指向 citations_json 的合法
+   下标,来源条目 url/quote 非空。运行期校验已保证过,评测独立复算是为了让
+   报告质量分不会失去引用完整性这一下限。
+2. 状态机行为断言,behavior 维:澄清流程、run_done 恰好一次、seq 连续、恢复
+   接管。attempt/lease 直读 DB,评测 harness 用操作者视图,产品 API 保持用
+   户最小面。
+3. 过程指标只记录不判分,成本、时长、缓存命中随 artifact 落盘。
 
-轨迹用于归因与行为断言，**绝不按"工具调用顺序"给报告质量打分**。
+轨迹只用于归因与行为断言,不按工具调用顺序给报告质量打分。
 """
 
 from __future__ import annotations
@@ -20,22 +20,22 @@ from typing import Any, Callable
 
 from evals.schemas import Criterion, CriterionResult
 
-# 新旧两代报告都认：改名后新产物用 [证据N]，存量结果仍是 [来源N]。
+# 存量结果仍用 [来源N],改名后的新产物用 [证据N],两种标记都识别。
 CITATION_MARKER = re.compile(r"\[(?:证据|来源)(\d+)\]")
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 
 @dataclass
 class Artifact:
-    """一次 run 的评测素材：产品 API 视角 + DB 特权视角 + runner 控制面回执。"""
+    """一次 run 的评测素材,来源分三类:产品 API 返回、DB 行、runner 控制面记录。"""
 
     case_id: str
     attempt: int
     run_id: str
     detail: dict[str, Any]  # GET /api/runs/{id} 返回
     events: list[dict[str, Any]] = field(default_factory=list)  # run_events.record
-    run_row: dict[str, Any] = field(default_factory=dict)  # runs 表行（attempt 等）
-    control: dict[str, Any] = field(default_factory=dict)  # runner 侧记录（如重复回答的 HTTP 码）
+    run_row: dict[str, Any] = field(default_factory=dict)  # runs 表行,含 attempt
+    control: dict[str, Any] = field(default_factory=dict)  # runner 侧记录,如重复回答的 HTTP 码
     # 从 LangGraph checkpoint 直读的评测/审计材料，不来自产品 API。
     evidences: list[dict[str, Any]] = field(default_factory=list)
 
@@ -145,11 +145,12 @@ def check_seq_continuous(artifact: Artifact, criterion: Criterion) -> CriterionR
 
 
 def check_clarify_flow(artifact: Artifact, criterion: Criterion) -> CriterionResult:
-    """条件断言：**若**进入 awaiting_input，则答后须 queued→running、Router 恰一次。
+    """条件断言:若进入 awaiting_input,则回答后须走完 queued→running 且 Router 恰一次。
 
-    Clarifier 是否追问本身是模型的非确定性判断，不是被测对象；把它当硬判据会让
-    用例随"这次问没问"flaky 失败。故：本次没挂起 → 前件为假 → 断言空真（yes），
-    恢复机制由单测 test_real_suspend_then_resume 单独锁死。只有真挂起后语义错才 no。
+    Clarifier 是否追问是模型的非确定性判断,不属于被测行为;把它设为断言前提
+    会让用例随本次是否触发追问而随机失败。因此本次未挂起时断言直接判 yes。
+    恢复机制由单测 test_real_suspend_then_resume 单独覆盖,这里只校验真正挂
+    起之后的语义。
     """
     statuses = artifact.status_sequence()
     if "awaiting_input" not in statuses:
@@ -180,7 +181,7 @@ def check_duplicate_answer_rejected(artifact: Artifact, criterion: Criterion) ->
 
 
 def check_lease_takeover(artifact: Artifact, criterion: Criterion) -> CriterionResult:
-    """强杀接管：attempt≥2、done 恰一次、seq 连续（跨世续号的现场证明）。"""
+    """worker 强杀接管后校验 attempt>=2、run_done 恰一次、seq 跨接管仍连续。"""
     attempt = int(artifact.run_row.get("attempt") or 0)
     if attempt < 2:
         return _result(artifact, criterion, "unknown", f"attempt={attempt}，故障注入未生效？")
@@ -224,7 +225,7 @@ CHECKS: dict[str, Check] = {
     "cache_reuse": check_cache_reuse,
 }
 
-# 每一轨每一份完成产物都自动附挂的门（不写进题集，避免 30 份重复）。
+# 每份完成产物自动附加的门;不写进题集,免得每题重复声明。
 UNIVERSAL_GATES = (
     "citation_integrity",
     "done_exactly_once",
@@ -234,7 +235,7 @@ UNIVERSAL_GATES = (
 
 def score_artifact(
     artifact: Artifact,
-    case: Any,  # EvalCase（避免循环导入用鸭子类型）
+    case: Any,  # EvalCase,用 Any 标注以避免循环导入
     *,
     gates: tuple[str, ...] = UNIVERSAL_GATES,
 ) -> list[CriterionResult]:
@@ -251,7 +252,7 @@ def score_artifact(
 
 
 def process_metrics(artifact: Artifact) -> dict[str, Any]:
-    """过程指标：tracked，不做 pass/fail。"""
+    """收集过程指标,只记录,不判 pass/fail。"""
     detail = artifact.detail
     return {
         "status": detail.get("status"),

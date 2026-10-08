@@ -187,7 +187,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     assert first["result_count"] == 12
     assert len(first["candidates"]) == SEARCH_RESULTS_PREVIEW_COUNT
     assert first["has_more"] is True
-    # 预览与分页统一形状：首屏即带（截断）snippet，模型不必再翻 ListSearchResults(offset=0) 才能判断。
+    # 预览与分页统一形状:首屏即带截断 snippet,模型无需再调 ListSearchResults(offset=0) 判断。
     assert all(item["snippet"] and len(item["snippet"]) <= 1_200 for item in first["candidates"])
     assert first["next_offset"] == SEARCH_RESULTS_PREVIEW_COUNT  # 预览消费 0..N-1 → 下一页从 N
 
@@ -200,7 +200,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     assert page["offset"] == 5
     assert page["returned_count"] == 3
     assert page["next_offset"] == 8
-    # 同一候选在预览与分页里字段完全一致（无 include_snippet 分叉）。
+    # 同一候选在预览与分页里字段完全一致,不再按 include_snippet 分叉两种字段集。
     assert set(first["candidates"][0]) == set(page["candidates"][0])
     # 分页重建只从 SearchTool 的进程/持久缓存取数，不再请求 Provider。
     assert client.calls == 1
@@ -603,7 +603,7 @@ def test_add_evidence_validates_before_ranking_by_confidence():
 
 
 def test_add_evidence_repairs_punctuation_only_quote_against_source():
-    # 账本实测过半拒绝只差标点样式：回退定位到原文子串直接入池，不再烧模型回合改抄。
+    # 实测中过半拒绝只差标点样式:回退定位到原文子串直接入池,不再消耗模型回合重抄。
     store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
@@ -882,12 +882,12 @@ def test_researcher_agent_crash_passes_through_as_failed_not_dressed_up():
     assert task_result.stop_detail == "graph exploded"
     assert task_result.coverage_status == "insufficient"
     assert any("direction_agent_failed" in item for item in task_result.failures)
-    # 交付层仍拿到降级说明与缺口标注(证据为零时的兜底文案不变)
+    # 交付层仍拿到降级说明与缺口标注,证据为零时的兜底文案不变
     assert "未获得可用 Evidence。" in task_result.remaining_gaps
 
 
 def test_search_tool_emits_query_level_progress_events():
-    """方向卡的静默真空期由逐 query 事件填上:每条检索式起止各一条,聚合事件保留。"""
+    """方向卡的无输出间隙由逐 query 事件填充:每条检索式起止各一条,聚合事件保留。"""
 
     class Sink:
         def __init__(self) -> None:
@@ -935,7 +935,7 @@ def test_search_tool_query_failed_event_reraises():
     )
 
 
-# --- 通道化不变式(§5 硬点 + 通道往返 + ref 化 + 批重建 + serde) -----------------
+# 通道化不变式守卫:覆盖 §5 硬点、通道往返、ref 化、批重建与 serde。
 
 
 def _non_concurrency_safe_channels(state_cls) -> set[str]:

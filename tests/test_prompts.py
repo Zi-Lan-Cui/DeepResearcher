@@ -20,17 +20,17 @@ def test_every_prompt_loads_nonempty():
 
 
 def test_language_directive_matches_template_byte_for_byte():
-    # 外置前后逐字一致：语言纪律模板必须原样产出。
+    # 语言纪律模板必须原样产出,文案不漂移。
     out = language_directive("中文")
     assert out.startswith("---\n\n## Output language") and out.endswith("leave code as is.\n")
-    assert "{language}" not in out  # 占位符已被替换
+    assert "{language}" not in out
 
 
 def test_role_prompts_keep_identity_markers():
     assert "# Role" in load_prompt("researcher")
     assert "Supervisor" in load_prompt("supervisor")
     assert "overall reviewer" in load_prompt("reviewer")
-    # writer 保留语言占位符（由调用点 .replace 填充）
+    # writer 保留语言占位符,由调用点 .replace 填充
     assert "__LANG__" in load_prompt("writer")
 
 
@@ -49,10 +49,10 @@ def test_researcher_prompt_teaches_early_evidence_submission_with_examples():
 def test_supervisor_prompt_carries_dispatch_fewshots():
     prompt = load_prompt("supervisor")
     assert "## Examples" in prompt
-    # 派发示例两字段各就各位，且反面说明禁止截断复述。
+    # 派发示例两字段各就各位,反面说明禁止截断复述。
     assert '"display_title":' in prompt and '"research_topic":' in prompt
     assert "merely truncates" in prompt
-    # 预算耗尽示例锁住 blocked 分支的正确动作。
+    # 预算耗尽示例校验 blocked 分支的正确动作。
     assert "round_budget_exhausted" in prompt
 
 

@@ -46,14 +46,14 @@ class DocumentGrepMatch(BaseModel):
 
 
 class GrepResult(BaseModel):
-    """单个查询词一次 grep 的结果:窗口 + 可续读的截断账。
+    """单个查询词一次 grep 的结果：命中窗口，外加说明截断程度与续读方式的三个字段。
 
-    截断/翻页/整窗不截半行的完整行为契约见 materials.store.grep_lines(实现所在);
+    截断、翻页与整窗不拆行的完整行为契约见实现所在 materials.store.grep_lines；
     本处只描述字段级语义。
     """
 
     query: str
     matches: list[DocumentGrepMatch] = Field(default_factory=list)
-    total_matches: int = Field(ge=0)  # 去重后该词全文命中数(截断前)
-    has_more: bool  # 仍有未取的后续窗口(上限或字符预算所致)
-    next_offset: int = Field(ge=0)  # 取后续窗口的 offset;无后续则 0
+    total_matches: int = Field(ge=0)  # 截断之前，去重后该词在全文的命中窗口总数
+    has_more: bool  # 受命中数上限或字符预算影响，仍有未返回的后续窗口
+    next_offset: int = Field(ge=0)  # 续读后续窗口时传入的 offset；无后续窗口时为 0

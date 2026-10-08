@@ -1,7 +1,7 @@
 """方向级自主研究 Agent：在全局预算内完成一个受派方向的局部研究闭环。
 
-只负责装配:稳定零件收进 ResearcherDeps,每次 run 造一个纯名词的
-ResearcherLoopContext;工具协议在 tools.py,业务实现（检索/读取/校验）在 services.py。
+本模块只负责装配:稳定零件收进 ResearcherDeps,每次 run 造一个纯数据的
+ResearcherLoopContext;工具协议在 tools.py,检索、读取、校验的业务实现在 services.py。
 """
 
 import asyncio
@@ -49,8 +49,8 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 _RESEARCHER_SYSTEM_PROMPT = load_prompt("researcher")
 
 # revision/replace 敏感或改变活跃集的串行工具:逐个完成,避免并发整字段快照互相覆盖。
-# AddEvidence/ReadSources 是唯一被允许同批并发的写通道工具,只提交合并语义差量。
-# 约束由 tests/test_researcher.py 的静态守卫测试锁定(§5)。
+# AddEvidence 与 ReadSources 是唯一允许同批并发的写通道工具,只提交合并语义差量。
+# 该名单约束由 tests/test_researcher.py 的静态守卫测试校验(方案 §5 分类守卫)。
 RESEARCHER_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
         "SearchSources",
@@ -139,8 +139,8 @@ class ResearchAgent:
                                     "ResearchDirectionComplete 诚实提交已覆盖内容和剩余缺口。"
                                 ),
                             ),
-                            # 与 submitted_probe 同一信号:方向结果落定(stop_reason 收口)
-                            # 后下一跳静默出环;被拒回执不写 stop_reason,模型留环改正。
+                            # 与 submitted_probe 同一信号:stop_reason 收成终值后下一跳直接退出
+                            # 循环;被拒回执不写 stop_reason,模型留在循环内改正。
                             exit_probe=lambda ctx, _state: (
                                 getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
                                 in {
@@ -154,7 +154,7 @@ class ResearchAgent:
                 ],
             ),
             name="researcher",
-            # 业务状态已并入通道,翻回继承:崩溃重放从最后一个已提交 superstep 续跑。
+            # 业务状态经通道持久化,崩溃重放从最后一个已提交 superstep 续跑。
         )
 
     async def run(self, task: SubTask) -> ResearchAgentResult:
@@ -209,9 +209,9 @@ class ResearchAgent:
                 active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
                 evidence_archive_limit=self.config.research_agent_max_evidence_candidates_per_direction,
             )
-        # 凡未正常收尾的,一律套用最小保守结果保住已验证证据、补降级标注。
-        # 它只改写**交付**语义(conclusion/gaps);执行真相由 status/stop_reason
-        # 如实记录——崩溃的方向就是 failed,不得标成 completed+fallback。
+        # 未正常收尾的路径统一套用最小保守结果,保住已验证证据并补降级标注。
+        # 它只改写交付语义的 conclusion 与 remaining_gaps;执行真相由 status 与
+        # stop_reason 如实记录,崩溃的方向就是 failed,不能标成 completed+fallback。
         if status != "cancelled" and loop_state.stop_reason not in {
             DirectionStopReason.COMPLETE,
             DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
@@ -225,10 +225,10 @@ class ResearchAgent:
 
     @staticmethod
     def _apply_minimum_result(loop_state: ResearcherLoopState) -> None:
-        """不调用模型的最终保险：保留现有证据，明确标注自动收束与缺口。
+        """不调用模型的最终兜底：保留现有证据，明确标注自动收束与缺口。
 
-        stop_reason 只在"本无收尾原因"时补写(回合耗尽→fallback/blocked);
-        direction_agent_failed 是真因,保留,不得被交付层的名字覆写。
+        stop_reason 只在本无收尾原因时补写,回合耗尽对应 fallback 或 blocked;
+        direction_agent_failed 是真实故障原因,保留,不能被交付层的名字覆写。
         """
         if not loop_state.active_evidence_ids and loop_state.evidences:
             loop_state.active_evidence_ids.update(

@@ -1,11 +1,11 @@
 """Checkpointer serde：把 State 类型加入 msgpack 允许清单。
 
-LangGraph 把每个 superstep 的 state 以 msgpack 存进 Postgres；反序列化时对未知自定义
-类型默认告警、未来严格模式会直接拒绝——这会让"崩溃恢复 / 澄清 resume"在升级后炸。
-这里显式放行 deepresearcher 自有包里的 Pydantic 模型 / Enum / dataclass（即可能进
-ResearchState 的通道类型），既消除告警、又不对任意（外部）类开放反序列化。
+LangGraph 把每个 superstep 的 state 以 msgpack 存进 Postgres；反序列化遇到未知自定义
+类型目前告警，未来严格模式会直接拒绝，崩溃恢复与澄清 resume 会在升级后失败。这里显式
+放行 deepresearcher 自有包里的 Pydantic 模型、Enum 与 dataclass，这些即可能进入
+ResearchState 的通道类型；既消除告警，也不对外部类开放反序列化。
 
-扫描式收集：以后新增 state 类型只要落在这些包内即自动覆盖，无需手维护清单。
+扫描式收集：新增 state 类型只要落在这些包内即自动覆盖，清单无需手维护。
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from enum import Enum
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel
 
-# 可能出现在 State 或内层循环通道里的类型所在包。除业务 State 通道外,还包括通道化后
-# 进入 researcher/writer 内层通道的类型:SearchCandidate、DocumentRef、ValidatedDraft。
+# 可能进入 State 或内层循环通道的类型所在包。新增通道化类型必须落在下列包内，例如
+# researcher/writer 内层通道用到的 SearchCandidate、DocumentRef、ValidatedDraft。
 _PROJECT_TYPE_PACKAGES = (
     "deepresearcher.schemas",
     "deepresearcher.evidence",

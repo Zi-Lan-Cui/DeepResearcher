@@ -44,7 +44,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     ):
         super().__init__()
         self.agent_name = agent_name
-        # 事件名前缀走显式 slug;显示名 lower() 得到的是驼峰形,不是 snake_case。
+        # 事件名前缀走显式 slug:显示名是驼峰,lower() 之后仍得不到 snake_case 形式。
         self._slug = event_slug or agent_name.lower()
         self.run_limit = run_limit
         self._emit = emit
@@ -57,9 +57,9 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return int(state.get("run_model_call_count", 0) or 0)
 
     def _event_context(self, runtime: Any) -> dict[str, object]:
-        # context 契约(鸭子读,删改 LoopContext 字段前先 grep 本文件):
-        #   scope: AgentExecutionScope | None —— 所有 agent 的 LoopContext 必须携带,
-        #   模型回合/工具事件的 run_id/task_id/operation_id 归因全靠它;缺席是静默降级。
+        # context 契约按 getattr 读取,删改 LoopContext 字段前先 grep 本文件。
+        # scope: AgentExecutionScope | None,所有 agent 的 LoopContext 必须携带;
+        # 模型回合与工具事件的 run_id/task_id/operation_id 归因依赖它,缺席时不崩溃但静默失去归属。
         context = getattr(runtime, "context", None)
         scope: AgentExecutionScope | None = getattr(context, "scope", None)
         fields = scope.event_fields() if isinstance(scope, AgentExecutionScope) else {}
@@ -179,10 +179,10 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             summary["content_redacted"] = redact
             if not redact:
                 summary["content_preview"] = cls._preview(content)
-            # total_matches/has_more/candidate_count 等计数排在 matches/candidates 大数组
-            # 之后,常被 content_preview 截断而看不到 → 无法审计取证漏斗与翻页。把标量 hoist
-            # 到事件顶层。**即使正文被 redact(读取类工具含来源原文引用)也照提取计数**——
-            # 数字本身不敏感,不该被正文脱敏一起挡掉;此时只放行 int/float/bool,不放行字符串。
+            # total_matches/has_more/candidate_count 等计数排在 matches/candidates 大数组之后,
+            # 常被 content_preview 截断而看不到,取证漏斗与翻页就无从审计,故把标量计数提升到
+            # 事件顶层。正文含来源原文引用、被脱敏时计数照提:数字本身不敏感,不随正文一起隐去;
+            # 脱敏模式下只放行 int/float/bool,不放行字符串。
             metrics = cls._result_metrics(content, numeric_only=redact)
             if metrics:
                 summary["result_metrics"] = metrics
@@ -217,7 +217,7 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return rendered[:_TOOL_ARGUMENT_PREVIEW_CHARS]
 
     def _log_event(self, event_type: str, payload: dict[str, object]) -> None:
-        # 旁路保护在 emit_agent_event 一层，此处不再各自设防。
+        # 事件旁路的异常容错在 emit_agent_event 一层,此处不再各自设防。
         if self._emit is not None:
             self._emit(event_type, payload)
             return

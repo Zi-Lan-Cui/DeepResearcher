@@ -214,8 +214,8 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
                 preferred=RunWork(third_run_id, user_id, "slot b"),
             ),
         )
-        # 输家必须是"容量饱和"而非 None——wake 靠这个区分把 preferred 弹回队列,
-        # 否则 resume 任务会在容量满的瞬间被吞掉。
+        # 未领到的一方必须返回容量饱和而非 None;wake 靠这个区分把 preferred
+        # 弹回队列,否则 resume 任务会在容量满时被丢弃。
         assert sum(isinstance(claim, RunWork) for claim in slot_claims) == 1
         assert sum(isinstance(claim, ClaimCapacitySaturated) for claim in slot_claims) == 1
 

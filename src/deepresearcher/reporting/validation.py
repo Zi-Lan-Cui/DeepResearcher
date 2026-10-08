@@ -12,7 +12,7 @@ _FENCED_CODE = re.compile(
 )
 _INLINE_CODE = re.compile(r"(?P<tick>`+).*?(?P=tick)", re.DOTALL)
 _CITE_MARKER = re.compile(r"\[\[cite:(?P<sources>[^\]\r\n]+)\]\]", re.IGNORECASE)
-# 手写编号护栏收两种词：旧词"来源"是改名前的模型习惯,残留时必须照样拦。
+# 手写编号检测同时匹配旧词"来源"：那是改名前模型留下的书写习惯，出现时同样要拒绝。
 _CITATION_MARKER = re.compile(r"\[(?:证据|来源)(?P<index>\d+)\]")
 _MAX_EVIDENCE_IDS_PER_CITATION = 3
 

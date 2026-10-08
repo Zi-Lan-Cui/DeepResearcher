@@ -56,8 +56,8 @@ def test_tool_execution_gate_makes_exclusive_call_a_barrier():
 
 
 def test_serial_middleware_orders_complete_after_inflight_delegate():
-    """生产路径:同批 [ResearchDelegate, ResearchComplete] 交叠时,exclusive 的
-    Complete 必须等在飞 delegate(shared)落地——消灭"完结后状态仍可变"竞态。"""
+    """生产路径:同批出现 ResearchDelegate 与 ResearchComplete 时,exclusive 的
+    Complete 必须等 shared 的 delegate 结束才执行,避免完结后状态仍可变。"""
 
     middleware = SerialToolMiddleware(serial_tools={"ResearchComplete"})
     context = SimpleNamespace(tool_gate=ToolExecutionGate())

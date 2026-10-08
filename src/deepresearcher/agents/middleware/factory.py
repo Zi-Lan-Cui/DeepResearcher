@@ -1,9 +1,7 @@
-"""Agent 共享机器件之装配:中间件栈的声明(Profile)与组装(Builder)同文件。
+"""Agent 共享中间件的装配:栈声明 MiddlewareProfile 与装配函数 build_agent_middleware 同文件。
 
-Profile 收拢 ``build_agent_middleware`` 的长参数列表:每个 Agent 用一份 Profile
-描述自己要的中间件栈,参数间的成对约束(如提交守卫的消息与探测)由结构本身
-保证,而不是靠两个可空参数之间的隐式约定——声明与唯一装配者住在一起,读栈
-的形状只需要这一个文件。
+Profile 收拢 build_agent_middleware 的长参数列表,每个 Agent 用一份 Profile 描述自己要的
+中间件栈;提交守卫的消息与探测这类成对约束由结构本身保证,不靠两个可空参数之间的隐式约定。
 """
 
 import json
@@ -43,10 +41,7 @@ AGENT_RECURSION_LIMIT = 1_000
 
 
 class ObservableSummarizationMiddleware(SummarizationMiddleware):
-    """压缩发生时记一笔 context_compacted——纯观测,不改任何压缩决策。
-
-    纯观测:只记录,不参与任何压缩决策。
-    """
+    """压缩发生时记一笔 context_compacted;只记录,不参与任何压缩决策。"""
 
     def __init__(self, *, agent_name: str, emit: Any, trigger_tokens: int, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -82,10 +77,10 @@ class ObservableSummarizationMiddleware(SummarizationMiddleware):
 
 @dataclass(frozen=True)
 class SubmissionGuard:
-    """工具提交守卫配置：成对出现，杜绝只配一半。
+    """工具提交守卫配置;消息与探测绑定在同一数据类里,不会只配一半。
 
-    模型在完成提交（``submitted_probe`` 返回 False）前输出纯文本时，
-    注入 ``nudge_message`` 并踢回重试；耗尽后放行给业务层兜底。
+    模型在 ``submitted_probe`` 返回 False 前输出纯文本时,注入
+    ``nudge_message`` 并退回重试;退回次数耗尽后放行,交业务层兜底。
     """
 
     nudge_message: str
@@ -99,12 +94,12 @@ class SubmissionGuard:
 class MiddlewareProfile:
     """一个 Agent 的中间件栈完整输入。
 
-    ``max_turns`` 只是防失控的模型调用天花板，不承担业务配额语义；
-    业务配额由 ``tool_call_limits``（单工具调用数）与业务层 hard check 表达。
+    ``max_turns`` 只是防失控的模型调用次数上限,不承担业务配额语义;业务配额由
+    ``tool_call_limits`` 的单工具调用数与业务层硬校验表达。
     """
 
     agent_name: str
-    event_slug: str  # 事件名前缀(snake 归因域,如 "researcher");与显示名 agent_name 分家
+    event_slug: str  # 事件名前缀,snake_case 风格,如 researcher;与显示名 agent_name 分开设置
     max_turns: int
     context_window_tokens: int
     model: BaseChatModel | None = None
@@ -112,18 +107,17 @@ class MiddlewareProfile:
     serial_tools: set[str] | None = None
     tool_call_limits: Sequence[tuple[str, int]] = ()
     submission_guard: SubmissionGuard | None = None
-    # 提交落盘后由 SubmittedExitMiddleware 在下一跳静默出环;probe 收
-    # (context, state),读该 agent 提交事实所在的单一事实源;工具一律不设
-    # return_direct、不用 Command(goto) 控环——被拒后模型必须留在循环内改正。
-    # None = 不挂。
+    # 提交落盘后由 SubmittedExitMiddleware 在下一跳直接退出循环;probe 收 context 与 state,
+    # 读该 agent 提交事实所在的单一事实源;工具一律不设 return_direct、不用 Command(goto)
+    # 控环,被拒后模型必须留在循环内改正。None 表示不挂。
     exit_probe: Callable[[Any, Any], bool] | None = None
     emit: AgentEmit | None = None  # 契约见 observability.events.AgentEmit
 
 
 def _message_text(message: BaseMessage) -> str:
-    """把消息中用于计数的内容规范化为字符串(含工具调用参数)。
+    """把消息中用于计数的内容规范化为字符串,含工具调用参数。
 
-    tool_calls 的参数是真实载荷——Writer 草稿、AddEvidence 逐字引用都住在这里;
+    tool_calls 的参数也是真实载荷:Writer 草稿、AddEvidence 逐字引用都在其中,
     只数 content 会让两级压缩对最重的消息不生效。
     """
     parts = [message.content if isinstance(message.content, str) else str(message.content)]
@@ -141,9 +135,9 @@ def count_message_tokens(messages) -> int:
 def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     """按 Profile 组装所有 Agent 共用的模型、工具、上下文和轮次中间件。
 
-    Profile 字段语义见本文件 ``MiddlewareProfile`` 的类/字段注释；注册顺序即行为契约：提交守卫
-    先于 AgentObservability 注册（after-hook 逆序执行），保证回合日志完整记录
-    被拦截的文本输出；ModelCallLimit 最后注册，其计数先于日志中间件递增。
+    Profile 字段语义见本文件 ``MiddlewareProfile`` 的类与字段注释。注册顺序即行为契约:
+    提交守卫先于 AgentObservability 注册,after-hook 逆序执行,回合日志因此能完整记录
+    被拦截的文本输出;ModelCallLimit 最后注册,其计数先于日志中间件递增。
     """
     trigger = max(1_024, int(profile.context_window_tokens * 0.8))
     keep = max(1_024, int(profile.context_window_tokens * 0.25))
@@ -153,8 +147,8 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
             token_counter=count_message_tokens,
         )
     ]
-    # 压缩中间件会向模型要真实 BaseChatModel 能力(with_retry 等)；None 与测试
-    # 窄假模型都按"未配置压缩模型"处理——生产恒为 ChatOpenAI,始终启用压缩。
+    # 压缩中间件要求模型具备真实 BaseChatModel 能力,如 with_retry;None 与测试用的窄假
+    # 模型都按"未配置压缩模型"处理。生产 profile.model 恒为 ChatOpenAI,压缩始终启用。
     if isinstance(profile.model, BaseChatModel):
         middleware.insert(
             0,
@@ -171,7 +165,7 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
     middleware.append(
         model_retry(profile.agent_name, event_slug=profile.event_slug, emit=profile.emit)
     )
-    # 标签默认取工具名本身(retry_tools 只声明工具;展示名即协议名)。
+    # 标签取工具名本身:retry_tools 只声明工具,展示名即协议名。
     middleware.extend(tool_retry(names, names[0]) for names in profile.retry_tools)
     if profile.retry_tools:
         # 归一层必须注册在 tool_retry 之后(更内):retry 看到的是归一后的异常,

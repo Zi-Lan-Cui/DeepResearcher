@@ -1,8 +1,8 @@
 """State 分区、运行生命周期与节点结果契约。
 
-``StopReason`` 是本模块的词汇单一来源：赋值端（Supervisor 及其工具）与
-消费端（兜底判定、面向用户的描述文案）都引用枚举成员，杜绝两处
-手工维护字符串清单的漂移。
+``StopReason`` 是本模块的词汇单一来源：赋值端，即 Supervisor 及其工具，与
+消费端，即兜底判定和面向用户的描述文案，都引用枚举成员，避免两处
+各自维护字符串清单造成漂移。
 """
 
 from __future__ import annotations
@@ -54,29 +54,29 @@ class StopReason(StrEnum):
 
     @property
     def rank(self) -> int:
-        """终止原因的**声明式**权威度;数字越大越能覆盖小的。
+        """终止原因的优先级数字;rank 大的覆盖 rank 小的。
 
-        Supervisor 一次运行里多个位置可能给 stop_reason 赋值(轮次预算、
-        模型调用天花板、异常、模型显式决定);过去依赖"物理书写顺序 +
-        零散 is None 守卫"隐式规定优先级,任何新增写点都可能悄悄把该显示的终态
-        压下去。改为单调 rank 之后,`SupervisorLoopState.set_stop_reason` 按 rank 采纳,
-        新增写点不用再操心顺序——只需选一个合适的 rank。
+        Supervisor 一次运行里多个写点都可能给 stop_reason 赋值:轮次预算、
+        模型调用上限、异常、模型显式决定。此前优先级靠物理书写顺序和零散的
+        is None 判断隐式规定,新增写点稍有不慎就会覆盖本该显示的终态;改为
+        单调 rank 后,SupervisorLoopState.set_stop_reason 按 rank 采纳,
+        新增写点只需选合适的 rank,与书写顺序无关。
 
         分级理由:
-        - 轮次预算 (ROUND < GLOBAL) 表示"没做完但到点了",低于天花板命中,
-          因为后者是"到点前就被强行掐掉"这一更强的终止事实。
-        - 模型调用天花板 (MODEL_CALL_LIMIT) 表示"根本没机会收尾"。
-        - 账户级熔断认证 (PROVIDER_EXHAUSTED) 介于天花板与异常之间:模型确为
-          显式收尾,但动因是系统性不可用;若同一轮再撞出真实异常,异常更硬。
-        - 异常 (AGENT_FAILED) 高于以上,基础设施失败要显式暴露。
-        - 两个显式决定 (SUBMITTED_WITH_GAPS < SUFFICIENT) 最高——模型自己
-          说了"就这样收尾",压过一切基础设施信号;SUFFICIENT 再强于带缺口。
+        - 轮次预算 ROUND < GLOBAL:含义是没做完但轮次用尽,低于模型调用上限,
+          后者是在轮次用尽之前就被强制终止。
+        - MODEL_CALL_LIMIT 表示没有机会收尾。
+        - PROVIDER_EXHAUSTED 排在调用上限与异常之间:模型确实显式收尾,
+          但动因是账户级系统性不可用;同一轮若再出现真实异常,异常优先。
+        - AGENT_FAILED 高于以上各项:基础设施失败需要显式暴露。
+        - 两个模型显式决定 SUBMITTED_WITH_GAPS < SUFFICIENT 排最高:
+          模型自己决定收尾,优先于基础设施信号;无缺口优先于带缺口。
         """
         return _STOP_REASON_RANKS.get(self, 0)
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
-    # 全覆盖由 test_sections 锁定:缺描述会静默落到语义相反的兜底句。
+    # tests/test_supervisor.py 校验每个 StopReason 都登记了描述:缺描述会静默落到语义相反的兜底句。
     StopReason.SUFFICIENT: "Supervisor 确认现有材料足以形成完整研究报告。",
     StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
     StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
@@ -87,7 +87,7 @@ _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
 }
 
 
-# 声明式权威度；见 StopReason.rank 的 docstring。留 5 的间隔便于将来插入新级别。
+# 优先级数字，见 StopReason.rank 的 docstring；间隔取 5，便于将来插入新级别。
 _STOP_REASON_RANKS: dict[StopReason, int] = {
     StopReason.ROUND_BUDGET_EXHAUSTED: 20,
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: 25,
@@ -100,7 +100,7 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
 
 
 class DirectionStopReason(StrEnum):
-    """方向级 ResearchAgent 的终止原因:与 StopReason 分域,值即 wire。"""
+    """方向级 ResearchAgent 的终止原因;与 StopReason 分属两域,成员值就是序列化 wire 值。"""
 
     COMPLETE = "complete"
     STEP_BUDGET_EXHAUSTED = "step_budget_exhausted"
@@ -123,7 +123,7 @@ class RunError(BaseModel):
     @field_validator("message", "detail", mode="before")
     @classmethod
     def _clip_long_text(cls, value: object) -> object:
-        # 校验器只截断不抛错:错误处理路径自身绝不允许因超长文本再造异常。
+        # 校验器只截断不抛错,避免错误处理路径自身因超长文本再抛出新异常。
         text = str(value)
         if len(text) <= RUN_ERROR_TEXT_HARD_LIMIT_CHARS:
             return value
@@ -150,9 +150,12 @@ class RunError(BaseModel):
 
 
 def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str, Any]]:
-    """失败事件与失败状态的公共字段单源:node_runner(状态侧)与
-    instrumentation(sink 侧)由同一 RunError 构造,error/code/retryable 不再两处各自演化;
-    link/duration 等场景专有字段由调用方自行补进 make_node_event。"""
+    """失败事件与失败状态的公共字段单源。
+
+    状态侧 node_runner 与事件侧 instrumentation 由同一个 RunError 构造,
+    error/code/retryable 两处保持一致、不各自演化;link、duration 等场景
+    专有字段由调用方自行补进 make_node_event。
+    """
     error = RunError.from_exception(stage, exc)
     return error, {
         "error": error.message,
@@ -161,11 +164,11 @@ def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str
 
 
 class RenderOutcome(StrEnum):
-    """渲染终点节点写下的交付结局:terminal_reason 的第二域(第一域是 StopReason)。
+    """渲染终点节点写下的交付结局;terminal_reason 词汇的第二域,第一域是 StopReason。
 
-    值与 checkpoint/前端已冻结,只做枚举化与用户可读文案的单一来源;
-    跨进程持久化的 lifecycle 终态(user_cancelled/server_shutdown 等)是第三域,
-    仅登记于 DB 侧,不经此枚举。
+    成员值已被 checkpoint 与前端冻结,本枚举不改变 wire,只作枚举成员与用户可读
+    文案的单一来源;跨进程持久化的 lifecycle 终态,如 user_cancelled、
+    server_shutdown,是第三域,仅登记于 DB 侧,不经此枚举。
     """
 
     CLARIFICATION_NEEDED = "clarification_needed"
@@ -195,11 +198,11 @@ _RENDER_OUTCOME_DESCRIPTIONS: dict[RenderOutcome, str] = {
 
 
 def terminal_reason_text(value: object) -> str:
-    """把 terminal_reason 换成面向用户的中文——三域词汇的统一查表出口。
+    """把 terminal_reason 换成面向用户的中文,三域词汇的统一查表出口。
 
     terminal_reason 混装 StopReason 值、RenderOutcome 值与 DB lifecycle 字符串;
-    凡渲染进用户报告必经此函数,裸机器词不得再直达用户。未登记值原样返回
-    (lifecycle 词汇自有中文包装点)。
+    凡渲染进用户报告的 terminal_reason 都经此函数,机器可读词不直达用户。
+    未登记的值原样返回,lifecycle 词汇在 DB 侧自有中文包装点。
     """
     text = str(value or "")
     if not text:
@@ -284,7 +287,7 @@ class ResearchDirectionResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
     stop_reason: DirectionStopReason
     stop_detail: str = ""
-    # 数据信号（非控制流）：搜索服务账户级不可用时置真，供 Supervisor 模型读到后自然停止派发/收尾。
+    # 数据信号，不是控制流：搜索服务账户级不可用时置真，Supervisor 模型读到后自然停止派发或收尾。
     provider_exhausted: bool = False
 
 
@@ -325,7 +328,7 @@ class SupervisorStateUpdate(BaseModel):
     supervisor_next: NodeName = NodeName.RENDER_FINAL_REPORT
 
     def state_update(self) -> dict[str, object]:
-        """转换为 LangGraph 增量；生命周期状态已经在模型边界完成。"""
+        """转换为 LangGraph 增量；生命周期校验已在模型构造边界完成。"""
         return {
             "run": self.run,
             "supervisor": self.supervisor,
@@ -362,8 +365,8 @@ class WriterResult(BaseModel):
     def state_update(self) -> dict[str, object]:
         """转为 LangGraph 状态增量，阶段状态只通过嵌套模型交接。
 
-        None 字段不产生增量;模型字段以对象整体写入——model_dump 会把
-        citations/bindings 摊平成 dict,同 run 内破坏"消费方拿到的恒是模型"
-        的恢复前提,dict↔模型转换只发生在 checkpoint 边界。
+        None 字段不产生增量;模型字段以对象整体写入:若用 model_dump 摊平成
+        dict,同 run 内消费方拿到模型对象的前提就被破坏。dict 与模型的转换
+        只发生在 checkpoint 边界。
         """
         return {name: value for name, value in self if value is not None}

@@ -301,13 +301,12 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             assert completed["report_markdown"].startswith("# M8")
             await _validate_database(database_url, failover_run)
 
-            # ---- F2: 优雅 SIGTERM -> interrupted -> checkpoint 续跑 ----
-            # Worker 优雅停止时以干净的租约释放把在飞 run 落为
-            # ``interrupted``,与前面验证的租约过期接管是两条路径。
-            # 轮询循环只领 ``queued``、租约清扫只处理过期的 ``running``,
-            # 都无法续上这种行——只有 Worker 启动 reconcile 会提交显式
-            # ``resume=True`` 领取。本段在一个专用 run 上走完这条路径,
-            # 该 run 仍阻塞在 release 标记上。
+            # F2: 优雅 SIGTERM -> interrupted -> checkpoint 续跑。
+            # Worker 优雅停止时通过干净的租约释放把运行中的 run 落为 interrupted,
+            # 与前面验证的租约过期接管是两条路径。轮询循环只领 queued、租约清扫
+            # 只处理过期的 running,都续不上这种行,只有 Worker 启动 reconcile 会
+            # 提交显式 resume=True 领取。本段在一个专用 run 上走完这条路径,该
+            # run 此时仍阻塞在 release 标记上。
             graceful_run = await _create_run(client, token, "M8 graceful resume")
             run_ids.append(graceful_run)
             await _eventually(
@@ -400,7 +399,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                     timeout=10,
                     label=f"single graph execution for concurrency wave {level}",
                 )
-                # 正常情况下,第二个领取者会在一个轮询间隔内进入。
+                # 若发生双领,第二个执行会在一个轮询间隔内进入;睡过窗口后仍应是单执行。
                 await asyncio.sleep(0.3)
                 assert all(len(_entered_pids(marker_dir, run_id)) == 1 for run_id in wave)
                 for run_id in wave:

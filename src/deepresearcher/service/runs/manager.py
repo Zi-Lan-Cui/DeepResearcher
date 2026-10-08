@@ -83,7 +83,7 @@ class RunManager:
         """受理新研究问题，创建 queued 行并通知 worker。
 
         返回:
-            str: 新 run 的 id。
+            新 run 的 id。
         """
         run_id = await self._run_service.create(user_id, query.strip())
         self._hub.open(run_id)
@@ -100,7 +100,7 @@ class RunManager:
             run_id: 目标 run。
 
         返回:
-            Run: 处理后的行。
+            处理后的 run 行。
 
         抛出:
             LookupError: run 不存在或非本人所有。
@@ -130,10 +130,10 @@ class RunManager:
             return await session.get(Run, run_id)
 
     async def terminal_state(self, run_id: str) -> dict[str, Any] | None:
-        """SSE 兜底终止用:run 已终态则返回 done 帧载荷要素,否则 None。
+        """SSE 兜底终止用：run 已终态时返回 done 帧载荷要素，否则返回 None。
 
-        done 帧可能在失败批次中丢失(flush 已尽力回插,close 竞态仍可能截尾),
-        事件的权威副本是行状态——查到这里即该收尾,不让客户端无限等待。
+        done 帧可能在失败批次中丢失：flush 对失败批次已尽力回插，close 竞态仍
+        可能丢尾。事件的权威副本是行状态，查到这里即应收尾，不让客户端一直等待。
         """
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
@@ -162,7 +162,7 @@ class RunManager:
             answer: 用户回答。
 
         返回:
-            str: 入队后的当前状态。
+            入队后的当前状态。
 
         抛出:
             ValueError: 回答为空。

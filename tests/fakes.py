@@ -41,12 +41,11 @@ def as_llm(fake: Any) -> BaseChatModel:
 
 
 def as_state(partial: dict[str, Any]) -> ResearchState:
-    """把部分 State 字典收口为 ResearchState（TypedDict 仅用于注释键）。"""
+    """把部分 State 字典收口为 ResearchState。TypedDict 只在类型标注层生效,不做运行时校验。"""
     return cast(ResearchState, partial)
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
-    """读取 JSONL 事件流中的全部 event 记录。"""
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
@@ -76,7 +75,7 @@ def make_evidence(
     direction="",
     retrieval="origin_fetch",
 ):
-    """构造合法 Evidence 模型；State 通道已类型化，测试 fixture 不再用裸 dict。"""
+    """构造合法 Evidence 模型。"""
     return Evidence(
         evidence_id=evidence_id,
         subtask_id="r1-1",

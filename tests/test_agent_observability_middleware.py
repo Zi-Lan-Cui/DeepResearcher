@@ -15,11 +15,11 @@ from deepresearcher.observability.execution import AgentExecutionScope
 
 
 def _real_researcher_context() -> ResearcherLoopContext:
-    """生产形状的真实 ResearcherLoopContext:中间件契约字段(scope/tool_gate)必须在场。
+    """生产形状的真实 ResearcherLoopContext,中间件契约字段 scope/tool_gate 必须在场。
 
-    上方 SimpleNamespace 假件测的是中间件"如何对待有 scope 的对象";本函数测
-    "真 context 是否提供中间件所需字段"——两个方向都有守卫,才不会再出现
-    删字段后 CI 全绿、事件静默失去归因的漂移。
+    SimpleNamespace 假件测中间件如何对待有 scope 的对象,本函数测真 context
+    是否提供中间件所需字段;两个方向都设守卫,删字段后测试会失败,
+    而不是事件静默失去归因。
     """
     task = {
         "id": "task-0001",
@@ -64,7 +64,7 @@ async def test_real_researcher_context_carries_middleware_attribution_fields():
     assert started["run_id"] == "run-1"
     assert started["task_id"] == "task-0001"
     assert started["operation_id"] == "task-0001"
-    # serial_tools 的栅栏读者同样在场(缺席则该工具失去与 Complete 的互斥)。
+    # 中间件读取的 tool_gate 同样必须在场,缺席时 serial_tools 中的工具失去与 Complete 的互斥。
     assert getattr(request.runtime.context, "tool_gate", None) is not None
 
 
@@ -128,7 +128,7 @@ async def test_tool_lifecycle_records_scope_and_preserves_result():
 @pytest.mark.asyncio
 async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
     """grep 回执里排在 matches 之后的 total_matches/has_more/next_offset 常被预览截断;
-    必须 hoist 到 result_metrics 顶层才可审计。"""
+    必须提取到 result_metrics 顶层才可审计。"""
     events: list[tuple[str, dict[str, object]]] = []
     middleware = AgentObservabilityMiddleware(
         "ResearchAgent",
@@ -156,8 +156,8 @@ async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
 
     await middleware.awrap_tool_call(_request(), handler)
     completed = events[-1][1]
-    assert len(completed["content_preview"]) == 2000  # 预览被截断(工具结果预览上限)
-    assert '"total_matches"' not in completed["content_preview"]  # 预览里根本看不到
+    assert len(completed["content_preview"]) == 2000
+    assert '"total_matches"' not in completed["content_preview"]
     metrics = completed["result_metrics"]
     assert metrics["total_matches"] == 42
     assert metrics["has_more"] is True
@@ -184,7 +184,7 @@ def test_result_metrics_numeric_only_drops_strings():
     assert numeric == {"total_matches": 42, "has_more": True, "next_offset": 19}
     full = AgentObservabilityMiddleware._result_metrics(payload, numeric_only=False)
     assert full["status"] == "completed" and full["query"] == "CUDA"
-    assert "matches" not in full and "note" not in full  # 大数组/长串不搬
+    assert "matches" not in full and "note" not in full
 
 
 @pytest.mark.asyncio
@@ -245,7 +245,7 @@ async def test_document_tool_content_is_redacted_from_lifecycle_events():
 
 @pytest.mark.asyncio
 async def test_sink_failure_does_not_block_host():
-    """旁路保护的单位是 emit_agent_event:sink 落盘异常一律吞掉转错误日志。"""
+    """旁路保护在 emit_agent_event 一层:sink 落盘异常被吞掉并转入错误日志。"""
     import logging
 
     from deepresearcher.observability.events.emit import emit_agent_event
@@ -256,11 +256,11 @@ async def test_sink_failure_does_not_block_host():
 
     emit_agent_event(
         ExplodingSink(), logging.getLogger("test"), "evt", {"a": 1}, component="c"
-    )  # 调用不抛 == 保护在此层
+    )  # 调用不抛异常即说明保护生效在本层
 
 
 def test_context_token_count_includes_tool_call_arguments():
-    """工具参数里是最重的载荷(草稿/逐字引用);只数 content 会让压缩条件永不触发。"""
+    """工具参数常带草稿与逐字引用,是最重的载荷;只数 content 会让压缩条件无法触发。"""
     from langchain_core.messages import AIMessage
 
     from deepresearcher.agents.middleware.factory import count_message_tokens
@@ -276,7 +276,7 @@ def test_context_token_count_includes_tool_call_arguments():
 
 
 def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
-    """canary:两个跨层字符串契约一旦上游改文案必须当场失败,而不是静默退化。"""
+    """跨层字符串契约校验:上游改文案时本用例必须失败,不允许静默放过。"""
     from langchain.agents.middleware.model_call_limit import _build_limit_exceeded_message
 
     from deepresearcher.agents.middleware.observability import LIMIT_MESSAGE_MARKER
@@ -284,7 +284,7 @@ def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
 
     message = _build_limit_exceeded_message(1, 9, None, 8)
     assert LIMIT_MESSAGE_MARKER in message
-    # observability 剥前缀提指标:回执以 startswith 判定归属
+    # observability 以 startswith 判定回执归属,再剥前缀提取指标
     receipt = format_tool_receipt({"evidence_count": 2})
     assert receipt.startswith("【系统工具执行结果")
     assert receipt.split("\n", 1)[-1] == '{"evidence_count": 2}'
@@ -292,7 +292,7 @@ def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
 
 @pytest.mark.asyncio
 async def test_observable_summarization_emits_compaction_metrics():
-    """压缩事件在整表重建那一刻带前后 token 数——为 clear_tool_inputs 决策积数据。"""
+    """压缩事件在整表重建时携带前后 token 数,供 clear_tool_inputs 决策积累数据。"""
     from langchain_core.messages import HumanMessage, RemoveMessage
     from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
@@ -309,7 +309,7 @@ async def test_observable_summarization_emits_compaction_metrics():
     summary = HumanMessage(content="摘要")
 
     async def fake_super(_self, _state, _runtime):
-        # 替掉真压缩,只观察本类自身逻辑;真实触发路径由集成测试覆盖。
+        # 替换真实压缩,只观察本类自身逻辑;真实触发路径由集成测试覆盖。
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary]}
 
     real_super = factory_module.SummarizationMiddleware.abefore_model

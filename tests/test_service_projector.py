@@ -63,14 +63,14 @@ def test_node_completed_closes_stage_with_conclusion():
     assert clarify_fallback.data["text"] == "Redis 有什么作用？"
     writer = project(_record("node_completed", {"writer_status": "completed"}, node="writer"))
     assert writer.data["text"] == "草稿通过校验"
-    # supervisor 读的是列表增量键 evidences_count（曾误读 evidence_count 恒为 0）
+    # 读取的是增量键 evidences_count;误读累计键 evidence_count 会让数字恒为 0
     sup = project(
         _record("node_completed", {"current_round": 2, "evidences_count": 49}, node="supervisor")
     )
     assert sup.data["text"] == "规划完成 · 第 2 轮 · 本次新增证据 49"
     reviewer = project(_record("node_completed", {"review_status": "approved"}, node="review"))
     assert reviewer.data["text"] == "审阅通过"
-    # 未注册的收尾事件保持安静；SECRET 类字段无一透入
+    # 未注册的收尾事件不出口;SECRET 类字段均不透出
     assert project(_record("node_completed", node="unknown_node")) is None
     assert "SECRET" not in json.dumps(done.data, ensure_ascii=False)
 
@@ -104,7 +104,7 @@ def test_unmapped_model_turn_agent_returns_none():
 
 def test_node_failed_uses_safe_text_only():
     frame = project(_record("node_failed", node="review"))
-    # 已知节点：失败也必须关框（红点收束），绝不停留在 running
+    # 已知节点失败也要关框,状态标 failed,不能停留在 running
     assert (frame.event, frame.data["stage"], frame.data["status"]) == (
         "stage_done",
         "review",
@@ -142,7 +142,7 @@ def test_task_frames_require_task_id():
 
 
 def test_research_round_completed_maps_to_stats_frame():
-    """轮次统计进标题区指标条，不再混入结果流叙事。"""
+    """轮次统计投影为指标条帧,不进结果流叙事。"""
     frame = project(
         _record(
             "research_round_completed",
@@ -163,7 +163,7 @@ def test_research_round_completed_maps_to_stats_frame():
 
 @pytest.mark.parametrize("event_type", ["writer_model_turn", "researcher_model_turn"])
 def test_non_supervisor_model_turn_events_are_silent(event_type):
-    """轮次计数是内部预算视角；writer/researcher 的 turn 一律不出口。"""
+    """轮次计数是内部预算信息,writer/researcher 的 turn 不出口。"""
     assert project(_record(event_type, {"turn": 3, "tool_names": ["SearchSources"]})) is None
 
 
@@ -188,7 +188,7 @@ def test_supervisor_turn_exports_only_written_thought():
     thought = project(base)
     assert thought.event == "plan"
     assert thought.data["text"] == "现有证据缺少法家视角，补派一个方向。"
-    # 除文字外不携带其他 payload（tool_names/queries 仍在被禁面）
+    # 除文字外不携带其他 payload,tool_names 与 queries 仍在被禁清单
     assert set(thought.data) == {"stage", "text", "seq"}
     assert "SECRET" not in json.dumps(thought.data, ensure_ascii=False)
 
@@ -208,7 +208,7 @@ def test_research_task_card_lifecycle():
     )
     assert opened.event == "task_open"
     assert opened.data["task"] == "task-0001"
-    assert len(opened.data["title"]) == 140  # 无短题的存量事件:回退截断契约
+    assert len(opened.data["title"]) == 140  # 无短题时回退截断到 140 字,存量事件的契约
     titled = project(
         _record(
             "research_task_started",
@@ -219,7 +219,7 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert titled.data["title"] == "性善论的先验根据"  # 短题优先,不再展示长契约
+    assert titled.data["title"] == "性善论的先验根据"  # 有短题优先用短题,不展示长问题
     started = project(
         _record(
             "source_fetch_started",
@@ -311,9 +311,9 @@ def test_research_task_card_lifecycle():
 def test_writer_stage_lifecycle():
     opened = project(_record("node_started", node="writer"))
     assert (opened.event, opened.data["stage"]) == ("stage_open", "writer")
-    # 草稿 ready 是 Writer 内部事件；审阅阶段会自行开框，不在 Writer 中抢跑播报。
+    # 草稿 ready 是 Writer 内部事件;审阅阶段自行开框,不在 Writer 阶段提前播报。
     assert project(_record("writer_draft_ready", {})) is None
-    # writer 的内部 turn/finished 帧不再出口（收束交给 node_completed 的结论）
+    # writer 内部 turn/finished 帧不出口;阶段收束由 node_completed 承载
     assert project(_record("writer_agent_finished", {"stop_reason": "final_response"})) is None
     assert project(_record("writer_model_turn", {"turn": 2})) is None
     closed = project(_record("node_completed", {"writer_status": "exhausted"}, node="writer"))
@@ -321,7 +321,7 @@ def test_writer_stage_lifecycle():
 
 
 def test_agent_finished_events_are_silent():
-    """agent 内部收尾帧不进用户视图（阶段收束统一走 stage_done）。"""
+    """agent 内部收尾帧不进用户视图,阶段收束统一走 stage_done。"""
     assert project(_record("supervisor_agent_finished", {"stop_reason": "final_response"})) is None
     assert (
         project(_record("researcher_agent_finished", {"stop_reason": "model_call_limit_exceeded"}))
@@ -373,16 +373,16 @@ def test_clarification_projection_only_exposes_prompt_and_three_options():
 def test_text_delta_whitelist_and_no_seq():
     ok = project(_record("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"}))
     assert (ok.event, ok.data) == ("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"})
-    # 只有 supervisor 的思考值得逐字预览；writer（正文是工具参数、散文字幕无价值）、
-    # research_agent 与空文本一律不出口
+    # 逐字预览只开给 supervisor;writer 正文是工具参数,
+    # research_agent 与空文本都不出口
     assert project(_record("text_delta", {"channel": "research_agent", "text": "x"})) is None
     assert project(_record("text_delta", {"channel": "writer", "text": "写报告中"})) is None
     assert project(_record("text_delta", {"channel": "supervisor", "text": ""})) is None
     assert "seq" not in ok.data and "SECRET" not in json.dumps(ok.data, ensure_ascii=False)
 
 
-# stream_truncated 的产生者(进程内直投)已删除;它留在下方 default-deny 名单里,
-# 保证即便有代码再投这种帧,投影层也不出口。
+# stream_truncated 已无生产者,仍留在下方 default-deny 名单里:
+# 若有代码重新投影这类帧,出口仍会被拒绝。
 
 
 def test_search_query_progress_becomes_task_update():
@@ -400,7 +400,7 @@ def test_search_query_progress_becomes_task_update():
             "search_query_completed", {"task_id": "t1", "query": "关键词甲", "candidate_count": 0}
         )
     )
-    assert empty.data["text"] == "关键词甲 → 未见相关来源"  # 查净了没结果,不是失败
+    assert empty.data["text"] == "关键词甲 → 未见相关来源"  # 零候选是检索无结果,不是失败
     failed = project(_record("search_query_failed", {"task_id": "t1", "query": "x"}))
     assert failed.data["text"].startswith("检索失败，已跳过")
 
@@ -417,12 +417,12 @@ def test_search_query_progress_becomes_task_update():
         # 全部查询失败:逐查询行已逐条说明,批次行不再重复下结论。
         ({"candidate_count": 0, "failure_count": 2}, None),
         ({"candidate_count": 0, "failure_count": 2, "status": "failed"}, None),
-        # 无逐查询细节可依托的批次失败,必须留一行,否则隐身。
+        # 没有逐查询行可依托的批次失败必须留一行,否则用户看不到失败。
         ({"candidate_count": 0, "failure_count": 0, "status": "failed"}, "检索失败"),
     ],
 )
 def test_direction_search_completed_distinguishes_empty_from_failed(payload, expected):
-    """区分度:0 候选不再一律"完成";;批次行只说细节行说不出来的事。"""
+    """区分度:0 候选不再一律报"完成",批次行只补充逐查询行给不出的信息。"""
     frame = project(_record("direction_search_completed", {"task_id": "t1", **payload}))
     if expected is None:
         assert frame is None
@@ -457,7 +457,7 @@ def test_direction_search_completed_distinguishes_empty_from_failed(payload, exp
     ],
 )
 def test_never_leaks_denied_fields(event_type):
-    """对抗测试：所有被映射的事件里，被禁字段必须无一透出。"""
+    """所有会被投影的事件,被禁字段一律不透出。"""
     frame = project(_record(event_type, {"node": "supervisor", "turn": 1, "status": "running"}))
     if frame is None:
         return

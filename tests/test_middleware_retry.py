@@ -1,4 +1,4 @@
-"""重试策略两枚判据与边界归一的单元测试。"""
+"""模型与工具两层重试判据、工具异常边界归一的单元测试。"""
 
 import asyncio
 
@@ -29,8 +29,8 @@ def test_model_retry_predicate():
 def test_tool_retry_predicate_trusts_only_declared_retryability():
     assert tool_retry_on(ToolRequestError("429 稍后")) is True
     assert tool_retry_on(ToolError("配置缺失")) is False
-    # 内建 Timeout/Connection 不再是判据:与真实工具异常类型不相交,
-    # 不命中的保险删除后,未知异常全部由边界归一层统一处理。
+    # 内建 Timeout/Connection 不作为判据:它们与真实工具抛出的异常类型不相交,
+    # 未知异常统一交给边界归一层处理。
     assert tool_retry_on(TimeoutError("永不命中的形状")) is False
     assert tool_retry_on(ConnectionError("同上")) is False
 
@@ -56,7 +56,7 @@ async def test_normalizer_wraps_unexpected_and_passes_tool_errors():
 
     with pytest.raises(ToolError) as wrapped:
         await normalizer.awrap_tool_call(_Request(), flaky_timeout)
-    assert wrapped.value.retryable is True  # 传输类瞬断仍归可重试
+    assert wrapped.value.retryable is True  # 传输类瞬时故障仍归可重试
 
     declared = ToolRequestError("provider 抖动")
 
@@ -80,8 +80,8 @@ async def test_normalizer_never_swallows_cancellation():
 
 
 def test_failure_message_carries_the_guard_marker() -> None:
-    """ToolLoopGuard 靠 MODEL_FAILURE_MARKER 把"后端故障引导"从协议违规里分出来:
-    _failure_message 的模板一旦绕过该符号拼文案,软文案会被误判并退整轮重试。"""
+    """ToolLoopGuard 靠 MODEL_FAILURE_MARKER 把模型故障后的引导文本与协议违规区分开;
+    _failure_message 一旦绕过该符号拼文案,一次故障会被放大成一整轮新的重试。"""
     from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
 
     text = _failure_message("ResearchAgent")(RuntimeError("boom"))

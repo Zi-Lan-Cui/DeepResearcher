@@ -7,8 +7,8 @@ from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-# AgentState 由 typing_extensions 的 _TypedDictMeta 构造;混入 TypedDict 基
-# 必须同族,否则多继承撞元类。
+# AgentState 由 typing_extensions 的 _TypedDictMeta 构造;混入的 TypedDict 基类
+# 必须来自同一来源,否则多继承会因元类冲突报错。
 from typing_extensions import TypedDict
 
 from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
@@ -20,8 +20,8 @@ from deepresearcher.schemas import RunStatus
 class ClarifierLoopContext:
     """不进入 checkpoint 的 Clarifier 工具执行上下文。
 
-    读者:observability 取 scope(事件归因);serial_tools 取 tool_gate
-    (AskClarification/ClarificationComplete 独占,与一切在飞工具互斥)。
+    消费方:observability 取 scope 做事件归因;serial_tools 取 tool_gate,
+    AskClarification 与 ClarificationComplete 独占执行,与所有在飞工具互斥。
     """
 
     scope: AgentExecutionScope
@@ -29,9 +29,9 @@ class ClarifierLoopContext:
 
 
 class ClarifierDialogue(TypedDict, total=False):
-    """内外图共享的澄清对话字段;字段名就是两图间 wire 契约,只定义一遍。
+    """内外图共享的澄清对话字段,两个 State 类各继承一次;字段名就是两图间的数据契约,只定义一处。
 
-    单边改动只改一处、静默丢字段;两 State 各继承一次。
+    若只改单边而字段名对不上,跨图传递会静默丢字段,所以两侧改动必须同时核对这里的名字。
     """
 
     query: str
@@ -42,8 +42,8 @@ class ClarifierDialogue(TypedDict, total=False):
     clarification_rounds: int
     pending_question: str
     pending_options: list[str]
-    # ClarificationComplete 提交的历史浓缩标题;必须在 wire 契约声明,
-    # 否则子图按未声明通道静默丢弃,主图 values 取不到、headline 永不落库。
+    # ClarificationComplete 提交的历史浓缩标题;必须在此数据契约中声明,
+    # 未声明的键会被子图按未知通道静默丢弃,主图取不到值,headline 无法落库。
     run_headline: str
 
 

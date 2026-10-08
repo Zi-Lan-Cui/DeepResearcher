@@ -182,7 +182,7 @@ class _ReadyWriter:
 
 
 def test_quick_answer_system_prompt_carries_language_directive():
-    """快答与其余节点同吃输出语言纪律;漏拼时语言配置对 quick_answer 不生效。"""
+    """快答与其余节点共用输出语言指令;漏拼时语言配置对 quick_answer 不生效。"""
     from deepresearcher.prompts import language_directive, load_prompt
 
     class CapturingLLM(TextLLM):
@@ -251,8 +251,8 @@ def test_router_model_failure_fails_closed_to_deep_research():
 
 
 def test_router_bubbles_fail_fast_signals_instead_of_fallback_routing():
-    """预算耗尽与账户级不可用必须冒泡给 node_runner 收口(llm.py 契约);
-    折成 deep_research 兜底会静默烧掉后续全部模型调用并把真故障伪装成路由决定。"""
+    """预算耗尽与账户级不可用必须冒泡给 node_runner 收口,这是 llm.py 的契约;
+    折成 deep_research 兜底会继续消耗后续模型调用,并把真故障伪装成路由决定。"""
     from deepresearcher.llm import LLMConfigurationError
     from deepresearcher.usage_runtime import UsageBudgetExceeded
 
@@ -281,7 +281,7 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert result["run"].error.stage == "broken"
     assert "执行失败，请稍后重试" in result["report"]
     assert "boom" not in result["report"]
-    # 边界的失败产物自身必须通过与节点产物相同的不变量校验（回归锁）。
+    # 边界产出的失败产物必须通过与节点产物相同的不变量校验,此为回归用例。
     validate_state_invariants({}, result)
 
 
@@ -491,7 +491,7 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
 
     monkeypatch.setattr(graph, "Clarifier", _CancellingClarifier)
 
-    # LangGraph 会把节点主动抛出的 CancelledError 包装成自己的取消异常；
+    # LangGraph 会把节点主动抛出的 CancelledError 包装成自己的取消异常;
     # 关键契约是它不会被 node_runner 转换成 RunError 并渲染成失败报告。
     with pytest.raises(BaseException) as caught:
         asyncio.run(
@@ -501,7 +501,7 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
 
 
 def test_writer_revisit_does_not_fold_add_channels(tmp_path, monkeypatch):
-    """Writer 直挂回归:节点 update 只含自身产出,不得携带 add-reducer 通道的历史副本。
+    """Writer 直连图的回归:节点 update 只含自身产出,不得携带 add-reducer 通道的历史副本。
 
     脚本：supervisor→writer→reviewer(退回)→supervisor→writer→reviewer(通过)→render，
     两次访问 WRITER；supervisor_messages 必须按真实回合线性增长，不得翻倍。
@@ -564,7 +564,7 @@ def test_terminal_phase_trunk_overrides_every_business_handoff():
     assert route_after_writer(
         {"run": {"phase": "reviewing"}, "writer": {"status": "completed"}}
     ) == (NodeName.REVIEWER)
-    # 审阅还在等回流，但 Supervisor 宣告终止 → 仍然去渲染
+    # 审阅退回本应等回流,但 Supervisor 宣告终止时仍去渲染。
     assert (
         route_after_reviewer({"run": {"phase": "rendering"}, "review": {"status": "rejected"}})
         == NodeName.RENDER_FINAL_REPORT

@@ -1,12 +1,12 @@
 """PostgreSQL advisory lock 原语:全仓唯一直写锁 SQL 的地方。
 
-advisory lock 是对话连接的能力,不是任何一张表的领域;各平面借它串行化
-"计数+写"这类跨行不变量。非 PG(SQLite 测试)统一在此降级为空操作,
-调用点不再各自写方言判断。两种锁的生命周期不同,选错就是 bug:
+advisory lock 是会话连接的能力，不属于任何一张表的领域；各平面持它串行化
+计数加写入这类跨行不变量。非 PG（SQLite 测试）统一在此降级为空操作，
+调用点不再各自写方言判断。两种锁生命周期不同，按场景不可选错：
 
-- acquire_xact_lock:事务级,commit/rollback 自动释放,罩住当前事务的临界区;
-- held_session_lock:会话级,跨任意代码块持有、退出时显式释放;进程崩溃时
-  随连接断开自动解锁,适合"启动归类跑完才放行"这类跨事务的编排。
+- acquire_xact_lock：事务级，commit/rollback 自动释放，保护当前事务的临界区；
+- held_session_lock：会话级，跨任意代码块持有、退出时显式释放；进程崩溃时
+  随连接断开自动解锁，适合启动归类这类跨事务的编排。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ async def acquire_xact_lock(session_or_connection: Any, key: int) -> None:
 
 @asynccontextmanager
 async def held_session_lock(session: Any, key: int) -> AsyncIterator[None]:
-    """会话级 advisory 锁的上下文:先进块后解锁;非 PG 直接穿过。"""
+    """会话级 advisory 锁的上下文管理器：进块前取锁，退出时释放；非 PG 直接穿过。"""
     if not _is_postgres(session):
         yield
         return

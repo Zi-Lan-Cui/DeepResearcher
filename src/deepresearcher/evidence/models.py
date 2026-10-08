@@ -17,8 +17,8 @@ class Evidence(BaseModel):
     # 搜索提供方给出的发布时间，用于时效性判断；不属于 quote 原文。
     published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
-    # 来源方法是自由字符串,当前词表在 vocab.RETRIEVAL_*;新 provider 经
-    # fetch 编排层拼接产生的新值必须在证据层原样存活(词表外的值不该炸构造)。
+    # 来源方法是自由字符串，当前词表在 vocab.RETRIEVAL_*；新 provider 经 fetch
+    # 编排层拼接产生的新值必须原样保留，词表外的值不应导致 Evidence 构造报错。
     retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
     support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)

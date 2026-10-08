@@ -1,12 +1,12 @@
 """进程内预览总线:EphemeralEventBus 协议的同环实现。
 
-只承载 text_delta 预览帧——无 seq、不落库、队满丢最旧。已提交事件不经
-进程内直投:SSE 从 DB tail run_events,由信号总线 notify 唤醒(权威副本在库里)。
+只承载 text_delta 预览帧：无 seq、不落库、队满丢最旧。已提交事件不经
+进程内直投：SSE 从 DB tail run_events，由信号总线 notify 唤醒，权威副本在库里。
 
-生产装配不构造本类(redis 预览开启用 Redis 总线,关闭则预览退化、durable 流
-不受影响);它存在的唯一理由是单栈 harness——测试里 worker 与订阅者同进程、
-同事件循环时,用它把执行器的预览帧直接送进订阅队列。契约(白名单校验、丢帧
-可容忍、close 幂等)由协议测试覆盖,与 Redis 实现可互换。
+生产装配不构造本类：redis 预览开启时用 Redis 总线，关闭时预览退化、durable 流
+不受影响。本类只服务于单栈 harness：测试里 worker 与订阅者同进程、同事件循环，
+用它把执行器的预览帧直接送进订阅队列。协议契约（白名单校验、丢帧可容忍、
+close 幂等）由协议测试覆盖，与 Redis 实现可互换。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class LocalPreviewBus:
         self._closed = False
 
     async def publish(self, run_id: str, event: dict) -> None:
-        """白名单外的帧不进队列;队列满丢最旧——预览本来就是可丢弃观感。"""
+        """白名单外的帧不进队列；队列满时丢最旧一帧，预览帧本来就可丢弃。"""
         if self._closed:
             return
         safe = preview_event(event, run_id=run_id)

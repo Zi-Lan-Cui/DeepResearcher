@@ -1,4 +1,4 @@
-"""服务层测试共享件（风格对齐 tests/fakes.py：显式构造，不用 conftest）。"""
+"""服务层测试共享件。风格对齐 tests/fakes.py:显式构造,不经 conftest 注入。"""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def service_config(tmp_path, **overrides) -> ServiceConfig:
 
 
 class FakeGraph:
-    """假研究图：先发若干真实形态的引擎事件（run_id 注入）、可选等门控、返回结果或抛错。"""
+    """假研究图:先发若干真实形态的引擎事件并注入 run_id,可选等待 gate,再返回结果或抛错。"""
 
     def __init__(self, *, result=None, error=None, gate=None, emit=()):
         self.result = result if result is not None else completed_result()

@@ -28,21 +28,22 @@ from deepresearcher.tools.web.search.models import SearchCandidate
 
 
 def _candidate_channel_entry(candidate: SearchCandidate) -> SearchCandidate:
-    """进通道的候选去掉 raw_content:正文留在材料缓存,检查点只存可重取的引用形。"""
+    """进通道的候选去掉 raw_content:正文留在材料缓存,检查点只存可重取的引用信息。"""
     return candidate.model_copy(update={"raw_content": ""})
 
 
 def _document_channel_entry(view: DocumentRef) -> DocumentRef:
-    """文档进通道降为 DocumentRef:剥 content/inline,grep/read 经 material_store 现取。"""
+    """文档进通道降为 DocumentRef:去掉 content 与 inline,grep/read 时经 material_store 按需取回。"""
     return DocumentRef.model_validate(view.model_dump())
 
 
 class ResearcherAgentState(AgentState):
     """ResearchAgent 内层图的 state_schema:方向业务状态的持久化载体。
 
-    AddEvidence/ReadSources 并发,只写合并语义通道;SearchSources/Release/Restore/
-    ResearchDirectionComplete 串行,replace 通道(conclusion/remaining_gaps/stop_detail)
-    由它们写。active 工作集存有序 op 流水;候选与文档进通道时剥正文。
+    AddEvidence 与 ReadSources 并发执行,只写合并语义通道;SearchSources、Release、
+    Restore、ResearchDirectionComplete 串行执行,conclusion、remaining_gaps、
+    stop_detail 这几个 replace 通道只由它们写。active 工作集存有序 op 流水;
+    候选与文档进通道时剥离正文,只留可重取的引用信息。
     """
 
     evidences: Annotated[list[Evidence], merge_evidences]
@@ -101,7 +102,7 @@ def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]
 
 @dataclass(frozen=True)
 class ResearcherDeps:
-    """ResearchAgent 构造期的稳定零件；跨并发 run 共享、只读(frozen 是纪律载体)。"""
+    """ResearchAgent 构造期的稳定零件;跨并发 run 共享、只读,frozen 数据类保证这一点。"""
 
     config: AgentConfig
     search_tool: SearchTool
@@ -112,20 +113,20 @@ class ResearcherDeps:
 
 @dataclass
 class ResearcherLoopContext:
-    """ResearchAgent 一次 run 的注入载荷:全部名词,没有动词。
+    """ResearchAgent 一次 run 的注入载荷:字段全是数据,不含行为。
 
-    deps 为共享零件;task/loop_state/event_context/commit_lock 属本轮 run。
-    实现住在 services.py 的纯函数里,tools.py 从本对象转交参数;本清单之外,
-    工具对 agent 内部一无所知。
+    deps 为共享零件;task、loop_state、event_context、commit_lock 属本轮 run。
+    行为实现是 services.py 里的纯函数,tools.py 从本对象转交参数;本清单之外,
+    工具不依赖 agent 内部任何其他对象。
 
-    读者不只是 tools.py——中间件消费以下字段,删改前必须先查 agents/middleware/
-    (注意两种读法、缺席后果不同):
-      scope     → observability._event_context 以 getattr 鸭子读:模型回合/工具事件
-                  归因(run_id 等);缺席不崩,但事件静默失去归属。
-      tool_gate → serial_tools 直接属性读:全库唯一的调度栅栏(serial 工具 exclusive,
-                  其余 shared 可并发但被 pending exclusive 挡);缺席当场
-                  AttributeError。业务锁另名另责:本 agent 的 commit_lock
-                  只护证据入池,与调度无关。
+    消费方除 tools.py 还有中间件,删改以下字段前必须先查 agents/middleware/;
+    两者读法不同,缺席后果也不同:
+      scope     → observability._event_context 用 getattr 读取,模型回合与工具事件的
+                  run_id 等归因依赖它;缺席不崩溃,但事件静默失去归属。
+      tool_gate → serial_tools 直接属性读取,读写调度栅栏:serial 工具取 exclusive,
+                  其余取 shared 可并发但被 pending exclusive 挡;缺席当场抛
+                  AttributeError。业务锁是另一字段:本 agent 的 commit_lock 只护
+                  证据入池,与调度无关。
     """
 
     deps: ResearcherDeps
@@ -166,8 +167,8 @@ class ResearcherLoopState:
     conclusion: str = ""
     stop_reason: DirectionStopReason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
     stop_detail: str = "方向级探索步数预算已耗尽。"
-    # 搜索提供方账户级不可用（额度/鉴权）。仅作数据：让本方向与 Supervisor 的模型读到后
-    # 自然收尾/停止派发，不引入控制流分支。
+    # 搜索提供方账户级不可用,即额度耗尽或鉴权失败。仅作数据:本方向与 Supervisor 的
+    # 模型读到后自然收尾、停止派发,不引入控制流分支。
     provider_exhausted: bool = False
 
     def active_evidences(self) -> list[Evidence]:
@@ -199,8 +200,6 @@ class ResearcherLoopState:
         restored = candidates[:slots]
         self.active_evidence_ids.update(restored)
         return restored
-
-    # --- 通道往返:loop_state ⇄ ResearcherAgentState -------------------------------
 
     def capture_active(self) -> set[str]:
         """并发工具执行前的活跃集快照,出口据此算 add/remove 差量。"""

@@ -109,5 +109,5 @@ def test_checkpoint_dsn_derivation():
         == "postgresql://u:p@localhost:5432/db"
     )
     assert checkpoint_dsn("postgresql://plain/url") == "postgresql://plain/url"
-    # 非 PG 部署（测试 SQLite）不假装支持恢复
+    # 非 PG 部署无 checkpoint DSN,返回 None 而不是伪造一个
     assert checkpoint_dsn("sqlite+aiosqlite:///x.db") is None

@@ -1,7 +1,7 @@
 """动态研究 Supervisor：以工具调用循环驱动方向级研究。
 
-模型每轮通过 ResearchDelegate 派发方向级 ResearchAgent(子 Agent 抽象为工具),
-或通过 ResearchComplete 宣布现有 Evidence 足以成文;轮次预算、任务/URL 去重、
+子 Agent 抽象为工具:模型每轮通过 ResearchDelegate 派发方向级 ResearchAgent,
+或通过 ResearchComplete 宣布现有 Evidence 足以成文;轮次预算、任务与 URL 去重、
 并发上限与异常降级由本地程序强制,不依赖模型自觉。
 """
 
@@ -57,8 +57,8 @@ from deepresearcher.state import ResearchState, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 
-# 除 ResearchDelegate 外的写通道工具(及只读 ReadWorkingSet)一律串行,避免并发整字段
-# 快照互相覆盖。约束由 tests/test_supervisor.py 的静态守卫测试锁定。
+# 除 ResearchDelegate 外的写通道工具与只读 ReadWorkingSet 一律串行,避免并发整字段
+# 快照互相覆盖。名单约束由 tests/test_supervisor.py 的静态守卫测试校验(方案 §5 分类守卫)。
 SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
         "ReadWorkingSet",
@@ -70,12 +70,12 @@ SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
 )
 
 
-# 天花板消息恒在会话尾部数条内;窗口留一小段冗余防 after-hook 顺序变化。
+# 模型调用上限消息恒在会话尾部数条内;扫描窗口多留几条冗余,防 after-hook 顺序变化漏检。
 _LIMIT_MESSAGE_SCAN_TAIL = 3
 
 
 def _model_call_limit_hit(messages: list[BaseMessage]) -> bool:
-    """判断本次 Agent 运行是否被 ModelCallLimitMiddleware 掐断而非模型正常收尾。"""
+    """判断本次 Agent 运行是否终止于 ModelCallLimitMiddleware 上限,而非模型正常收尾。"""
     return any(
         isinstance(message, AIMessage) and LIMIT_MESSAGE_MARKER in str(message.content)
         for message in messages[-_LIMIT_MESSAGE_SCAN_TAIL:]
@@ -178,8 +178,8 @@ class ResearchSupervisor:
         ResearchComplete 冻结最新综合版本进入改写，ResearchDelegate 继续补研究。
         """
         history = self._supervisor_history_from_state(state)
-        # 首次运行时 _supervisor_history_from_state 会补入初始 System/Human 消息；
-        # 快照必须取 State 入口长度，确保这些消息也能持久化到上下文历史。
+        # 首次运行时 _supervisor_history_from_state 会补入初始委托消息;
+        # 快照长度必须取 State 入口处的历史长度,补入的消息才能一并持久化到上下文历史。
         history_start = len(state.get("supervisor_messages", []))
 
         review = section(state, "review", ReviewProgress)
@@ -212,7 +212,7 @@ class ResearchSupervisor:
             current_round=round_no,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
-        # research_query 派生一次即定;批重建循环只需它作标量,不再持有整份外层 State。
+        # research_query 派生一次即定;批重建循环只需它作标量,上下文不持有整份外层 State。
         research_query = loop_state.research_query
         # 轮次预算不注入观察:由 services.delegate_research 的执行越界硬校验以回执告知。
         self._append_research_observation(
@@ -249,8 +249,8 @@ class ResearchSupervisor:
             # 该对象含上一批合并后的状态与本批已完成工具的改动。
             loop_state = loop_context.loop_state
             loop_state.set_stop_reason(StopReason.AGENT_FAILED)
-            # 异常文本进 failure_details 而非 coverage_gaps：后者会被渲染为用户报告的
-            # "未闭合缺口"，执行故障不得伪装成研究缺口；原文上限走截断配置。
+            # 异常文本进 failure_details 而非 coverage_gaps:后者会被渲染为用户报告的
+            # "未闭合缺口",执行故障不应出现在那里;文本长度由截断配置控制。
             loop_state.failure_details.append(str(exc)[: self.config.supervisor_preview_chars])
         else:
             generated = result.get("messages", []) if isinstance(result, dict) else []
@@ -262,8 +262,8 @@ class ResearchSupervisor:
                 active_evidence_limit=self.config.supervisor_max_active_evidences,
             )
             if not loop_state.sufficient and _model_call_limit_hit(generated):
-                # 真实终止原因是模型调用天花板；set_stop_reason 的声明式 rank 保证它压过
-                # 更弱的预算类信号，又不会盖过模型的显式收尾决定。
+                # 真实终止原因是模型调用上限;set_stop_reason 的声明式 rank 保证它强于
+                # 更弱的预算类信号,又不会盖过模型的显式收尾决定。
                 loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
         self._emit_round_completed(
             round_no,

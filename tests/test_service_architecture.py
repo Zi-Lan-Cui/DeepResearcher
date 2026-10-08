@@ -12,13 +12,13 @@ KERNEL_ROOT = SRC_ROOT / "deepresearcher"
 SERVICE_PREFIX = "deepresearcher.service"
 EXECUTION_PREFIX = "deepresearcher.service.execution"
 
-# worker.py 是执行平面进程入口（python -m deepresearcher.worker），属于外壳；
-# 它放在包根只是为了模块路径短，不改变归属。
+# worker.py 是执行平面进程入口 python -m deepresearcher.worker,属外壳;
+# 放在包根只是为了模块路径短,不改变归属。
 SHELL_ENTRYPOINTS = frozenset({Path("src/deepresearcher/worker.py")})
 
-# 棘轮白名单：service 现存的每一条跨界 import（模块名与属性名都登记，按前缀
-# 匹配）。新增跨界 import 必须显式加名单并说明它为何是内核对外端口；
-# 方向是收窄（graph 与 protocol 类端口），已有边不会自行消失。
+# 棘轮白名单:service 现存的每一条跨界 import,模块名与属性名都登记,按前缀
+# 匹配。新增跨界 import 必须显式加名单并说明它为何是内核对外端口;名单只收
+# 不放,收窄方向是 graph 与 protocol 类端口。
 ALLOWED_KERNEL_IMPORTS = frozenset(
     {
         # 配置与模型出入口
@@ -84,9 +84,9 @@ def _walk(root: Path):
 
 
 def test_kernel_does_not_import_service_layer():
-    """内核（deepresearcher 除 service/ 与外壳入口外的一切）不得依赖投递层。
+    """内核,即 deepresearcher 除 service/ 与外壳入口外的一切,不得依赖 service 交付层。
 
-    evidence/reporting/observability 等新内核模块无需登记即自动受同一纪律约束。
+    evidence/reporting/observability 等新内核模块无需登记,自动受同一约束。
     """
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT):
@@ -151,10 +151,10 @@ def test_event_and_preview_planes_do_not_import_each_other():
 
 
 def test_asyncpg_raw_connections_live_only_in_signals():
-    """PG 正门是 sqlalchemy 引擎;唯一登记在案的例外是 signals 的长驻订阅连接。
+    """PG 连接统一由 sqlalchemy 引擎管理,登记在案的例外只有 signals 的长驻订阅连接。
 
-    第二扇门必须只有一处、且有成文理由(见 signals.py 头),否则 NullPool/
-    方言/池策略的集中决定开始被各模块绕过。
+    再开一处 raw 连接必须先有书面理由,见 signals.py 文件头;否则 NullPool、
+    方言、池策略这些集中决定会被各模块陆续绕过。
     """
     allowed = Path("src/deepresearcher/service/signals.py")
     violations: list[str] = []
@@ -171,7 +171,7 @@ def test_asyncpg_raw_connections_live_only_in_signals():
 def test_advisory_lock_sql_lives_in_persistence_helper():
     """pg_advisory_* 只许出现在 persistence/advisory_lock.py。
 
-    锁语义(何时释放、跨不跨 yield)一旦散写各平面,复制一份就多一种复制错的方式。
+    锁的释放时机、是否跨 yield 等语义散写到各平面后,容易出现互不一致的副本。
     """
     allowed = Path("src/deepresearcher/service/persistence/advisory_lock.py")
     violations: list[str] = []
@@ -190,7 +190,7 @@ def test_advisory_lock_sql_lives_in_persistence_helper():
 def test_store_append_has_single_caller():
     """生产内唯一合法的 RunEventStore.append 调用点是 RunEventHub.flush。
 
-    绕过 hub 直写账本 = 消费端收不到唤醒、seq 编排与 _requeue 契约全部失效。
+    绕过 hub 直接写事件表,消费端收不到唤醒,seq 编排与 _requeue 契约随之失效。
     """
     allowed = Path("src/deepresearcher/service/events/hub.py")
     violations: list[str] = []
@@ -213,7 +213,7 @@ def test_store_append_has_single_caller():
 
 
 def test_web_control_plane_does_not_import_execution_plane():
-    """API 进程结构上无法执行:web→execution 的任何 import 都等于重新启用 embedded。"""
+    """API 进程结构上不具备执行能力:web 引用 execution 会重新打开进程内执行的路径。"""
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT / "service" / "web"):
         for lineno, resolved in _resolved_imports(path):
@@ -226,10 +226,10 @@ def test_web_control_plane_does_not_import_execution_plane():
 
 
 def test_no_production_module_imports_local_preview_bus():
-    """LocalPreviewBus 只由单栈 harness(测试)构造。
+    """LocalPreviewBus 只由测试 harness 构造。
 
-    生产预览路径只经 EphemeralEventBus 协议装配(Redis 总线,或退化为 None);
-    若把本地总线 import 进 src,等于恢复 embedded 模式的进程内直投。
+    生产预览路径只经 EphemeralEventBus 协议装配,取 Redis 总线或退化为 None;
+    把本地总线 import 进 src 会重新打开进程内直投的路径。
     """
     preview_prefix = "deepresearcher.service.preview.local"
     violations: list[str] = []
@@ -244,7 +244,7 @@ def test_no_production_module_imports_local_preview_bus():
 
 
 def test_execution_runtime_can_be_imported_before_run_manager():
-    """包的正规模块必须任意导入顺序都安全。"""
+    """包模块之间的 import 顺序必须任意组合都安全,这里先 execution 后 runs。"""
 
     code = (
         "from deepresearcher.service.execution.runtime import worker_lifespan; "

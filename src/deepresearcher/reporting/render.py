@@ -1,8 +1,8 @@
 """最终报告渲染：按正文首现顺序编号，替换内部标记，生成证据来源表。
 
-本模块是 [[cite:evidence_id]] → [证据N] 编号的唯一发生地；审阅通过后
-由终检渲染节点调用一次。编号单位是 Evidence，"来源"一词只用于文章（URL）；
-证据来源表携带 quote，保证最终交付物保留可审计的原文引文，不因渲染而丢失 chunk。
+[[cite:evidence_id]] 到 [证据N] 的编号只在本模块完成，审阅通过后由终检渲染节点
+调用一次。编号单位是 Evidence，"来源"一词只指文章（URL）。证据来源表携带 quote，
+保证最终交付物保留可审计的原文引文，不经渲染丢失引文内容。
 """
 
 import re
@@ -13,8 +13,8 @@ from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INL
 from deepresearcher.schemas import Citation, ResearchDirectionResult, RunError, SupervisorProgress
 from deepresearcher.state import ResearchState, section
 
-# Writer 提示词禁止自写引用列表，模型违反时也必须程序兜底：整段剥除（连同其中
-# [[cite:…]] 标记，避免其抢占首现编号），编号权威只属于本模块的追加段。
+# Writer 提示词禁止自写引用列表，模型违反时仍需程序兜底：整段剥除，连同其中的
+# [[cite:…]] 标记一起剥掉，避免它们占用首现编号；编号只由本模块的追加段给出。
 _REFERENCE_HEADING = re.compile(
     r"^(#{2,3})[ \t]*(?:证据来源|参考来源|引用来源|参考文献|引用列表|来源列表|参考文档|资料来源"
     r"|主要参考(?:资料|文献)?|引用(?:的)?来源|来源参考"
@@ -63,7 +63,7 @@ def render_final_report(
     display = {source_id: f"证据{index}" for index, source_id in enumerate(display_order, 1)}
     source_count = len({item.url for item in used_citations if item.url})
 
-    # 文章形:H1 是 Writer 拟的标题(兜底系统题),研究问题与审计信息收在文末一行。
+    # 文章结构：H1 是 Writer 拟的标题，为空时用默认标题；研究问题与审计信息放在文末一行。
     heading = (title or "").strip() or "研究报告"
     footer = (
         "\n\n---\n\n"
@@ -125,7 +125,7 @@ def _reference_list(
     for source_id in display_order:
         citation = by_id.get(source_id)
         if citation is None:
-            continue  # 正文引用了无元数据的 id：降级为只有编号，不炸终检
+            continue  # 正文引用了无元数据的 id：降级为只显示编号，不中断终检
         label = citation.title or urlsplit(citation.url).netloc or display[source_id]
         lines.append(f"- [{display[source_id]}] {label}: {citation.url}")
         if citation.quote:
@@ -195,7 +195,7 @@ def render_error_report(state: ResearchState, error: RunError) -> str:
 
 
 def no_evidence_blockers(state: ResearchState) -> list[str]:
-    """把 worker 的失败汇总为面向用户的阻塞信息，而非吞掉原始原因。"""
+    """把 worker 的失败汇总为面向用户的阻塞信息，同时保留原始失败原因。"""
     task_results = state.get("task_results", [])
     failures: list[str] = []
     skipped: list[str] = []

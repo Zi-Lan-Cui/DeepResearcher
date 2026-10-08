@@ -55,9 +55,9 @@ class Clarifier:
                         max_turns=MAX_CLARIFICATION_ROUNDS + 4,
                         context_window_tokens=context_window_tokens,
                         serial_tools={"AskClarification", "ClarificationComplete"},
-                        # clarifier 的提交事实住 state 通道(outer 子图按它路由):
-                        # 问题已 staged(待答)或已完成 → 内层本轮工作即告结束,下一跳
-                        # 静默出环。ask 节点收到回答会清空 pending_question,多轮由此放行。
+                        # clarifier 的提交事实在 state 通道,outer 子图按它路由:问题已
+                        # staged 待答或已完成,内层本轮工作即告结束,下一跳直接退出循环。
+                        # ask 节点收到回答会清空 pending_question,多轮澄清由此放行。
                         exit_probe=lambda _ctx, state: (
                             bool(state.get("clarification_completed"))
                             or bool(str(state.get("pending_question") or "").strip())
@@ -69,7 +69,7 @@ class Clarifier:
         )
 
     async def run(self, state: ClarifierGraphState) -> dict[str, object]:
-        """注入本轮独立的调度栅栏(ToolExecutionGate)；上下文不写入 checkpoint。"""
+        """注入本轮独立的调度栅栏 ToolExecutionGate;上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
             context=ClarifierLoopContext(

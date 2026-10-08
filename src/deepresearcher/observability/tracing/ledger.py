@@ -5,9 +5,9 @@
 scope 的 span,按 creation-time 的 deepresearcher.run_id 属性路由到该 run 注册
 的 sink;查无 sink 时丢弃并告警一次,写 sink 抛错不得波及 span 路径。
 
-同一节点执行会落双轨记录,这是裁决后的分工而非迁移残留:本模块的 span_* 承载
-trace 树形(面板、evals、回放按 span 消费),instrumentation 的 node_* 承载
-业务字段摘要(projector 面向用户的投影消费);两侧以 span_id 互链。
+同一节点执行会落双轨记录,两轨分工不同:本模块的 span_* 承载 trace 树形,
+供面板、evals、回放按 span 消费;instrumentation 的 node_* 承载业务字段摘要,
+供 projector 面向用户的投影消费;两侧以 span_id 互链。
 """
 
 import json
@@ -37,7 +37,7 @@ def attach_run_sink(run_id: str, sink: TraceSink) -> None:
 
 
 def detach_run_sink(run_id: str) -> None:
-    """注销 sink;根 span 已在此之前 end,终态记录不会丢。"""
+    """注销 sink;调用方须在本 run 的根 span 结束后执行,否则终态记录会丢。"""
     _SPAN_SINKS.pop(run_id, None)
     _warned_runs.discard(run_id)
 

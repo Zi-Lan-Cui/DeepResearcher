@@ -1,7 +1,7 @@
 """Agent/领域审计事件的一行式发射。
 
-日志与 sink 落盘的顺序、上下文关联（全部由事件工厂自读 contextvars）
-在这里收敛为一份实现；各 Agent 不再各自展开 ``current_context()``。
+日志与 sink 落盘的顺序在此收敛为一份实现；上下文关联字段由事件工厂
+自读 contextvars，各 Agent 的调用方无需自行展开 ``current_context()``。
 """
 
 import logging
@@ -18,9 +18,10 @@ DEFAULT_CONTENT_KEYS = ("markdown", "normalized_markdown", "report")
 class AgentEmit(Protocol):
     """各 Agent Deps 携带的事件发射回调的统一契约。
 
-    绑定自 ``_emit``/``_emit_audit_event``；``component`` 关键字允许领域事件
-    改写归属(如 supervisor 派发链发 research_agent 组件的事件),默认值由
-    绑定方自带。Deps 用它替代宽松的 Callable,两个 agent 的 emit 从此同契约。
+    绑定自 agents 侧的 ``_emit``/``_emit_audit_event``。``component`` 关键字允许
+    领域事件改记到别的组件名下，例如 Supervisor 派发链发出的事件归属
+    research_agent 组件，默认值由绑定方自带。Deps 以此协议替代宽松的
+    Callable，两个 agent 的 emit 遵循同一契约。
     """
 
     def __call__(
@@ -59,8 +60,8 @@ def emit_agent_event(
 ) -> None:
     """记录 Agent 生命周期事件：先入日志，再按需写 JSONL sink。
 
-    可观测性是旁路：日志 handler 或 sink 落盘异常一律在此吞掉转错误日志,
-    不得阻断、重试或改写宿主执行——保护住在这一层,各调用点不再各自设防。
+    可观测性是旁路：日志 handler 或 sink 落盘的异常一律在此吞掉并转成错误日志,
+    不阻断、重试或改写宿主执行。保护统一做在这一层,各调用点不必再各自做防护。
     """
     try:
         logger.info("%s payload=%s", event_type, payload)

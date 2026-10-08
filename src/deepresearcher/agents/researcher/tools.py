@@ -258,7 +258,7 @@ def build_researcher_tools() -> list[BaseTool]:
         )
 
     # 不设 return_direct:被拒的提交也须留在循环内改正引用;接受后由 SubmittedExitMiddleware
-    # 依 stop_reason 在下一跳退出(与 Supervisor/Writer 同构)。
+    # 依 stop_reason 在下一跳退出,与 Supervisor、Writer 的出口方式一致。
     @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
     async def complete_direction(
         reason: str,
@@ -278,7 +278,7 @@ def build_researcher_tools() -> list[BaseTool]:
             conclusion,
             remaining_gaps,
         )
-        # 被拒不落通道(无 stop_reason 变化、无活跃集变化),只回一份纠错回执。
+        # 被拒时 stop_reason 与活跃集都不变,不落通道,只回一份纠错回执。
         if result.get("status") != "accepted":
             return _channel_command(
                 runtime, result, tool_name="ResearchDirectionComplete", channel_update={}

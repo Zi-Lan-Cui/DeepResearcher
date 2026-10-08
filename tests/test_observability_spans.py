@@ -1,4 +1,4 @@
-"""spans 模块的建 span 语义:creation-time 标签注入、属性清洗与词表。
+"""spans 模块的建 span 语义:创建时注入标签、属性清洗与 kind 词表。
 
 统一 span 树的端到端断言在 test_observability_opentelemetry.py;
 账本记录形状在 test_observability.py。
@@ -37,7 +37,7 @@ def test_sanitized_keeps_scalars_stringifies_rest():
 
 
 def test_kind_maps_cover_the_call_site_vocabulary():
-    # kind 词表由 instrumentation/tools 的调用面决定;缺项会静默落到 INTERNAL。
+    # kind 词表由 instrumentation 与 tools 的调用点决定;缺项会静默落到 INTERNAL。
     assert set(spans._SPAN_KIND_MAP) >= {"trace", "node", "tool"}
     assert spans.INSTRUMENTATION_SCOPE == "deepresearcher.tracing"
 

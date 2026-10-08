@@ -113,7 +113,7 @@ def test_synthesis_rejects_duplicate_aspect_ids() -> None:
 
 
 def test_aspect_grounding_requires_evidence_or_explicit_gap() -> None:
-    """状态层只校验内部一致性：covered 必须挂证据、uncovered 不得伪装、缺口必须写明。"""
+    """状态层只校验内部一致性:covered 必须挂证据,uncovered 不得挂证据,缺口必须写明。"""
     base = {"aspect_id": "a", "topic": "主题", "role": "主线"}
     with pytest.raises(ValueError, match="covered 研究方面必须绑定"):
         ResearchAspect(**base, status="covered", evidence_ids=[])
@@ -335,12 +335,11 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
 
 
 def test_concurrent_delegates_allocate_unique_task_ids_before_absorb():
-    """回归锁：序号必须分配即消耗，不能从已完成结果反推。
+    """任务序号必须分配即消耗,不能从已完成结果反推 max+1。
 
-    旧实现下第二个并行 delegate 在第一个 absorb 之前读到同一 max+1，
-    两个任务共享 task-0001，merge_task_results 按 task_id 去重静默吞掉
-    一个方向（线上事故已证实）。交错点用 fake 研究代理入口让出一次
-    事件循环来确定性复现。
+    读 max+1 的写法下,第二个并行 delegate 会在第一个 absorb 之前读到同一
+    序号,两个任务共享 task-0001,merge_task_results 按 task_id 去重时静默
+    丢弃一个方向。交错点用 fake 研究代理入口让出一次事件循环来确定性复现。
     """
 
     class InterleavedResearchAgent(FixedResearchAgent):
@@ -417,8 +416,8 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
                 },
             }
 
-    # complete_args=None 使 fake 每轮重发同一批方向：程序化去重已删除，重复方向
-    # 每次都真实执行。fake 不会主动收尾，最终由模型调用次数上限终止循环。
+    # complete_args=None 使 fake 每轮重发同一批方向:产品不做程序化去重,重复
+    # 方向每次都真实执行。fake 不会主动收尾,最终由模型调用次数上限终止循环。
     # 声明式 rank 让更强的 MODEL_CALL_LIMIT_EXCEEDED 压过轮次预算(终态归属回归)。
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["重复方向"], complete_args=None),
@@ -435,7 +434,7 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
         )
     )
 
-    # 重复方向每次都执行了（证明去重确实不存在），未判充分、走部分报告。
+    # 重复方向每次都真实执行,说明派发层没有去重;未判充分,走部分报告。
     assert len(result["task_results"]) > 1
     assert result["supervisor"].is_sufficient is False
     # 终态归属真正的终止者：模型调用天花板压过轮次预算。
@@ -492,7 +491,7 @@ def test_supervisor_rejects_completion_without_evidence():
 
 
 def test_supervisor_stale_complete_rejection_recovers_inside_loop():
-    """被拒的 ResearchComplete 留在环内自愈:带 revision 的回执后，模型改对综合稿再提即成立。"""
+    """被拒的 ResearchComplete 留在环内恢复:带 revision 的回执后,模型改对综合稿再提即成立。"""
 
     class RejectThenRecoverLLM:
         def bind_tools(self, _tools, tool_choice="any"):
@@ -723,9 +722,9 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
     assert '"status": "stale"' in str(revised[0].content)
     assert result["research_synthesis"] is None
     assert result["working_set_revision"] == 1
-    # 拒绝回执留环自愈;模型反复不成时终态归属真实终止者——模型调用天花板。
+    # 拒绝回执留环恢复;模型反复不成时,终态归属真实终止者,即模型调用天花板。
     assert "模型调用预算已耗尽" in result["writer"].feedback
-    # 通道规矩:协议拒绝不得伪装成研究缺口,混进用户报告的 coverage_gaps 清单。
+    # 协议拒绝不得作为研究缺口写进用户报告的 coverage_gaps 清单。
     assert not any("ResearchComplete" in gap for gap in result["supervisor"].coverage_gaps)
 
 
@@ -838,7 +837,7 @@ def test_revise_synthesis_rejects_evidence_outside_active_working_set():
 
 
 def test_supervisor_agent_failure_routes_exception_to_failure_details():
-    """agent loop 抛异常：异常文本走执行诊断与内部事件，不得伪装成"未闭合缺口"进报告。
+    """agent loop 抛异常:异常文本只进执行诊断与内部事件,不得作为"未闭合缺口"进报告。
 
     模型调用异常会被 ModelRetryMiddleware 软化成引导文本，到不了 loop 级 except；
     这里整体替换 _agent_loop，模拟图级故障（递归天花板、checkpointer 等）。
@@ -1272,7 +1271,7 @@ def test_supervisor_per_round_delegate_quota_blocks_excess_dispatches():
 
 
 def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
-    """模型调用天花板触发时，终止原因如实记录，不再谎报轮次耗尽。"""
+    """模型调用天花板触发时,终止原因记为天花板,不得记成轮次耗尽。"""
 
     class ReadLoopLLM:
         def bind_tools(self, _tools, tool_choice="any"):
@@ -1300,24 +1299,24 @@ def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
 
 
 def test_stop_reason_vocabulary_single_source():
-    """StopReason 是停止原因的唯一来源：词汇可回环、描述与兜底判定挂成员。"""
+    """StopReason 是停止原因的唯一来源:值可回环构造,描述与兜底判定都在成员上。"""
     from deepresearcher.schemas import StopReason
     from deepresearcher.schemas.sections import _STOP_REASON_DESCRIPTIONS
 
     for reason in StopReason:
         assert StopReason(reason.value) is reason
         assert isinstance(reason, str)  # terminal_reason/JSON 等 str 消费点兼容
-    # 描述表全覆盖:漏登记的成员会静默吃兜底句(兜底句对 SUFFICIENT 语义相反)。
+    # 描述表全覆盖:漏登记的成员会落到兜底句,而兜底句对 SUFFICIENT 语义相反。
     assert set(_STOP_REASON_DESCRIPTIONS) == set(StopReason)
 
-    # 锁定兜底进入部分报告的集合语义（与 compose_final_update 手工清单行为一致）：
+    # 校验 allows_partial_report 集合与 compose_final_update 里写明的清单一致:
     assert {r for r in StopReason if r.allows_partial_report} == {
         StopReason.ROUND_BUDGET_EXHAUSTED,
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
         StopReason.MODEL_CALL_LIMIT_EXCEEDED,
         StopReason.SUBMITTED_WITH_GAPS,
     }
-    # 描述文案保留原逐字内容（回归锁）：
+    # 描述文案逐字校验;改文案须同步这里:
     assert StopReason.ROUND_BUDGET_EXHAUSTED.description == "研究轮次预算已耗尽。"
     assert StopReason.SUFFICIENT.description == "Supervisor 确认现有材料足以形成完整研究报告。"
 
@@ -1328,7 +1327,7 @@ def test_stop_reason_rank_is_a_declared_total_order():
 
     ranks = {reason: reason.rank for reason in StopReason}
     assert len(set(ranks.values())) == len(ranks)  # 无并列，全序确定
-    # 现存最弱信号是轮次预算；天花板必须压过它（原瞬时去重信号已随程序化去重删除）。
+    # 现存最弱信号是轮次预算,天花板必须强于它。
     assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.ROUND_BUDGET_EXHAUSTED.rank
     assert min(ranks.values()) == StopReason.ROUND_BUDGET_EXHAUSTED.rank
     # 模型的显式收尾决定是最高终态，压过基础设施失败。
@@ -1343,12 +1342,12 @@ def test_stop_reason_rank_is_a_declared_total_order():
 
 
 def test_loop_state_set_stop_reason_adopts_by_rank():
-    """低权威度不覆盖高权威度；None 直接采纳；天花板覆盖瞬时去重信号（回归）。"""
+    """低权威度不覆盖高权威度;None 直接采纳;更强信号后到则升级覆盖。"""
     from deepresearcher.state import ResearchState
 
     state: ResearchState = {}
     loop_state = SupervisorLoopState(state, current_round=4, active_evidence_limit=30)
-    # current_round 由构造参数单一来源注入，不再从持久化 section 自读。
+    # current_round 只由构造参数注入,持久化 section 不作为第二个来源。
     assert loop_state.current_round == 4
 
     assert loop_state.stop_reason is None
@@ -1428,7 +1427,7 @@ def _delegate(context, topic: str) -> dict:
 
 
 def test_delegate_research_blocks_when_round_budget_exhausted():
-    """轮次超过 max_research_rounds → 返回 blocked 且绝不派发子 Agent。"""
+    """轮次超过 max_research_rounds 时返回 blocked,不再派发子 Agent。"""
     agent = _RecordingDelegateAgent()
     supervisor, context = _delegate_context("run-x", current_round=5, agent=agent, max_rounds=3)
     result = _delegate(context, "一个方向")
@@ -1463,7 +1462,7 @@ def test_render_outcome_vocabulary_and_user_text_lookup():
         assert RenderOutcome(outcome.value) is outcome
     assert set(_RENDER_OUTCOME_DESCRIPTIONS) == set(RenderOutcome)
 
-    # 第一域:StopReason 值 → 中文描述(此前裸词直进用户报告)。
+    # 第一域:StopReason 值必须映射成中文描述,裸词不得直接进用户报告。
     assert terminal_reason_text(StopReason.ROUND_BUDGET_EXHAUSTED) == "研究轮次预算已耗尽。"
     # 第二域:RenderOutcome 值。
     assert terminal_reason_text(RenderOutcome.REPORT_RENDERED) == "报告已渲染交付。"
@@ -1535,7 +1534,7 @@ def _revise_evidenceless(loop_state: SupervisorLoopState) -> dict:
 
 
 def test_freeze_synthesis_rejects_evidenceless_without_certification():
-    """零证据综合稿默认不可接受,防"空稿逃逸";拒绝回执必须带可行动原因。"""
+    """零证据综合稿默认被拒绝,拒绝回执必须带可行动原因。"""
     loop_state = _blank_loop_state()
     assert _revise_evidenceless(loop_state)["status"] == "accepted"
 
@@ -1563,7 +1562,7 @@ def test_absorb_certifies_provider_exhaustion_then_freeze_accepts_evidenceless()
 
 
 def test_compose_floor_uses_certified_execution_fault_not_round_budget():
-    """默认兜底不冒名:认证后直接结束记 PROVIDER_EXHAUSTED;未认证仍记 ROUND_BUDGET_EXHAUSTED。"""
+    """默认兜底按实际原因记录:熔断认证后记 PROVIDER_EXHAUSTED,未认证仍记 ROUND_BUDGET_EXHAUSTED。"""
     unproven = _blank_loop_state()
     services.compose_final_update(_blank_state(), unproven, AgentConfig())
     assert unproven.stop_reason is StopReason.ROUND_BUDGET_EXHAUSTED
@@ -1579,7 +1578,7 @@ def test_compose_floor_uses_certified_execution_fault_not_round_budget():
     assert "账户级不可用" in update.writer.feedback
 
 
-# --- 通道化不变式(§5 硬点 + 批重建合同) --------------------------------------
+# 通道化不变式守卫:覆盖 §5 硬点与批重建合同。
 
 
 def _reducer_of(hint):

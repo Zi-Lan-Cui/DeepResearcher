@@ -22,26 +22,26 @@ SOURCE_CANDIDATES_PER_READ = 8
 SEARCH_RESULTS_PAGE_HARD_LIMIT = 20
 SEARCH_RESULTS_PREVIEW_COUNT = 10
 SEARCH_RESULT_SNIPPET_PREVIEW_CHARS = 1_200
-# 仅用于 search 客户端审计事件(日志排查用):独立于模型预览数的展示条数,
-# 标题按字符截断。二者都不进模型上下文,改这里只影响日志可读性。
+# 仅用于 search 客户端审计事件,供日志排查:展示条数独立于模型预览数,
+# 标题按字符截断。两者都不进模型上下文,改这里只影响日志可读性。
 SEARCH_RESULTS_AUDIT_PREVIEW_COUNT = 8
 SEARCH_RESULT_TITLE_PREVIEW_CHARS = 160
-# 回合思维链 content_preview 的字符预算:observability 产生端截一次、projector
-# 消费端(deny-by-default,不信任上游)再钳一次,两处共用此常量。
+# 模型回合 content_preview 的字符预算:observability 产生端截一次,projector
+# 消费端再钳一次;消费端不信任上游输入,两处共用此常量。
 EVENT_CONTENT_PREVIEW_CHARS = 800
 # 历史标题(clarify 浓缩问题)与报告标题(writer 命名回答)的长度上限。
 RUN_HEADLINE_MAX_CHARS = 40
 REPORT_TITLE_MAX_CHARS = 80
 
-# Clarifier 交互协议边界(原 agents/clarifier/constants.py,wire 容量在本模块登记)。
+# Clarifier 交互协议边界;wire 容量在本模块登记。
 MAX_CLARIFICATION_ROUNDS = 2
 CLARIFICATION_QUESTION_MAX_CHARS = 500
 CLARIFICATION_OPTION_COUNT = 3
 CLARIFICATION_INTENT_MAX_CHARS = 1_000
 CLARIFICATION_FOCUS_LIMIT = 4
 CLARIFICATION_ASSUMPTION_LIMIT = 3
-# ReadEvidence 一次可请求的窗口(防失控的宽松值);每轮实际交付量由
+# ReadEvidence 一次可请求的 ID 窗口上限,取值宽松以防失控;每轮实际交付量由
 # writer_read_batch_size 决定,差额走 not_read_ids 显式排队。
 READ_EVIDENCE_REQUEST_WINDOW_IDS = 50
-# 方向卡短题(ResearchDelegate 派发时给出的展示名)上限。
+# 方向卡短题的上限;短题由 ResearchDelegate 派发时给出,是展示名。
 DIRECTION_TITLE_MAX_CHARS = 40

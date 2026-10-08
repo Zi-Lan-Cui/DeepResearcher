@@ -109,7 +109,7 @@ def test_classify_source_flags_primary_domains_conservatively():
     assert classify_source("https://www.stats.gov.cn/x") == "primary"
     assert classify_source("https://cs.stanford.edu/~person") == "primary"
     assert classify_source("https://nsfc.gov.cn/p1") == "primary"
-    # 商业门户/学生报纸/会议营销站 → general（不冒充一手权威）
+    # 商业门户、学生报纸、会议营销站归为 general,不得算作一手权威
     assert classify_source("https://www.thecrimson.com/article") == "general"
     assert classify_source("https://uppersideconferences.com/2024") == "general"
     assert classify_source("https://m.36kr.com/p/1") == "general"
@@ -190,10 +190,10 @@ def test_search_parses_tavily_response_without_network():
 
 
 def test_tavily_null_raw_content_still_validates_as_result():
-    """回归守卫：Tavily advanced depth 对无法抽取正文的页返回 JSON null（非缺键）。
-    `.get(k,"")` 只在缺键时兜底，null 会漏成 None，进而令 SearchToolResult 的
-    Pydantic 校验整批失败 → researcher 反复重试空转（真实评测被卡 684 事件零产出）。
-    必须：null 归一为 ""，且能过 model_validate。"""
+    """回归守卫:Tavily advanced depth 对无法抽取正文的页返回 JSON null,键本身存在。
+
+    .get(k,"") 只在缺键时兜底,null 会漏成 None,令 SearchToolResult 的 Pydantic
+    校验整批失败、researcher 反复重试空转。null 须归一为 "" 并能过 model_validate。"""
     from deepresearcher.tools.web.search.models import SearchToolResult
 
     config = SearchConfig(tavily_api_key="test", max_results=5)
@@ -228,7 +228,7 @@ def test_tavily_null_raw_content_still_validates_as_result():
     assert [type(r["raw_content"]).__name__ for r in results] == ["str", "str"]
     assert results[0]["raw_content"] == "" and results[0]["title"] == ""
     assert results[0]["published_at"] == ""  # str(None) 会得到 "None" 字符串污染
-    # 关键：整批能被真实消费方（researcher）的 Pydantic 校验接受
+    # 整批结果要能被真实消费方 researcher 的 Pydantic 校验接受
     SearchToolResult.model_validate({"task_id": "t", "status": "completed", "results": results})
 
 
@@ -475,7 +475,7 @@ def test_fetch_service_policy_rejection_short_circuits_provider_chain():
     managed = SucceedingProvider()
     with pytest.raises(UnsafeUrlError, match="不能访问本机"):
         asyncio.run(FetchService([guarded, managed]).afetch("http://169.254.169.254/meta"))
-    # 策略拒绝不是"这家不行"：下一家（不经公网守卫的服务端代取）必须完全不被触达。
+    # 策略拒绝不触发 provider 回退:下一家是不经公网守卫的服务端代取,不得被触达。
     assert guarded.calls == 1
     assert managed.calls == 0
 
@@ -882,7 +882,7 @@ class _ConcurrencyTrackingProvider:
 
 
 def test_search_client_caps_provider_concurrency(monkeypatch):
-    """跨 worker 并发查询被收敛到 max_concurrent_requests 路在飞。"""
+    """跨 worker 并发查询被收敛到同时最多 max_concurrent_requests 路。"""
     provider = _ConcurrencyTrackingProvider()
     config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
     client = SearchService(config)

@@ -38,17 +38,17 @@ class RunWorker:
     ) -> None:
         self._queue = queue
         self._executor = executor
-        # 下限钳制住在 settings 加载层;这里只保留 settings 没有的新约束:
-        # 心跳必须严格少于半个租约,否则续约来不及。
         self._max_running = max_running
         self._lease_seconds = lease_seconds
+        # 参数下限钳制由 settings 加载层负责；这里新增的约束是心跳必须严格小于
+        # 半个租约，否则续约来不及。
         self._heartbeat_seconds = min(max(1, heartbeat_seconds), self._lease_seconds // 2)
         self._poll_seconds = poll_seconds
         self._worker_id = worker_id or new_id("worker")
         self._recover_expired = recover_expired
         self._after_reap = after_reap
-        # 瞬断容忍:连续 N 个心跳周期 renew 因 DB 错误失败才降级 lease_lost;
-        # 心跳间隔 ≤ lease/2,预算耗尽时租约本已过期,reap 的判定与我们一致。
+        # 瞬断容忍：连续 N 个心跳周期 renew 因 DB 错误失败才降级为 lease_lost；
+        # 心跳间隔 ≤ lease/2，预算耗尽时租约实际已过期，该判定与 reap 侧一致。
         self._heartbeat_failure_budget = 3
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._dispatch_tasks: set[asyncio.Task[None]] = set()
@@ -110,8 +110,8 @@ class RunWorker:
                     preferred=preferred,
                 )
                 if isinstance(work, ClaimCapacitySaturated):
-                    # 容量满 ≠ preferred 过期:弹出的显式任务放回队首、结束本轮,
-                    # 等下一次信号/轮询/reap 唤醒;静默丢弃会让 resume 行再无被取时机。
+                    # 容量满不代表 preferred 过期：弹出的显式任务放回队首并结束本轮，
+                    # 等下一次信号、轮询或 reap 唤醒；丢弃会让 resume 行再无被领取机会。
                     if preferred is not None:
                         self._explicit.appendleft(preferred)
                         self._explicit_ids.add(preferred.run_id)
@@ -159,8 +159,8 @@ class RunWorker:
         )
         try:
             if work.resume:
-                # claim 确实成功之后才广播恢复:被 cancel flag 排除或被他 worker
-                # 抢走的 preferred 行,不该发出误报的 resuming 帧。
+                # claim 成功后才广播恢复：被取消标记排除或被他 worker 抢走的
+                # preferred 行，不应发出误报的 resuming 帧。
                 await self._executor.publish_status(work.run_id, "resuming")
                 await self._executor.flush_events(work.run_id)
             await self._executor.execute(
@@ -178,10 +178,10 @@ class RunWorker:
             await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def _heartbeat(self, work: RunWork, owner_task: asyncio.Task[None] | None) -> None:
-        """续租义务不允许静默退出:每轮只有三种结局——续上、确认取消/丢租、瞬断容忍。
+        """租约续约不得静默失败：每轮有三种结局——续上、确认取消或丢租、瞬断容忍。
 
-        DB 抖动(renew 或取消检查抛错)只计失败数,预算耗尽才判 lease_lost;
-        真被抢占/清空的 CAS 失败是确定信号,立即取消 owner。
+        DB 抖动（renew 或取消检查抛错）只计失败数，预算耗尽才判 lease_lost；
+        真被抢占或清空的 CAS 失败是确定信号，立即取消 owner。
         """
         transient_failures = 0
         try:
@@ -207,8 +207,8 @@ class RunWorker:
                     return
                 transient_failures += 1
                 if cancelled is None and transient_failures < self._heartbeat_failure_budget:
-                    # 无法区分"真丢租"与"DB 瞬断"时按后者处理:真丢租另有
-                    # reap+settle 双保险,误杀却会让健康 run 白白重跑。
+                    # 无法区分真丢租与 DB 瞬断时按后者处理：真丢租另有 reap 与
+                    # settle 路径兜底，误判取消却会让健康 run 白白重跑。
                     continue
                 self._executor.mark_lease_lost(work.run_id)
                 if owner_task is not None:
@@ -264,9 +264,9 @@ class RunWorker:
         for task in list(self._dispatch_tasks):
             task.cancel()
         await asyncio.gather(*background, *self._dispatch_tasks, return_exceptions=True)
-        # 锁内快照:确保已穿过 _closed 检查、正等在 dispatch 锁上的 wake
-        # 全部落地后,再决定 release 范围——否则会出现"release 跑完才被领取"
-        # 的孤儿行(状态=running、进程已退出,只能等租约过期)。
+        # 在锁内做快照：先让已穿过 _closed 检查、正等 dispatch 锁的 wake 全部
+        # 落地，再决定 release 范围；否则会出现 release 完成后才被领取的孤儿行，
+        # 状态为 running 而进程已退出，只能等租约过期。
         async with self._dispatch_lock:
             live = [
                 (run_id, task, self._claims.get(run_id))

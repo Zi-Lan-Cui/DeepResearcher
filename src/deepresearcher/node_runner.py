@@ -2,7 +2,7 @@
 
 观测层只记录节点生命周期；本模块负责把未处理的节点异常转换成
 可供 LangGraph 继续收束的运行状态：失败收口在此产出降级报告
-（render_incomplete_report / render_error_report），终点渲染节点对
+render_incomplete_report 或 render_error_report，终点渲染节点对
 failed 分支只透传。各节点因此不必各自复制一套 try/except。
 """
 
@@ -57,7 +57,7 @@ async def execute_node(
         raise
     except Exception as exc:
         # 失败的生命周期事件由 observability.instrumentation 经 sink 单路记录，
-        # 状态里不再留副本；这里的 error 口径与事件侧共用 failure_event_fields 单源。
+        # 状态里不另存副本；此处的 error 字段与事件侧共用 failure_event_fields 单源。
         error, _ = failure_event_fields(stage, exc)
         budget_exhausted = isinstance(exc, UsageBudgetExceeded)
         if budget_exhausted:
@@ -86,6 +86,6 @@ async def execute_node(
             ),
         }
         # 运行器的产物与节点产物过同一条不变量校验。此处校验不通过说明
-        # 错误路径本身被改坏，是运行器的 bug——向上抛出，绝不静默降级。
+        # 错误路径本身被改坏，是运行器的 bug，直接向上抛出，不做静默降级。
         validate_state_invariants(state, failure)
         return failure

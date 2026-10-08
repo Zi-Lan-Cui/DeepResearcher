@@ -71,9 +71,9 @@ class LLMConfig:
     output_usd_per_million: float = 0.0
     cached_input_usd_per_million: float = 0.0
     price_version: str = "unpriced"
-    # 内容级修复预算：结构化输出不合规时重新送模型修复几次。传输级重试由
-    # openai SDK 内建消化、循环级由 ModelRetryMiddleware 用自带参数处理，
-    # 本字段只管内容级这一层。
+    # 内容级修复预算：结构化输出不合规时重新提交给模型修复的次数。传输级重试
+    # 由 openai SDK 内建机制处理，循环级重试由 ModelRetryMiddleware 用自带参数
+    # 处理，本字段只管内容级这一层。
     structured_repair_attempts: int = 1
 
     @property
@@ -94,10 +94,10 @@ class AgentConfig:
     writer_feedback_chars: int = 800
     writer_minimum_support: Support = "direct"
     writer_max_markdown_chars: int = 24_000
-    # 单次 ReadEvidence 每轮交付量（可一次请求至多 50 条，差额 not_read_ids 排队）。
-    # 引用总条数不设上限：聚焦度由"只能引用已读"+审阅把关保证，与条数无关。
+    # 单次 ReadEvidence 每轮交付量；一次至多请求 50 条，差额经 not_read_ids 排队。
+    # 引用总条数不设上限：聚焦度由"只能引用已读"与审阅把关保证，与条数无关。
     writer_read_batch_size: int = 30
-    # reviewer 对内容审查抖动/坏 JSON 的额外重试次数（传输级重试由 openai SDK 内建消化）。
+    # reviewer 对内容审查抖动与坏 JSON 的额外重试次数；传输级重试由 openai SDK 内建机制处理。
     reviewer_retry_attempts: int = 1
     reviewer_retry_initial_seconds: float = 2.0
     max_subtasks_per_round: int = 12
@@ -116,7 +116,9 @@ class AgentConfig:
     document_read_max_lines: int = 240
     document_read_max_chars: int = 24_000
     document_grep_context_lines: int = 2
-    document_grep_max_matches: int = 12  # 单个查询词一次调用的窗口上限;批量=并行多调用,非跨词总数
+    document_grep_max_matches: int = (
+        12  # 单个查询词一次调用的返回窗口上限；多词靠并行多次调用，不是跨词总数
+    )
     document_grep_max_chars: int = 12_000
     evidence_add_batch_size: int = 8
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
@@ -135,8 +137,8 @@ class AgentConfig:
     research_query_chars: int = 180
     research_observation_quote_chars: int = 500
     research_failure_history_limit: int = 5
-    # 所有面向用户的自然语言输出（理由/旁白/任务描述/正文）的统一语言。
-    # 注入各 system prompt 的 language_directive() 使用；quote 永远保持原文。
+    # 面向用户的自然语言输出的统一语言：理由、旁白、任务描述、正文。
+    # 由注入各 system prompt 的 language_directive() 使用；quote 保持原文。
     output_language: str = "中文"
 
     def __post_init__(self) -> None:
@@ -195,7 +197,7 @@ class SearchConfig:
     retry_initial_seconds: float = 1.0
     retry_max_seconds: float = 10.0
     retry_after_max_seconds: float = 60.0
-    # 同一供应商同时允许的搜索请求数（跨 worker 全局）；限流窗口下降低并发比快速重试更有效。
+    # 同一供应商同时允许的搜索请求数，跨 worker 全局生效；限流窗口下降低并发比快速重试更有效。
     max_concurrent_requests: int = 2
     max_concurrent_fetches: int = 6
     tavily_include_raw_content: bool = True

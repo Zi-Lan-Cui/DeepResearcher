@@ -1,8 +1,8 @@
 """LangGraph 顶层状态:跨节点交接物的类型与合并语义。
 
-字段按所有权分组;channel 直接存 Pydantic 模型,节点不再在 dict 与
-模型之间手工往返。同一 run 内 LangGraph 保持模型对象;跨进程 checkpoint
-恢复时 incoming 可能是 dict,dict→模型的防御性恢复分三个入口、各管一片:
+字段按所有权分组;channel 直接存 Pydantic 模型。同一 run 内 LangGraph
+保持模型对象;跨进程 checkpoint 恢复时 incoming 可能是 dict,dict→模型的
+防御性恢复分三个入口,各自覆盖一段:
 list 通道由幂等 reducer(merge_evidences / merge_task_results / merge_unique)
 按 id 折回并顺带恢复;scalar 通道(run / supervisor / writer / review /
 writer_directive / research_synthesis)由 node_runner 在每节点入口调用
@@ -51,7 +51,7 @@ class SubTask(TypedDict):
     id: str
     run_id: NotRequired[str]
     question: str
-    # 方向卡展示短题(Supervisor 派发时给)；与 question 完整研究契约分离。
+    # 方向卡展示短题，由 Supervisor 派发时给出；question 是完整研究契约，两者分离。
     display_title: NotRequired[str]
     # Evidence 召回可选的内部细分；缺失时以 question 作为唯一检索查询。
     research_direction: NotRequired[str]
@@ -74,7 +74,7 @@ def _coerce(model_cls: type[_ModelT], value: object) -> _ModelT:
 
 
 def merge_evidences(current: list[Evidence], incoming: list[Evidence]) -> list[Evidence]:
-    """按 evidence_id 去重合并；同名但内容不同视为状态契约冲突。"""
+    """按 evidence_id 去重合并；同 id 而内容不同视为状态契约冲突，抛出 StateInvariantError。"""
     restored = [_coerce(Evidence, item) for item in [*current, *incoming]]
     by_id: dict[str, Evidence] = {}
     for item in restored:
@@ -89,7 +89,7 @@ def merge_task_results(
     current: list[ResearchDirectionResult],
     incoming: list[ResearchDirectionResult],
 ) -> list[ResearchDirectionResult]:
-    """按 task_id 去重合并;同一 task 重跑(恢复执行)时以新结果覆盖。"""
+    """按 task_id 去重合并;同一 task 因恢复而重跑时，以新结果覆盖旧结果。"""
     restored = [_coerce(ResearchDirectionResult, item) for item in [*current, *incoming]]
     by_id: dict[str, ResearchDirectionResult] = {}
     for item in restored:
@@ -110,7 +110,7 @@ class ResearchState(TypedDict, total=False):
     review: ReviewProgress
     run_id: str
 
-    # 输入与路由(Router / Clarify / Writer)
+    # 输入与路由字段
     query: str
     clarified_query: str
     session_id: str
@@ -122,38 +122,38 @@ class ResearchState(TypedDict, total=False):
 
     supervisor_messages: Annotated[list[BaseMessage], add]
     evidences: Annotated[list[Evidence], merge_evidences]
-    # 已读取来源的快照引用（URL），不作为报告正文内容使用。
+    # 已读取来源的 URL 快照引用，不作为报告正文内容使用。
     source_refs: Annotated[list[str], merge_unique]
     # Supervisor 当前工作集；完整 Evidence 档案仍保存在 evidences 中。
     active_evidence_ids: list[str]
     working_set_revision: int
     research_synthesis: ResearchSynthesis | None
-    # 报告任务书唯一事实源在 writer_directive.report_brief，不再平行存顶层字段。
+    # 报告任务书唯一事实源是 writer_directive.report_brief，不要再加平行的顶层字段。
     writer_directive: WriterDirective | None
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
     supervisor_next: NodeName
 
-    # Writer 未通过校验的兜底草稿(exhausted/citation_protocol 失败时写入);
-    # 与 report_draft 语义相反,rejection 回流时作为 Supervisor 的修订底稿。
+    # Writer 未通过校验时的兜底草稿，exhausted 或 citation_protocol 失败时写入;
+    # 区别于 report_draft，rejection 回流时作为 Supervisor 的修订底稿。
     rejected_draft: str
-    # Writer 产出的 evidence_id 键草稿(含 [[cite:evidence_id]] 标记);
-    # 审阅通过后由终检渲染层编号渲染为 report。
+    # Writer 产出的草稿，以 [[cite:evidence_id]] 标记引用;
+    # 审阅通过后由终检渲染层编号并渲染为 report。
     report_draft: str
-    # 两个标题通道:run_headline 是 Clarifier 对问题的一句话浓缩(进历史列表),
-    # report_title 是 Writer 为回答拟的文章标题(进报告 H1)。
+    # 两个标题通道分工不同:run_headline 是 Clarifier 对问题的一句话浓缩，用于历史列表;
+    # report_title 是 Writer 为回答拟的文章标题，用作报告 H1。
     run_headline: str
     report_title: str
     paragraph_bindings: list[ParagraphBinding]
     citations: list[Citation]
     report: str
 
-    # 审计(Instrumentation)
+    # 审计计数字段
     evidence_count: int
     source_count: int
 
 
-# 允许为 None 的标量通道由注解派生,不再手工登记第二份:新增 Optional 通道
-# 若漏进 skip 集,带必填字段的模型 model_cls() 会在恢复当场炸。
+# 允许为 None 的标量通道由类型注解派生,避免手工维护第二份名单:名单若漏了
+# 新增的 Optional 通道,恢复会对 None 调用带必填字段的 model_cls() 而当场报错。
 _OPTIONAL_SCALAR_KEYS = frozenset(
     key for key, hint in get_type_hints(ResearchState).items() if type(None) in get_args(hint)
 )
@@ -194,7 +194,9 @@ def restore_state_models(state: dict[str, object]) -> None:
 
 
 def section(state: object, name: str, model_cls: type[_ModelT]) -> _ModelT:
-    """读取并恢复一个嵌套状态区，供直接调用节点和 Graph 共同使用。"""
+    """读取并恢复一个嵌套状态区；缺失时写入默认实例，dict 形态恢复为模型后写回，
+    调用方与 state 共享同一对象。
+    """
     mapping = cast(MutableMapping[str, object], state)
     value = mapping.get(name)
     if value is None:
@@ -224,7 +226,7 @@ def validate_state_invariants(
     run = _coerce(RunStatus, run)
     if run.phase == "failed" and run.error is None:
         raise StateInvariantError("run.phase=failed 时必须提供 run.error。")
-    # rendering 是终局准备相:研究可能因预算耗尽收尾,渲染层仍需要 reason
-    # 解释为何不完整——因此它在 completed 之前即为合法。
+    # rendering 是进入终点的准备阶段:因预算耗尽收尾时，渲染层需要 terminal_reason
+    # 解释报告为何不完整，所以该阶段携带 terminal_reason 是合法的。
     if run.phase not in {"rendering", "completed", "failed"} and run.terminal_reason:
         raise StateInvariantError(f"run.phase={run.phase} 时不能设置 terminal_reason。")

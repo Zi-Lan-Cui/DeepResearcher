@@ -12,8 +12,8 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def session(tmp_path):
-    # 文件库（NullPool）而非 :memory:+StaticPool：与 test_service_runs 同理，
-    # 规避 aiosqlite 线程在循环关闭后的迟到回调竞态。
+    # 用文件库配 NullPool 而非 :memory: 配 StaticPool,与 test_service_runs
+    # 同理:规避 aiosqlite 线程在事件循环关闭后的迟到回调竞态。
     engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'db.test.db'}")
     await init_db(engine)
     factory = make_session_factory(engine)
@@ -45,7 +45,7 @@ async def test_run_json_roundtrip_and_defaults(session: AsyncSession):
 
 
 async def test_deleting_run_cascades_events(session: AsyncSession):
-    """DB 级 ON DELETE CASCADE 生效（SQLite 需要 make_engine 打开 FK pragma）。"""
+    """验证 DB 级 ON DELETE CASCADE 生效;SQLite 下依赖 make_engine 打开 FK pragma。"""
     user = User(email="c@test", password_hash="h")
     session.add(user)
     await session.flush()
@@ -64,4 +64,3 @@ async def test_deleting_run_cascades_events(session: AsyncSession):
 
     remaining = await session.scalar(select(func.count()).select_from(RunEvent))
     assert remaining == 0
-    # 级联删的孤儿索引不会残留：再插入同 (run_id, seq) 也不冲突，这里仅验证计数为 0。

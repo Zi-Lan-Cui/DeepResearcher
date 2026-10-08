@@ -1,6 +1,6 @@
 """摘要调用的观测归属:callbacks 覆盖它,模型中间件预检不覆盖它。
 
-结论若变化(升级 langchain 后传播行为改变),本测试即警报。
+这是当前 langchain 的行为;升级后传播行为若改变,本用例会失败提醒。
 """
 
 import asyncio
@@ -46,7 +46,7 @@ class _CountStarts(BaseCallbackHandler):
 
 
 class _ProbeWrap(AgentMiddleware):
-    """统计 awrap_model_call 包到的模型调用数(预算预检挂在这一层)。"""
+    """统计经 awrap_model_call 的模型调用数;预算预检就挂在这一层。"""
 
     wrapped = 0
 
@@ -75,7 +75,7 @@ def test_summarization_call_is_recorded_but_bypasses_model_wrappers():
                 _ProbeWrap(),
             ],
         )
-        # 摘要需要"有历史可摘":单条消息会被 keep 窗口全部保留,不触发。
+        # 需要构造足够历史才触发摘要:单条消息会被 keep 窗口全部保留,不触发。
         history = []
         for i in range(6):
             history.append({"role": "user", "content": f"问题{i} " + "用于超过阈值的中文。" * 10})
@@ -92,7 +92,7 @@ def test_summarization_call_is_recorded_but_bypasses_model_wrappers():
     assert model._calls >= 2  # noqa: SLF001
     # 传播成立:astream 级 callbacks 覆盖了摘要调用,RunUsageCallback 能记到它。
     assert starts.chat_model_starts == model._calls  # noqa: SLF001
-    # 预检不覆盖:摘要绕开 awrap_model_call(enforce_usage_budget 所在层),
-    # 因此预算快耗尽时仍可能多花一次摘要调用——事后记账、下回合拦截。
+    # 预检不覆盖:摘要绕开 awrap_model_call,即 enforce_usage_budget 所在层,
+    # 预算接近耗尽时仍可能多花一次摘要调用,靠事后记账、下回合拦截。
     assert _ProbeWrap.wrapped < model._calls
     assert result["messages"][-1].content == "已摘要/完成"

@@ -50,8 +50,9 @@ class SourceReaderTool:
         material_store: ResearchMaterialStore,
         document_inline_max_tokens: int = 6_000,
     ):
-        # fetcher 是 FetchService(跑整条 provider 链、带 material_fetch_key),
-        # 不是单个原子 FetchProvider——同名协议下，缓存键不匹配不会被类型检查发现。
+        # fetcher 必须是跑整条 provider 链、带 material_fetch_key 的 FetchService，
+        # 不能是单个 FetchProvider：两者的 afetch 协议同名，
+        # 传错时缓存键缺失不会被类型检查发现。
         if fetcher is None:
             raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchService。")
         self.fetcher = fetcher
@@ -246,8 +247,8 @@ class SourceReaderTool:
         )
 
     def _material_fetch_key(self, url: str) -> str:
-        # FetchService 提供 material_fetch_key;此处仍容错缺失,让无正文缓存需求的
-        # 轻量 fetcher(含测试替身)退回"不缓存"而非当场炸。
+        # FetchService 提供 material_fetch_key；此处仍容忍缺失，让无正文缓存需求、
+        # 包括测试替身在内的轻量 fetcher 退回不缓存并继续运行，而不是直接报错。
         key_builder = getattr(self.fetcher, "material_fetch_key", None)
         return str(key_builder(url)) if callable(key_builder) else ""
 

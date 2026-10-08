@@ -1,13 +1,13 @@
 """评测 CLI：`python -m evals.cli <子命令>`。
 
-子命令即评测流水线的六个工位：
-  split      生成/重看 DRB 中文 dev/holdout 切分（固定种子）
-  cases      列出双轨题集（校验并报告问题）
-  run        经 HTTP API 跑题，产物落 evals/results/
-  score      确定性门 + 行为断言（零 LLM 费用）
-  judge      二元 rubric LLM judge（外轨带专家参考对照）
-  annotate   导出人工标注 CSV / 回导并算人机一致率
-  report     记分表汇总（Quality/Grounding/Behavior/pass^k/unknown）
+子命令对应评测流水线各阶段：
+  split      生成或重看 DRB 中文 dev/holdout 切分,固定种子
+  cases      列出两轨题集,校验并报告问题
+  run        经 HTTP API 跑题,产物落 evals/results/
+  score      确定性门 + 行为断言,零 LLM 费用
+  judge      二元 rubric LLM judge,external 轨带专家参考对照
+  annotate   导出人工标注 CSV,重新导入并算人机一致率
+  report     记分表汇总,含 Quality/Grounding/Behavior/pass^k/unknown
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from evals.runner import RunHarness
 from evals.schemas import CriterionResult, EvalCase, load_cases, load_results, merge_results
 
 EVALS_DIR = Path(__file__).resolve().parent
-# 每轮评测应使用独立目录，避免旧 round2/round3 混入新基线。
+# 每轮评测用 EVAL_RESULTS_DIR 指定独立目录,避免旧 round 产物混入新基线。
 RESULTS_DIR = Path(os.environ.get("EVAL_RESULTS_DIR", EVALS_DIR / "results"))
 BEHAVIOR_FILE = EVALS_DIR / "cases" / "behavior.jsonl"
 SPLIT_FILE = EVALS_DIR / "split_drb_zh.json"
@@ -113,7 +113,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
                 print(f"running {case.case_id} attempt={attempt}/{repeats} ...", flush=True)
                 try:
                     await harness.run_case(case, attempt)
-                except Exception as exc:  # noqa: BLE001 - 单题失败不拖垮整批（超时/澄清环/网关抖动）
+                except Exception as exc:  # noqa: BLE001 - 单题因超时、澄清环、网关抖动等失败时不拖垮整批
                     failures.append(f"{case.case_id}#{attempt}: {type(exc).__name__}: {exc}")
                     print(f"  FAILED {case.case_id} attempt={attempt}: {exc}", flush=True)
     finally:
@@ -125,13 +125,13 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
 
 async def cmd_capture(args: argparse.Namespace) -> None:
-    """把一次已经跑过/恢复中的 run 收成产物（不重跑、不再花钱）。"""
+    """把一次已存在或恢复中的 run 收成为评测产物,不重跑、不产生 LLM 费用。"""
     all_cases = {c.case_id: c for c in load_cases(BEHAVIOR_FILE)}
     try:
         for c in drb.build_cases(drb.drb_root(None)):
             all_cases.setdefault(c.case_id, c)
     except FileNotFoundError:
-        pass  # 外轨 case 需要 DRB 在场；capture 行为题时没有也无妨
+        pass  # external 轨 case 需要 DRB 在场,capture behavior 题时缺场无妨
     case = all_cases.get(args.case_id)
     if case is None:
         sys.exit(f"未知 case_id: {args.case_id}")
@@ -265,7 +265,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     scores = []
     for cid, attempt in sorted(pairs):
         case = cases.get(cid)
-        if case is None:  # 外轨题需 DRB 在场才有判分定义；缺场时只出门计数不合成假分
+        if case is None:  # external 轨题需 DRB 在场才有判分定义,缺场时只出门计数不合成质量分
             case = EvalCase(case_id=cid, track="external", prompt="", criteria=())
         scores.append(aggregate.score_case(case, attempt, results))
     metrics = aggregate.k_metrics(scores)
@@ -282,7 +282,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     }
     judge_meta_file = RESULTS_DIR / "judge_meta.json"
     if judge_file.is_file():
-        # 无 meta 的旧轮次如实标 unknown，而非假装异构。
+        # 无 judge_meta 的旧轮次如实标 unknown,不假设与被测同模型。
         summary["judge"] = (
             json.loads(judge_meta_file.read_text("utf-8"))
             if judge_meta_file.is_file()
@@ -296,7 +296,7 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 
 def _all_round_metrics() -> list[dict]:
-    """从所有 round 产物里抽 process_metrics（token/时长/成本效率块的数据源）。"""
+    """从所有 round 产物里抽 process_metrics,供 summarize_metrics 汇总效率块。"""
     rows: list[dict] = []
     for _case_id, round_path in _iter_result_rounds(None):
         for row in json.loads(round_path.read_text("utf-8")):

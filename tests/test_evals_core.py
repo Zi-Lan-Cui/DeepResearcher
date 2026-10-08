@@ -49,9 +49,6 @@ def _case(**overrides):
     return EvalCase(**base)
 
 
-# ---- 数据 schema ----
-
-
 def test_behavior_seed_set_loads_and_validates():
     cases = load_cases(REPO_ROOT / "evals" / "cases" / "behavior.jsonl")
     assert len(cases) == 15
@@ -98,14 +95,11 @@ def test_partial_result_merge_replaces_only_evaluated_rounds(tmp_path):
 
 
 def test_validate_catches_broken_cases():
-    assert validate_case(_case(prompt="  "))  # 空 prompt
-    assert validate_case(_case(criteria=()))  # 无判据
-    assert validate_case(_case(require_clarify=True, clarify_answer=""))  # 等待无解
+    assert validate_case(_case(prompt="  "))
+    assert validate_case(_case(criteria=()))
+    assert validate_case(_case(require_clarify=True, clarify_answer=""))
     bad_dim = _case(criteria=(Criterion(id="c", dimension="magic", text="t"),))
     assert validate_case(bad_dim)
-
-
-# ---- DRB 适配 ----
 
 
 @pytest.fixture
@@ -190,9 +184,6 @@ def test_drb_split_is_seeded_stable_and_partitions(fake_drb, tmp_path):
     assert held == []  # id=1 落在 dev
 
 
-# ---- 确定性 scorer ----
-
-
 def _artifact(**overrides) -> Artifact:
     detail = {
         "status": "completed",
@@ -260,8 +251,8 @@ def test_artifact_normalizes_span_failures_from_top_level_records():
 
 
 def test_process_metrics_carries_cache_and_token_fields():
-    """效率块不能静默漏字段：cached/saved tokens 必须在 process_metrics 里（曾因缺
-    字段令 report 显示 0，尽管 DB/detail 有 941k cached）。"""
+    """效率字段不能静默漏:cached 与 saved tokens 必须出现在 process_metrics 里。
+    曾因漏字段使 report 显示 0,而底层数据其实存在。"""
     from evals.deterministic import process_metrics
 
     art = _artifact(
@@ -351,7 +342,8 @@ def test_clarify_flow_checks_resume_path():
     assert _gate(results, "seq_continuous").verdict == "yes"
     rerun = score_artifact(_artifact(events=_clarify_events(1)), case)
     cf = next(r for r in rerun if r.criterion_id == "cf")
-    assert cf.verdict == "no" and "Router" in cf.reason  # 恢复重跑 Router → 行为违规
+    # 恢复时重跑 Router 属于行为违规。
+    assert cf.verdict == "no" and "Router" in cf.reason
 
 
 def test_lease_takeover_and_cache_reuse():
@@ -374,9 +366,6 @@ def test_lease_takeover_and_cache_reuse():
     results = score_artifact(cold, case)
     assert next(r for r in results if r.criterion_id == "tk").verdict == "unknown"
     assert next(r for r in results if r.criterion_id == "cr").verdict == "no"
-
-
-# ---- judge ----
 
 
 class ScriptedInvoker:
@@ -402,7 +391,7 @@ async def test_judge_one_call_per_criterion_with_unknown_exit():
     invoker = ScriptedInvoker(["yes", "抱歉，无法判断"])
     results = await judge_case(case, report="R", attempt=1, invoker=invoker, reference="REF")
     assert [r.verdict for r in results] == ["yes", "unknown"]
-    assert len(invoker.calls) == 2  # 逐条独立调用
+    assert len(invoker.calls) == 2
     assert "REF" in invoker.calls[0] and "【待评报告】" in invoker.calls[0]
     assert "报告没写到”一律判 no" in SYSTEM_PROMPT
 
@@ -425,9 +414,6 @@ def test_parse_verdict_prefix_ordering():
     assert parse_verdict("yes, clearly") == "yes"
 
 
-# ---- 聚合 ----
-
-
 def test_external_weighted_score_and_threshold():
     case = _case(
         track="external",
@@ -447,7 +433,7 @@ def test_external_weighted_score_and_threshold():
     score = aggregate.score_case(case, 1, results)
     assert score.quality_score == 50.0 and not score.passed
     assert score.track == "external"
-    # unknown 不是有效交付：保守按0分计，同时另报 unknown_rate。
+    # unknown 不是有效交付:保守按 0 分计,同时另报 unknown_rate。
     unknown_b = [
         dataclasses.replace(r, verdict="unknown") if r.criterion_id == "b" else r for r in results
     ]
@@ -488,10 +474,10 @@ def test_track_summary_never_mixes_behavior_judge_score_into_report_quality():
 
 
 def test_clarify_flow_is_vacuously_true_when_no_clarification():
-    """未触发澄清 → 前件假 → 条件断言空真（yes），不因模型这次没问而假失败。"""
+    """未触发澄清时前件为假,条件断言空真记 yes;不因模型这次没问而假失败。"""
     from evals.deterministic import CHECKS
 
-    art = _artifact()  # 状态只有 queued/running/done，无 awaiting_input
+    art = _artifact()
     result = CHECKS["clarify_flow"](art, Criterion(id="cf", dimension="behavior", text="t"))
     assert result.verdict == "yes" and "空真" in result.reason
 
@@ -521,7 +507,7 @@ def test_annotation_roundtrip_and_agreement():
     csv_text = aggregate.export_annotation_csv(results, {"x-1": case})
     rows = list(csv.DictReader(io.StringIO(csv_text)))
     assert len(rows) == 2 and rows[0]["criterion_text"] == "乙"
-    # 人工填：j=yes（一致），k=yes（judge unknown → 不进二值域但计 unknown 率）
+    # 人工填写 j 与 k 都记 yes:j 与 judge 一致;k 因 judge 为 unknown 不进一致率,计入 unknown 率。
     for row in rows:
         row["human_verdict"] = "yes"
     buffer = io.StringIO()
@@ -537,7 +523,7 @@ def test_annotation_roundtrip_and_agreement():
 
 
 def test_cohen_kappa_basic():
-    # 完全一致 → 1.0 之前的退化保护；随机对半 → 0
+    # 完全一致 kappa 为 1.0;完全相反时 kappa 为 -1.0,断言取绝对值。
     assert aggregate._cohen_kappa(["yes", "no", "yes", "no"], ["yes", "no", "yes", "no"]) == 1.0
     assert (
         abs(aggregate._cohen_kappa(["yes", "no", "yes", "no"], ["no", "yes", "no", "yes"])) - 1.0
@@ -545,7 +531,7 @@ def test_cohen_kappa_basic():
     )
 
 
-# ---- judge 身份约束:防止自评偏好 ----
+# judge 身份约束:引擎模型给自己产出打分有偏好,自评需显式开启,异构模型不受限。
 
 
 def _fake_llm_settings(monkeypatch, model: str = "mimo-v2.5"):
@@ -565,7 +551,7 @@ def test_judge_falling_back_to_engine_model_requires_explicit_optin(monkeypatch)
     monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
     monkeypatch.delenv("EVAL_SELF_JUDGE", raising=False)
     with pytest.raises(RuntimeError, match="EVAL_JUDGE_MODEL"):
-        OpenAICompatJudge()  # 自评不得静默生效
+        OpenAICompatJudge()
 
     monkeypatch.setenv("EVAL_SELF_JUDGE", "1")
     judge = OpenAICompatJudge()

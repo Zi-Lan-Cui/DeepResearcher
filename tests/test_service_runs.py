@@ -94,11 +94,11 @@ class FakeGraph:
         return await self._run(input)
 
     async def astream(self, input, **kwargs):
-        """复刻官方形态：subgraphs=True 时 yield (namespace, mode, chunk)。
+        """复刻官方形态:subgraphs=True 时 yield (namespace, mode, chunk)。
 
-        stream_messages 条目 = (namespace, text) 或 (namespace, text, msg_type)，
-        msg_type 默认 "AIMessageChunk"——langchain 1.x 真实流式片段的 .type 就是它，
-        假图若默认成 "ai" 会让执行器闸门与生产脱钩(流式失踪事故的测试盲区)。
+        stream_messages 条目 = (namespace, text) 或 (namespace, text, msg_type)。
+        langchain 1.x 真实流式片段的 .type 是 "AIMessageChunk",若假图默认成
+        "ai" 会让执行器的放行判断与生产脱钩,流式问题测不出来。
         "tool" 模拟 messages 模式里混入的工具回执。
         """
         self.seen_configs.append(dict(kwargs))  # 记录 config（thread_id 注入断言用）
@@ -175,9 +175,9 @@ class ServiceHarness:
 
 @pytest_asyncio.fixture
 async def manager(tmp_path):
-    # 用文件库而非 :memory:+StaticPool：StaticPool 全共享一条连接，后台任务与
-    # cancel() 的并发 session 会互相踩（一方回滚会 terminate 另一方在用的连接）。
-    # 生产 asyncpg 池每 session 独立连接，无此问题——文件 SQLite 还原该语义。
+    # 用文件库而非 :memory: + StaticPool:StaticPool 全共享一条连接,后台任务与
+    # cancel() 的并发 session 会互相干扰,一方回滚会 terminate 另一方在用的连接。
+    # 生产 asyncpg 池每 session 独立连接,无此问题;文件 SQLite 还原该语义。
     engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'runs.db'}")
     await init_db(engine)
     session_factory = make_session_factory(engine)
@@ -300,7 +300,7 @@ async def test_manager_delegates_execution_without_building_graph_itself(manager
 
 
 async def test_running_status_is_announced_only_for_user_visible_claim(manager):
-    """人工 resume 只在等待时离开 queued;重启恢复的 resume 持续续跑。"""
+    """人工回答恢复要播 running 帧;重启恢复的续跑不播。"""
 
     silent_id = "run-system-resume"
     announced_id = "run-human-resume"
@@ -340,7 +340,7 @@ async def test_success_persists_terminal_and_injects_run_id(manager):
     run_id = await manager.start(USER_ID, "  测试问题  ")
     await _settle(manager, run_id)
 
-    # 不变式 1：run_id/session_id 必须显式进入引擎输入
+    # run_id/session_id 必须显式进入引擎输入
     assert graph.ainvoke_inputs[0] == {"query": "测试问题", "run_id": run_id, "session_id": run_id}
     run = await _row(manager, run_id)
     assert run.status == "completed"
@@ -413,12 +413,12 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
                 select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
             )
         ).all()
-    assert len(dones) == 1  # 不变式 2/3：done 恰一次且在 DB（可回放）
+    assert len(dones) == 1  # done 恰一次,且必须落 DB 以便重连回放
 
 
 async def test_remote_manager_cancel_uses_notification_without_waiting_for_heartbeat(manager):
     gate = asyncio.Event()
-    manager.execution.worker._heartbeat_seconds = 20  # noqa: SLF001 - prove fast path is independent
+    manager.execution.worker._heartbeat_seconds = 20  # noqa: SLF001 - 验证快路径不依赖心跳
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     run_id = await manager.start(USER_ID, "remote cancel")
     while (await _row(manager, run_id)).status != "running":
@@ -506,10 +506,12 @@ async def test_graph_interrupt_persists_awaiting_input_without_done(manager):
 
 
 async def test_real_suspend_then_resume_matches_is_null_cas(manager):
-    """回归守卫：真实挂起（worker claim 分支写 resume_payload=None）必须让
-    resume 的 `is_(None)` CAS 命中。JSON 列默认把 None 存成 JSON 字面量 null，
-    Python 读回同样是 None，肉眼与 ORM 都看不出，却令 `IS NULL` 恒 false →
-    澄清后永久 409 卡死。故断言必须在 SQL 层用 is_(None)，不能比对 Python None。
+    """回归守卫:真实挂起时 worker claim 分支写 resume_payload=None,必须让
+    resume 的 `is_(None)` CAS 命中。
+
+    JSON 列默认把 None 存成 JSON 字面量 null,Python 读回同样是 None,代码里
+    看不出差别,但 SQL 的 IS NULL 恒为 false,澄清回答会一直 409 无法恢复。
+    因此断言必须在 SQL 层用 is_(None),不能比对 Python None。
     """
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
@@ -519,8 +521,8 @@ async def test_real_suspend_then_resume_matches_is_null_cas(manager):
     await _settle(manager, run_id)
     assert (await _row(manager, run_id)).status == "awaiting_input"
 
-    # SQL 层不变量：挂起后载荷必须是真正的 SQL NULL（而非 JSON null）。
-    # 这是 bug 的精确探针——旧代码在此失败（is_ 判 false），且 Python 读回仍是 None。
+    # SQL 层不变式:挂起后载荷必须是真正的 SQL NULL,而非 JSON null;
+    # 用 Python 侧比对看不出这个差别。
     async with manager.session_factory() as session:
         is_sql_null = await session.scalar(
             select(Run.resume_payload.is_(None)).where(Run.id == run_id)
@@ -531,7 +533,9 @@ async def test_real_suspend_then_resume_matches_is_null_cas(manager):
     manager.holder["graph"] = FakeGraph(result=_completed_result(), resume_run_id=run_id)
     manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - resume 需要断点在
     advanced = await manager.resume_with_input(USER_ID, run_id, "成本")
-    assert advanced != "awaiting_input"  # 旧代码此处抛 RuntimeError（already_resumed）→ 永久 409
+    assert (
+        advanced != "awaiting_input"
+    )  # CAS 落空时此处抛 RuntimeError already_resumed、回答永远 409
     await _settle(manager, run_id)
     assert (await _row(manager, run_id)).status == "completed"
 
@@ -590,7 +594,7 @@ async def test_two_queue_instances_claim_a_run_only_once(manager):
 
 async def test_worker_polling_claims_run_created_by_another_process(manager):
     """独立 Worker 不依赖 API 进程调用 wake(),靠自身轮询领取。"""
-    manager.execution.worker._poll_seconds = 0.01  # noqa: SLF001 - polling seam
+    manager.execution.worker._poll_seconds = 0.01  # noqa: SLF001 - 测试提速轮询
     graph = FakeGraph(result=_completed_result(), emit_events=1)
     manager.holder["graph"] = graph
     service = RunService(session_factory=manager.session_factory, config=manager.config)
@@ -680,7 +684,7 @@ async def test_two_event_stores_allocate_non_overlapping_sequences(manager):
 
 async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - capacity seam
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - 测试容量口子
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
 
     first = await manager.start(USER_ID, "q1")
@@ -703,7 +707,7 @@ async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
 
 async def test_cancel_queued_run_never_executes_graph(manager):
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - capacity seam
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - 测试容量口子
     graph = FakeGraph(gate=gate, result=_completed_result())
     manager.holder["graph"] = graph
 
@@ -783,7 +787,7 @@ async def test_reconcile_startup_converts_stale_rows(manager):
     assert len(orphans) == 2
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
-    # done 帧必须经 hub→store 正路:seq 由账本指针分配而非手写 max+1,行号与指针一致。
+    # done 帧必须经 hub→store 正路:seq 由 runs.event_seq 指针分配而非手写 max+1,行号与指针一致。
     async with manager.session_factory() as session:
         for event in orphans:
             run_row = await session.get(Run, event.run_id)
@@ -791,8 +795,8 @@ async def test_reconcile_startup_converts_stale_rows(manager):
 
 
 async def test_headline_persists_at_clarify_exit_not_at_end(manager):
-    """时机回归:携带 run_headline 的根 values(clarify 超步出口)一到就落库推帧,
-    不等 run 终态;终值再含 headline 也被 CAS 挡成一次。"""
+    """headline 落库时机:携带 run_headline 的根 values 在 clarify 超步出口一到
+    就落库推帧,不等 run 终态;终值再含 headline 时由 CAS 挡住,只落一次。"""
     gate = asyncio.Event()
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
@@ -833,8 +837,8 @@ async def test_headline_persists_at_clarify_exit_not_at_end(manager):
 
 
 async def test_run_graph_passes_thread_id_config(manager):
-    """①恢复基建的接缝：graph 必须收到 thread_id=run_id 的 config，
-    否则 checkpointer 无处落、resume 无从谈起。"""
+    """恢复的接缝:graph 必须收到 thread_id=run_id 的 config,
+    否则 checkpointer 无处落、resume 无法续跑。"""
     graph = FakeGraph(result=_completed_result())
     manager.holder["graph"] = graph
     run_id = await manager.start(USER_ID, "q")
@@ -846,13 +850,13 @@ async def test_run_graph_passes_thread_id_config(manager):
 
 
 async def test_streaming_preview_routing_and_ephemerality(manager):
-    """官方 flag 形态：只有 supervisor 直下（ns 深度1）的 text 进预览；
-    深层嵌套（tools 路径）、writer、空文本一律静默；帧无 seq、不落库。
+    """只有 supervisor 直下、命名空间深度 1 的 text 进预览;tools 深层嵌套、
+    writer、空文本都不出口;帧不带 seq、不落库。
 
-    预览只有一条路径:执行器直发注入的总线(测试里 manager 与 executor
-    共享同一个 LocalPreviewBus 实例)。"""
+    预览只有一条路径:执行器直发注入的总线。测试里 manager 与 executor
+    共享同一个 LocalPreviewBus 实例。"""
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - subscription timing seam
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - 控制派发时机的口子
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
         gate=gate,
@@ -887,7 +891,7 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         {"channel": "supervisor", "text": "先梳理缺口，"},
         {"channel": "supervisor", "text": "旧版聚合消息也放行"},
     ]
-    assert all("seq" not in d for d in deltas)  # ephemeral：不占 seq
+    assert all("seq" not in d for d in deltas)  # 临时帧,不占 seq
     async with manager.session_factory() as session:
         persisted = (
             await session.scalars(
@@ -915,7 +919,7 @@ class FakeSaver:
 
 async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(manager):
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - keep resumed work queued
+    manager.execution.worker._max_running = 1  # noqa: SLF001 - 让恢复任务留在队列不派发
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     active = await manager.start(USER_ID, "occupy slot")
     while (await _row(manager, active)).status != "running":
@@ -925,7 +929,7 @@ async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(man
     async with manager.session_factory() as session:
         session.add(Run(id=run_id, user_id=USER_ID, query="clarify", status="awaiting_input"))
         await session.commit()
-    manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - injected fake saver
+    manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - 注入假断点存储
 
     assert await manager.resume_with_input(USER_ID, run_id, "选择第二项") == "queued"
     queued = await _row(manager, run_id)
@@ -939,7 +943,7 @@ async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(man
 
 
 async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
-    """②全链路：分诊(判定不可恢复/续跑) → seq 续号 → astream(None) 续跑 → 新事件落库。"""
+    """恢复全链路:分诊判定可续/不可续 → seq 续号 → astream(None) 续跑 → 新事件落库。"""
     engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'resume.db'}")
     await init_db(engine)
     factory = make_session_factory(engine)
@@ -956,7 +960,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
             )
         )
         session.add(Run(id="run-dead", user_id=USER_ID, query="无据可活", status="running"))
-        for i in range(1, 6):  # 上一世留下的 seq 1..5
+        for i in range(1, 6):  # 上一个进程已写入的 seq 1..5
             session.add(
                 RunEvent(run_id="run-orphan", seq=i, event_type=f"engine_{i}", record={"seq": i})
             )
@@ -1028,7 +1032,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
                 )
             ).all()
         )
-        # 旧 1..5 → resuming=6 → trace + engine + done：跨世连续、无主键冲突。
+        # 旧 1..5 → resuming=6 → trace + engine + done:跨重启连续,无主键冲突。
         assert [event.seq for event in persisted] == list(range(1, 13))
         assert [event.event_type for event in persisted[6:]] == [
             "trace_started",

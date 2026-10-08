@@ -1,17 +1,18 @@
-"""跨模块共享的字面量词汇表:同一值集只登记一次,wire 形状不变。
+"""跨模块共享的字面量词汇表:同一值集只登记一次,不改变序列化后的 wire 值。
 
-必须住在根级而非 schemas/ 之内:evidence.models 也要 import 它;放进 schemas 包
-会重新引入 evidence⇄schemas 循环导入,该包在半初始化状态下直接报错。本模块只依赖 typing。
+必须住在根级而非 schemas/ 之内:evidence.models 也要 import 它,放进 schemas 包
+会形成 evidence 与 schemas 的循环导入,模块在半初始化状态下就会报错。
+本模块只依赖 typing。
 
-两组刻意相近但**不同域**的词汇,读码时勿混:
-- ``RouteDecision.route`` 的 ``clarify_needed``:路由节点的即时判定(wire 值已冻结);
+两组刻意相近但分属不同域的词汇,读码时勿混:
+- ``RouteDecision.route`` 的 ``clarify_needed``:路由节点的即时判定,wire 值已冻结;
 - ``AnswerMode`` 的 ``clarification_needed``:run 的最终交付形态。
-一字之差,语义空间互不包含,故不合并。
+一字之差,语义互不包含,因此不合并。
 
-"一个研究方向"在链上有三个名字,各司其职、不再扩面:
-- ``topic``:Supervisor 派发工具(ResearchDelegate)的入参;
-- ``task`` / ``task_id``:状态簿记(SubTask、事件字段、ResearchDirectionResult);
-- ``direction``:对外与模型可见面(事件名 direction_*、方向卡、提示词与报告词)。
+"一个研究方向"在链上有三个名字,各司其职,不要再新增别名:
+- ``topic``:Supervisor 派发工具 ResearchDelegate 的入参;
+- ``task`` / ``task_id``:状态簿记,含 SubTask、事件字段、ResearchDirectionResult;
+- ``direction``:对外与模型可见面,含事件名 direction_*、方向卡、提示词与报告用词。
 """
 
 from typing import Literal
@@ -27,7 +28,7 @@ ResearchStatus = Literal["not_started", "running", "completed", "incomplete", "f
 
 # Writer 可交付的四种答案形态。
 WriterAnswerMode = Literal["quick_answer", "deep_research", "research_incomplete", "review_limited"]
-# State 顶层 answer_mode 通道 = Writer 产物 ∪ 路由侧澄清。
+# State 顶层 answer_mode 通道:Writer 的四种交付形态,外加路由侧的澄清值。
 AnswerMode = Literal[
     "quick_answer",
     "deep_research",
@@ -36,14 +37,14 @@ AnswerMode = Literal[
     "clarification_needed",
 ]
 
-# retrieval_method 词表:默认/回退共用 origin_fetch,各来源路径一名一常量。
-# Evidence 字段是 str——fetch 编排层的 f"{provider.name}_fetch" 兜底允许产生
-# 词表外的新值,域核心不设枚举闸(供应商字符串不进 Evidence)。
+# retrieval_method 词表:默认与回退共用 origin_fetch,每种来源路径各一个常量。
+# Evidence 字段类型是 str:fetch 编排层的 f"{provider.name}_fetch" 兜底允许产生
+# 词表外的新值,域核心因此不加枚举校验;provider 的原始名字不写入 Evidence。
 RETRIEVAL_ORIGIN_FETCH = "origin_fetch"
 RETRIEVAL_ALIYUN_WEB_FETCH = "aliyun_web_fetch"
 RETRIEVAL_TAVILY_RAW_CONTENT = "tavily_raw_content"
 RETRIEVAL_SEARCH_SUMMARY = "search_summary"
 
-# support 阶梯的序(升序):writer 打分与 researcher 分档共用,不再各写形状。
+# support 强度从低到高的排序:writer 打分与 researcher 分档共用,各处不要再抄一份。
 SUPPORT_ORDER: tuple[str, ...] = ("insufficient", "partial", "direct")
 SUPPORT_RANK: dict[str, int] = {value: index for index, value in enumerate(SUPPORT_ORDER)}

@@ -22,9 +22,9 @@ if uvloop is not None:
 
 @pytest.fixture(scope="session", autouse=True)
 def otel_tracer_provider():
-    """生产 worker_lifespan 必装 provider;测试会话同构:常驻一份,ledger 只挂一次。
+    """生产 worker_lifespan 会安装 provider,测试会话同样常驻一份,ledger 处理器只挂一次。
 
-    账本记录是否写出由 ledger 的 run→sink 注册表决定,未注册 run 的 span 不落账。
+    账本是否写出由 ledger 的 run→sink 注册表决定,未注册 run 的 span 不落账。
     """
     provider = opentelemetry_trace.get_tracer_provider()
     if not isinstance(provider, TracerProvider):

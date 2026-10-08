@@ -27,9 +27,9 @@ from deepresearcher.state import section
 
 _logger = get_logger("deepresearcher.nodes.reviewer")
 
-# 只重试同一请求重发后结果可能不同的失败：网关内容审查有随机抖动
-# （content_filter 事故已证实），JSON 解析/schema 校验失败同理。
-# 传输层超时/断连由 openai SDK 内建重试消化，不在这里重复。
+# 只重试同一请求重发后结果可能不同的失败：网关内容审查有随机抖动，
+# content_filter 曾在线上实际发生，JSON 解析与 schema 校验失败同理。
+# 传输层超时与断连由 openai SDK 内建重试处理，不在这里重复。
 _RETRYABLE_REVIEW_ERRORS = (
     ContentFilterFinishReasonError,
     OutputParserException,
@@ -77,7 +77,7 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
         }
         for item in bindings
     ]
-    # 报告任务书只随 writer_directive 交接（node_runner 已恢复为模型）。
+    # 报告任务书只随 writer_directive 交接；node_runner 已在节点入口恢复为模型。
     directive = state.get("writer_directive")
     report_brief = directive.report_brief if isinstance(directive, WriterDirective) else {}
     messages = [

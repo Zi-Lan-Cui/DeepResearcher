@@ -1,9 +1,9 @@
 """服务层配置：数据库、JWT、监听与配额。
 
-引擎配置（LLM/搜索/agent 预算）仍由 ``deepresearcher.config.get_settings()`` 负责；
-本模块只补“把它跑成多用户服务”所需的新键。沿用同一 env 文件约定
-（``DEEPRESEARCHER_ENV_FILE``，默认 ``env/.env``；``load_dotenv(override=False)``
-不会与引擎的加载互相覆盖），环境判别复用 ``APP_ENV``。
+引擎配置（LLM、搜索、agent 预算）仍由 ``deepresearcher.config.get_settings()`` 提供，
+本模块只定义把它跑成多用户服务所需的新键。env 文件沿用同一约定：
+``DEEPRESEARCHER_ENV_FILE``，默认 ``env/.env``，``load_dotenv(override=False)``
+不会与引擎侧的加载互相覆盖；环境判别复用 ``APP_ENV``。
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def get_service_config() -> ServiceConfig:
     if len(jwt_secret) < _MIN_SECRET_CHARS:
         if environment == "production":
             raise ValueError(f"生产环境必须提供长度 ≥{_MIN_SECRET_CHARS} 的 SERVICE_JWT_SECRET。")
-        # 开发期缺省 → 每次进程随机一份：能用，但重启即令全部旧 token 失效。
+        # 开发环境缺省时每个进程随机生成一份，代价是重启后全部旧 token 失效。
         jwt_secret = secrets.token_urlsafe(_MIN_SECRET_CHARS)
         logger.warning(
             "SERVICE_JWT_SECRET 缺失或过短（%s 环境），已生成一次性密钥；进程重启后登录态失效。",
@@ -142,9 +142,9 @@ def clear_service_config_cache() -> None:
 def checkpoint_dsn(database_url: str) -> str | None:
     """由业务库 URL 派生 checkpointer 的 psycopg DSN。
 
-    langgraph 的 AsyncPostgresSaver 走 psycopg（不认 SQLAlchemy 的 +asyncpg 方言），
-    两者共享同一个 PG 实例但连接层独立；非 postgresql URL（测试用 SQLite）
-    返回 None，服务自动跳过 checkpointer——恢复能力随部署形态降级，不假装有。
+    langgraph 的 AsyncPostgresSaver 走 psycopg，不认 SQLAlchemy 的 +asyncpg 方言，
+    因此要改写协议前缀；两个连接层共享同一个 PG 实例。非 postgresql URL
+    （测试用 SQLite）返回 None，装配方据此跳过 checkpointer，恢复能力随部署形态降级。
     """
     if not database_url.startswith("postgresql"):
         return None

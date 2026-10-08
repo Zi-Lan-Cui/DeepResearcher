@@ -1,6 +1,6 @@
-"""Run 状态机命名迁移表的独立校验。
+"""Run 状态机迁移表的独立校验。
 
-EXPECT_* 是手抄自 service/runs/transitions.py 的第二份表:表改动时这里必须同步。
+EXPECT_* 是从 service/runs/transitions.py 手抄的第二份表;迁移表改动时这里必须同步。
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def test_reason_is_carried_by_fixed_provenance_transitions() -> None:
     assert TRANSITIONS["reap"].reason is not None
     assert TRANSITIONS["release"].reason is not None
     assert TRANSITIONS["reap"].reason != TRANSITIONS["release"].reason
-    # finish/fail 的 reason 是引擎产物,不随行固定。
+    # finish/fail 的 reason 由引擎按运行结果填写,迁移表中不固定。
     assert TRANSITIONS["finish"].reason is None
     assert TRANSITIONS["fail"].reason is None
 
@@ -123,7 +123,7 @@ def test_side_effects_terminal_and_intermediate() -> None:
     assert interrupted["lease_owner"] is None
     assert interrupted["finished_at"] is None
     assert "resume_payload" not in interrupted  # 中断行保留 payload,供 resume 领取
-    assert "terminal_reason" not in interrupted  # 随迁移行固定(reap/release),不经状态
+    assert "terminal_reason" not in interrupted  # 由迁移行自带的 reason 写入,不在副作用里填
 
     assert side_effects("running", now=NOW) == {"status": "running"}
     assert side_effects("queued", now=NOW) == {"status": "queued"}
@@ -157,8 +157,8 @@ def test_apply_transition_fills_fixed_reason() -> None:
 
 
 def test_apply_transition_rejects_wrong_name_even_when_edge_exists() -> None:
-    # running→cancelled 这条边存在(cancel_running),但 cancel_pending 不许推它:
-    # 按迁移名校验严于按并集校验。
+    # running→cancelled 这条边经 cancel_running 存在,但 cancel_pending 不能用它:
+    # 按迁移名校验严于按来源并集校验。
     row = _row("running")
     doomed_before = vars(row).copy()
     with pytest.raises(IllegalTransitionError):

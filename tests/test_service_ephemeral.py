@@ -116,7 +116,7 @@ async def test_redis_preview_publish_never_waits_for_network_and_drops_oldest():
 
     async with asyncio.timeout(0.1):
         await bus.publish("run-1", _event(text="first"))
-        await asyncio.sleep(0)  # publisher takes the first item and blocks in Redis
+        await asyncio.sleep(0)  # publisher 协程取走第一条,随后阻塞在 Redis 里
         await bus.publish("run-1", _event(text="discarded"))
         await bus.publish("run-1", _event(text="latest"))
 
@@ -147,8 +147,8 @@ def test_preview_event_rejects_business_events_and_unknown_channels():
 
 
 def test_preview_channel_whitelist_single_source_across_gates():
-    """总线闸与投影闸同读 PREVIEW_CHANNELS:任何一边私设的通道集合漂移,
-    都会在这里表现为"某通道在两道闸结论不同"而被抓住。"""
+    """总线闸与投影闸同读 PREVIEW_CHANNELS;若某一边私设通道集合发生漂移,
+    本用例按同一通道在两闸结论不一致时抓出。"""
     from deepresearcher.service.events.projector import project
     from deepresearcher.service.preview.protocol import PREVIEW_CHANNELS
 

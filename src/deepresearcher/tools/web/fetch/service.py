@@ -1,7 +1,7 @@
 """网页抓取编排：Provider 顺序尝试与可恢复降级。
 
-正文级缓存不在本层——由 SourceReaderTool 经 ResearchMaterialStore.resolve_fetch
-命中/回写；material_fetch_key 只是把"可跨 Run 复用"的身份算给 reader 用。
+正文级缓存不在本层：SourceReaderTool 经 ResearchMaterialStore.resolve_fetch 完成
+命中与回写，material_fetch_key 只负责算出可跨 Run 复用的正文身份交给 reader 使用。
 """
 
 import asyncio

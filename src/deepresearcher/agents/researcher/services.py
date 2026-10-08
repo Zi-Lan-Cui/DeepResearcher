@@ -1,8 +1,8 @@
 """ResearchAgent 方向级工具的业务实现:不感知 langgraph 的纯 async 函数。
 
-每个函数依赖显式入参:deps 是 agent 构造期的稳定零件(跨 run 共享只读),
-task/loop_state/event_context/commit_lock 是本轮 run 的名词,由 tools.py
-从 ResearcherLoopContext 转交。工具回执的字符串协议留在 tools.py,这里只回 dict。
+每个函数只依赖显式入参:deps 是 agent 构造期的稳定零件,跨 run 共享只读;
+task、loop_state、event_context、commit_lock 属本轮 run,由 tools.py 从
+ResearcherLoopContext 转交。工具回执的字符串协议留在 tools.py,这里只回 dict。
 """
 
 import asyncio
@@ -370,8 +370,8 @@ async def _validate_submissions(
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
     accepted_via_normalization = 0  # 逐字比对因连字符/ligature 编码差异失败、归一化后才接受的条数
-    accepted_via_punctuation = 0  # 只差标点样式、由回退定位替换为原文子串后接受的条数
-    # 批内 memo：同文档多条引用只取一次原文(Redis 后端下省 N-1 次全量 GET)。
+    accepted_via_punctuation = 0  # 仅标点样式不同、由回退定位替换为原文严格子串后接受的条数
+    # 批内缓存:同一文档的多条引用只取一次原文,Redis 后端下省去重复的全量 GET。
     source_texts: dict[str, str] = {}
     assert deps.material_store is not None  # 调用方已守卫
     for index, raw in enumerate(submissions):
@@ -390,9 +390,9 @@ async def _validate_submissions(
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
             source_texts[document_id] = source_text
-        # 入池不变式：quote 逐字（忽略空白 + 连字符/ligature 编码差异）出现在该来源正文里。
-        # 宽松仍不过时先试标点回退定位：词序列一致、仅标点/引号/破折号样式不同
-        # → 替换为原文严格子串直接入池；词都对不上才是模型改述，回执附最接近的原文句。
+        # 入池不变式:quote 逐字出现在该来源正文里,忽略空白与连字符/ligature 编码差异。
+        # 逐字比对不过时先试标点回退定位:词序列一致、仅标点/引号/破折号样式不同,
+        # 替换为原文严格子串后直接入池;词对不上才是模型改述,回执附最接近的原文句。
         if not quote_in_source(source_text, quote):
             canonical_quote = quote_verbatim_span(source_text, quote)
             if canonical_quote is None:
@@ -457,8 +457,8 @@ async def add_evidence(
 ) -> dict[str, object]:
     """逐条校验(锁外,可含网络读)→ 排序截断 → commit_lock 短临界区入池。
 
-    边界:校验不触碰 loop_state;去重/每源容量/档案容量的检查-然后-动作
-    全部收进临界区,并发提交不会互相吞并槽位或越过每源上限。
+    边界:校验不触碰 loop_state;去重、每源容量、档案容量的检查-然后-动作全部
+    收进临界区,并发提交不会重复占掉同一批槽位,也不会越过每源上限。
     """
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
@@ -505,13 +505,13 @@ async def add_evidence(
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "duplicate_count": len(duplicates),
-            # 直方图归因证据为何被丢；quote_paraphrase=改述（标点回退也定位不到）；
-            # accepted_via_normalization=编码归一后才接受，accepted_via_punctuation=
-            # 仅标点样式不同、替换为原文子串后接受。
+            # 直方图记录证据被拒原因的分布;quote_paraphrase 指标点回退也定位不到的改述;
+            # accepted_via_normalization 指编码归一后才接受的条数,accepted_via_punctuation
+            # 指仅标点样式不同、替换为原文子串后接受的条数。
             "rejected_reasons": rejected_reasons,
             "accepted_via_normalization": accepted_via_normalization,
             "accepted_via_punctuation": accepted_via_punctuation,
-            # 模型提交证据时的理由：留作审计/归因的可解释信号，不再静默丢弃。
+            # 模型提交证据时给出的理由,留作审计与归因的可解释信号。
             "reason": reason.strip()[:400],
         },
     )
@@ -576,8 +576,8 @@ def _candidate_cards(
     start: int,
     count: int,
 ) -> tuple[list[dict[str, object]], int | None]:
-    """按 raw_results 原始下标分页出候选卡；SearchSources 预览与 ListSearchResults 共用，
-    保证同一候选在两处形状一致、且 offset 坐标同一（跳过空 url 不移动游标）。"""
+    """按 raw_results 原始下标分页出候选卡,SearchSources 预览与 ListSearchResults 共用。
+    同一候选在两处形状一致,offset 口径相同:跳过空 url 时不推进 offset。"""
     cards: list[dict[str, object]] = []
     for raw in raw_results[start : start + count]:
         url = str(raw.get("url", "")).strip()
@@ -593,7 +593,7 @@ def _candidate_cards(
 
 
 def _search_candidate_card(candidate: SearchCandidate) -> dict[str, object]:
-    """统一的候选卡形状：始终带（截断）snippet，供首屏即可判断是否值得 ReadSources。"""
+    """统一的候选卡形状:始终带截断后的 snippet,让模型在预览阶段就能判断是否值得读取。"""
     return {
         "candidate_id": candidate.candidate_id,
         "title": candidate.title,
@@ -622,7 +622,7 @@ def complete_direction(
     """ResearchDirectionComplete 业务:校验选定集、落定 stop_reason,返回完整回执。
 
     只引用活跃 Evidence;选定即收敛工作集。无活跃证据时按 BLOCKED_WITHOUT_EVIDENCE
-    落定并把 reason 兜底进 remaining_gaps,保证缺口面不为空。
+    落定,并把 reason 兜底进 remaining_gaps,保证缺口清单留有内容。
     """
     requested = list(dict.fromkeys(selected_evidence_ids))
     active = set(loop_state.active_evidence_ids)

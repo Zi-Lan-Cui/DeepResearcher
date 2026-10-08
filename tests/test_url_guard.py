@@ -65,8 +65,8 @@ def test_public_url_guard_rejects_non_public_dns_answers(monkeypatch, address):
 
 
 def test_public_url_guard_admits_dual_stack_with_one_global_record(monkeypatch):
-    """双栈主机同时返回一条全局 + 一条非全局记录时，旧实现整源拒绝，误杀大量
-    合法来源（评测里一个研究方向被拦 50+ 次）。修正后放行并只钉全局地址。"""
+    """双栈主机同时返回全局与非全局记录时,只筛掉非全局地址并仅钉全局地址,
+    不得整源拒绝。"""
     guard = PublicUrlGuard()
 
     async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:

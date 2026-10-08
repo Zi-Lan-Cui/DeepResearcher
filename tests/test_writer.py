@@ -54,7 +54,7 @@ def test_writer_directive_accepts_configured_ten_known_gaps() -> None:
 
 
 def test_evidence_has_no_audit_or_locator_surface() -> None:
-    # 行号定位与 audit_chunk 已整体删除；这里锁定不再有这两个面（防止回潮）。
+    # 输出契约不含行号定位与 audit_chunk,断言缺席以防重新引入。
     evidence = _ev(
         "e1",
         "可公开的结论",
@@ -731,7 +731,7 @@ def test_writer_rejects_invalid_inline_draft_but_keeps_text(tmp_path):
 
 
 class _NudgeAwareLLM:
-    """先违规输出正文；收到守卫踢回提示后改用 CompleteReport 正规提交。"""
+    """先输出未提交正文;收到守卫退回提示后改用 CompleteReport 正规提交。"""
 
     def __init__(self):
         self.turn = 0
@@ -791,7 +791,7 @@ def _event_types(tmp_path):
 
 
 def test_writer_guard_nudges_text_only_output_back_into_tool_submission(tmp_path):
-    """提交前输出纯文本被守卫踢回，模型改用 CompleteReport 时按正规路径完成。"""
+    """提交前输出纯文本被守卫退回,模型改用 CompleteReport 时按正规路径完成。"""
     writer, state, _ = _writer_inline_test_setup(tmp_path, _NudgeAwareLLM())
     result = asyncio.run(writer.run(state))
 
@@ -799,13 +799,13 @@ def test_writer_guard_nudges_text_only_output_back_into_tool_submission(tmp_path
     assert "[[cite:e1]]" in result["report_draft"]
     events = _event_types(tmp_path)
     assert events.count("writer_tool_loop_nudged") == 1
-    # 走的是工具提交路径，而非内联救回
+    # 走工具提交路径,而非内联草稿恢复
     assert "writer_draft_ready" in events
     assert "writer_inline_draft_recovered" not in events
 
 
 def test_writer_guard_bounded_then_recovery_catches(tmp_path):
-    """模型坚持输出正文：守卫最多踢回 2 次后放行，由内联救回兜底，不死循环。"""
+    """模型坚持输出正文:守卫最多退回 2 次后放行,由内联草稿恢复兜底,不无限循环。"""
     writer, state, _ = _writer_inline_test_setup(tmp_path, _InlineReportLLM("e1"))
     result = asyncio.run(writer.run(state))
 
@@ -872,7 +872,7 @@ class _BulkReadThenWriteLLM:
 
 
 def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
-    """批量截断必须显式回传；编造 id 一次性报全且不吞配额（run-e10d1229 回归锁）。"""
+    """批量截断必须显式回传;编造 id 一次性全部点名,且不占读取配额。"""
     import json
 
     from deepresearcher.schemas import WriterDirective
@@ -905,10 +905,10 @@ def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
     assert reads[0]["payload"]["truncated_ids"] == ["e3", "e4"]  # 截断显式
     assert reads[0]["payload"]["unknown_ids"] == ["ghost-1"]  # 编造 id 被点名
     assert reads[0]["payload"]["read_ids"] == ["e1", "e2"]  # 未知 id 不占配额
-    assert result["writer"].status == "completed"  # 两步内自愈
+    assert result["writer"].status == "completed"  # 截断信号可见,模型两步内补齐
 
 
-# --- 通道化不变式(§5 分类 + 通道回环 + 批重建) --------------------------------
+# 通道化不变式守卫:覆盖 §5 分类、通道回环与批重建。
 
 
 def _non_concurrency_safe_channels(state_cls) -> set[str]:

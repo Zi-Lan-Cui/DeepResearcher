@@ -40,7 +40,7 @@ class SearchTool:
         self.client = client
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.tools.web_search")
-        # 实例随 build_graph 每 run 新建:缓存生命周期=单个 run,随 run 结束回收。
+        # build_graph 每个 run 新建实例，因此查询缓存只在单个 run 内有效，随 run 结束回收。
         self._query_cache: dict[str, list[SearchResult]] = {}
         self._query_cache_lock = asyncio.Lock()
 
@@ -50,7 +50,8 @@ class SearchTool:
     async def arun_queries(self, task: SubTask, *, queries: list[str]) -> SearchToolResult:
         started = time.perf_counter()
         link: SpanContext | None = None
-        failures: list[SearchFailure] = []  # 先绑定:早期异常路径下 except 侧需要引用它
+        # 提前绑定空列表：早期异常路径进入 except 时也要能引用它。
+        failures: list[SearchFailure] = []
         search_queries = list(
             dict.fromkeys(query.strip() for query in queries if query.strip())
         ) or [task["question"]]
@@ -83,7 +84,7 @@ class SearchTool:
                         missing_queries.append(query)
 
             async def search_one(query: str) -> list[SearchResult]:
-                # 逐 query 的起止事件:方向卡在整批 gather 返回前就有滚动进度。
+                # 每个 query 单独发起止事件，使进度能在整批 gather 返回前持续输出。
                 if self.event_sink is not None:
                     self.event_sink.write(
                         make_tool_event(
@@ -135,7 +136,8 @@ class SearchTool:
                 kind="tool",
                 input={"queries": [query[:80] for query in missing_queries[:10]]},
             ):
-                link = current_span_context()  # search 事件归属 tool span,即使写出点在 with 之外
+                # 在此捕获上下文：搜索事件的写出点位于 with 之外，仍需归属本 tool span。
+                link = current_span_context()
                 batches = await asyncio.gather(
                     *(search_one(query) for query in missing_queries),
                     return_exceptions=True,
@@ -148,8 +150,8 @@ class SearchTool:
                 if isinstance(batch, BaseException)
             ]
             fetched_batches = [batch for batch in batches if isinstance(batch, list)]
-            # 账户级不可用优先于"这次没搜到"：直接上抛专用错误，让 failed_search 打标志，
-            # 上层据此停止重试、快速收尾（而不是把每条 query 当普通空结果反复试）。
+            # 账户级不可用优先于普通没搜到结果：直接上抛专用错误，让 failed_search 打标志，
+            # 上层据此停止重试、快速收尾，不再把每条 query 当普通空结果反复重试。
             exhausted = next((b for b in batches if isinstance(b, ProviderExhaustedError)), None)
             if exhausted is not None:
                 raise exhausted
@@ -244,8 +246,8 @@ class SearchTool:
             url = result.get("url", "")
             if not url:
                 continue
-            # 与缓存共用同一 canonical_url;去重折叠尾斜杠。凭证 URL 归一为 ""
-            # (不可共用身份)——退回原串,既不错误合并也不丢失结果。
+            # 与缓存共用同一 canonical_url，去重时折叠尾斜杠。
+            # 凭证 URL 归一为空串即无法共用身份，此时退回原串，既不错误合并也不丢失结果。
             key = canonical_url(url, strip_trailing_slash=True) or url
             current = by_url.get(key)
             if current is None or result.get("score", 0.0) > current.get("score", 0.0):

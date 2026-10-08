@@ -1,14 +1,12 @@
 """二元 rubric LLM judge：每条 criterion 独立调用，允许 unknown。
 
-方法论对齐（美团的二元化改造 + Anthropic 的 unknown 出口建议）：
-- 打分单位是"是/否断言"，不是 0-10 印象分——整体打分的人机一致率基线太低
-  （DRB 官方自证人工互评一致率仅 ~69%），逐条二元判 + 人工同表标注才有
-  可计算的一致率；
-- 每条 criterion 独立调用：一次长上下文里顺判 12 条会互相污染；
-- unknown 只表示 criterion 本身歧义、材料损坏或评审器无法工作；
-  报告未覆盖 criterion 是明确的 no，不能用 unknown 逃避失分；
-- 外轨带专家参考文章做对照（RACE 的 reference-based 语义），内轨行为题
-  不走 judge（全部 deterministic）。
+- 判定单位是逐条 criterion 的 yes/no,不给整篇报告 0-10 印象分:整体打分
+  的人机一致率过低,逐条二元判并在同一张表上人工标注才可计算一致率;
+- 每条 criterion 独立调用:一次长上下文里连判多条会互相干扰;
+- unknown 只表示 criterion 本身歧义、材料损坏或 judge 无法工作;
+  报告未覆盖 criterion 是明确的 no,不得用 unknown 代替失分;
+- external 轨带专家参考文章做对照,behavior 轨不经 judge,全部走
+  deterministic scorer。
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ def build_user_prompt(criterion: Criterion, report: str, reference: str | None) 
 
 def parse_verdict(raw: str) -> str:
     text = raw.strip().lower()
-    for verdict in ("yes", "no", "unknown"):  # 顺序有意：unknown 含 "no" 前先匹配词首
+    for verdict in ("yes", "no", "unknown"):  # 逐项 startswith 匹配，此顺序勿调换
         if text.startswith(verdict):
             return verdict
     return "unknown"
@@ -77,7 +75,7 @@ async def judge_case(
                     invoker.complete(SYSTEM_PROMPT, user), timeout=total_timeout
                 )
             verdict, reason = parse_verdict(raw), ""
-        except Exception as exc:  # noqa: BLE001 - 单条 judge 失败降级 unknown，不废整题
+        except Exception as exc:  # noqa: BLE001 - 单条 criterion 判定失败降级为 unknown,不影响其余条目
             verdict, reason = "unknown", f"judge 调用失败: {type(exc).__name__}: {str(exc)[:120]}"
         return CriterionResult(
             case_id=case.case_id,
@@ -93,12 +91,12 @@ async def judge_case(
 
 
 class OpenAICompatJudge:
-    """生产 invoker：judge 身份取自评测侧 env，不回写也不依赖引擎配置。
+    """生产 invoker：judge 身份取自评测侧 env,不回写也不依赖引擎配置。
 
-    与被测同模型自评为已知测量污染(self-preference)，因此回落同模型不再无声
-    生效：必须 EVAL_SELF_JUDGE=1 显式认领，且 judge_meta 落盘、报表打水印，
-    自评分数只能用于调试。异构 judge 用 EVAL_JUDGE_MODEL(+可选
-    EVAL_JUDGE_BASE_URL/EVAL_JUDGE_API_KEY) 指向另一家族即可。
+    judge 与被测同模型时 self-preference 会污染分数,默认报错而不是静默回
+    落:显式设 EVAL_SELF_JUDGE=1 才允许自评,此时自评状态写入 judge_meta、
+    报表带警示,分数只用于调试。独立 judge 用 EVAL_JUDGE_MODEL 指向另一模型
+    家族,可选配 EVAL_JUDGE_BASE_URL 与 EVAL_JUDGE_API_KEY。
     """
 
     def __init__(self) -> None:
@@ -130,7 +128,7 @@ class OpenAICompatJudge:
 
     @property
     def identity(self) -> dict[str, object]:
-        """落进 judge_meta.json 的评审身份——报表水印的数据源。"""
+        """写入 judge_meta.json 的评审身份,供报表标注是否自评。"""
         return {"model": self._model, "self_judging": self.self_judging}
 
     async def complete(self, system: str, user: str) -> str:
@@ -142,8 +140,8 @@ class OpenAICompatJudge:
             ],
             temperature=0,
             max_tokens=self._max_tokens,
-            # 该网关是思考型模型（引擎各处亦如此关闭）：不禁用则 token 预算全花在
-            # 隐藏思考上、content 返回空串 → 解析成 unknown，把整批评测器打成 0 命中。
+            # 网关模型是思考型:不禁用思考,max_tokens 预算会全花在隐藏思考上,
+            # content 返回空串、被解析成 unknown,整批评测判定失效。
             extra_body={"thinking": {"type": "disabled"}},
         )
         return response.choices[0].message.content or ""

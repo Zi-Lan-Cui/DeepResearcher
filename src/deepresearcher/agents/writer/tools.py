@@ -38,15 +38,13 @@ def _writer_command(
     )
 
 
-# 一次可请求的窗口（防失控的宽松值）；每轮实际交付量由 writer_read_batch_size
-# 决定，差额走 not_read_ids 显式排队。引用总条数刻意不设上限：聚焦度是写作
-# 质量问题，交给提示词引导、已读校验与审阅把关；硬上限只会催生为凑数而选。
 def build_writer_tools(*, turn_budget: int, read_batch: int):
-    """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。
+    """组装 Writer 工具;机制写在工具描述里,随运行配置动态生成。
 
-    引用总条数不设上限；约束只剩三条：cite 必须已读（本工具集）、
-    每轮交付 read_batch 条（差额 not_read_ids 排队）、正文有字符上限。
-    聚焦度是写作质量问题，交给系统提示词的引导与审阅把关。
+    一次可请求的窗口是防失控的宽松值,每轮实际交付量由 read_batch 决定,差额走
+    not_read_ids 显式排队。引用总条数刻意不设上限:聚焦度是写作质量问题,交给系统
+    提示词引导、已读校验与审阅把关,硬上限只会催生为凑数而选。剩下的约束只有三条:
+    cite 必须已读、每轮交付 read_batch 条、正文有字符上限。
     """
 
     @tool(
@@ -71,8 +69,8 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         del reason
         context = runtime.context
         requested = list(dict.fromkeys(evidence_ids))
-        # 静默截断曾让模型误以为"请求即已读"，引用被截掉的证据后无限循环烧尽
-        # 轮次（引用错位事故）。截断必须显式回传给模型。
+        # 截断必须显式回传给模型:静默截断会让模型误以为"请求即已读",
+        # 引用被截掉的证据后反复循环直到耗尽轮次。
         unknown = [item for item in requested if item not in context.evidence_by_id]
         already_read = [
             item

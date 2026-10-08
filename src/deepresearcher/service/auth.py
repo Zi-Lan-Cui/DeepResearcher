@@ -1,8 +1,8 @@
 """鉴权：argon2 口令哈希、HS256 JWT 编解码、每请求的 current_user 依赖。
 
-无状态 JWT，不建 sessions 表：代价是服务端无法吊销（登出=前端删 token），
-用短 TTL（默认 12h）限制窗口。decode 后仍回表查 User：删号立即失效，
-"这个 id 还存在吗"的检查集中在唯一入口。
+无状态 JWT，刻意不建 sessions 表：服务端因此无法主动吊销 token，登出只由
+前端删除本地 token，用短 TTL（默认 12h）限制风险窗口。decode 之后仍要回表
+查 User，删号立即生效，用户存在性检查集中在这一个入口。
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _hasher = PasswordHasher()
 
 
 class TokenError(ValueError):
-    """任何 token 层失败（过期/伪造/载荷异常）统一收敛到这里 → 调用方出 401。"""
+    """token 层失败都收敛为该异常：过期、伪造或载荷异常，调用方据此出 401。"""
 
 
 def hash_password(password: str) -> str:
@@ -36,8 +36,8 @@ def verify_password(password: str, password_hash: str) -> bool:
     try:
         return _hasher.verify(password_hash, password)
     except (VerifyMismatchError, Argon2Error, TypeError, ValueError):
-        # 当前 argon2 版本里 InvalidHashError 挂在 ValueError 分支而非 Argon2Error；
-        # 不区分原因，登录侧一律失败。
+        # 当前 argon2 版本的 InvalidHashError 继承 ValueError 而非 Argon2Error，
+        # 因此 ValueError 也必须在捕获列表里；登录失败不区分原因。
         return False
 
 
@@ -77,8 +77,11 @@ class TokenCodec:
 
 
 def make_current_user(codec: TokenCodec, session_factory: Callable[[], Any]):
-    """构造 current_user 依赖：手解 Authorization 头（不依赖 OpenAPI securityScheme，
-    换来 lifespan 之后可按 state 组装、无 HTTPBearer 闭包绑定问题）。"""
+    """构造 current_user 依赖，手动解析 Authorization 头。
+
+    不用 HTTPBearer，这样依赖可以在 lifespan 之后按 app.state 组装，
+    避开其依赖闭包在装配期的绑定限制。
+    """
 
     async def current_user(request: Request) -> User:
         header = request.headers.get("authorization", "")

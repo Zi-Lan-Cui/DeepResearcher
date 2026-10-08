@@ -1,4 +1,4 @@
-"""OTel 单引擎终态:span 树、langfuse 属性、账本记录与 span 对象的一致性。
+"""OTel 追踪的一致性:span 树、langfuse 属性、账本记录与 span 对象相互吻合。
 
 provider 由 conftest 会话级常驻并挂好 ledger 处理器;本模块另接一个
 InMemorySpanExporter 观察导出的 span 树,用 ledger 注册表收取账本记录。
@@ -92,7 +92,7 @@ async def test_spans_form_single_otel_tree(otel_exporter):
     assert root.parent is None
     assert by_name["supervisor"].parent.span_id == root.context.span_id
     assert by_name["search"].parent.span_id == by_name["supervisor"].context.span_id
-    # gather 并行枝各自认根,不互相污染——OTel 上下文随 task 创建复制。
+    # gather 并行枝各自认根为父,不互相污染;OTel 上下文随 task 创建复制。
     assert by_name["writer"].parent.span_id == root.context.span_id
     assert by_name["reviewer"].parent.span_id == root.context.span_id
 
@@ -110,7 +110,7 @@ async def test_spans_carry_langfuse_and_correlation_attributes(otel_exporter):
     assert '"phase": "completed"' in root.attributes["langfuse.observation.output"]
     assert root.attributes["deepresearcher.run_id"] == "run-tree"
     assert by_name["search"].attributes["langfuse.observation.type"] == "tool"
-    # 工具 span 自带输入:面板上点开 fetch/search 必须能看出在读/搜什么。
+    # 工具 span 自带输入,面板上点开 fetch 或 search 能看出在读、在搜什么。
     assert "example.org" in by_name["search"].attributes["langfuse.observation.input"]
     assert by_name["search"].kind == opentelemetry_trace.SpanKind.CLIENT
     assert by_name["supervisor"].kind == opentelemetry_trace.SpanKind.INTERNAL
@@ -152,7 +152,7 @@ async def test_ledger_records_derive_from_same_span_ids():
         if record.get("name") == "supervisor" and record["event_type"] == "span_started"
     )
     assert supervisor_started["span_id"] == completed["supervisor"]["span_id"]
-    # 根现在是真实 span(旧实现里 trace 不带 span),直接子级的父为根的 16 位 hex。
+    # trace 根是真实 span,子级的 parent_span_id 是根的 16 位 hex span_id。
     assert HEX_SPAN_ID.match(supervisor_started["parent_span_id"])
     tool = next(
         record
@@ -170,6 +170,6 @@ async def test_ledger_records_derive_from_same_span_ids():
 
 @pytest.mark.asyncio
 async def test_unregistered_run_produces_no_ledger_records():
-    # 账本注册表就是"落账与否"的唯一开关:未注册 run 的 span 不产生任何记录。
+    # 是否写账本由账本注册表决定:未注册 run 的 span 不产生记录。
     with spans.span("ephemeral"):
         pass

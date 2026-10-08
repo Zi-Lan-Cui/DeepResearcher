@@ -12,10 +12,10 @@ def normalize_text(value: str) -> str:
 
 
 def canonical_url(value: str, *, strip_trailing_slash: bool = False) -> str:
-    """URL 归一的唯一实现。返回 "" = 该 URL 不可共用身份(凭证 URL 禁入缓存)。
+    """URL 归一的唯一实现。返回空串表示该 URL 含凭证，禁止进入共享缓存与去重身份。
 
-    strip_trailing_slash 是搜索去重独有的折叠(/page 与 /page/ 算同条);
-    缓存键保持缺省,凭证 bypass 语义两边共用。
+    strip_trailing_slash 只在搜索去重时折叠 /page 与 /page/，让两者算作同一条；
+    缓存键保持缺省。含凭证时返回空串并跳过缓存的语义，两侧调用方共用。
     """
     value, _fragment = urldefrag(value.strip())
     parts = urlsplit(value)

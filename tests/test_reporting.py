@@ -50,7 +50,7 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
     assert "[证据2]" in report
     assert report.index("[证据1]") < report.index("[证据2]")
     assert "## 证据来源" in report
-    # 证据来源表保留可审计 quote，最终交付物不丢 chunk
+    # 来源表逐条保留 quote,交付报告不丢原文片段
     assert "「第二条。」" in report
     assert "「第一条。」" in report
     assert "https://example.com/two" in report
@@ -58,11 +58,10 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
 
 
 def test_render_final_report_strips_writer_authored_reference_section():
-    """Writer 违反禁令自写来源小节：程序剥除之，参考表以唯一追加段为准。
+    """Writer 自写来源小节时由程序剥除,参考表以管道追加的一段为准。
 
-    线上事故已证实：正文一次+结尾一次两份「来源」并存。剥除必须发生在
-    编号渲染之前——被剥段里的 [[cite:e1]] 不再抢占首现顺序，仅出现于此的
-    citation 依既有规则不进参考表。
+    剥除必须发生在编号渲染之前:被剥段里的 [[cite:e1]] 不再抢占首现顺序,
+    仅出现于该段的 citation 依既有规则不进参考表。
     """
     citations = [
         Citation(
@@ -116,9 +115,9 @@ def test_render_final_report_strip_stops_at_next_same_level_heading():
             ),
         ],
     )
-    assert "这里还要引用" in report  # 误剥会吃掉后文
-    assert report.count("## 证据来源") == 1  # 旧词"## 参考来源"被剥，只剩管道新表
-    # e1 在存活正文中重新出现 → 依然合法入表（编号 2，因 e2 首现更早）
+    assert "这里还要引用" in report  # 剥段范围越界会吃掉后文
+    assert report.count("## 证据来源") == 1  # 正文的 ## 参考来源 被剥,只剩管道追加的表
+    # e1 在存活正文中再次出现仍入表,e2 首现更早故 e1 编号为 2
     assert "「第一条。」" in report
     assert report.index("前言") < report.index("这里还要引用")
 
@@ -210,7 +209,7 @@ def test_render_final_report_node_routes_failure_paths():
     assert "## 证据来源" in result["report"]
     assert "已达到修订上限" in result["report"]
 
-    # 快乐路径:草稿 + citations → 渲染
+    # 正常路径:草稿 + citations → 渲染
     result = asyncio.run(
         render_final_report_node(
             {
@@ -308,7 +307,7 @@ def test_rendered_report_preserves_auditable_quotes_in_reference_list():
 
 
 def test_render_never_leaks_machine_terminal_reason_into_report():
-    """回归锁:StopReason 值曾经原文直进用户报告(研究阶段未完成:round_...)。"""
+    """StopReason 值不得原文进入用户报告,须译为中文文案。"""
     from deepresearcher.nodes.render import render_final_report_node
     from deepresearcher.schemas import RunStatus, SupervisorProgress
 
@@ -323,7 +322,7 @@ def test_render_never_leaks_machine_terminal_reason_into_report():
 
 
 def test_reference_table_survives_ghost_cite():
-    """正文引用无元数据的 id:降级为编号、不炸终检(此前 by_id[...] KeyError)。"""
+    """正文引用无元数据的 id 时降级为编号显示,终检不得抛 KeyError。"""
     from deepresearcher.reporting import render_final_report
 
     report = render_final_report(
@@ -337,7 +336,7 @@ def test_reference_table_survives_ghost_cite():
     )
     assert "证据来源" in report
     assert "证据1" in report
-    assert "证据2" in report  # 幽灵仍占编号位
+    assert "证据2" in report  # 无元数据的引用仍占编号位
 
 
 def test_final_report_is_article_shaped_with_model_title():
@@ -350,7 +349,7 @@ def test_final_report_is_article_shaped_with_model_title():
         title="A 的真相",
     )
     assert report.startswith("# A 的真相\n")
-    assert "## 研究问题" not in report  # 系统段撤下,正文即文章
+    assert "## 研究问题" not in report  # 不再输出系统结构小节
     assert "> 研究问题：A 的性能" in report  # 追溯信息收进文末一行
     assert "## 证据来源" in report
 

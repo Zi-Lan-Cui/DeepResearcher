@@ -1,8 +1,8 @@
 """API 与 Worker 进程之间由 PostgreSQL 承载的尽力而为信号。
 
 本模块是全仓唯一允许绕开 sqlalchemy 引擎、直接 `asyncpg.connect` 的地方:
-LISTEN 订阅连接的生死等于进程生死,进不了请求式 session 池——这是登记在案的
-PG 第二入口,守卫 test_asyncpg_raw_connections_live_only_in_signals 钉住它。
+LISTEN 订阅连接随进程存活、不能放入请求式 session 池。该约束由守卫
+test_asyncpg_raw_connections_live_only_in_signals 校验。
 """
 
 from __future__ import annotations

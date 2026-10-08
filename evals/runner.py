@@ -1,15 +1,14 @@
-"""Runner：用户旅程走产品唯一入口（HTTP API），地面真相走数据库。
+"""Runner：用户旅程走 HTTP API，行为判定的事实来源走数据库。
 
 分工刻意为之：
-- 提交/澄清回答/取消/详情 全部经 API —— 评测必须在与真实用户相同的路径上跑，
-  旁路即失真；
-- run_events 原始记录、runs.attempt 等取数走 DB 直读 —— SSE 只有投影帧，
-  评测需要原始事件序列做行为断言，harness 是特权操作者视角，产品 API 保持
-  用户最小面不被评测需求污染。
+- 提交、澄清回答、取消、详情全部经 API:评测必须跑在与真实用户相同的路径上,
+  绕过 API 就测不到用户可见行为;
+- run_events 原始记录、runs.attempt 等走 DB 直读:SSE 只有投影帧,行为断言需
+  要原始事件序列;harness 用操作者视图,产品 API 不为评测需求扩展。
 
-故障注入（kill/stop 接管类，F1/F2）需要 harness 掌控 worker 进程生命周期，
-按 M8 验收脚本的模式在第二阶段接线；本文件对 fault=none/rerun_cache 与
-duplicate_answer 给出完整闭环。
+故障注入中 kill/stop 接管类需要 harness 掌控 worker 进程生命周期,按
+tests/verify_m8_processes.py 的模式在第二阶段接线;本文件已覆盖
+fault=none/rerun_cache 与 duplicate_answer。
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from evals.deterministic import Artifact, process_metrics
 from evals.schemas import EvalCase
 
 TERMINAL = ("completed", "failed", "cancelled")
-# 外轨题偶发被 Clarifier 追问时的代答语：把范围界定交回给系统、要求直接研究。
+# external 轨题被 Clarifier 偶发追问时的默认回复:让系统自行界定范围、直接研究。
 DEFAULT_CLARIFY_ANSWER = "请以我的原问题为准，按你认为最合理的范围直接开展研究，不必再追问。"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
@@ -100,8 +99,6 @@ class RunHarness:
                 evidences.append(dict(item))
         return evidences
 
-    # ---- 用户旅程（API） ----
-
     async def _auth(self, client: httpx.AsyncClient) -> dict[str, str]:
         if not self._token:
             register = await client.post(
@@ -121,7 +118,7 @@ class RunHarness:
     async def _await_state(
         self, client: httpx.AsyncClient, headers: dict[str, str], run_id: str
     ) -> dict[str, Any]:
-        """轮询到终态或 awaiting_input（等待态交给 case 的澄清回答处理）。"""
+        """轮询到终态或 awaiting_input 返回;等待态交由调用方做澄清回答。"""
         deadline = asyncio.get_running_loop().time() + self.timeout_seconds
         while True:
             response = await client.get(f"{self.base_url}/api/runs/{run_id}", headers=headers)
@@ -146,9 +143,9 @@ class RunHarness:
         while detail.get("status") == "awaiting_input":
             answer = case.clarify_answer
             if not answer:
-                # 外轨 DRB 题本就是"直接作答"式，没配澄清回答；Clarifier 偶发追问时
-                # 代答一次、放它继续研究。仍追问（第二轮）说明它会卡死 → 取消本 run 并
-                # 抛出，交由 cmd_run 记为该题失败而不拖垮整批。
+                # DRB 题属直接作答式,没配澄清回答;Clarifier 偶发追问时代答一
+                # 次继续研究,再次追问说明无法收敛,取消本 run 并抛出,由 cmd_run
+                # 记为该题失败。
                 if control.get("auto_resumed"):
                     await client.post(f"{self.base_url}/api/runs/{run_id}/cancel", headers=headers)
                     raise RuntimeError(f"{case.case_id} 连续多轮澄清，评测放弃该题")
@@ -202,8 +199,6 @@ class RunHarness:
             )
         return [r.record for r in rows], row
 
-    # ---- case 编排 ----
-
     async def run_case(self, case: EvalCase, attempt: int) -> list[Artifact]:
         if case.fault in {"kill", "stop", "stop_during_awaiting"}:
             raise NotImplementedError(
@@ -213,7 +208,7 @@ class RunHarness:
         async with httpx.AsyncClient(timeout=60.0) as client:
             artifacts = [await self._drive_once(case, client)]
             if case.fault == "rerun_cache":
-                # 同题二跑：验证 L1/L2/L3 语义缓存兑现"重提交不重付费"。
+                # 同题二跑:验证语义缓存命中,重提交不再产生外部调用费用。
                 artifacts.append(await self._drive_once(case, client))
         for index, artifact in enumerate(artifacts, start=1):
             artifact.attempt = index + (attempt - 1) * (2 if case.fault == "rerun_cache" else 1)
@@ -221,11 +216,11 @@ class RunHarness:
         return artifacts
 
     async def capture(self, case: EvalCase, run_id: str, attempt: int) -> Artifact:
-        """把一次已经发生（或崩溃恢复中）的 durable run 收成产物，不重跑。
+        """把一次已存在或恢复中的 durable run 收成产物,不重跑。
 
-        评测可以附着到飞行中的 run：clarify/故障注入这类跨进程流程常常需要
-        人工或外部推动，capture 让我们用真实 API + DB 现状补齐 artifact，
-        而不必为收集结果再花一遍钱。
+        clarify、故障注入这类跨进程流程常需人工或外部推动,评测可以附着到正
+        在运行的 run:capture 用 API 与 DB 现状补齐 artifact,免去为收集结果
+        重跑一遍的费用。
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             headers = await self._auth(client)
@@ -247,7 +242,7 @@ class RunHarness:
         return artifact
 
     def _persist(self, case: EvalCase, attempt: int, artifacts: list[Artifact]) -> None:
-        """out_dir 未配置时静默跳过；守卫收敛在这里，调用点不再各自判空。"""
+        """out_dir 未配置时直接返回;判空集中在这里,调用点不再各自检查。"""
         if self.out_dir is None:
             return
         target = self.out_dir / case.case_id

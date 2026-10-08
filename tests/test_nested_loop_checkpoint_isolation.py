@@ -1,19 +1,20 @@
 """嵌套循环 checkpointer 的继承合同:内层从自己的回合边界续跑,而非整体重放。
 
-create_agent 的 checkpointer 默认 None = 继承外层运行的 thread/checkpointer。
+create_agent 的 checkpointer 默认 None,表示继承外层运行的 thread/checkpointer。
 合同内容:
   1. 内层循环把业务状态写进自己的 state 通道后,进程崩溃重放从内层最后一个已提交
-     superstep 续跑——已完成的工具不重跑、其通道增量不重复施加(两级与"外层节点→
-     supervisor create_agent→Delegate 工具→researcher create_agent"三级皆然);
+     superstep 续跑:已完成的工具不重跑、其通道增量不重复施加。两级(外层节点直接
+     调内层)与三级(外层节点→supervisor create_agent→Delegate 工具→researcher
+     create_agent)皆然;
   2. 内层已跑完、外层节点尚未提交时,重放再次以 seed 调用内层不会重新开场:既不重跑
-     内层模型,也不把 seed 再写一遍通道。故入口无需额外的 resume 守卫——langgraph 的
-     pending-writes WAL 已封住该窗口;
-  3. checkpointer=False 时内层不落检查点,重放整体重跑本节点(消息与业务状态同时重置),
+     内层模型,也不把 seed 再写一遍通道,故入口无需额外的 resume 守卫;langgraph 的
+     pending-writes WAL 已覆盖该窗口;
+  3. checkpointer=False 时内层不落检查点,重放整体重跑本节点,消息与业务状态同时重置,
      是尚未通道化循环的过渡语义。
 
-未通道化的循环(researcher/writer)因此显式 checkpointer=False;supervisor 已把业务状态
-并入通道(SupervisorAgentState),翻回继承。clarifier 的 interrupt(awaiting_input 澄清
-恢复)依赖继承链,反向锁不得禁用。
+supervisor、researcher、writer 已将业务状态并入各自通道,使用继承(None)。调整这些循环时
+不得把 clarifier 一并改为不继承:其 interrupt 在 awaiting_input 澄清后的恢复依赖继承链,
+文件末尾有单独校验用例。
 """
 
 import asyncio
@@ -44,14 +45,14 @@ def _reducer_append(current, incoming):
 
 
 class _CountedState(AgentState):
-    """内层业务通道:evidence 计数与一条裸 append 列表(用于暴露 seed 是否被二次施加)。"""
+    """内层业务通道:evidence 计数与一条裸 append 列表,用于暴露 seed 是否被二次施加。"""
 
     evidence_count: Annotated[int, _reducer_sum]
     seeded: Annotated[list, _reducer_append]
 
 
 class _CrashModel:
-    """第一轮派工具、工具结果回来后第二轮抛异常——模拟模型回合中途进程终止。"""
+    """第一轮派工具、工具结果回来后第二轮抛异常,模拟模型回合中途进程终止。"""
 
     def __init__(self, history_shapes: list[int], role="child") -> None:
         self.history_shapes = history_shapes
@@ -62,7 +63,6 @@ class _CrashModel:
 
     async def ainvoke(self, messages):
         self.history_shapes.append(len(messages))
-        # 首轮:派工具;次轮(看到 ToolMessage 后):崩溃。
         if len(messages) == 1:
             return AIMessage(
                 content="",
@@ -96,11 +96,11 @@ def _build_child(checkpointer, evidence_runs: list[int], history_shapes: list[in
     )
 
 
-# --- 两级:外层节点函数 → 内层 create_agent -------------------------------------
+# 两级嵌套:外层节点函数调用内层 create_agent。
 
 
 def _build_pair(child_checkpointer):
-    """外层单节点图(带 thread 检查点),节点函数调内层 create_agent——生产同形。"""
+    """外层单节点图带 thread 检查点,节点函数调内层 create_agent,与生产同形。"""
     history_shapes: list[int] = []
     evidence_runs: list[int] = []
     child = _build_child(child_checkpointer, evidence_runs, history_shapes)
@@ -162,7 +162,7 @@ def test_disabled_child_checkpointer_replays_whole_node():
     with pytest.raises(BaseException):
         asyncio.run(app.ainvoke(None, config))
 
-    # 整体重跑证据:第二次尝试从初始消息([1])重新开场,取证工具重新执行——
+    # 整体重跑证据:第二次尝试从初始消息重新开场,取证工具重新执行;
     # 消息历史与业务状态同时重置,不存在不一致窗口。
     third = history_shapes.index(1, 2)
     assert history_shapes[third:] == [1, 3]
@@ -175,7 +175,7 @@ def test_disabled_child_checkpointer_replays_whole_node():
 
 
 def test_completed_child_not_reinjected_when_outer_uncommitted():
-    """内层已完整、外层未提交窗口:重放不再跑内层模型、不再施加 seed——守卫因此多余。
+    """内层已完整、外层未提交的窗口:重放不再跑内层模型、不再施加 seed,入口守卫因此多余。
 
     把内层模型换成"派工具后正常收尾"的可完成模型,外层节点在内层返回之后、return
     之前抛错;重放外层节点会再次调用内层,但内层在其 ns 已完成,langgraph 从 WAL 直接
@@ -259,7 +259,7 @@ def test_completed_child_not_reinjected_when_outer_uncommitted():
     assert seeded_sizes and max(seeded_sizes) == 1
 
 
-# --- 三级:外层节点 → supervisor create_agent → Delegate 工具 → researcher ------
+# 三级嵌套:外层节点、supervisor create_agent、Delegate 工具、researcher create_agent。
 
 
 def test_delegate_resumed_inner_researcher_keeps_evidence():
@@ -302,7 +302,7 @@ def _build_triple(researcher_checkpointer):
 
     @tool("Delegate")
     async def delegate(runtime: ToolRuntime) -> Command:
-        """派最内层 researcher,与生产 delegate 工具同形(仅传部分 config)。"""
+        """派最内层 researcher,与生产 delegate 工具同形,仅传部分 config。"""
         researcher = create_agent(
             model=_CrashModel(researcher_shapes),
             tools=[add_evidence],
@@ -357,15 +357,14 @@ def _build_triple(researcher_checkpointer):
     return outer.compile(checkpointer=MemorySaver()), counters
 
 
-# --- 生产构造锁 ----------------------------------------------------------------
+# 生产校验:各循环构造时的 checkpointer 取值。
 
 
 def test_production_loops_compile_with_inherited_checkpointer():
-    """构造锁:三张 create_agent 循环均已通道化,业务状态并入各自通道并翻回继承(None)。
+    """生产三个 create_agent 循环均已通道化,业务状态并入各自通道,checkpointer 使用继承(None)。
 
-    supervisor/researcher/writer 把可变簿记写进各自 state_schema 通道,翻回继承后,
-    崩溃重放从各内层最后一个已提交 superstep 续跑(见上方继承合同用例)。clarifier
-    的 interrupt 依赖继承,单独反向锁。
+    supervisor/researcher/writer 把可变簿记写进各自 state_schema 通道,启用继承后,
+    崩溃重放从各内层最后一个已提交 superstep 续跑,见上方继承合同用例。
     """
     supervisor = ResearchSupervisor(object(), AgentConfig(), research_agent=object())
     assert supervisor._agent_loop.checkpointer is None
@@ -387,6 +386,6 @@ def test_production_loops_compile_with_inherited_checkpointer():
 
 
 def test_clarifier_keeps_checkpointer_inheritance_for_interrupt():
-    """反向锁:clarifier 的 interrupt 恢复链依赖继承(默认 None),不得一并禁用。"""
+    """clarifier 的 interrupt 恢复链依赖继承(默认 None),禁用其他循环继承时不得一并禁用它。"""
     clarifier = Clarifier(object(), AgentConfig())
     assert clarifier.graph.checkpointer is None

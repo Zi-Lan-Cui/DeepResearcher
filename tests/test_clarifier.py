@@ -140,7 +140,8 @@ def test_clarifier_graph_preserves_parent_state_contract():
 
 
 def test_clarifier_headline_propagates_to_parent_state():
-    """回归锁:run_headline 是 wire 契约通道,漏声明时子图静默丢写、headline 永不落库。"""
+    """回归用例:run_headline 是 wire 契约通道;父图漏声明该键时子图写入被静默丢弃,
+    headline 不会落库。"""
 
     async def scripted_agent(_state):
         return {

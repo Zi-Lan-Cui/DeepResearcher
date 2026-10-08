@@ -1,7 +1,7 @@
 """节点级观测:instrument_node 记录生命周期(started/completed/failed/cancelled)并原样重抛。
 
-本模块只记录、不裁决——失败转 RunStatus 的收口归 node_runner.execute_node;
-两处失败事件的 error/code/retryable 口径共用 schemas 的 failure_event_fields。
+本模块只记录、不改变运行结果——失败转 RunStatus 的收口归 node_runner.execute_node;
+两处失败事件的 error/code/retryable 字段共用 schemas 的 failure_event_fields。
 也不解读业务字段:节点产出的字段摘要由装配层以 summarize 注入,
 缺省只登记 updated_fields。
 """
@@ -36,7 +36,7 @@ def instrument_node(
     max_text_chars: int,
     summarize: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
-    """统一记录节点 Log、Event 和 Span。业务字段摘要经 summarize 注入,缺省登记 updated_fields。"""
+    """统一记录节点的 Log、Event 和 Span。"""
     summary_of = summarize if summarize is not None else _base_summary
     log = logger or get_logger("deepresearcher.observability.instrumentation")
 
@@ -59,7 +59,8 @@ def instrument_node(
             try:
                 span_link: SpanContext | None = None
                 with span(name):
-                    # 节点生命周期事件统一归属节点 span;span 进入即冻结身份。
+                    # 生命周期事件统一归属本节点 span;span_link 在进入 span 后立即
+                    # 读取,failed 与 cancelled 分支才能同样带上该 span 的身份。
                     span_link = current_span_context()
                     value = node(state)
                     if inspect.isawaitable(value):

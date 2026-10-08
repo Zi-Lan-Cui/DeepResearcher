@@ -1,10 +1,11 @@
 """端到端 kill-重放:生产 channelized ResearchAgent/ResearchSupervisor 跑在真 AsyncPostgresSaver 上。
 
-区别于 `test_checkpoint_postgres_resume.py`(用最简 create_agent 证框架契约),本文件驱动
-真实生产类,验证"崩溃前已提交的取证在恢复后不重跑、不浪费":进程在 add_evidence 随
-superstep 提交后中止(抛非 Exception 的 BaseException,不被业务层 except 吞),外层流式
-中止;再以执行器恢复用的同一机制 `graph.astream(None)`(同 thread)续跑。恢复后搜索/抓取
-各只执行 1 次即证内层从自己的 superstep 续跑、未整体重放。DB 不可达时整文件 skip,不回显连接串。
+区别于 `test_checkpoint_postgres_resume.py` 用最简 create_agent 验证框架契约,本文件驱动
+真实生产类,验证"崩溃前已提交的取证在恢复后不重跑":进程在 add_evidence 随 superstep
+提交后中止,抛出的是非 Exception 的 BaseException,不被业务层 except 捕获,外层流式中止;
+再以执行器恢复用的同一机制 `graph.astream(None)` 在同 thread 上续跑。恢复后搜索/抓取
+各只执行 1 次,即证明内层从自己的 superstep 续跑,未整体重放。
+DB 不可达时整文件 skip,不回显连接串。
 """
 
 import asyncio
@@ -30,7 +31,7 @@ _URL = "https://example.com/e2e-report"
 
 
 class _ProcessKilled(BaseException):
-    """模拟进程被硬杀:非 Exception、非 CancelledError,故不被业务层 except 吞掉。"""
+    """模拟进程被杀:非 Exception、非 CancelledError,不被业务层 except 捕获。"""
 
 
 class _FakeSearchService:
@@ -119,7 +120,7 @@ class _ScriptedResearcherModel:
                 "id": "a1",
             }
         elif not self._killed:
-            # 证据已随 superstep 提交进内层检查点;此刻模拟进程硬杀(不被 run() 吞)。
+            # 证据已随 superstep 提交进内层检查点;此刻模拟进程被杀,该异常不被 run() 捕获。
             self._killed = True
             raise _ProcessKilled("simulated process kill right after evidence committed")
         else:
@@ -222,7 +223,7 @@ async def _drive(saver):
 
 
 def test_e2e_researcher_resumes_without_rerunning_search_on_postgres():
-    """真库上:进程在证据提交后被杀,恢复后搜索/抓取不重跑、已验证证据随收尾交付。"""
+    """真 Postgres 上:进程在证据提交后被杀,恢复后搜索/抓取不重跑、已验证证据随收尾交付。"""
     saver_context = _make_saver()
     if saver_context is None:
         pytest.skip("checkpointer 未配置(非 postgresql 部署形态)")
@@ -240,16 +241,12 @@ def test_e2e_researcher_resumes_without_rerunning_search_on_postgres():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 关键:恢复后已提交的搜索与抓取只发生一次(researcher 从内层检查点续,而非整体重跑)。
+    # 恢复后已提交的搜索与抓取只发生一次:researcher 从内层检查点续跑,而非整体重跑。
     assert facts["search_calls"] == 1, f"搜索应只 1 次,实测 {facts['search_calls']}(疑似整体重跑)"
     assert facts["fetch_calls"] == 1, f"抓取应只 1 次,实测 {facts['fetch_calls']}(疑似整体重跑)"
-    # 续跑正常收尾,崩溃前已验证的 1 条 Evidence 随结果交付。
     assert facts["execution_status"] == "completed", facts["execution_status"]
     assert facts["evidence_count"] == 1, facts["evidence_count"]
     assert facts["evidence_id"]
-
-
-# --- 再套一层:生产 ResearchSupervisor 内嵌 researcher 的整链 kill-重放 -----------
 
 
 class _FakeSupervisorModel:
@@ -331,9 +328,9 @@ async def _drive_supervisor(saver):
         await app.ainvoke({"done": False}, {"configurable": {"thread_id": thread}})
     except _ProcessKilled:
         killed = True
-    # 崩溃后、恢复前:reconcile._has_checkpoint 用的正是 aget_tuple(thread)——证明确有可续检查点。
+    # 崩溃后、恢复前:reconcile._has_checkpoint 用的正是 aget_tuple(thread),证明确有可续检查点。
     checkpoint_after_crash = await saver.aget_tuple(config)
-    # 执行器恢复(含 reconcile→resume_runs→execute(resume=True))最终都走 astream(None)。
+    # 执行器恢复经 reconcile、resume_runs、execute(resume=True),最终都走 astream(None)。
     async for _ in app.astream(None, config={"configurable": {"thread_id": thread}}):
         pass
 
@@ -352,7 +349,7 @@ async def _drive_supervisor(saver):
 
 
 def test_e2e_supervisor_nested_researcher_resumes_on_postgres():
-    """真库上:进程在内嵌 researcher 取证提交后被杀,supervisor+researcher 整链续跑、不重跑搜索。"""
+    """真 Postgres 上:进程在内嵌 researcher 取证提交后被杀,supervisor+researcher 整链续跑、不重跑搜索。"""
     saver_context = _make_saver()
     if saver_context is None:
         pytest.skip("checkpointer 未配置(非 postgresql 部署形态)")
@@ -372,10 +369,9 @@ def test_e2e_supervisor_nested_researcher_resumes_on_postgres():
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
     # reconcile 据 aget_tuple 判定可续:崩溃后确有 thread 检查点。
     assert facts["has_checkpoint_after_crash"] is True
-    # 整链恢复:已提交的搜索/抓取各只一次(supervisor 内层 + researcher 内层都从断点续)。
+    # 整链恢复:已提交的搜索/抓取各只一次,supervisor 内层与 researcher 内层都从断点续跑。
     assert facts["search_calls"] == 1, f"搜索应只 1 次,实测 {facts['search_calls']}(疑似整体重跑)"
     assert facts["fetch_calls"] == 1, f"抓取应只 1 次,实测 {facts['fetch_calls']}(疑似整体重跑)"
-    # 方向完成并被 supervisor 吸收,崩溃前已验证的 Evidence 进入顶层通道。
     assert facts["task_count"] == 1, facts
     assert facts["task_status"] == "completed", facts["task_status"]
     assert facts["absorbed_evidence"] == 1, facts["absorbed_evidence"]

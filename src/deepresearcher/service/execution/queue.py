@@ -23,11 +23,11 @@ from deepresearcher.service.runs.transitions import (
 
 @dataclass(frozen=True)
 class ClaimCapacitySaturated:
-    """全局并发上限已满、本轮无法领取——与"没有可领取的行"是两种语义。
+    """全局并发上限已满、本轮无法领取，与"没有可领取的行"是两种语义。
 
-    调用方(worker 的 wake)据此把显式 preferred 放回队列;
-    若混同为 None,容量满瞬间从 recover/settle 弹出的 resume 任务会被吞掉,
-    该 interrupted 行要停留到下次进程重启。
+    调用方 worker 的 wake 路径据此把显式 preferred 放回队列；若混同为 None，
+    容量满瞬间从 recover/settle 弹出的 resume 任务会被吞掉，
+    该 interrupted 行会停留到下次进程重启。
     """
 
 
@@ -54,8 +54,8 @@ class PostgresRunQueue:
 
     单一胜者由条件 UPDATE 本身保证（status ∈ sources + 取消守卫 +
     attempt 递增）：对行来说是原子 CAS，落败的领取者看到 rowcount 0。
-    PostgreSQL 额外用 ``FOR UPDATE SKIP LOCKED`` 选候选，并用事务级
-    advisory lock 包住计数+领取的容量检查。``_claim_lock`` 只串行化本实例
+    PostgreSQL 额外用 ``FOR UPDATE SKIP LOCKED`` 选候选，并在计数与领取之前
+    持事务级 advisory lock 完成容量检查。``_claim_lock`` 只串行化本实例
     自身的 poll/wake 路径——多宿主正确性（如测试中两个 worker 共用一个
     SQLite 文件）依赖 CAS，不依赖该锁。
     """
@@ -217,14 +217,14 @@ class PostgresRunQueue:
             return result.rowcount == 1
 
     async def settle_cancellations(self) -> list[RunWork]:
-        """取消意图是持久事实,落地不依赖 executor 活着。
+        """取消意图是持久事实，其执行不依赖 executor 存活。
 
-        带 flag 的行里,running 归 heartbeat→executor 自写终态;只有
-        executor 退出时未写终态的 interrupted 行需要这里补写。claim 的
-        WHERE 永远排除带 flag 的行,不 settle 它们就永久停留。
+        带取消标记的行里，仍在 running 的由 heartbeat 与 executor 自写终态；
+        只有 executor 退出时未写终态的 interrupted 行需要这里补写。claim 的
+        WHERE 始终排除带标记的行，不做 settle 这些行就会永久停留。
 
         返回:
-            list[RunWork]: 被终态化的行（仅身份字段），供调用方补投递。
+            被终态化的行，仅含身份字段，供调用方补投递。
         """
         async with self._session_factory() as session:
             settle_transition = transition_for("settle_cancelled")

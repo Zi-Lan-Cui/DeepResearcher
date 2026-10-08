@@ -1,4 +1,4 @@
-"""RunEventHub：事件推送的唯一管理"""
+"""RunEventHub：进程内事件缓冲与推送的唯一入口。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from deepresearcher.service.signals import PostgresSignalBus
 
 logger = get_logger("deepresearcher.service.events")
 
-#: open 登记数量上限(API/Worker 进程各自持有):终结路径有 close,
-#: "从未被订阅也从未跑完"的 run 由超额回收兜底,常驻集合不许无界增长。
+#: open 登记数量上限，API 与 Worker 进程各自持有一份。终结路径会走 close，
+#: 从未被订阅也从未跑完的 run 由超额回收兜底，常驻集合不许无界增长。
 _OPEN_MAX = 2048
 _DONE_DEDUP_MAX = 2048
 
@@ -36,10 +36,10 @@ class RunEventHub:
         self._signal_bus = signal_bus
         self._open_max = max(1, open_max)
         self._lock = threading.Lock()
-        # 键序即 open 的 FIFO 序(dict 保序);超限时回收最早的登记。
+        # 键序沿用 dict 插入序，即 open 的 FIFO 序；超限时回收最早的登记。
         self._open: dict[str, None] = {}
         self._pending: dict[str, list[dict]] = {}
-        # done 幂等只需覆盖"同进程相邻两次发布"，插入序即 FIFO 淘汰序。
+        # done 幂等只需覆盖同进程相邻的重复发布，插入序即 FIFO 淘汰序。
         self._done_published: dict[str, None] = {}
         self._announced_unrouted = False
 
@@ -78,10 +78,9 @@ class RunEventHub:
     def close(self, run_id: str) -> None:
         """摘除该 run 的 open 登记与缓冲。
 
-        订阅者经 DB tail + notify 判定终止,close 只影响本进程 pending
-        的记账。
-        未取走的 pending 一并丢弃——终结顺序(take→最后一次 flush→close)
-        是 executor 的职责,正常路径走不到丢数据;走到即记 warning。
+        订阅者经 DB tail + notify 判定 run 终止，close 只影响本进程 pending 缓冲。
+        未取走的 pending 一并丢弃；终结顺序 take → 最后一次 flush → close
+        由 executor 保证，正常路径走不到丢数据，走到则记 warning。
         """
         with self._lock:
             had_open = self._open.pop(run_id, None) is not None
@@ -141,8 +140,8 @@ class RunEventHub:
         await self._signal_bus.notify_event(run_id)
 
     def _requeue(self, run_id: str, records: Sequence[dict]) -> None:
-        """持久化失败时把批次放回队首——只在该 run 仍持有 open 登记时回插;
-        close 之后的迟到批次按既有契约丢弃,客户端由 SSE 的行终态兜底收敛。"""
+        """持久化失败时把批次放回队首，只在该 run 仍持有 open 登记时回插。
+        close 之后的迟到批次按契约丢弃，客户端一侧由 SSE 的行终态兜底。"""
         with self._lock:
             if run_id not in self._open:
                 return

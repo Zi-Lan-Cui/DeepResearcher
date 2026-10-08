@@ -79,9 +79,10 @@ def build_supervisor_tools() -> list[BaseTool]:
             channel_update=ctx.loop_state.delegate_increment(marker),
         )
 
-    # 不设 return_direct、不用 Command 做循环控制(实测 Command(goto) 会跳过中间件
-    # 流水线,反复拒绝时撞 recursion wall):两个分支都回 plain 回执,默认边天然
-    # 把拒绝送回模型自愈;接受后由 SubmittedExitMiddleware 的 jump_to 在下一跳出环。
+    # 不设 return_direct、不用 Command 做循环控制:实测 Command(goto) 会跳过中间件
+    # 流水线,反复拒绝时一路运行到 recursion 上限报错。两个分支都回 plain 回执,
+    # 默认边自然把拒绝送回模型自行修正;接受后由 SubmittedExitMiddleware 的 jump_to
+    # 在下一跳退出循环。
     @tool("ResearchComplete", args_schema=ResearchComplete)
     async def research_complete(
         synthesis_revision: int,

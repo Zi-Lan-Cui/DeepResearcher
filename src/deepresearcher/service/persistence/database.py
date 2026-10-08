@@ -4,9 +4,9 @@
 （测试/无 Docker 过渡）。``:memory:`` 的 SQLite 每个连接是独立库，必须
 StaticPool 复用同一连接；外键（CASCADE）在 SQLite 里默认关闭，需逐连接开 pragma。
 
-应用启动用 ``migrate_database`` 以 ``create_all``(幂等)确保 schema 存在；
-``init_db`` 是同一套 metadata 的隔离测试入口。个人项目、未上线，不维护
-Alembic 版本迁移链——schema 演进直接改 models 再重建即可。
+应用启动用 ``migrate_database`` 以幂等的 ``create_all`` 确保 schema 存在；
+``init_db`` 是同一套 metadata 的隔离测试入口。本仓库不维护 Alembic 版本
+迁移链，schema 演进直接改 models 再重建。
 """
 
 from __future__ import annotations
@@ -31,10 +31,10 @@ def make_engine(database_url: str) -> AsyncEngine:
         if ":memory:" in database_url:
             kwargs["poolclass"] = StaticPool
         else:
-            # 文件库用 NullPool：连接随 session 归还即关（await 完成），
-            # 不依赖 dispose 回收池——dispose 之后 aiosqlite 工作线程的迟到
-            # 回调会在已关闭循环上 call_soon_threadsafe（测试里表现为归因到
-            # 后续用例的 UnhandledThreadException 竞态告警）。
+            # 文件库用 NullPool：连接随 session 归还即关（await 完成），不依赖
+            # dispose 回收池。dispose 之后 aiosqlite 工作线程的迟到回调会在
+            # 已关闭循环上 call_soon_threadsafe，测试里表现为归因到后续用例的
+            # UnhandledThreadException 竞态告警。
             kwargs["poolclass"] = NullPool
         if "aiosqlite" in database_url:
             kwargs["connect_args"] = {"check_same_thread": False}
@@ -65,7 +65,8 @@ def _configure_sqlite(engine: AsyncEngine) -> None:
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    # expire_on_commit=False：提交后的实例属性仍可读，避免异步下惰性刷新炸线程。
+    # expire_on_commit=False：提交后实例属性仍可读，避免异步会话在访问过期
+    # 属性时触发惰性刷新而出错。
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -78,10 +79,10 @@ async def init_db(engine: AsyncEngine) -> None:
 async def migrate_database(database_url: str) -> None:
     """幂等地确保应用 schema 存在（创建缺失的表）。
 
-    本项目未上线，不维护 Alembic 迁移链：schema 由模型元数据经
+    本仓库不维护 Alembic 迁移链：schema 由模型元数据经
     ``create_all``（checkfirst）推出，重跑是空操作，加表只改模型。
-    API 与多个 Worker 可能同时启动，因此 PostgreSQL 上把 DDL 包在
-    事务级 advisory lock 里串行化并发 create_all；SQLite 是单进程测试路径。
+    API 与多个 Worker 可能同时启动，因此 PostgreSQL 上把 DDL 放进
+    事务级 advisory lock 串行化并发 create_all；SQLite 是单进程测试路径。
     """
     engine = make_engine(database_url)
     try:

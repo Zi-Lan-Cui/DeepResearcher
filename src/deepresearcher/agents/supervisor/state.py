@@ -50,9 +50,10 @@ def _merge_stop_reason_by_rank(
 class SupervisorAgentState(AgentState):
     """Supervisor 内层图的 state_schema:循环业务状态的持久化载体。
 
-    reducer 按工具并发身份选择(共用 reducer 见 agents/channels.py):ResearchDelegate
-    同批并发,只写合并语义通道;Release/Restore/Revise/ResearchComplete 串行,可写
-    replace 通道。active 工作集存有序 op 流水而非列表,以避开并发整字段快照互相覆盖。
+    reducer 按工具的串行/并发身份选择,共用 reducer 见 agents/channels.py:
+    ResearchDelegate 同批并发,只写合并语义通道;Release、Restore、Revise、
+    ResearchComplete 串行,可写 replace 通道。active 工作集存有序 op 流水而非
+    整列表,避免并发整字段快照互相覆盖。
     """
 
     evidences: Annotated[list[Evidence], merge_evidences]
@@ -112,7 +113,7 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
 
 @dataclass(frozen=True)
 class SupervisorDeps:
-    """ResearchSupervisor 构造期的稳定零件；跨并发 loop 共享、只读(frozen 是纪律载体)。"""
+    """ResearchSupervisor 构造期的稳定零件;跨并发 loop 共享、只读,frozen 数据类保证这一点。"""
 
     config: AgentConfig
     research_agent: ResearchAgent
@@ -126,13 +127,13 @@ class SupervisorLoopContext:
 
     loop_state 是当前工具批的可变状态:每次模型回合前由 rebuild_loop_state 从通道重建,
     批内工具共享同一对象,工具出口把改动作为 Command 增量写回通道;它不进 checkpoint,
-    持久状态以通道为准。research_query/current_round/active_evidence_limit 是重建所需的
-    标量。业务实现住在 services.py,tools.py 从本对象转交参数。
+    持久状态以通道为准。research_query、current_round、active_evidence_limit 是重建
+    所需的标量。业务实现在 services.py,tools.py 从本对象转交参数。
 
-    读者含中间件(删改字段前先 grep agents/middleware/):
+    消费方含中间件,删改字段前先 grep agents/middleware/:
       scope            → observability:事件归因
       tool_gate        → serial_tools:串行调度门,exclusive 工具与在飞 ResearchDelegate 互斥
-      bookkeeping_lock → services.delegate_research 的编号分配/absorb 临界区
+      bookkeeping_lock → services.delegate_research:任务编号分配与 absorb 的临界区
     """
 
     scope: AgentExecutionScope
@@ -221,13 +222,13 @@ class SupervisorLoopState:
         self.active_evidence_limit = active_evidence_limit
         self.source_refs = list(state.get("source_refs", []))
         self.task_results = list(state.get("task_results", []))
-        # 当前轮次唯一来源是构造参数（由 _run_agent_loop 从持久化的 SupervisorProgress 推一次）；
-        # 这里仍读 SupervisorProgress 只为取持久化的 coverage_gaps，不决定轮次。
+        # 当前轮次只来源于构造参数:由 _run_agent_loop 从持久化的 SupervisorProgress 推一次。
+        # 这里读 SupervisorProgress 只为取持久化的 coverage_gaps,不决定轮次。
         persisted = section(state, "supervisor", SupervisorProgress)
         self.current_round: int = current_round
         self.coverage_gaps = list(persisted.coverage_gaps)
-        # 执行失败详情（截断异常文本等）。coverage_gaps 只装研究内容缺口，会渲染进
-        # 用户报告的"未闭合缺口"；两者可见面与恢复策略不同，不得混用一个字段。
+        # 执行失败详情,如截断后的异常文本。coverage_gaps 只装研究内容缺口,会渲染进用户
+        # 报告的"未闭合缺口";两者的可见面与恢复策略不同,不能混用同一个字段。
         self.failure_details: list[str] = []
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
         self.sufficient = False
@@ -235,9 +236,9 @@ class SupervisorLoopState:
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
         self.completed_synthesis: ResearchSynthesis | None = None
         self.stop_reason: StopReason | None = None
-        # 账户级熔断认证位:absorb 见到任何带该标志的方向结果即置真——这类故障是
-        # 系统性不可用而非方向偶发,单个方向足以为全局认证。ResearchComplete 据
-        # 此放行无证据收束,执行故障轮不再被迫记成预算耗尽。
+        # 账户级熔断认证位:absorb 见到任何带该标志的方向结果即置真。这类故障是系统性
+        # 不可用而非单个方向偶发,一个方向足以为全局认证。ResearchComplete 据此放行
+        # 无证据收束,执行故障轮不再被迫记成预算耗尽。
         self.provider_exhausted = False
 
         self._task_counter: int = 0
@@ -276,7 +277,7 @@ class SupervisorLoopState:
                 for item in values["evidences"]
             ]
         if "active_evidence_ops" in values:
-            # 按序折叠 op 流水重建活跃集;并发 add 与串行 remove 折叠后与执行史等价。
+            # 按序折叠 op 流水重建活跃集;并发 add 与串行 remove 折叠后与真实执行顺序等价。
             active: set[str] = set()
             for op in values["active_evidence_ops"]:
                 active.update(op.get("add", []))
@@ -341,11 +342,11 @@ class SupervisorLoopState:
         }
 
     def delegate_increment(self, marker: dict[str, Any]) -> dict[str, Any]:
-        """并发安全的通道增量:全部 merge 语义字段,不含任何 replace 快照。
+        """并发安全的通道增量:全部是 merge 语义字段,不含任何 replace 快照。
 
-        与同伴工具在批内交错时,列表尾差量可能多包含对方刚追加的条目——
-        merge_evidences/merge_unique 按 id 折重,超集无害;漏集不可能,
-        因为差量以本对象当前长度为界。
+        与同伴工具在批内交错时,列表尾差量可能多包含对方刚追加的条目;
+        merge_evidences 与 merge_unique 按 id 折重,超集无害。漏集不可能:
+        差量以本对象当前长度为界,本方追加不会落在界外。
         """
         return {
             "evidences": self.evidences[marker["evidences"] :],
@@ -368,8 +369,8 @@ class SupervisorLoopState:
     def set_stop_reason(self, reason: StopReason) -> None:
         """按 `StopReason.rank` 采纳终止原因；低权威度不覆盖已采纳的高权威度。
 
-        写点只需调用本方法并选对 reason；冲突由声明式 rank 裁决（见 StopReason.rank），
-        与写入先后无关。
+        写点只需调用本方法并选对 reason;冲突由声明在 StopReason.rank 上的权威度
+        裁决,与写入先后无关。
         """
         current = self.stop_reason
         if current is None or reason.rank >= current.rank:
@@ -378,18 +379,19 @@ class SupervisorLoopState:
     def _bump_working_set(self) -> None:
         """工作集版本前进的唯一出口。
 
-        不变式：任何改变 `active_evidence_ids` 成员的操作都必须经此推进 revision，
-        否则 `synthesis_is_fresh` 会误判综合稿仍然新鲜、放行基于过期证据的 ResearchComplete。
-        新增 mutation 方法时记得调用它（版本单调性无法由类型系统强制，只能约定）。
+        不变式:任何改变 `active_evidence_ids` 成员的操作都必须经此推进 revision,
+        否则 `synthesis_is_fresh` 会误判综合稿仍然新鲜,放行基于过期证据的
+        ResearchComplete。新增 mutation 方法时必须调用它:revision 的单调性
+        无法由类型系统表达,只能靠此约定维持。
         """
         self.working_set_revision += 1
 
     def allocate_task_index(self) -> int:
-        """分配独立的任务序号，不把研究轮次编码进任务 ID。
+        """分配独立的任务序号,不把研究轮次编码进任务 ID。
 
-        序号必须在**分配时刻**（runtime.bookkeeping_lock 内）消费掉：从已完成结果反推的
-        派生值会被并行 delegate 的双方读到同一个 max+1，撞出的 task_id 让
-        merge_task_results 按 id 去重时静默吞掉一个方向的研究结果。
+        序号必须在分配时刻于 bookkeeping_lock 临界区内消费掉:若改为从已完成结果
+        反推,并行 delegate 会读到同一个 max+1,撞出的相同 task_id 让
+        merge_task_results 按 id 去重时吞掉一个方向的研究结果。
         max(计数器, 已完成最大值)+1 同时兼容恢复执行时从快照重建的场景。
         """
         completed_max = max((item.task_index for item in self.task_results), default=0)
@@ -445,7 +447,6 @@ class SupervisorLoopState:
         )
 
     def active_evidences(self) -> list[Evidence]:
-        """返回当前工作集中的 Evidence。"""
         return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
 
 
@@ -454,9 +455,9 @@ def working_set_snapshot(
 ) -> dict[str, object]:
     """Supervisor 工作集目录的唯一构造处。
 
-    tools.py 的 ReadWorkingSet/拒绝回执用全量(include_reserve=True);
-    轮次观察只取 active(省 token)。两处共用同一卡片形状与 revision 字段,
-    不会再各自演化出子集分叉。
+    tools.py 的 ReadWorkingSet 与拒绝回执用全量,即 include_reserve=True;
+    轮次观察只取 active 以省 token。两处共用同一卡片形状与 revision 字段,
+    不要各自演化出不同的子集。
     """
     active = loop_state.active_evidences()
     snapshot: dict[str, object] = {

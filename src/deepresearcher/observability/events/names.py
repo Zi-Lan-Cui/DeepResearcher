@@ -1,11 +1,11 @@
-"""账本事件名的登记表(跨层 wire 契约)。
+"""账本事件名的登记表,跨层 wire 契约。
 
-发射侧(instrumentation、agents/tools 的 emit 调用、hub 服务层合成)与
-消费侧(projector 投影白名单、SSE 尾随、DB 查询)都引用这里的符号,改名
-不再靠两侧字面量对撞。动态拼接的家族名以约定记录、不进枚举成员:
-节点生命周期 `node_{status}`(observability/events/models.make_node_event)、
-工具边界 `tool_{status}`(make_tool_event)、各 Agent 回合与工具事件
-`{slug}_model_turn` / `{slug}_tool_{status}`(agents/middleware/observability)。
+发射侧，即 instrumentation、agents/tools 的 emit 调用、hub 服务层合成，与
+消费侧，即 projector 投影白名单、SSE 尾随、DB 查询，都引用这里的符号;
+改名只改这一处。动态拼接的事件名按约定记录,不作枚举成员:
+节点生命周期 `node_{status}` 见 observability/events/models.make_node_event;
+工具边界 `tool_{status}` 见 make_tool_event;各 Agent 回合与工具事件
+`{slug}_model_turn` / `{slug}_tool_{status}` 见 agents/middleware/observability。
 """
 
 from enum import StrEnum

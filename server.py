@@ -13,8 +13,8 @@ from deepresearcher.service.settings import get_service_config
 
 def main() -> None:
     config = get_service_config()
-    # 与 Worker 同源：不配置 handler，服务层 INFO/WARNING 会被 logging 的
-    # lastResort（仅 WARNING+）静默吞掉——曾导致 text_delta 路由探针无迹可寻。
+    # 与 Worker 同源:不配置 handler 时,logging 的 lastResort 只输出 WARNING
+    # 及以上,服务层的 INFO/WARNING 日志会丢失。
     settings = get_settings()
     configure_logging(
         settings.app.log_level,

@@ -6,11 +6,11 @@ class ToolError(AgentError):
 
 
 class ProviderExhaustedError(ToolError):
-    """数据提供方**账户级**不可用：鉴权失败 / 额度耗尽 / key 无效。
+    """数据提供方账户级不可用：鉴权失败、额度耗尽或 key 无效。
 
-    重试单条无意义（同 key 同结果），应触发熔断并让上层快速收尾。与
-    "某个来源 401/403（付费墙/登录墙）" 区分开——后者是 per-source 的
-    SourceUnavailable/ToolRequestError，不代表 provider 整体挂掉。
+    同一 key 重试单条请求结果不变，因此重试无意义，应触发熔断并让上层快速收尾。
+    与单个来源的 401/403 区分开：付费墙、登录墙属于该来源的结论，抛
+    SourceUnavailableError 或 ToolRequestError，不代表提供方整体不可用。
     """
 
     code = "provider_exhausted"

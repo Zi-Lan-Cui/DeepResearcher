@@ -34,8 +34,8 @@ class SearchCandidate(BaseModel):
     raw_content: str = ""
     score: float = 0.0
     content_provider: str = ""
-    published_at: str = ""  # 搜索引擎给出的发布时间（时效性判断用，非正文事实）
-    # 域名启发式的一手/权威分级，暴露给模型以引导"优先一手来源"的选择（见 classify_source）。
+    published_at: str = ""  # 搜索引擎给出的发布时间，只用于时效性判断，不是正文内的事实
+    # 域名启发式的一手/权威分级，暴露给模型以引导其优先选择一手来源，见 classify_source。
     source_tier: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
 
@@ -171,7 +171,7 @@ def describe_source(url: str) -> SourceProfile:
 
 
 def classify_source(url: str) -> str:
-    """primary=论文/官方/学术一手；general=其余（含商业媒体/聚合，默认按二手对待）。"""
+    """primary 指论文、官方与学术一手来源；其余归 general，含商业媒体与聚合页，默认按二手对待。"""
     return "primary" if describe_source(url).authority_tier == "primary" else "general"
 
 
@@ -191,7 +191,7 @@ class SearchToolResult(BaseModel):
     queries: list[str] = Field(default_factory=list)
     failures: list[SearchFailure] = Field(default_factory=list)
     error: str = ""
-    # 账户级不可用（额度/鉴权）：与普通"这次没搜到"区分，上层据此停止重试并快速收尾。
+    # 额度或鉴权导致的账户级不可用，与普通情况下没搜到结果区分；上层据此停止重试并快速收尾。
     provider_exhausted: bool = False
     provider_user_code: str = ""
 

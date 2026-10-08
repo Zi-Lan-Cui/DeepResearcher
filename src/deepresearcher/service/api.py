@@ -1,8 +1,6 @@
 """FastAPI 应用装配根。
 
-安全与传输策略住在 ``service.web``。本模块刻意只保留应用装配，
-避免导入 API 时把路由、鉴权、SSE 与 worker 生命周期实现
-藏进同一个大文件。
+路由、鉴权、SSE 与 worker 生命周期的实现位于 ``service.web``，本模块只做装配。
 """
 
 from pathlib import Path
@@ -29,9 +27,6 @@ def create_app(
 
     控制面在结构上无法执行 run：图装配与 worker 生命周期
     只存在于 ``deepresearcher.worker``。
-
-    返回:
-        FastAPI: 配置好 lifespan 的应用实例。
     """
 
     app = FastAPI(

@@ -123,18 +123,19 @@ def grep_lines(
     max_chars: int,
     offset: int = 0,
 ) -> GrepResult:
-    """对已加载文本执行单查询词的字面检索，返回**可见截断、可续读**的窗口结果。
+    """对已加载文本执行单查询词的字面检索，返回截断可见、可续读的窗口结果。
 
-    一次调用只查一个词:批量由 agent 在同一回合并行发起多个 GrepDocument 实现
-    (该工具非 serial)。因此不存在跨查询词的配额抢占/饿死,`offset` 就是"跳过该词
-    去重后的前 N 个窗口"这一单纯分页。截断(受 max_matches / max_chars 约束)通过
-    total_matches/has_more/next_offset 显式回报;max_chars 触顶时**整窗不截半行**,
-    留待下一页。为保证翻页必定前进,当某次调用一个窗口都还没发出、而下一个窗口又
-    超过字符预算时,仍整窗发出这一次(受 context_lines 上限约束,单个窗口有限)。
+    一次调用只查一个词；批量查多个词由 agent 在同一回合并行发起多个
+    GrepDocument 实现，该工具非 serial，因此不存在跨查询词相互占用窗口的情况，
+    offset 的含义就是跳过该词去重后的前 N 个窗口。截断受 max_matches 与 max_chars
+    约束，截断情况经 total_matches、has_more、next_offset 显式回报。
+    max_chars 触顶时不拆行截断单个窗口，未发出的窗口整窗留到下一页。
+    为保证翻页必定前进，当本次调用尚未发出任何窗口、而下一个窗口超出字符预算时，
+    仍整窗发出这一个；单个窗口受 context_lines 上限约束，大小有限。
     """
 
     needle = query.strip().casefold()
-    # 全文扫描得到去重后的候选窗口(文档序);据此得出 total_matches(截断前)。
+    # 全文扫描得到去重后的候选窗口，按文档行号排序；total_matches 取截断前的该列表总数。
     windows: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
     if needle:
@@ -156,7 +157,7 @@ def grep_lines(
         content = "\n".join(
             f"L{line_number}: {lines[line_number - 1]}" for line_number in range(start, end + 1)
         )
-        # 整窗预算;仅在"已发出至少一个窗口"时因字符预算停手,保证至少前进一格、不死循环。
+        # 预算按整窗消耗；仅在已发出至少一个窗口时才因字符预算停止，保证每页前进、不死循环。
         if matches and used_chars + len(content) > max_chars:
             break
         matches.append(

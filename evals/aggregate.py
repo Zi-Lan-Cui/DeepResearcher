@@ -1,10 +1,10 @@
 """聚合与报表：criterion 级结果 → 分维得分、case 判定、pass@k/pass^3、一致率。
 
-分数呈现纪律（已定决策，不合并单一总分）：
-  DeepResearchBench Quality   xx.x     ← 外轨四维加权（官方权重，官方 criterion）
-  Evidence Groundedness       xx.x     ← 确定性门通过率（引用完整性等）
-  Behavior Pass Rate          xx.x     ← 内轨行为断言
-  Engineering pass@3 / pass^3          ← 内轨整体稳定性表述
+分数呈现纪律：五个分块各自呈现,不合并为单一总分。
+  DeepResearchBench Quality   xx.x     ← external 轨四维加权,用官方权重与官方 criterion
+  Evidence Groundedness       xx.x     ← 确定性门通过率,即引用完整性等
+  Behavior Pass Rate          xx.x     ← behavior 轨行为断言
+  Engineering pass@3 / pass^3          ← behavior 轨整体稳定性表述
   Unknown Rate / 人机一致率 / Cohen κ  ← judge 可信度证明
 """
 
@@ -25,7 +25,7 @@ def criterion_weight(case: EvalCase, criterion_id: str) -> float:
     for c in case.criteria:
         if c.id == criterion_id:
             return c.weight * (case.dimension_weights.get(c.dimension, 1.0))
-    return 0.0  # gate:* 等附挂项不占题分
+    return 0.0  # gate:* 门控项不参与题分加权
 
 
 @dataclass
@@ -37,8 +37,8 @@ class CaseScore:
     gate_failures: list[str] = field(default_factory=list)
     behavior_pass: bool = True
     behavior_failures: list[str] = field(default_factory=list)
-    quality_score: float | None = None  # 外轨加权分（judge 维度）
-    judge_failures: list[str] = field(default_factory=list)  # 内轨 judge 断言的非 yes 项
+    quality_score: float | None = None  # external 轨 judge 维度的加权分
+    judge_failures: list[str] = field(default_factory=list)  # behavior 轨 judge 断言的非 yes 项
     unknown_count: int = 0
     judge_count: int = 0
     passed: bool = False
@@ -61,8 +61,8 @@ def score_case(case: EvalCase, attempt: int, results: Iterable[CriterionResult])
     )
     score.behavior_pass = all(r.verdict == "yes" for r in deterministic)
     score.behavior_failures = [r.criterion_id for r in deterministic if r.verdict != "yes"]
-    # unknown 是评审器未交付有效判定，不能当作产品通过。它同时进
-    # unknown_rate，用于区分“系统未达标”与“judge/rubric 需校准”。
+    # unknown 表示 judge 未给出有效判定,不能算产品通过;同时计入
+    # unknown_rate,用于区分系统未达标与 judge/rubric 需要校准两种情况。
     score.judge_failures = [r.criterion_id for r in judged if r.verdict != "yes"]
     score.unknown_count = sum(1 for r in judged if r.verdict == "unknown")
     score.judge_count = len(judged)
@@ -88,7 +88,7 @@ def score_case(case: EvalCase, attempt: int, results: Iterable[CriterionResult])
             and score.quality_score is not None
             and score.quality_score >= EXTERNAL_PASS_THRESHOLD
         )
-    else:  # 行为题：门 + 全部 deterministic 断言 + 全部 judge 断言，一票不过
+    else:  # behavior 轨：门控、deterministic 断言、judge 断言任一不过即失败
         score.passed = score.gates_green and score.behavior_pass and not score.judge_failures
     return score
 
@@ -149,8 +149,6 @@ def track_summary(
     }
 
 
-# ---- 人工标注同步表 ----
-
 ANNOTATION_COLUMNS = [
     "case_id",
     "attempt",
@@ -159,8 +157,8 @@ ANNOTATION_COLUMNS = [
     "criterion_text",
     "judge_verdict",
     "judge_reason",
-    "human_verdict",  # 人工填 yes/no/unknown（留空=未标）
-    "agree",  # import 时回算
+    "human_verdict",  # 人工填 yes/no/unknown,留空视为未标注
+    "agree",  # 重新导入时在 import_annotation_csv 里回算
 ]
 
 
@@ -193,7 +191,8 @@ def export_annotation_csv(results: Iterable[CriterionResult], cases: dict[str, E
 
 
 def import_annotation_csv(content: str) -> list[dict[str, str]]:
-    """回导人工列并回算 agree；human 为 unknown 的行不计一致（rubric 歧义信号另算）。"""
+    """读入人工列并回算 agree:双方判定相同算一致,含都判 unknown;单方
+    unknown 的行不计一致也不计分歧,rubric 歧义信号由 agreement_report 另算。"""
     rows = list(csv.DictReader(io.StringIO(content)))
     for row in rows:
         human = (row.get("human_verdict") or "").strip().lower()
@@ -201,16 +200,17 @@ def import_annotation_csv(content: str) -> list[dict[str, str]]:
         if human not in {"yes", "no", "unknown"}:
             row["agree"] = ""  # 未标注
         elif human == judge:
-            row["agree"] = "1"  # 含双方都判 unknown 的"一致地认为歧义"
+            row["agree"] = "1"  # 双方一致判 unknown 也算一致
         elif "unknown" in (human, judge):
-            row["agree"] = ""  # 一方 unknown：二值域外，不记分歧也不记一致
+            row["agree"] = ""  # 单方 unknown,不参与一致与否的判定
         else:
             row["agree"] = "0"
     return rows
 
 
 def agreement_report(rows: list[dict[str, str]]) -> dict[str, Any]:
-    """人机一致率 + Cohen's kappa（yes/no 二值域上算，unknown 单独计歧义率）。"""
+    """人机一致率 + Cohen's kappa。kappa 只在 yes/no 二值域上计算,
+    unknown 不计入,单独以双方歧义率呈现。"""
     judge: list[str] = []
     human: list[str] = []
     for row in rows:
@@ -256,8 +256,8 @@ def _cohen_kappa(a: list[str], b: list[str]) -> float | None:
 def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """把各 artifact 的 process_metrics 汇成效率块。
 
-    成本口径：token 已从网关实采（usage_estimated=false）；`estimated_cost_usd`
-    未配 LLM 单价时恒 0——这不是缺失，是当前"只记录 token"的刻意口径。
+    成本口径:token 已从网关实采,usage_estimated=false;estimated_cost_usd
+    在未配 LLM 单价时恒 0,这是当前只记录 token 的刻意口径,不是数据缺失。
     """
     if not rows:
         return {"runs": 0}

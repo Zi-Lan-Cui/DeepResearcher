@@ -2,11 +2,11 @@
 
 节点名是跨模块契约：graph.py 用它挂边，node_runner 与 Supervisor 把
 ``supervisor_next`` 写进 State。因此常量必须放在 ``nodes/`` 与
-``graph.py`` 之外的中性模块，否则叶子 Agent 又要反向 import 装配层。
+``graph.py`` 之外的中性模块，避免叶子 Agent 反向 import 装配层。
 
-路由规则只有一条主干（``route_after``）：节点一旦声明 terminal phase，
+路由规则只有一条主干 ``route_after``：节点一旦声明 terminal phase，
 无条件收束到渲染终点；否则跟随该节点写下的业务交接。各节点的出口
-函数是主干 + 各自一个字段的业务判断，路由表整体在本文件可一眼读尽。
+函数是主干加各自一个字段的业务判断，全部路由出口都定义在本文件。
 """
 
 from collections.abc import Mapping
@@ -27,10 +27,10 @@ class NodeName(StrEnum):
 # 即时回答、证据不足、写作失败）；completed：防御性收束。
 TERMINAL_PHASES = frozenset({"failed", "rendering", "completed"})
 
-# 可丢弃预览通道的白名单唯一事实源:值是产出方的节点名(astream 的 ns 头)。
-# executor(生产)、preview 总线闸、projector(投影闸)三处同读这一处,放开新通道
-# 只改这里;持久事件面与预览面互不 import 的守卫(tests/test_service_architecture)
-# 决定了常量必须住在两面都可达的中性词表模块。
+# 可丢弃预览通道白名单的唯一事实源；值是产出方的节点名，即 astream 的 ns 头。
+# 生成端 executor、preview 总线、消费端 projector 三处同读这一份，放开新通道
+# 只改这里。tests/test_service_architecture 守卫持久事件面与预览面互不 import，
+# 常量因此必须住在两面都可达的中性词表模块。
 PREVIEW_CHANNELS = frozenset({NodeName.SUPERVISOR})
 
 
@@ -52,7 +52,7 @@ def route_after(state: Mapping[str, object], normal: str) -> str:
 
 
 def route_after_router(state: Mapping[str, object]) -> str:
-    # "quick_answer" 是 RouteDecision 的业务取值，不是节点名，两个词汇空间不混用。
+    # "quick_answer" 取的是 RouteDecision 的业务值，不是节点名；两个字段词表不混用。
     return route_after(
         state,
         NodeName.QUICK_ANSWER if state.get("route") == "quick_answer" else NodeName.CLARIFY,

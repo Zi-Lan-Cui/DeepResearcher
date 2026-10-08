@@ -1,4 +1,4 @@
-"""Agent 共享机器件:中间件、栈装配与调度原语(非全是"中间件",包名沿用生态惯用词)。"""
+"""Agent 共享中间件、栈装配与调度原语。"""
 
 from deepresearcher.agents.middleware.factory import (
     AGENT_RECURSION_LIMIT,

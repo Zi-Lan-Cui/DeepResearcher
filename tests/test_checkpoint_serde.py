@@ -4,7 +4,7 @@ from deepresearcher.service.checkpoint_serde import build_checkpointer_serde, pr
 
 def test_allowlist_covers_our_state_types():
     keys = projected_type_keys()
-    # 触发过告警的三个类型都必须在允许清单里（否则恢复在严格模式下会炸）。
+    # 触发过告警的类型必须在允许清单里,否则恢复在严格模式下失败。
     assert ("deepresearcher.schemas.sections", "ResearchDirectionResult") in keys
 
 
@@ -30,8 +30,8 @@ def test_state_model_roundtrips_through_serde():
 def test_every_state_channel_model_is_allowlisted():
     """ResearchState 通道里的每个模型类型必须被 serde 扫描收录。
 
-    白名单按包扫描收集,新增通道若落在包外(或 import 方式变化使扫描漏收),
-    恢复路径会在未来某次严格化时静默失败——该测试保证问题今天暴露。
+    白名单按包扫描收集。新增通道若落在包外,或 import 方式变化使扫描漏收,
+    恢复路径会在未来某次严格化时静默失败;该测试让问题今天暴露。
     """
     from typing import Annotated, get_args, get_origin, get_type_hints
 
@@ -60,7 +60,7 @@ def test_every_state_channel_model_is_allowlisted():
 
 
 def test_scalar_channels_roundtrip_with_full_fidelity():
-    """全 scalar 通道 dump→load 后仍是被登记模型且等值——防止绕过校验被当作合法模型。"""
+    """全 scalar 通道模型 dump→load 后仍返回登记的类型且等值,防止绕过校验的替身被当作合法模型。"""
     from deepresearcher.schemas import ReviewProgress, RunStatus, SupervisorProgress, WriterProgress
 
     serde = build_checkpointer_serde()

@@ -22,7 +22,8 @@ from deepresearcher.tools.web.search.models import SearchResult
 if TYPE_CHECKING:
     from deepresearcher.tools.transport.aliyun import AliyunDtsApi
 
-# 账户级不可用（额度/鉴权）的默认熔断窗口：够长以止住 hammer，又能在上游恢复后自愈。
+# 账户级不可用（额度/鉴权）的默认熔断窗口：长到足以停止连续请求该提供方，
+# 又能在上游恢复后自愈。
 _PROVIDER_HEALTH_SECONDS = 900.0
 
 
@@ -78,7 +79,7 @@ class SearchService:
         deadline = self._rate_limit_deadlines.get(provider, 0.0)
         now = time.monotonic()
         if now < deadline:
-            # retryable=False：本窗口内立即重试没有意义，把决策让给模型换策略。
+            # retryable=False：本窗口内立即重试没有意义，标记为不可重试，由调用方改用其他策略。
             raise ToolRequestError(
                 f"搜索供应商 {provider} 已被限流，跳过远程重试；"
                 f"约 {max(1, math.ceil(deadline - now))} 秒后恢复。"

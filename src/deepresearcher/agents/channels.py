@@ -1,8 +1,8 @@
-"""内层循环 state 通道的共用 reducer。reducer 即同一 superstep 内多份工具增量的合并规则。
+"""内层循环 state 通道的共用 reducer。reducer 定义同一 superstep 内多份工具增量如何折叠。
 
-并发工具(同批多个 tool_calls)只能写合并语义通道:按 id 折重、取 max、集合并、op 流水
-追加、按键合并;replace 语义(整字段后写覆盖)只允许串行工具写——并发快照按调用序而非
-完成序合并,后写会盖掉先写。各内层图共用,同一规则只此一处。
+同批多个 tool_calls 并发执行,并发工具只能写合并语义通道:按 id 折重、取 max、集合并、
+op 流水追加、按键合并。replace 语义即整字段由最后写入值覆盖,只允许串行工具写:通道按
+调用序而非完成序合并,并发写整字段快照会互相覆盖增量。各内层图共用,合并规则只在此一处。
 """
 
 from typing import Any
@@ -27,12 +27,12 @@ def merge_or(current: bool, incoming: bool) -> bool:
 
 
 def append_ops(current: Any, incoming: list[dict[str, list[str]]]) -> list:
-    """有序 op 流水追加;活跃集折叠后与串行执行史等价,并发 add 互不覆盖。"""
+    """有序 op 流水追加;活跃集按流水顺序折叠后与串行执行结果等价,并发 add 互不覆盖。"""
     return list(current or []) + list(incoming or [])
 
 
 def merge_dict_by_key(current: Any, incoming: dict) -> dict:
-    """按键合并:并发工具写入不同 key(候选/文档按 id),互不覆盖。"""
+    """按键合并;并发工具写入的 key 如候选 id、文档 id 各不相同,互不覆盖。"""
     merged = dict(current or {})
     merged.update(incoming or {})
     return merged

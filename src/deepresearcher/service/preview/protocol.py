@@ -1,6 +1,6 @@
 """可丢弃预览的传输契约。
 
-Ephemeral 事件只改善实时观感：没有序号、从不持久化，不得参与
+Ephemeral 事件只改善实时观感：没有序号、不持久化，不得参与
 run 状态判定。协议有两个可互换的实现，装配时选定：
 ``RedisEphemeralEventBus``（跨进程，生产）与 ``LocalPreviewBus``
 （同事件循环，单栈 harness）。

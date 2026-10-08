@@ -58,7 +58,7 @@ _FLUSH_INTERVAL_SECONDS = 2.0
 def prune_event_jsonl(events_dir: Path, retention_days: int) -> int:
     """按 mtime 删除超龄的 run 事件 JSONL,返回删除数。
 
-    清理是尽力而为:单个文件出错跳过,绝不让运维杂务打断进程启动。
+    清理是尽力而为：单个文件出错跳过，清理失败不阻塞进程启动。
     retention_days<=0 表示关闭清理。
     """
     if retention_days <= 0 or not events_dir.is_dir():
@@ -75,7 +75,7 @@ def prune_event_jsonl(events_dir: Path, retention_days: int) -> int:
     return removed
 
 
-# 账户级 LLM 不可用 → 面向用户的安全文案（不泄露内部错误串）。
+# LLM 账户级不可用时面向用户的安全文案，不含内部错误串。
 _LLM_UNAVAILABLE_MESSAGE = {
     "invalid_key": "模型服务密钥无效，请检查配置后重试。",
     "insufficient_credit": "模型服务余额不足，请充值或更换密钥后重试。",
@@ -107,8 +107,8 @@ class RunExecutor:
         self._session_factory = session_factory
         self._config = config
         self._hub = hub
-        # 投递与 notify 只发生在 RunEventHub.flush:executor 必须复用协调层注入的
-        # 同一实例，不设默认构造，避免出现绕过它的第二个 Hub。
+        # 投递与 notify 只发生在 RunEventHub.flush：executor 必须复用协调层注入的
+        # 同一实例，不设默认构造，避免出现绕过该投递点的第二个 Hub。
         self._usage_store = usage_store
         self._llm_gate = llm_gate
         self._llm_rate_limiter = llm_rate_limiter
@@ -123,8 +123,9 @@ class RunExecutor:
             if config.database_url.startswith("postgresql")
             else None
         )
-        # Langfuse 是镜像用的观测出口: callbacks 级挂入,失败或断网不得影响 run
-        # (与预览总线同一合同)。三键缺任一 = 完全关闭;导入失败(未装 extra)同样降级关闭。
+        # Langfuse 是把 trace 复制到外部的观测出口，callbacks 级挂入，失败或断网
+        # 不得影响 run，与预览总线同一合同。三个配置键缺任一即完全关闭，
+        # 未安装 extra 导致导入失败时同样降级为关闭。
         self._langfuse_client: Any | None = None
         self._langfuse_handler: Callable[[], Any] | None = None
         self._langfuse_scope: Callable[..., Any] | None = None
@@ -160,7 +161,7 @@ class RunExecutor:
         self._shutdown_interrupts.update(run_ids)
 
     def mark_lease_lost(self, run_id: str) -> None:
-        """阻止已被取消的过期持有者再发布状态或 done 帧。"""
+        """租约判定丢失后，本持有者停止为该 run 发布状态与 done 帧。"""
         self._lost_leases.add(run_id)
 
     def mark_cancellation_requested(self, run_id: str) -> None:
@@ -222,8 +223,8 @@ class RunExecutor:
                 )
         except asyncio.CancelledError:
             if run_id not in self._shutdown_interrupts and run_id not in self._lost_leases:
-                # shield:终态落库事务不再被二次 cancel 打断(shutdown 后紧跟
-                # 取消的二次时序);本协程照常退出,写库由被 shield 的任务完成。
+                # 用 shield 保护终态落库事务不被随后的第二次 cancel 打断
+                # （shutdown 后任务取消会再次到来）；本协程照常退出，写库由被 shield 的任务完成。
                 try:
                     persisted = await asyncio.shield(
                         self.persist_status(
@@ -407,9 +408,9 @@ class RunExecutor:
                     if headline and not headline_persisted:
                         headline_persisted = True
                         if await self._persist_headline(run_id, headline):
-                            # 落库成功即推帧:进行中的头部当场从长问题收敛为短题。
-                            # 根 values 块在 clarify 那一超步后即携带 run_headline,
-                            # 故本帧在澄清出口、而非 run 结束时发出。
+                            # 落库成功即推帧：进行中的头部当场从长问题收敛为短题。
+                            # 根 values 块在 clarify 那一超步后即携带 run_headline，
+                            # 因此本帧在澄清中断处发出，而非 run 结束时。
                             self._hub.write(
                                 {
                                     "run_id": run_id,
@@ -417,7 +418,7 @@ class RunExecutor:
                                     "payload": {"headline": headline[:RUN_HEADLINE_MAX_CHARS]},
                                 }
                             )
-                            # 立即 flush 越过 ≤2s 周期:落库→写库→NOTIFY 门铃一次走完。
+                            # 立即 flush，不等 ≤2s 周期：持久化与 NOTIFY 唤醒一次走完。
                             await self._hub.flush(run_id)
                 continue
             if mode == "updates" and isinstance(chunk, dict):
@@ -436,8 +437,8 @@ class RunExecutor:
             message, _metadata = chunk
         except (TypeError, ValueError):
             return
-        # langchain 1.x 的流式片段 .type 为 "AIMessageChunk" 而非 "ai"——只认 "ai"
-        # 会把全部 token 静默丢掉(流式失踪事故的根因)。
+        # langchain 1.x 的流式片段 .type 为 "AIMessageChunk" 而非 "ai"；只认 "ai"
+        # 会把全部 token 静默丢掉，这是此前流式失踪事故的根因。
         if getattr(message, "type", None) not in {"ai", "AIMessageChunk"}:
             return
         channel = self._preview_channel(namespace)
@@ -455,8 +456,8 @@ class RunExecutor:
                 "payload": {"channel": channel, "text": text[:200]},
             }
             try:
-                # 预览只走注入的总线这一条路径(生产 Redis,单栈 harness 注入 Local bus)。
-                # 已提交帧从不经过这里——SSE 从 DB tail 取。
+                # 预览只走注入的总线这一条路径：生产为 Redis，单栈 harness 注入 Local bus。
+                # 已提交帧不经过这里，SSE 从 DB tail 取。
                 if self._ephemeral_bus is not None:
                     await self._ephemeral_bus.publish(run_id, event)
             except Exception:  # noqa: BLE001 - 预览通道不反噬运行
@@ -521,8 +522,8 @@ class RunExecutor:
     async def _persist_awaiting_input(self, run_id: str, *, claim: RunWork | None = None) -> bool:
         if claim is not None:
             async with self._session_factory() as session:
-                # WHERE 固定 running:只有当前 claim 持有者可写(所有权检查),
-                # 故意严于命令表来源并集,不查表。
+                # WHERE 固定 running：只有当前 claim 持有者可写，这是所有权检查，
+                # 故意严于迁移表的来源并集，不查迁移表。
                 result = await session.execute(
                     update(Run)
                     .where(
@@ -578,7 +579,6 @@ class RunExecutor:
     async def persist_status(
         self, run_id: str, *, status: str, claim: RunWork | None = None, **extra: Any
     ) -> bool:
-        # 对账写:结构副作用查表,站点字段(extra)覆写其上;来源纪律只有"不覆盖终态"。
         """把生命周期事实写成行状态，并落对应事件。
 
         参数:
@@ -588,12 +588,13 @@ class RunExecutor:
             **extra: 附加列；None 值跳过。
 
         返回:
-            bool: 是否写入成功（CAS 未命中或行已终态为 False）。
+            是否写入成功，CAS 未命中或行已终态时为 False。
         """
         values = side_effects(status, now=_utcnow())
+        # 对账写：结构副作用先查表，extra 附加列覆写其上；来源纪律只有"不覆盖终态"。
         values.update({key: value for key, value in extra.items() if value is not None})
         if claim is not None:
-            # 同上:WHERE 固定 running 是所有权检查,严于迁移表来源并集,不查表。
+            # 同上：WHERE 固定 running 是所有权检查，严于迁移表来源并集，不查迁移表。
             async with self._session_factory() as session:
                 result = await session.execute(
                     update(Run)

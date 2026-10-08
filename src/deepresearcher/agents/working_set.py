@@ -1,10 +1,8 @@
 """supervisor 与 researcher 共享的 Evidence 工作集释放/恢复原语。
 
-两侧的工作集操作同源(archive=全量档案、active=工作集、reserve=档案−工作集),
-回执此前在两边 tools.py 各维护一份并已漂移:去重先后不同、supervisor 的 restore
-缺 unknown_evidence_ids。本模块收拢为一份实现,行为取严的一侧——请求 id 先按
-顺序去重再进回执;restore 与 release 同为三键形状。
-快照回执因两侧卡片形状不同而由调用方以回调传入,并在状态变更后求值。
+两侧工作集操作同源,分三层:archive 是全量档案、active 是工作集、reserve 是档案减去
+工作集。请求 id 先按顺序去重再进回执;release 与 restore 的回执同为三键形状,取行为较严
+的一侧。快照因两侧卡片形状不同而由调用方以回调传入,并在状态变更后求值。
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -36,8 +34,8 @@ def release_working_set(
     archive_ids = {item.evidence_id for item in loop_state.evidences}
     return {
         "released_evidence_ids": released,
-        # 重复释放同一 id ≠ 编造:档案在而工作集无,单列一键;
-        # unknown 只留给真不在档案的 id——与 Restore 的键形状对齐。
+        # 档案中有、工作集中没有的 id(含重复释放)归 not_in_working_set_ids,不归 unknown;
+        # unknown_evidence_ids 只收不在档案的 id,与 restore 的键形状对齐。
         "not_in_working_set_ids": [
             item for item in requested if item in archive_ids and item not in released
         ],

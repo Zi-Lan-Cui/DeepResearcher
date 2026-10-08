@@ -1,13 +1,14 @@
-"""DeepResearch Bench 适配器：只引用、绝不拷贝。
+"""DeepResearch Bench 适配器：只引用,不拷贝。
 
-DRB 代码是 MIT，但题目/criterion/专家参考文章是**数据集许可**——本模块
-不在本仓库落任何一行 DRB 内容，只在运行时从 ``$DRB_ROOT`` 解析其 jsonl，
-拼成我们的 :class:`~evals.schemas.EvalCase`。评测产物（分数、报告）是我们
-自己的输出，可入库展示；原始数据集请使用者自行 clone（README 有指引）。
+DRB 代码是 MIT,但题目、criterion、专家参考文章受数据集许可约束。本模块不
+把任何 DRB 内容放进仓库,只在运行时从 $DRB_ROOT 解析其 jsonl,拼成
+:class:`~evals.schemas.EvalCase`。评测产物(分数、报告)是我们的输出,可以入
+库;原始数据集由使用者按 README 指引自行 clone。
 
-题集治理（防 rubric 过拟合）：中文 50 题按固定种子切 dev/holdout 两层——
-dev 允许翻失败轨迹、归因、调提示词；holdout 只看分数。切分结果落
-split_drb_zh.json 冻结，全组人共用同一份，杜绝"悄悄把某题挪回 dev"。
+题集治理:为防对着已知 rubric 调提示词造成过拟合,中文 50 题按固定种子切成
+dev/holdout 两层。dev 允许查失败轨迹、归因、调提示词,holdout 只看分数。切
+分结果冻结在 split_drb_zh.json 供全组共用,改题目归属必须改这个文件、留下
+痕迹。
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ def load_criteria(root: Path) -> dict[int, dict[str, Any]]:
 
 
 def load_references(root: Path) -> dict[int, str]:
-    """专家参考文章（RACE 对照基准；judge 上下文用，永不提交进本仓库）。"""
+    """专家参考文章,作 judge 的 RACE 对照基准;受数据集许可限制不得提交进本仓库。"""
     path = root / "data" / "test_data" / "cleaned_data" / "reference.jsonl"
     if not path.is_file():
         return {}
@@ -107,8 +108,8 @@ def build_cases(
                 prompt=str(row["prompt"]),
                 language=language,
                 topic=str(row.get("topic", "")),
-                # 官方纪律：全量 100 题一次跑不动；首轮 dev 每题 ×1 校准，
-                # 里程碑轮次再升 ×3 计 pass^3。
+                # DRB 全量 100 题一次跑不动:首轮 dev 每题跑 1 次校准,
+                # 里程碑轮次升到 3 次再计 pass^3。
                 repeat=1,
                 dimension_weights=dict(rubric.get("dimension_weight") or {}),
                 criteria=tuple(criteria),

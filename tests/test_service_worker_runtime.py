@@ -13,9 +13,9 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_langfuse_unreachable_still_completes_run(tmp_path):
-    """观测出口合同:langfuse 后端不可达,run 照常完成,不反噬执行。
+    """观测出口合同:langfuse 后端不可达时 run 照常完成,观测失败不影响执行。
 
-    base_url 指向 discard 端口(连接拒绝,立即失败),导出侧没有服务。
+    base_url 指向 discard 端口,连接立即被拒,导出侧没有任何服务。
     """
     settings = service_settings(tmp_path)
     config = service_config(

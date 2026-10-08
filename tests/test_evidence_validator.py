@@ -8,10 +8,11 @@ from deepresearcher.evidence.validator import (
 
 
 def test_punctuation_only_diff_repairs_to_source_span():
-    # 源用弯引号/破折号，模型写成直引号/连字符：词序列一致 → 回退定位到原文子串。
+    # 源用弯引号与破折号,模型写成直引号与连字符;词序列一致,修复后定位回原文子串。
     source = "引言。The report — “very robust” — passed. 结尾"
     quote = 'The report - "very robust" - passed.'
-    assert not quote_in_source(source, quote)  # 连字符/引号样式差异，第二档仍不过
+    # 引号与连字符的样式差异不在归一范围,宽松判定也不通过。
+    assert not quote_in_source(source, quote)
     assert quote_verbatim_span(source, quote) == "The report — “very robust” — passed"
 
 
@@ -63,25 +64,24 @@ def test_encoding_variants_rescued_by_loose_but_rejected_by_strict():
 
 def test_paraphrase_fails_both_strict_and_loose():
     source = "The system remained stable for 50 hours."
-    assert quote_in_source(
-        source, "The system remained stable for 50 hours"
-    )  # 逐字(去句号空白)仍过
-    assert not quote_in_source(source, "The system was stable for about two days")  # 改述不过
+    # 仅去掉句号与空白、仍逐字一致时可以通过。
+    assert quote_in_source(source, "The system remained stable for 50 hours")
+    assert not quote_in_source(source, "The system was stable for about two days")
 
 
 def test_quote_in_source_accepts_verbatim_ignoring_whitespace():
     source = "跨行引用上半句\n   下半句结束，其余正文。"
     assert quote_in_source(source, "跨行引用上半句 下半句结束")
-    assert quote_in_source(source, "跨行引用上半句下半句结束")  # 忽略换行/空白差异
+    assert quote_in_source(source, "跨行引用上半句下半句结束")
 
 
 def test_quote_in_source_rejects_unseen_or_empty_quote():
     assert not quote_in_source("已有正文", "虚构引用")
-    assert not quote_in_source("已有正文", "")  # 空 quote 不算证据
+    assert not quote_in_source("已有正文", "")
 
 
 def test_quote_in_source_is_immune_to_duplicate_and_paginated_lines():
-    # 旧实现按行号定位，遇 \f 换页 / \r\n / 重复句会错位；纯子串判定不受影响。
+    # 行号定位会被 \f 换页、\r\n 与重复句错位干扰,因此用纯子串判定。
     source = "同一句结论。\f同一句结论。\r\n正文其他内容。"
     assert quote_in_source(source, "同一句结论。")
     assert collapse_whitespace("A  \n B") == "a b"

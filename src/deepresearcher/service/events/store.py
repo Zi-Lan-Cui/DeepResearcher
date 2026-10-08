@@ -17,9 +17,9 @@ class RunEventStore:
     async def append(self, run_id: str, records: Sequence[dict]) -> list[dict]:
         """事务内分配 seq 并落库;返回带 seq 的完整记录。
 
-        本方法只负责持久,不做投递与通知——**唯一合法调用者是 RunEventHub.flush**,
-        那里在 append 成功后发 notify。直调本方法 = 消费端收不到
-        唤醒,只会靠轮询恢复:允许(轮询是兜底),但要知道这绕过了唯一投递点。
+        本方法只负责持久化，不做投递与通知；唯一允许的调用者是 RunEventHub.flush，
+        它在 append 成功后发 notify。其他位置直调本方法时消费端收不到唤醒，
+        只能等轮询追平。轮询是兜底路径，正确性不丢，但这绕过了唯一投递点。
         """
         if not records:
             return []

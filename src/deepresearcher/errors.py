@@ -5,7 +5,7 @@ ERROR_CLIP_CHARS = 500
 
 
 def clip_text(text: str | None, limit: int = ERROR_CLIP_CHARS) -> str:
-    """定长截断并留痕:超长时尾部以标记明示,避免读者把片段当全文。"""
+    """定长截断;超长时尾部附加显式标记,避免读者把片段当全文。"""
     if not text:
         return ""
     return text if len(text) <= limit else text[: limit - 8] + "…[截断]"

@@ -67,9 +67,9 @@ async def run_events(
             return frames, saw_done
 
         async def _terminate_if_settled() -> tuple[list[str], bool]:
-            """done 帧可能整批丢在失败的 flush 里——行的终态才是权威。
+            """done 帧可能整批丢在失败的 flush 里，行的终态才是权威。
 
-            重排一次 tail,防止合成帧排在刚落库的 done 之前;仍没有才合成。
+            合成前先重读一次 tail，避免合成帧排在刚落库的 done 之前；仍读不到才合成。
             """
             frames, saw_done = _drain(await state.manager.event_store.after(run.id, last_seq))
             if saw_done:
@@ -77,8 +77,8 @@ async def run_events(
             terminal = await state.manager.terminal_state(run.id)
             if terminal is None:
                 return frames, False
-            # 合成号必须严格大于最后已投帧:前端按 seq 水位去重,
-            # 同号帧会被当作回放丢弃,兜底 done 反而永远到不了客户端。
+            # 合成帧的 seq 必须严格大于最后已投帧：前端按已收帧的最大 seq 去重，
+            # 同号帧会被当作回放丢弃，兜底 done 反而送不到客户端。
             synthesized = project(
                 {
                     "run_id": run.id,
@@ -120,8 +120,8 @@ async def run_events(
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                 finally:
-                    # 成功路径只回收未完成的挂起者;客户端断连时 asyncio.wait 不为
-                    # 子任务负责——两条退出路径都在这里回收挂起任务。
+                    # 客户端断连时 asyncio.wait 不会代管子任务；成功与异常两条
+                    # 退出路径都在这里取消并回收挂起的读取任务。
                     for waiter in waits:
                         waiter.cancel()
                     await asyncio.gather(*waits, return_exceptions=True)
@@ -132,16 +132,16 @@ async def run_events(
                     # notify 只是唤醒信号,payload 是 None,数据由下一轮循环头的 tail 取。
                     notify_wait.result()
                 if not items:
-                    # 本轮无预览可发(wait 超时或仅 notify 唤醒):
-                    # 走一次心跳检查再回轮询头。超时是常态,不是异常——绝不许上抛。
+                    # 本轮无预览可发（wait 超时或仅 notify 唤醒）：走一次心跳检查
+                    # 后回到轮询开头。超时是常态路径，按无事件处理，不作为异常。
                     now = asyncio.get_running_loop().time()
                     if now - last_ping >= SSE_HEARTBEAT_SECONDS:
                         last_ping = now
                         yield ": ping\n\n"
                     continue
                 for item in items:
-                    # 预览总线只投 text_delta(preview_event 白名单闸保证);
-                    # project() 默认拒绝,非白名单帧自然为 None。
+                    # 预览总线只投 text_delta，由 preview_event 白名单闸保证；
+                    # project() 默认拒绝，非白名单帧返回 None。
                     frame = project(item)
                     if frame is not None:
                         yield _sse(frame)

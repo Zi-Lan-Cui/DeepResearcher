@@ -1,15 +1,15 @@
-"""评测数据契约：case / criterion / criterion 级结果的双轨统一形态。
+"""评测数据契约：两轨的 case 与 criterion 级结果统一为同一形态。
 
-外轨（DeepResearch Bench 专家二元 criterion + 四维官方权重）与内轨（自研行为
-断言）都归一到 ``EvalCase``；三方评判（确定性 scorer、LLM judge、人工标注）
-全部落到同一批 ``CriterionResult`` 记录上——人机一致率、unknown 率、pass^k
-都在这一张表上计算，不存在第二套事实。
+external 轨用 DeepResearch Bench 的专家二元 criterion 与四维官方权重,behavior
+轨用自研行为断言,都归一到 ``EvalCase``;确定性 scorer、LLM judge、人工标注三
+方判定全部写入同一批 ``CriterionResult`` 记录,人机一致率、unknown 率、pass^k
+等都在这批记录上计算,不另设第二套数据。
 
-设计纪律（对齐评测方法论）：
-- criterion 一律二元可判（yes/no），并保留 unknown 出口——某条 criterion 的
-  unknown 率异常即 rubric 定义歧义的反查信号；
-- 打分单位是 criterion，不是整篇报告印象分：judge 每条独立调用；
-- 工程行为断言走 ``deterministic:<check>``，由代码判，绝不劳驾 LLM。
+设计约束:
+- criterion 一律二元可判 yes/no,并保留 unknown 出口;某条 criterion 的
+  unknown 率异常,回查 rubric 定义是否歧义;
+- 打分单位是 criterion,judge 每条独立调用,不给整篇报告打印象分;
+- 工程行为断言写 ``deterministic:<check>`` 由代码判定,不经过 LLM。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-# 外轨四维沿用 DRB 官方维度名；behavior/grounding 为内轨扩展。
+# 前四维沿用 DRB 官方维度名;behavior/grounding 是评测自增的维度。
 DIMENSIONS = (
     "comprehensiveness",
     "insight",
@@ -40,7 +40,7 @@ class Criterion:
     text: str
     explanation: str = ""
     weight: float = 1.0
-    # "judge" 或 "deterministic:<check>"（check 注册表见 deterministic.py）
+    # judge 或 deterministic:<check>,check 注册表见 deterministic.py
     scorer: str = JUDGE_SCORER
 
 
@@ -52,14 +52,14 @@ class EvalCase:
     criteria: tuple[Criterion, ...]
     language: str = "zh"
     topic: str = ""
-    group: str = ""  # 内轨子类：B 澄清 / C 口径冲突 / D 保守交付 / F 恢复缓存
+    group: str = ""  # behavior 轨子类:B 澄清 / C 口径冲突 / D 保守交付 / F 恢复缓存
     repeat: int = 1
     require_clarify: bool = False
     clarify_answer: str = ""
-    duplicate_answer: bool = False  # 回答后再提交一次，期待 409（payload 单次消费）
-    fault: str = "none"  # none|rerun_cache|kill|stop（后两者需 harness 掌控 worker 进程）
-    phase: int = 1  # 2 = 骨架已备、故障编排未接线的题，CLI 默认跳过并明示
-    dimension_weights: dict[str, float] = field(default_factory=dict)  # 外轨官方权重
+    duplicate_answer: bool = False  # 回答后再提交一次,期待 409,用于校验 payload 单次消费
+    fault: str = "none"  # none|rerun_cache|kill|stop,后两者需 harness 掌控 worker 进程
+    phase: int = 1  # 2 表示骨架已备、故障编排未接线的题,CLI 默认跳过并明示
+    dimension_weights: dict[str, float] = field(default_factory=dict)  # external 轨官方权重
 
     def judge_criteria(self) -> list[Criterion]:
         return [c for c in self.criteria if c.scorer == JUDGE_SCORER]
@@ -80,9 +80,6 @@ class CriterionResult:
     verdict: Verdict
     source: Literal["deterministic", "judge", "human"]
     reason: str = ""
-
-
-# ---- JSONL 往返 ----
 
 
 def cases_to_jsonl(cases: list[EvalCase]) -> str:
@@ -134,9 +131,6 @@ def merge_results(
     temporary.write_text(results_to_jsonl(merged), "utf-8")
     temporary.replace(path)
     return merged
-
-
-# ---- 校验 ----
 
 
 def validate_case(case: EvalCase) -> list[str]:
