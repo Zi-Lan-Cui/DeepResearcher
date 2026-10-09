@@ -1,6 +1,6 @@
-"""服务进程入口：``uv run python server.py``。
+"""API 进程入口:console script `deepresearcher-api`,即 `python -m deepresearcher.service.main`。
 
-配置来自 env/.env（SERVICE_* 键）；引擎配置沿用 get_settings()。
+配置来自进程环境变量与服务 env 文件(SERVICE_* 键);引擎配置沿用 get_settings()。
 """
 
 import uvicorn
