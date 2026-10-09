@@ -15,6 +15,7 @@ def _batch(names: list[str]) -> dict:
     return {
         "messages": [
             AIMessage(
+                id="ai-batch",
                 content="",
                 tool_calls=[
                     {"name": name, "args": {}, "id": f"call-{index}"}

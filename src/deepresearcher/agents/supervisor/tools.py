@@ -70,7 +70,7 @@ def build_supervisor_tools() -> list[BaseTool]:
             ctx.scope,
             research_topic,
             display_title,
-            tool_call_id=runtime.tool_call_id,
+            tool_call_id=runtime.tool_call_id or "",
             origin_state=dict(runtime.state or {}),
         )
         return _channel_command(

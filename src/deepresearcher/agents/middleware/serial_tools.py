@@ -31,7 +31,8 @@ class SerialToolMiddleware(AgentMiddleware):
     async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         messages = state.get("messages", []) if isinstance(state, dict) else []
         last = messages[-1] if messages else None
-        if not isinstance(last, AIMessage) or not last.tool_calls:
+        # 无 id 的发起消息无法定点撤销,放行比留下半撤销状态更安全(合成测试消息才会如此)。
+        if not isinstance(last, AIMessage) or not last.tool_calls or last.id is None:
             return None
         calls = list(last.tool_calls)
         offenders = sorted({call["name"] for call in calls if call["name"] in self.serial_tools})

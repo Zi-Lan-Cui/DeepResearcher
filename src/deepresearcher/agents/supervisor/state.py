@@ -48,7 +48,8 @@ def _merge_stop_reason_by_rank(
 
 def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
     """在发起本次执行的 AIMessage 的 tool_calls 序列中定位该调用的下标。"""
-    for message in reversed(list(messages or [])):
+    entries = messages if isinstance(messages, list) else []
+    for message in reversed(entries):
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
             continue
