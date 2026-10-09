@@ -8,11 +8,13 @@ from deepresearcher.nodes import (
 from deepresearcher.reporting import (
     no_evidence_blockers,
     render_final_report,
+    render_incomplete_report,
     validate_and_bind,
 )
 from deepresearcher.reporting.validation import DraftProtocolError
 from deepresearcher.schemas import (
     Citation,
+    SupervisorProgress,
 )
 from fakes import make_evidence as _ev
 
@@ -207,7 +209,7 @@ def test_render_final_report_node_routes_failure_paths():
     assert result["run"].terminal_reason == "review_recovery_exhausted"
     assert "A 的平均延迟为 20ms" in result["report"]
     assert "## 证据来源" in result["report"]
-    assert "已达到修订上限" in result["report"]
+    assert "审阅修订已达上限" in result["report"]
 
     # 正常路径:草稿 + citations → 渲染
     result = asyncio.run(
@@ -359,3 +361,58 @@ def test_final_report_without_title_falls_back_to_system_heading():
         clarified_query="q", current_round=1, evidence_count=0, body="正文", citations=[]
     )
     assert report.startswith("# 研究报告\n")
+
+
+def test_incomplete_report_collapses_zero_evidence_to_diagnostic_card():
+    """零证据时塌缩为诊断卡:只给原因与恢复方式,不逐条罗列方向和缺口。"""
+    state = {
+        "clarified_query": "如何克服恐惧",
+        "evidences": [],
+        "supervisor": SupervisorProgress(current_round=1, coverage_gaps=["缺口一", "缺口二"]),
+        "task_results": [
+            {
+                "execution_status": "completed",
+                "coverage_status": "insufficient",
+                "research_direction": "梳理舒适圈概念的心理学理论基础，要求引用一手学术文献并标注出处",
+                "evidence_count": 0,
+                "remaining_gaps": ["需要查找A", "需要查找B"],
+                "provider_exhausted": True,
+            }
+        ],
+    }
+
+    report = render_incomplete_report(state, ["搜索服务额度耗尽"])
+
+    assert "搜索服务额度耗尽" in report
+    assert "系统性故障" in report  # provider_exhausted 命中,给系统性说明
+    assert "恢复方式" in report
+    assert "方向结果" not in report  # 塌缩,不再逐条罗列
+    assert "未闭合缺口" not in report
+
+
+def test_partial_report_dedups_and_caps_gap_list():
+    """有证据但部分交付:方向短题化,缺口归一化去重并限量。"""
+    from types import SimpleNamespace
+
+    long_direction = "研究人类面对未知时产生恐惧的神经机制" + "，覆盖杏仁核与前额叶" * 8
+    state = {
+        "clarified_query": "如何克服恐惧",
+        "evidences": [SimpleNamespace(source_url=f"https://a/{i}") for i in range(3)],
+        "supervisor": SupervisorProgress(current_round=1, coverage_gaps=[]),
+        "task_results": [
+            {
+                "execution_status": "completed",
+                "coverage_status": "partial",
+                "research_direction": long_direction,
+                "evidence_count": 3,
+                "remaining_gaps": ["需要 实证 来源", "需要 实证 来源", "缺口甲", "缺口乙"],
+            }
+        ],
+    }
+
+    report = render_incomplete_report(state, ["预算耗尽"])
+
+    assert "方向结果" in report
+    assert "…" in report  # 超长课题被截断,不再逐字回声
+    assert report.count("需要 实证 来源") == 1  # 大小写/空白归一后去重
+    assert "未闭合缺口" in report

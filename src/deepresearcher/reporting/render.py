@@ -68,7 +68,7 @@ def render_final_report(
     footer = (
         "\n\n---\n\n"
         f"> 研究问题：{clarified_query}；完成 {current_round} 轮研究，"
-        f"使用 {source_count} 个来源和 {evidence_count} 条 Evidence。"
+        f"使用 {source_count} 个来源和 {evidence_count} 条证据。"
     )
     return f"# {heading}\n\n{rendered_body}{footer}" + _reference_list(
         display_order, display, by_id
@@ -133,8 +133,33 @@ def _reference_list(
     return "\n".join(lines)
 
 
+# 部分报告里的方向与缺口只是诊断线索，不是交付主体：短题化、去重、限量，
+# 避免零证据或高重复场景下清单淹没结论缺失本身。
+_DIRECTION_SUMMARY_MAX_CHARS = 40
+_GAP_ITEM_MAX_CHARS = 90
+_GAP_LIST_MAX_ITEMS = 8
+
+
+def _task_field(task: object, name: str, default: object = None) -> object:
+    """ResearchDirectionResult 与 checkpoint 恢复态的 dict 两种形态统一取值。"""
+    if isinstance(task, ResearchDirectionResult):
+        return getattr(task, name, default)
+    return cast(dict[str, object], task).get(name, default)
+
+
+def _summarize(text: object, max_chars: int) -> str:
+    flattened = " ".join(str(text).split())
+    if len(flattened) <= max_chars:
+        return flattened
+    return flattened[: max_chars - 1] + "…"
+
+
 def render_incomplete_report(state: ResearchState, reasons: list[str]) -> str:
-    """研究未完成/写作失败路径的兜底报告；不补写任何研究结论。"""
+    """研究未完成/写作失败路径的兜底报告；不补写任何研究结论。
+
+    零证据路径塌缩为诊断卡（原因与恢复方式，不列方向与缺口）；有证据的部分报告
+    保留方向短题与去重截断后的缺口清单。
+    """
     evidences = state.get("evidences", [])
     task_results = state.get("task_results", [])
     research = section(state, "supervisor", SupervisorProgress)
@@ -146,52 +171,62 @@ def render_incomplete_report(state: ResearchState, reasons: list[str]) -> str:
         "## 研究问题",
         str(state.get("clarified_query") or state.get("query") or "（未提供研究问题）"),
         "",
-        "> 已进入检索与证据验证流程，但当前未形成可交付的完整研究报告。",
-        "> 因此不以模型内部知识补写研究结论。",
-        "",
         "## 研究进度",
-        f"已执行 {research.current_round} 轮，收集 {source_count} 个来源和 {evidence_count} 条 Evidence。",
+        f"已执行 {research.current_round} 轮，收集 {source_count} 个来源和 {evidence_count} 条证据。",
+        "",
+        "## 阻塞原因",
     ]
-    if task_results:
-        lines.append("方向结果：")
-        for task in task_results:
-            status = (
-                f"{task.execution_status}/{task.coverage_status}"
-                if isinstance(task, ResearchDirectionResult)
-                else f"{task.get('execution_status', 'unknown')}/{task.get('coverage_status', 'unknown')}"
-            )
-            direction = (
-                task.research_direction
-                if isinstance(task, ResearchDirectionResult)
-                else str(task.get("research_direction", "未命名方向"))
-            )
-            lines.append(f"- [{status}] {direction}")
-        gaps: list[str] = []
-        for task in task_results:
-            values = (
-                task.remaining_gaps
-                if isinstance(task, ResearchDirectionResult)
-                else task.get("remaining_gaps", [])
-            )
-            gaps.extend(str(value) for value in values if str(value).strip())
-        gaps.extend(str(value) for value in research.coverage_gaps if str(value).strip())
-        if gaps:
-            lines.append("未闭合缺口：")
-            lines.extend(f"- {gap}" for gap in dict.fromkeys(gaps))
-    lines.extend(
-        [
-            "",
-            "## 已知阻塞",
-        ]
-    )
     lines.extend(f"- {reason}" for reason in reasons)
+    if evidence_count == 0:
+        # 0 证据时方向级缺口全是"无法获取"类复读，列出只会淹没真正的原因。
+        if any(bool(_task_field(task, "provider_exhausted")) for task in task_results):
+            lines.append("- 搜索服务额度或凭据不可用，属系统性故障，与问题本身无关。")
+        lines.extend(
+            [
+                "",
+                "本次研究没有收集到任何可验证的证据，因此不给出结论，也不以模型内部知识补写。",
+                "恢复方式：补充或更换搜索服务凭据（env/.env）后重新提交该问题；本次运行不保留部分结果。",
+            ]
+        )
+        return "\n".join(lines)
+    if task_results:
+        lines.extend(["", "### 方向结果"])
+        for task in task_results:
+            status = f"{_task_field(task, 'execution_status', 'unknown')}/{_task_field(task, 'coverage_status', 'unknown')}"
+            direction = _summarize(
+                _task_field(task, "research_direction", "未命名方向"), _DIRECTION_SUMMARY_MAX_CHARS
+            )
+            task_evidence = _task_field(task, "evidence_count", 0)
+            lines.append(f"- {direction}（{status}，证据 {task_evidence} 条）")
+        raw_gaps = [
+            str(value)
+            for task in task_results
+            for value in cast(list[object], _task_field(task, "remaining_gaps", []) or [])
+            if str(value).strip()
+        ]
+        raw_gaps.extend(str(value) for value in research.coverage_gaps if str(value).strip())
+        unique_gaps: list[str] = []
+        seen_keys: set[str] = set()
+        for gap in raw_gaps:
+            key = " ".join(gap.split()).casefold()
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_gaps.append(gap)
+        if unique_gaps:
+            shown = [
+                _summarize(gap, _GAP_ITEM_MAX_CHARS) for gap in unique_gaps[:_GAP_LIST_MAX_ITEMS]
+            ]
+            lines.extend(["", "### 未闭合缺口"])
+            lines.extend(f"- {gap}" for gap in shown)
+            if len(unique_gaps) > len(shown):
+                lines.append(f"- …另有 {len(unique_gaps) - len(shown)} 条同类缺口未列出")
     return "\n".join(lines)
 
 
 def render_error_report(state: ResearchState, error: RunError) -> str:
-    """渲染面向用户的失败报告；异常原文只保留在日志和内部事件。"""
-    reason = f"阶段 `{error.stage}` 执行失败，请稍后重试或重新发起。"
-    return render_incomplete_report(state, [reason]) + "\n\n[流程状态：失败]"
+    """渲染面向用户的失败报告；异常原文与阶段标识只保留在日志和内部事件。"""
+    del error
+    return render_incomplete_report(state, ["研究流程中途失败，未能完成本次交付；请稍后重新提交。"])
 
 
 def no_evidence_blockers(state: ResearchState) -> list[str]:

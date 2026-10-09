@@ -279,7 +279,7 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert result["run"].phase == "failed"
     assert result["run"].terminal_reason == "node_failed"
     assert result["run"].error.stage == "broken"
-    assert "执行失败，请稍后重试" in result["report"]
+    assert "研究流程中途失败" in result["report"]
     assert "boom" not in result["report"]
     # 边界产出的失败产物必须通过与节点产物相同的不变量校验,此为回归用例。
     validate_state_invariants({}, result)
@@ -401,7 +401,7 @@ def test_compiled_graph_clarify_failure_renders_failure_report(tmp_path, monkeyp
 
     assert result["run"].phase == "failed"
     assert result["run"].error.stage == "clarify"
-    assert "执行失败，请稍后重试" in result["report"]
+    assert "研究流程中途失败" in result["report"]
     assert "clarify boom" not in result["report"]
 
 
@@ -432,7 +432,7 @@ def test_compiled_graph_supervisor_failure_skips_writer(tmp_path, monkeypatch):
 
     assert result["run"].error.stage == "supervisor"
     assert result.get("writer") is None
-    assert "执行失败，请稍后重试" in result["report"]
+    assert "研究流程中途失败" in result["report"]
     assert "supervisor boom" not in result["report"]
 
 
@@ -447,7 +447,7 @@ def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypa
     )
 
     assert result["run"].error.stage == "writer"
-    assert "执行失败，请稍后重试" in result["report"]
+    assert "研究流程中途失败" in result["report"]
     assert "writer boom" not in result["report"]
 
 
@@ -467,7 +467,7 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
     )
 
     assert result["run"].error.stage == "review"
-    assert "执行失败，请稍后重试" in result["report"]
+    assert "研究流程中途失败" in result["report"]
     assert "reviewer boom" not in result["report"]
 
 

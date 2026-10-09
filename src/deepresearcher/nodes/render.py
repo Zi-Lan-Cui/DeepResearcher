@@ -34,34 +34,26 @@ async def render_final_report_node(state: ResearchState):
     if writer.status in {"failed", "exhausted"}:
         feedback = str(writer.feedback or "报告草稿未能通过引用协议校验。")
         return {
-            "report": render_incomplete_report(
-                state,
-                [f"报告写作未能完成：{feedback}"],
-            )
-            + "\n\n[写作校验：未通过]",
+            "report": render_incomplete_report(state, [f"报告写作未能完成：{feedback}"]),
             "answer_mode": "research_incomplete",
             "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.WRITER_EXHAUSTED),
         }
     if research.status == "incomplete" and not state.get("report_draft"):
         feedback = terminal_reason_text(run.terminal_reason)
         return {
-            "report": render_incomplete_report(
-                state,
-                [f"研究阶段未完成：{feedback}"],
-            )
-            + "\n\n[研究阶段：未完成；未启动 Writer]",
+            "report": render_incomplete_report(state, [feedback]),
             "answer_mode": "research_incomplete",
             "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.RESEARCH_INCOMPLETE),
         }
     if state.get("answer_mode") == "research_incomplete":
         evidence_count = len(state.get("evidences", []))
         message = (
-            "当前未取得足以支撑事实性结论的可验证 Evidence。"
+            "当前未取得足以支撑事实性结论的可验证证据。"
             if evidence_count == 0
-            else f"当前已收集 {evidence_count} 条 Evidence，但未形成可交付的完整报告。"
+            else f"当前已收集 {evidence_count} 条证据，但未形成可交付的完整报告。"
         )
         return {
-            "report": report + f"\n\n[研究未完成：{message}]",
+            "report": report + f"\n\n> 注：{message}",
             "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.RESEARCH_INCOMPLETE),
         }
     if run.terminal_reason == RenderOutcome.REVIEW_RECOVERY_EXHAUSTED:
@@ -77,7 +69,7 @@ async def render_final_report_node(state: ResearchState):
                 title=str(state.get("report_title") or ""),
             )
             return {
-                "report": report + "\n\n[审阅状态：已达到修订上限，按最后一版交付]",
+                "report": report + "\n\n> 注：审阅修订已达上限，本报告按最后一版交付。",
                 "answer_mode": "review_limited",
                 "run": RunStatus(
                     phase="completed", terminal_reason=RenderOutcome.REVIEW_RECOVERY_EXHAUSTED
@@ -86,7 +78,7 @@ async def render_final_report_node(state: ResearchState):
     if review.status == "rejected":
         feedback = review.feedback or "整体审阅未通过。"
         return {
-            "report": render_incomplete_report(state, [feedback]) + "\n\n[整体审阅：未通过]",
+            "report": render_incomplete_report(state, [f"整体审阅未通过：{feedback}"]),
             "answer_mode": "research_incomplete",
             "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REVIEW_REJECTED),
         }
@@ -97,9 +89,8 @@ async def render_final_report_node(state: ResearchState):
         return {
             "report": render_incomplete_report(
                 state,
-                ["报告缺少 Writer 产出的草稿或引用元数据，无法渲染最终报告。"],
-            )
-            + "\n\n[渲染校验：未通过]",
+                ["报告缺少草稿或引用元数据，无法完成最终渲染。"],
+            ),
             "answer_mode": "research_incomplete",
             "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.MISSING_REPORT_DRAFT),
         }
