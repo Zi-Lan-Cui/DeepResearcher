@@ -1,5 +1,3 @@
-# API 与独立 Worker 共享 Postgres；Redis 只承载可丢弃的 token 预览。
-# 本机分别运行 server.py 和 python -m deepresearcher.worker。
 services:
   postgres:
     image: postgres:16

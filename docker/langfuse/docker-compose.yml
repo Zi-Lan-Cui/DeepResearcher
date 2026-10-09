@@ -1,10 +1,18 @@
 # Langfuse 自托管观测栈(可选,独立 compose 工程,与应用栈的 postgres/redis 互不共享、互不占端口)。
 # 起停:docker compose -f docker/langfuse/docker-compose.yml up -d / down
 # 密钥与首启置备参数在同目录 .env(模板 .env.example);面板 http://localhost:3000。
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 name: deepresearcher-langfuse
 services:
   langfuse-web:
     image: docker.langfuse.com/langfuse/langfuse:4
+    logging: *default-logging
     restart: always
     depends_on:
       postgres: {condition: service_healthy}
@@ -58,6 +66,7 @@ services:
 
   langfuse-worker:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
+    logging: *default-logging
     restart: always
     depends_on:
       postgres: {condition: service_healthy}
@@ -68,6 +77,7 @@ services:
 
   postgres:
     image: docker.io/postgres:17
+    logging: *default-logging
     restart: always
     environment:
       POSTGRES_USER: postgres
@@ -83,6 +93,7 @@ services:
 
   clickhouse:
     image: docker.io/clickhouse/clickhouse-server:25.12
+    logging: *default-logging
     restart: always
     user: "101:101"
     environment:
@@ -99,10 +110,14 @@ services:
 
   redis:
     image: docker.io/redis:7
+    logging: *default-logging
     restart: always
     command: >
       --requirepass ${REDIS_AUTH}
       --maxmemory-policy noeviction
+      --save ""
+      --appendonly no
+      --stop-writes-on-bgsave-error no
     volumes:
       - lf_redis_data:/data
     healthcheck:
@@ -113,6 +128,7 @@ services:
 
   minio:
     image: cgr.dev/chainguard/minio
+    logging: *default-logging
     restart: always
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
