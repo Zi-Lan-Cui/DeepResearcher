@@ -57,8 +57,10 @@ from deepresearcher.state import ResearchState, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 
-# 除 ResearchDelegate 外的写通道工具与只读 ReadWorkingSet 一律串行,避免并发整字段
-# 快照互相覆盖。名单约束由 tests/test_supervisor.py 的静态守卫测试校验(方案 §5 分类守卫)。
+# 除 ResearchDelegate 外的写通道工具与只读 ReadWorkingSet 是串行工具,必须单独一轮:
+# 与任何其他调用同批时,SerialToolMiddleware 在模型输出后整批驳回、打回模型重规划,
+# 避免并发整字段快照互相覆盖。名单约束由 tests/test_supervisor.py 的静态守卫测试校验
+# (方案 §5 分类守卫)。
 SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
         "ReadWorkingSet",
@@ -233,7 +235,6 @@ class ResearchSupervisor:
             loop_state=loop_state,
             research_query=research_query,
             current_round=round_no,
-            active_evidence_limit=self.config.supervisor_max_active_evidences,
         )
         prepared = history
         try:

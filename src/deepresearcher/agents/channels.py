@@ -1,7 +1,7 @@
 """内层循环 state 通道的共用 reducer。reducer 定义同一 superstep 内多份工具增量如何折叠。
 
 同批多个 tool_calls 并发执行,并发工具只能写合并语义通道:按 id 折重、取 max、集合并、
-op 流水追加、按键合并。replace 语义即整字段由最后写入值覆盖,只允许串行工具写:通道按
+差量施加到集合、按键合并。replace 语义即整字段由最后写入值覆盖,只允许串行工具写:通道按
 调用序而非完成序合并,并发写整字段快照会互相覆盖增量。各内层图共用,合并规则只在此一处。
 """
 
@@ -26,9 +26,16 @@ def merge_or(current: bool, incoming: bool) -> bool:
     return bool(current or incoming)
 
 
-def append_ops(current: Any, incoming: list[dict[str, list[str]]]) -> list:
-    """有序 op 流水追加;活跃集按流水顺序折叠后与串行执行结果等价,并发 add 互不覆盖。"""
-    return list(current or []) + list(incoming or [])
+def merge_active_set(current: Any, incoming: dict[str, list[str]]) -> list[str]:
+    """活跃工作集通道的合并:通道值是集合本身(排序列表),incoming 是 {add, remove} 差量。
+
+    并发工具各交自己的变化,合并结果与施加顺序无关(同批只有 add,remove 来自独占批);
+    入口种子同样按差量写入(对空集 add 全量)。读取方直接用通道现值,不重放历史。
+    """
+    values = set(current or [])
+    values.update(incoming.get("add", []))
+    values.difference_update(incoming.get("remove", []))
+    return sorted(values)
 
 
 def merge_dict_by_key(current: Any, incoming: dict) -> dict:

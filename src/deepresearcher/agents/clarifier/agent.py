@@ -69,7 +69,7 @@ class Clarifier:
         )
 
     async def run(self, state: ClarifierGraphState) -> dict[str, object]:
-        """注入本轮独立的调度栅栏 ToolExecutionGate;上下文不写入 checkpoint。"""
+        """构造本轮工具执行上下文(仅只读 scope);上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
             context=ClarifierLoopContext(

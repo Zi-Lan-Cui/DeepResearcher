@@ -38,7 +38,8 @@ from deepresearcher.state import ResearchState
 
 _WRITER_SYSTEM_PROMPT = load_prompt("writer")
 
-# CompleteReport 写 replace/retain 语义通道,即草稿、错误、底稿,必须串行完成。
+# CompleteReport 写 replace/retain 语义通道,即草稿、错误、底稿,是串行工具:必须
+# 单独一轮,与 ReadEvidence 等同批调用会被 SerialToolMiddleware 整批驳回、打回模型。
 # 名单约束由 tests/test_writer.py 的静态守卫测试校验(方案 §5 分类守卫)。
 WRITER_SERIAL_TOOLS: frozenset[str] = frozenset({"CompleteReport"})
 
@@ -202,7 +203,6 @@ class ReportWriter:
             read_evidence_ids=set(),
             read_batch_size=self.config.writer_read_batch_size,
             max_markdown_chars=self.config.writer_max_markdown_chars,
-            artifact_max_text_chars=self._artifact_max_text_chars,
         )
 
     def _emit(

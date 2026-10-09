@@ -7,7 +7,7 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 import pytest
 from langchain_core.messages import AIMessage
 
-from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.channels import merge_active_set, replace_channel, retain_if_absent
 from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
 from deepresearcher.agents.researcher import ResearchAgent, services
 from deepresearcher.agents.researcher.agent import RESEARCHER_SERIAL_TOOLS
@@ -516,7 +516,6 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
             TASK,
             loop_state,
             {},
-            asyncio.Lock(),
             [
                 {
                     "document_id": document.document_id,
@@ -569,7 +568,6 @@ def test_add_evidence_validates_before_ranking_by_confidence():
             TASK,
             loop_state,
             {},
-            asyncio.Lock(),
             [
                 {
                     "document_id": document.document_id,
@@ -635,7 +633,6 @@ def test_add_evidence_repairs_punctuation_only_quote_against_source():
             TASK,
             loop_state,
             {},
-            asyncio.Lock(),
             [
                 {
                     "document_id": document.document_id,
@@ -680,7 +677,6 @@ def test_add_evidence_paraphrase_receipt_carries_nearest_source_sentence():
             TASK,
             loop_state,
             {},
-            asyncio.Lock(),
             [
                 {
                     "document_id": document.document_id,
@@ -717,7 +713,6 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
     )
     loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
     loop_state.documents[document.document_id] = document
-    commit_lock = asyncio.Lock()
 
     async def submit(claim: str, quote: str):
         return await services.add_evidence(
@@ -725,7 +720,6 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
             TASK,
             loop_state,
             {},
-            commit_lock,
             [
                 {
                     "document_id": document.document_id,
@@ -958,6 +952,7 @@ def test_researcher_concurrent_tools_are_known_merge_writers():
     assert concurrent == {
         "AddEvidence",
         "ReadSources",
+        "SearchSources",
         "ListSearchResults",
         "GrepDocument",
         "ReadDocument",
@@ -1005,6 +1000,8 @@ def test_researcher_channel_round_trip_strips_bodies():
     assert "content" not in channels["documents"]["d-1"].model_dump()
     assert isinstance(channels["documents"]["d-1"], DocumentRef)
 
+    # 入口 input 在生产里经 langgraph 施加通道 reducer;测试如实模拟这一步。
+    channels["active_evidence_ids"] = merge_active_set(None, channels["active_evidence_ids"])
     restored = ResearcherLoopState.from_channel_values(
         channels, active_evidence_limit=6, evidence_archive_limit=12
     )
@@ -1028,6 +1025,8 @@ def test_researcher_rebuild_discards_uncommitted_memory():
     committed = ResearcherLoopState(active_evidence_limit=6, evidence_archive_limit=12)
     committed.conclusion = "已提交结论"
     channels = committed.initial_channel_state()
+    # 入口 input 在生产里经 langgraph 施加通道 reducer;测试如实模拟这一步。
+    channels["active_evidence_ids"] = merge_active_set(None, channels["active_evidence_ids"])
     context = ResearcherLoopContext(
         deps=SimpleNamespace(config=AgentConfig()),
         scope=SimpleNamespace(),

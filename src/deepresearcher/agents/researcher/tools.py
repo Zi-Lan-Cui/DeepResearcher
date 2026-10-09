@@ -188,7 +188,6 @@ def build_researcher_tools() -> list[BaseTool]:
             ctx.task,
             loop_state,
             ctx.event_context,
-            ctx.commit_lock,
             [
                 item.model_dump(mode="json") if isinstance(item, EvidenceSubmission) else dict(item)
                 for item in evidences
@@ -204,7 +203,7 @@ def build_researcher_tools() -> list[BaseTool]:
             tool_name="AddEvidence",
             channel_update={
                 "evidences": new_evidences,
-                "active_evidence_ops": loop_state.active_op_since(active_before),
+                "active_evidence_ids": loop_state.active_diff_since(active_before),
             },
         )
 
@@ -234,7 +233,7 @@ def build_researcher_tools() -> list[BaseTool]:
             runtime,
             result,
             tool_name="ReleaseEvidence",
-            channel_update={"active_evidence_ops": loop_state.active_op_since(active_before)},
+            channel_update={"active_evidence_ids": loop_state.active_diff_since(active_before)},
         )
 
     @tool("RestoreEvidence", args_schema=RestoreEvidence)
@@ -254,7 +253,7 @@ def build_researcher_tools() -> list[BaseTool]:
             runtime,
             result,
             tool_name="RestoreEvidence",
-            channel_update={"active_evidence_ops": loop_state.active_op_since(active_before)},
+            channel_update={"active_evidence_ids": loop_state.active_diff_since(active_before)},
         )
 
     # 不设 return_direct:被拒的提交也须留在循环内改正引用;接受后由 SubmittedExitMiddleware
@@ -292,7 +291,7 @@ def build_researcher_tools() -> list[BaseTool]:
                 "conclusion": loop_state.conclusion,
                 "stop_reason": loop_state.stop_reason,
                 "stop_detail": loop_state.stop_detail,
-                "active_evidence_ops": loop_state.active_op_since(active_before),
+                "active_evidence_ids": loop_state.active_diff_since(active_before),
             },
         )
 

@@ -1,19 +1,17 @@
 """ResearchAgent 的方向级运行状态和工具执行上下文。"""
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from langchain.agents import AgentState
 
 from deepresearcher.agents.channels import (
-    append_ops,
+    merge_active_set,
     merge_dict_by_key,
     merge_or,
     replace_channel,
     retain_if_absent,
 )
-from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
@@ -40,14 +38,14 @@ def _document_channel_entry(view: DocumentRef) -> DocumentRef:
 class ResearcherAgentState(AgentState):
     """ResearchAgent 内层图的 state_schema:方向业务状态的持久化载体。
 
-    AddEvidence 与 ReadSources 并发执行,只写合并语义通道;SearchSources、Release、
-    Restore、ResearchDirectionComplete 串行执行,conclusion、remaining_gaps、
-    stop_detail 这几个 replace 通道只由它们写。active 工作集存有序 op 流水;
-    候选与文档进通道时剥离正文,只留可重取的引用信息。
+    AddEvidence、ReadSources 与 SearchSources 并发执行,只写合并语义通道;Release、
+    Restore、ResearchDirectionComplete 串行执行(单独一轮),conclusion、remaining_gaps、
+    stop_detail 这几个 replace 通道只由它们写。active 工作集通道存集合本身,
+    工具出口只交 {add,remove} 差量;候选与文档进通道时剥离正文,只留可重取的引用信息。
     """
 
     evidences: Annotated[list[Evidence], merge_evidences]
-    active_evidence_ops: Annotated[list[dict], append_ops]
+    active_evidence_ids: Annotated[list[str], merge_active_set]
     source_refs: Annotated[list[str], merge_unique]
     queries: Annotated[list[str], merge_unique]
     read_urls: Annotated[list[str], merge_unique]
@@ -115,18 +113,12 @@ class ResearcherDeps:
 class ResearcherLoopContext:
     """ResearchAgent 一次 run 的注入载荷:字段全是数据,不含行为。
 
-    deps 为共享零件;task、loop_state、event_context、commit_lock 属本轮 run。
+    deps 为共享零件;task、loop_state、event_context 属本轮 run。
     行为实现是 services.py 里的纯函数,tools.py 从本对象转交参数;本清单之外,
     工具不依赖 agent 内部任何其他对象。
 
-    消费方除 tools.py 还有中间件,删改以下字段前必须先查 agents/middleware/;
-    两者读法不同,缺席后果也不同:
-      scope     → observability._event_context 用 getattr 读取,模型回合与工具事件的
-                  run_id 等归因依赖它;缺席不崩溃,但事件静默失去归属。
-      tool_gate → serial_tools 直接属性读取,读写调度栅栏:serial 工具取 exclusive,
-                  其余取 shared 可并发但被 pending exclusive 挡;缺席当场抛
-                  AttributeError。业务锁是另一字段:本 agent 的 commit_lock 只护
-                  证据入池,与调度无关。
+    消费方除 tools.py 还有中间件:observability._event_context 用 getattr 读取 scope,
+    模型回合与工具事件的 run_id 等归因依赖它;缺席不崩溃,但事件静默失去归属。
     """
 
     deps: ResearcherDeps
@@ -134,8 +126,6 @@ class ResearcherLoopContext:
     task: SubTask
     loop_state: "ResearcherLoopState"
     event_context: dict[str, object] = field(default_factory=dict)
-    commit_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
         """每次模型回合前从通道现值重建 loop_state;两个上限按本轮 config 现取,不进通道。"""
@@ -205,20 +195,18 @@ class ResearcherLoopState:
         """并发工具执行前的活跃集快照,出口据此算 add/remove 差量。"""
         return set(self.active_evidence_ids)
 
-    def active_op_since(self, before: set[str]) -> list[dict[str, list[str]]]:
-        """把本批活跃集变化折成一条 op,只经 active_evidence_ops 通道提交。"""
-        return [
-            {
-                "add": sorted(self.active_evidence_ids - before),
-                "remove": sorted(before - self.active_evidence_ids),
-            }
-        ]
+    def active_diff_since(self, before: set[str]) -> dict[str, list[str]]:
+        """本批活跃集变化折成 {add,remove} 差量,只经 active_evidence_ids 通道提交。"""
+        return {
+            "add": sorted(self.active_evidence_ids - before),
+            "remove": sorted(before - self.active_evidence_ids),
+        }
 
     def initial_channel_state(self) -> dict[str, Any]:
         """把当前 loop_state 一次性种进内层通道,作 ainvoke 入口 input。"""
         return {
             "evidences": list(self.evidences),
-            "active_evidence_ops": [{"add": sorted(self.active_evidence_ids), "remove": []}],
+            "active_evidence_ids": {"add": sorted(self.active_evidence_ids), "remove": []},
             "source_refs": list(self.source_refs),
             "queries": list(self.queries),
             "read_urls": list(self.read_urls),
@@ -257,12 +245,8 @@ class ResearcherLoopState:
                 item if isinstance(item, Evidence) else Evidence.model_validate(item)
                 for item in values["evidences"]
             ]
-        if "active_evidence_ops" in values:
-            active: set[str] = set()
-            for op in values["active_evidence_ops"]:
-                active.update(op.get("add", []))
-                active.difference_update(op.get("remove", []))
-            view.active_evidence_ids = active
+        if "active_evidence_ids" in values:
+            view.active_evidence_ids = set(values["active_evidence_ids"])
         for key in ("source_refs", "queries", "read_urls", "skipped", "failures", "remaining_gaps"):
             if key in values:
                 setattr(view, key, list(values[key] or []))

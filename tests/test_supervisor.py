@@ -7,7 +7,7 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.channels import merge_active_set, replace_channel, retain_if_absent
 from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
 from deepresearcher.agents.supervisor import ResearchSupervisor, services
 from deepresearcher.agents.supervisor.agent import SUPERVISOR_SERIAL_TOOLS
@@ -1420,9 +1420,7 @@ def _delegate_context(run_id: str, current_round: int, agent, *, max_rounds: int
 def _delegate(context, topic: str) -> dict:
     """测试转发:与生产 tools.py 同一入口,参数全部来自 context 名词字段。"""
     return asyncio.run(
-        services.delegate_research(
-            context.deps, context.loop_state, context.scope, context.bookkeeping_lock, topic
-        )
+        services.delegate_research(context.deps, context.loop_state, context.scope, topic)
     )
 
 
@@ -1639,8 +1637,11 @@ def test_loop_state_round_trips_through_channels():
     )
     source.set_stop_reason(StopReason.SUFFICIENT)
 
+    channels = source.initial_channel_state()
+    # 入口 input 在生产里经 langgraph 施加通道 reducer;测试如实模拟这一步。
+    channels["active_evidence_ids"] = merge_active_set(None, channels["active_evidence_ids"])
     restored = SupervisorLoopState.from_channel_values(
-        source.initial_channel_state(),
+        channels,
         research_query=source.research_query,
         current_round=source.current_round,
         active_evidence_limit=source.active_evidence_limit,
@@ -1663,17 +1664,20 @@ def test_rebuild_middleware_discards_uncommitted_memory():
     committed = SupervisorLoopState(
         {"query": "q", "evidences": []}, current_round=1, active_evidence_limit=6
     )
-    # abefore_model 只触 loop_state 与三个标量,scope/deps 用占位对象即可。
+    # abefore_model 触 loop_state、两个标量与 deps.config 里的上限,scope 用占位对象即可。
     context = SupervisorLoopContext(
         scope=SimpleNamespace(),
-        deps=SimpleNamespace(),
+        deps=SimpleNamespace(config=SimpleNamespace(supervisor_max_active_evidences=6)),
         loop_state=committed,
         research_query="q",
         current_round=1,
-        active_evidence_limit=6,
     )
-    # 先固化已提交通道,再对内存对象做未 Command 提交的改动:重建只认前者。
+    # 先固化已提交通道(入口 input 在生产里经 langgraph 施加通道 reducer),再对内存对象
+    # 做未 Command 提交的改动:重建只认前者。
     committed_channels = committed.initial_channel_state()
+    committed_channels["active_evidence_ids"] = merge_active_set(
+        None, committed_channels["active_evidence_ids"]
+    )
     context.loop_state.provider_exhausted = True
     context.loop_state.working_set_revision = 99
 

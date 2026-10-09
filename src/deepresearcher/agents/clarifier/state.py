@@ -1,6 +1,6 @@
 """Clarifier 子图与 Agent 的持久化 State。"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Annotated
 
 from langchain.agents import AgentState
@@ -11,7 +11,6 @@ from langgraph.graph.message import add_messages
 # 必须来自同一来源,否则多继承会因元类冲突报错。
 from typing_extensions import TypedDict
 
-from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import RunStatus
 
@@ -20,12 +19,11 @@ from deepresearcher.schemas import RunStatus
 class ClarifierLoopContext:
     """不进入 checkpoint 的 Clarifier 工具执行上下文。
 
-    消费方:observability 取 scope 做事件归因;serial_tools 取 tool_gate,
-    AskClarification 与 ClarificationComplete 独占执行,与所有在飞工具互斥。
+    消费方:observability 取 scope 做事件归因。AskClarification 与 ClarificationComplete
+    是串行工具,必须单独一轮,与其他工具同批会被 SerialToolMiddleware 整批驳回。
     """
 
     scope: AgentExecutionScope
-    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
 
 
 class ClarifierDialogue(TypedDict, total=False):

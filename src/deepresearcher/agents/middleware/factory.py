@@ -104,7 +104,9 @@ class MiddlewareProfile:
     context_window_tokens: int
     model: BaseChatModel | None = None
     retry_tools: Sequence[list[str]] = ()
-    serial_tools: set[str] | None = None
+    serial_tools: set[str] | None = (
+        None  # 独批工具:由 SerialToolMiddleware 在模型输出后校验,混批即整批驳回、打回模型重发
+    )
     tool_call_limits: Sequence[tuple[str, int]] = ()
     submission_guard: SubmissionGuard | None = None
     # 提交落盘后由 SubmittedExitMiddleware 在下一跳直接退出循环;probe 收 context 与 state,

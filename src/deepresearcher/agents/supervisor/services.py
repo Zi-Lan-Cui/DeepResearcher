@@ -1,8 +1,8 @@
 """Supervisor 业务实现:不感知 langgraph 的纯函数,async 与否按是否需要等待。
 
 工具回执的字符串协议与消息配对留在协议层 tools.py,本模块只回 dict,不构造
-ToolMessage。簿记并发由 bookkeeping_lock 保护,实际子 Agent 并发受
-deps.worker_limit 限制。
+ToolMessage。子 Agent 并发受 deps.worker_limit 限制;对 loop_state 的改写全部收在
+不含 await 的同步段内,原子性由事件循环的单线程调度保证。
 """
 
 import asyncio
@@ -52,15 +52,19 @@ async def delegate_research(
     deps: SupervisorDeps,
     loop_state: SupervisorLoopState,
     scope: AgentExecutionScope,
-    bookkeeping_lock: asyncio.Lock,
     topic: str,
     display_title: str = "",
+    *,
+    tool_call_id: str = "",
+    origin_state: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """执行一次 ResearchDelegate 工具请求:预算硬校验、任务编号、
     派发 ResearchAgent、吸收结果、返回完整方向报告。
 
     display_title 是方向卡的展示短题,topic 仍承载完整契约;缺省时前端回退截断 question。
     程序不做主题去重:防重复交给提示词纪律,重复调用的浪费由 max_subtasks 与轮次预算封顶。
+    tool_call_id 与 origin_state 提供时编号按调用位置派生(跨重放稳定),否则退回活视图分配。
+    编号分配与 absorb 为同步临界段,原子性依赖单线程调度,段内不得引入 await。
     """
     round_no = loop_state.current_round
 
@@ -89,23 +93,26 @@ async def delegate_research(
                 "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
             }
         )
-    async with bookkeeping_lock:
+    if tool_call_id and origin_state is not None:
+        task_index = loop_state.allocate_task_index_for_call(origin_state, tool_call_id)
+    else:
         task_index = loop_state.allocate_task_index()
-        task: SubTask = {
-            "id": f"task-{task_index:04d}",
-            "run_id": scope.run_id,
-            "question": topic,
-            "display_title": display_title.strip(),
-            "round": round_no,
-            "sequence": task_index,
-            "worker_id": f"research-agent-{task_index:04d}",
-            "worker_index": task_index,
-            "parent_task_id": "",
-            "operation_id": f"research-task-{task_index:04d}",
-        }
+    task: SubTask = {
+        "id": f"task-{task_index:04d}",
+        "run_id": scope.run_id,
+        "question": topic,
+        "display_title": display_title.strip(),
+        "round": round_no,
+        "sequence": task_index,
+        "worker_id": f"research-agent-{task_index:04d}",
+        "worker_index": task_index,
+        "parent_task_id": "",
+        "operation_id": f"research-task-{task_index:04d}",
+    }
     execution = await _execute_research_task(deps, task)
-    async with bookkeeping_lock:
-        loop_state.absorb(execution)
+    # absorb 是同步临界段:入档、槽位分配、推进版本一次完成;段内禁引入 await,
+    # 否则同批其他 delegate 会看到半更新的工作集并在回执里引用它。
+    loop_state.absorb(execution)
     direction_report: dict[str, object] = {
         "status": execution.task_result.execution_status,
         "research_direction": execution.task_result.research_direction,

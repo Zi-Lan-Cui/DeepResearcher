@@ -1,98 +1,64 @@
-import asyncio
-from types import SimpleNamespace
+"""串行批次守卫:违规工具批在模型输出后整批驳回、打回模型,不执行任何工具。"""
 
-from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
+import asyncio
+
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+
 from deepresearcher.agents.middleware.serial_tools import SerialToolMiddleware
 
-
-def test_tool_execution_gate_allows_parallel_shared_calls():
-    gate = ToolExecutionGate()
-    active = 0
-    peak = 0
-
-    async def reader():
-        nonlocal active, peak
-        async with gate.shared():
-            active += 1
-            peak = max(peak, active)
-            await asyncio.sleep(0)
-            active -= 1
-
-    async def run():
-        await asyncio.gather(reader(), reader())
-
-    asyncio.run(run())
-    assert peak == 2
+_SERIAL = {"ResearchComplete", "Revise"}
+_middleware = SerialToolMiddleware(_SERIAL)
 
 
-def test_tool_execution_gate_makes_exclusive_call_a_barrier():
-    gate = ToolExecutionGate()
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    order: list[str] = []
-
-    async def reader():
-        async with gate.shared():
-            order.append("reader_started")
-            entered.set()
-            await release.wait()
-            order.append("reader_finished")
-
-    async def writer():
-        await entered.wait()
-        async with gate.exclusive():
-            order.append("writer")
-
-    async def run():
-        reader_task = asyncio.create_task(reader())
-        writer_task = asyncio.create_task(writer())
-        await entered.wait()
-        await asyncio.sleep(0)
-        release.set()
-        await asyncio.gather(reader_task, writer_task)
-
-    asyncio.run(run())
-    assert order == ["reader_started", "reader_finished", "writer"]
+def _batch(names: list[str]) -> dict:
+    """模拟一次模型输出的 state:末条 AIMessage 携带给定工具调用批。"""
+    return {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": name, "args": {}, "id": f"call-{index}"}
+                    for index, name in enumerate(names)
+                ],
+            )
+        ]
+    }
 
 
-def test_serial_middleware_orders_complete_after_inflight_delegate():
-    """生产路径:同批出现 ResearchDelegate 与 ResearchComplete 时,exclusive 的
-    Complete 必须等 shared 的 delegate 结束才执行,避免完结后状态仍可变。"""
+def test_lone_serial_batch_passes_through():
+    assert asyncio.run(_middleware.aafter_model(_batch(["ResearchComplete"]), None)) is None
 
-    middleware = SerialToolMiddleware(serial_tools={"ResearchComplete"})
-    context = SimpleNamespace(tool_gate=ToolExecutionGate())
-    order: list[str] = []
-    delegate_running = asyncio.Event()
-    delegate_release = asyncio.Event()
 
-    def request(name: str) -> SimpleNamespace:
-        return SimpleNamespace(
-            runtime=SimpleNamespace(context=context),
-            tool_call={"name": name, "id": f"call-{name}", "args": {}},
+def test_parallel_only_batch_passes_through():
+    assert (
+        asyncio.run(
+            _middleware.aafter_model(_batch(["AddEvidence", "ReadSources", "SearchSources"]), None)
         )
+        is None
+    )
 
-    async def delegate_handler(_request):
-        order.append("delegate_running")
-        delegate_running.set()
-        await delegate_release.wait()
-        order.append("delegate_done")
-        return "delegated"
 
-    async def complete_handler(_request):
-        order.append("complete")
-        return "completed"
+def test_plain_text_output_passes_through():
+    state = {"messages": [AIMessage(content="研究结束,交回。")]}
+    assert asyncio.run(_middleware.aafter_model(state, None)) is None
 
-    async def run():
-        delegate = asyncio.create_task(
-            middleware.awrap_tool_call(request("ResearchDelegate"), delegate_handler)
-        )
-        await delegate_running.wait()
-        complete = asyncio.create_task(
-            middleware.awrap_tool_call(request("ResearchComplete"), complete_handler)
-        )
-        await asyncio.sleep(0)
-        delegate_release.set()
-        await asyncio.gather(delegate, complete)
 
-    asyncio.run(run())
-    assert order == ["delegate_running", "delegate_done", "complete"]
+def test_mixed_batch_rejected_wholesale():
+    """[Delegate, Complete] 混批:整批驳回——删除发起消息、注入驳回说明、jump 回模型。"""
+    origin = _batch(["ResearchDelegate", "ResearchComplete"])
+    update = asyncio.run(_middleware.aafter_model(origin, None))
+    assert update is not None
+    assert update["jump_to"] == "model"
+    injected = update["messages"]
+    assert isinstance(injected[0], RemoveMessage)
+    assert injected[0].id == origin["messages"][-1].id
+    assert isinstance(injected[1], HumanMessage)
+    assert "整批已驳回,没有任何工具执行" in injected[1].content
+
+
+def test_all_serial_batch_rejected_wholesale():
+    """[Revise, Complete] 两个串行同批:同样整批驳回,说明里点名全部违规工具。"""
+    update = asyncio.run(_middleware.aafter_model(_batch(["Revise", "ResearchComplete"]), None))
+    assert update is not None
+    assert update["jump_to"] == "model"
+    assert "ResearchComplete, Revise" in update["messages"][1].content

@@ -1,8 +1,9 @@
 """ResearchAgent 方向级工具的业务实现:不感知 langgraph 的纯 async 函数。
 
 每个函数只依赖显式入参:deps 是 agent 构造期的稳定零件,跨 run 共享只读;
-task、loop_state、event_context、commit_lock 属本轮 run,由 tools.py 从
-ResearcherLoopContext 转交。工具回执的字符串协议留在 tools.py,这里只回 dict。
+task、loop_state、event_context 属本轮 run,由 tools.py 从
+ResearcherLoopContext 转交。工具回执的字符串协议留在 tools.py,这里只回 dict;
+对 loop_state 的改写全部收在不含 await 的同步段内,原子性由事件循环的单线程调度保证。
 """
 
 import asyncio
@@ -363,7 +364,7 @@ async def _validate_submissions(
 
     返回 (candidates, rejected, duplicates, accepted_via_normalization,
     accepted_via_punctuation)。产物只是候选 Evidence 与拒因清单，不触碰
-    loop_state——入池的并发/容量判断全部留给 add_evidence 的 commit_lock 临界区。
+    loop_state——入池的并发/容量判断全部留给 add_evidence 的同步临界区。
     """
     rejected: list[dict[str, object]] = []
     duplicates: list[str] = []
@@ -451,14 +452,14 @@ async def add_evidence(
     task: SubTask,
     loop_state: ResearcherLoopState,
     event_context: dict[str, object],
-    commit_lock: asyncio.Lock,
     submissions: list[dict[str, object]],
     reason: str,
 ) -> dict[str, object]:
-    """逐条校验(锁外,可含网络读)→ 排序截断 → commit_lock 短临界区入池。
+    """逐条校验(可含网络读)→ 排序截断 → 入池同步临界区一次走完。
 
-    边界:校验不触碰 loop_state;去重、每源容量、档案容量的检查-然后-动作全部
-    收进临界区,并发提交不会重复占掉同一批槽位,也不会越过每源上限。
+    边界:校验不触碰 loop_state;去重、每源容量、档案容量的检查-然后-动作收在
+    同一个同步段里走完,并发提交不会重复占用槽位、不会越过每源上限——原子性由
+    单线程调度保证,段内禁引入 await,否则需恢复互斥。
     """
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
@@ -472,28 +473,27 @@ async def add_evidence(
     ) = await _validate_submissions(deps, task, loop_state, submissions)
     ranked = sorted(candidates, key=lambda item: item[2].confidence, reverse=True)
     selected = ranked[: deps.config.evidence_add_batch_size]
-    async with commit_lock:
-        existing_ids = {item.evidence_id for item in loop_state.evidences}
-        per_source = {
-            source_url: sum(1 for item in loop_state.evidences if item.source_url == source_url)
-            for source_url in {document.source_url for document in loop_state.documents.values()}
-        }
-        for index, document_id, evidence in selected:
-            if evidence.evidence_id in existing_ids:
-                duplicates.append(evidence.evidence_id)
-                continue
-            document = loop_state.documents[document_id]
-            source_count = per_source.get(document.source_url, 0)
-            if source_count >= deps.config.evidence_max_per_source:
-                rejected.append({"index": index, "reason": "source_evidence_limit_reached"})
-                continue
-            added = loop_state.add_evidences([evidence])
-            if not added:
-                rejected.append({"index": index, "reason": "evidence_archive_full"})
-                continue
-            accepted.extend(added)
-            existing_ids.add(evidence.evidence_id)
-            per_source[document.source_url] = source_count + 1
+    existing_ids = {item.evidence_id for item in loop_state.evidences}
+    per_source = {
+        source_url: sum(1 for item in loop_state.evidences if item.source_url == source_url)
+        for source_url in {document.source_url for document in loop_state.documents.values()}
+    }
+    for index, document_id, evidence in selected:
+        if evidence.evidence_id in existing_ids:
+            duplicates.append(evidence.evidence_id)
+            continue
+        document = loop_state.documents[document_id]
+        source_count = per_source.get(document.source_url, 0)
+        if source_count >= deps.config.evidence_max_per_source:
+            rejected.append({"index": index, "reason": "source_evidence_limit_reached"})
+            continue
+        added = loop_state.add_evidences([evidence])
+        if not added:
+            rejected.append({"index": index, "reason": "evidence_archive_full"})
+            continue
+        accepted.extend(added)
+        existing_ids.add(evidence.evidence_id)
+        per_source[document.source_url] = source_count + 1
     rejected_reasons: dict[str, int] = {}
     for item in rejected:
         key = str(item.get("reason", ""))[:40]

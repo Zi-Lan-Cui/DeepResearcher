@@ -1,19 +1,18 @@
 """Supervisor 的运行态辅助对象与内层 agent 的状态通道。"""
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from langchain.agents import AgentState
 
 from deepresearcher.agents.channels import (
-    append_ops,
+    merge_active_set,
     merge_monotonic,
     merge_or,
     replace_channel,
     retain_if_absent,
 )
-from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
@@ -47,17 +46,30 @@ def _merge_stop_reason_by_rank(
     return incoming if incoming.rank >= current.rank else current
 
 
+def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
+    """在发起本次执行的 AIMessage 的 tool_calls 序列中定位该调用的下标。"""
+    for message in reversed(list(messages or [])):
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            continue
+        for index, call in enumerate(tool_calls):
+            if call.get("id") == tool_call_id:
+                return index
+        break
+    return None
+
+
 class SupervisorAgentState(AgentState):
     """Supervisor 内层图的 state_schema:循环业务状态的持久化载体。
 
     reducer 按工具的串行/并发身份选择,共用 reducer 见 agents/channels.py:
     ResearchDelegate 同批并发,只写合并语义通道;Release、Restore、Revise、
-    ResearchComplete 串行,可写 replace 通道。active 工作集存有序 op 流水而非
-    整列表,避免并发整字段快照互相覆盖。
+    ResearchComplete 串行,可写 replace 通道。active 工作集通道存集合本身,
+    工具出口只交 {add,remove} 差量,避免并发整字段快照互相覆盖。
     """
 
     evidences: Annotated[list[Evidence], merge_evidences]
-    active_evidence_ops: Annotated[list[dict], append_ops]
+    active_evidence_ids: Annotated[list[str], merge_active_set]
     source_refs: Annotated[list[str], merge_unique]
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
     coverage_gaps: Annotated[list[str], merge_unique]
@@ -131,31 +143,27 @@ class SupervisorLoopContext:
     所需的标量。业务实现在 services.py,tools.py 从本对象转交参数。
 
     消费方含中间件,删改字段前先 grep agents/middleware/:
-      scope            → observability:事件归因
-      tool_gate        → serial_tools:串行调度门,exclusive 工具与在飞 ResearchDelegate 互斥
-      bookkeeping_lock → services.delegate_research:任务编号分配与 absorb 的临界区
+      scope → observability:事件归因
     """
 
     scope: AgentExecutionScope
     deps: SupervisorDeps
     loop_state: "SupervisorLoopState"
-    bookkeeping_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
     research_query: str = ""
     current_round: int = 0
-    active_evidence_limit: int = 0
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
         """每次模型回合前从通道现值重建状态对象,替代上一批的内存对象。
 
-        外层 State 的业务资产已在入口经 initial_channel_state 种进通道,重建只需
-        三个标量加通道现值,不再持有整份 ResearchState。
+        外层 State 的业务资产已在入口经 initial_channel_state 种进通道;重建的两个
+        标量派生自入口 State 且不进通道,只由本 context 承载,上限直接从 deps.config
+        现取。
         """
         self.loop_state = SupervisorLoopState.from_channel_values(
             values,
             research_query=self.research_query,
             current_round=self.current_round,
-            active_evidence_limit=self.active_evidence_limit,
+            active_evidence_limit=self.deps.config.supervisor_max_active_evidences,
         )
 
 
@@ -276,13 +284,9 @@ class SupervisorLoopState:
                 item if isinstance(item, Evidence) else Evidence.model_validate(item)
                 for item in values["evidences"]
             ]
-        if "active_evidence_ops" in values:
-            # 按序折叠 op 流水重建活跃集;并发 add 与串行 remove 折叠后与真实执行顺序等价。
-            active: set[str] = set()
-            for op in values["active_evidence_ops"]:
-                active.update(op.get("add", []))
-                active.difference_update(op.get("remove", []))
-            view.active_evidence_ids = active
+        if "active_evidence_ids" in values:
+            # 通道值即当前活跃集(merge_active_set 合并差量后的排序列表),直读。
+            view.active_evidence_ids = set(values["active_evidence_ids"])
         if "source_refs" in values:
             view.source_refs = list(values["source_refs"])
         if "task_results" in values:
@@ -316,7 +320,7 @@ class SupervisorLoopState:
         """构造 ainvoke 的入口 input:外层 State 资产一次性种进内层通道。"""
         return {
             "evidences": list(self.evidences),
-            "active_evidence_ops": [{"add": sorted(self.active_evidence_ids), "remove": []}],
+            "active_evidence_ids": {"add": sorted(self.active_evidence_ids), "remove": []},
             "source_refs": list(self.source_refs),
             "task_results": list(self.task_results),
             "coverage_gaps": list(self.coverage_gaps),
@@ -344,7 +348,7 @@ class SupervisorLoopState:
     def delegate_increment(self, marker: dict[str, Any]) -> dict[str, Any]:
         """并发安全的通道增量:全部是 merge 语义字段,不含任何 replace 快照。
 
-        与同伴工具在批内交错时,列表尾差量可能多包含对方刚追加的条目;
+        与同批其他工具交错时,列表尾差量可能多包含对方刚追加的条目;
         merge_evidences 与 merge_unique 按 id 折重,超集无害。漏集不可能:
         差量以本对象当前长度为界,本方追加不会落在界外。
         """
@@ -354,12 +358,10 @@ class SupervisorLoopState:
             "task_results": self.task_results[marker["task_results"] :],
             "coverage_gaps": self.coverage_gaps[marker["coverage_gaps"] :],
             "failure_details": self.failure_details[marker["failure_details"] :],
-            "active_evidence_ops": [
-                {
-                    "add": sorted(self.active_evidence_ids - marker["active_evidence_ids"]),
-                    "remove": [],
-                }
-            ],
+            "active_evidence_ids": {
+                "add": sorted(self.active_evidence_ids - marker["active_evidence_ids"]),
+                "remove": sorted(marker["active_evidence_ids"] - self.active_evidence_ids),
+            },
             "working_set_revision": self.working_set_revision,
             "task_index_counter": self._task_counter,
             "provider_exhausted": self.provider_exhausted,
@@ -387,16 +389,30 @@ class SupervisorLoopState:
         self.working_set_revision += 1
 
     def allocate_task_index(self) -> int:
-        """分配独立的任务序号,不把研究轮次编码进任务 ID。
+        """活视图顺次分配;仅在调用位置不可得时兜底。
 
-        序号必须在分配时刻于 bookkeeping_lock 临界区内消费掉:若改为从已完成结果
-        反推,并行 delegate 会读到同一个 max+1,撞出的相同 task_id 让
-        merge_task_results 按 id 去重时吞掉一个方向的研究结果。
-        max(计数器, 已完成最大值)+1 同时兼容恢复执行时从快照重建的场景。
+        正常派发走 allocate_task_index_for_call。此路径依赖批内共享对象,
+        崩溃重放时不同生命周期会算出相同编号,merge_task_results 按 id
+        去重会吞掉一个方向的研究结果,因此只能作为无持久位置信息时的退路。
         """
         completed_max = max((item.task_index for item in self.task_results), default=0)
         self._task_counter = max(self._task_counter, completed_max) + 1
         return self._task_counter
+
+    def allocate_task_index_for_call(self, origin_state: dict[str, Any], tool_call_id: str) -> int:
+        """任务序号由发起消息内的调用位置派生,不把研究轮次编码进任务 ID。
+
+        批初 task_index_counter 与 AIMessage 的 tool_calls 顺序都已在通道里持久化:
+        同一 tool_call 在任何生命周期重放到同一编号,journal 命中与重跑各得各位,
+        嵌套 researcher 的 ns(键含 task id)因此跨重放稳定。
+        """
+        position = _tool_call_position(origin_state.get("messages", []), tool_call_id)
+        if position is None:
+            return self.allocate_task_index()
+        base = int(origin_state.get("task_index_counter", 0) or 0)
+        index = base + position + 1
+        self._task_counter = max(self._task_counter, index)
+        return index
 
     def absorb(self, execution: TaskExecution) -> None:
         """把一次方向研究产物并入工作状态。

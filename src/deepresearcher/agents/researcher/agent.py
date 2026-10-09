@@ -48,12 +48,14 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 _RESEARCHER_SYSTEM_PROMPT = load_prompt("researcher")
 
-# revision/replace 敏感或改变活跃集的串行工具:逐个完成,避免并发整字段快照互相覆盖。
-# AddEvidence 与 ReadSources 是唯一允许同批并发的写通道工具,只提交合并语义差量。
-# 该名单约束由 tests/test_researcher.py 的静态守卫测试校验(方案 §5 分类守卫)。
+# 串行工具必须单独一轮:与任何其他调用同批时,SerialToolMiddleware 在模型输出后
+# 整批驳回、打回模型重规划。
+# 判据是写 replace 通道或改活跃集;其余只提交合并语义差量,可同批并发。
+# AddEvidence、ReadSources、SearchSources 只写 queries/candidates/documents 等
+# 合并通道,不在此名单,允许并发。名单与并发归类由 tests/test_researcher.py 的
+# 静态守卫测试校验(方案 §5 分类守卫)。
 RESEARCHER_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
-        "SearchSources",
         "ReadWorkingSet",
         "ReleaseEvidence",
         "RestoreEvidence",
@@ -176,7 +178,6 @@ class ResearchAgent:
                 "worker_id": task.get("worker_id", task["id"]),
                 "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
             },
-            commit_lock=asyncio.Lock(),
         )
         messages = self._initial_messages(task)
         status: Literal["completed", "failed", "cancelled"] = "completed"

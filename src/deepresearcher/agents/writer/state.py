@@ -1,13 +1,12 @@
 """Writer 的内部准备态、校验结果与内层 agent 的状态通道。"""
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from langchain.agents import AgentState
 
 from deepresearcher.agents.channels import replace_channel, retain_if_absent
-from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.schemas import Citation, ParagraphBinding
@@ -78,8 +77,6 @@ class WriterLoopContext:
     validated_draft: "ValidatedDraft | None" = None
     last_error: str = ""
     last_markdown: str = ""
-    artifact_max_text_chars: int = 1_000
-    tool_gate: ToolExecutionGate = field(default_factory=ToolExecutionGate)
 
     def initial_channel_state(self) -> dict[str, Any]:
         """构造 ainvoke 入口 input:当前簿记一次性种进内层通道。"""

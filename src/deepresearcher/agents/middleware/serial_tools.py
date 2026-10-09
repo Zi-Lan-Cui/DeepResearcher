@@ -1,45 +1,48 @@
-"""共享运行状态工具的串行执行控制。"""
+"""串行工具的批次守卫:模型输出后校验工具批次,违规整批驳回、打回模型重新决策。
 
-from typing import Any, cast
+串行工具做跨结构一致读(如 ReadWorkingSet)或整字段快照写(如 Complete、Revise),
+与同批任何其他调用并发都会让它读到不一致的现场。约束在模型输出之后、工具执行之前
+(after_model)一次判定:发起消息带多个 tool_calls 且其中含串行工具时,整批驳回——
+删除该 AIMessage、注入一条驳回 HumanMessage,jump 回模型重新决策。
 
-from langchain.agents.middleware import AgentMiddleware
+整批拒绝保持回合原子性:不出现"一半工具跑了、另一半被拒"的半途现场,模型下一回合
+看到的批次里没有任何工具执行过,按驳回说明完整重规划。单工具批与纯并行批不受影响。
 
-from deepresearcher.agents.middleware.concurrency import ToolExecutionGate
+判定只读 state 里已提交的发起消息,与工具执行和完成顺序无关,崩溃重放结论一致。
+
+工具进不进串行名单依据行为:跨 await 的一致读或 replace 快照写才串行;纯 IO 读加追加
+合并写(如 ReadSources、AddEvidence、SearchSources)并发安全,不进名单。
+"""
+
+from typing import Any
+
+from langchain.agents.middleware import AgentMiddleware, hook_config
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 
 class SerialToolMiddleware(AgentMiddleware):
-    """将状态边界工具作为独占屏障，其余工具允许共享并发。
-
-    工具调度只经过读写栅栏 ToolExecutionGate:serial 工具取 exclusive,与所有
-    取锁方互斥;其余取 shared,彼此可并发,但会被等待中的 exclusive 挡住,保持
-    写优先。注册本中间件的 agent 其 LoopContext 必须携带 tool_gate,缺席当场抛
-    AttributeError;Writer 没有 serial 工具,不注册本中间件。
-
-    工具进不进 serial 名单依据行为而非名字:
-    - exclusive:跨 await 的 check-then-act,如 Complete 读 revision 再冻结;
-      或需要快照一致性的多结构读,如 ReadWorkingSet。
-    - shared:并行 IO 读加 await 之后的纯追加写,如 ReadSources 写 documents
-      和 source_refs;追加没有跨结构一致性问题,串行化只会损失吞吐。
-
-    边界语义:Complete 等待的是同批中已经起跑的 delegate 与 shared 调用。同批
-    tool_calls 按模型给出的列表序启动,Complete 排在前时等不到尚未启动的
-    Delegate;[Complete, Delegate] 的顺序竞态是已知容忍项,出口有
-    review→supervisor 的 freshness 再入环纠正,调度层不为此兜底;墙钟时间没有
-    损失,同批本就由 ToolNode 汇合。
-
-    删改 LoopContext 字段前先 grep 本文件。业务临界区另有按用途命名的业务锁,
-    如 supervisor.bookkeeping_lock 与 researcher.commit_lock,与本调度无关。
-    """
+    """串行工具必须独占一批:违规批次在模型输出后整批驳回,不执行任何工具。"""
 
     def __init__(self, serial_tools: set[str]):
         super().__init__()
-        self.serial_tools = serial_tools
+        self.serial_tools = frozenset(serial_tools)
 
-    async def awrap_tool_call(self, request, handler):
-        context = cast(Any, request.runtime.context)
-        gate: ToolExecutionGate = context.tool_gate
-        guard = (
-            gate.exclusive() if request.tool_call["name"] in self.serial_tools else gate.shared()
+    @hook_config(can_jump_to=["model"])
+    async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        messages = state.get("messages", []) if isinstance(state, dict) else []
+        last = messages[-1] if messages else None
+        if not isinstance(last, AIMessage) or not last.tool_calls:
+            return None
+        calls = list(last.tool_calls)
+        offenders = sorted({call["name"] for call in calls if call["name"] in self.serial_tools})
+        if not offenders or len(calls) <= 1:
+            return None
+        content = (
+            f"本次输出包含 {len(calls)} 个工具调用,其中 {', '.join(offenders)} 是串行工具,"
+            "必须单独一轮调用;整批已驳回,没有任何工具执行。"
+            "请重新规划:本轮只发出一个工具调用。"
         )
-        async with guard:
-            return await handler(request)
+        return {
+            "messages": [RemoveMessage(id=last.id), HumanMessage(content=content)],
+            "jump_to": "model",
+        }

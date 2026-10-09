@@ -68,9 +68,10 @@ def build_supervisor_tools() -> list[BaseTool]:
             ctx.deps,
             ctx.loop_state,
             ctx.scope,
-            ctx.bookkeeping_lock,
             research_topic,
             display_title,
+            tool_call_id=runtime.tool_call_id,
+            origin_state=dict(runtime.state or {}),
         )
         return _channel_command(
             runtime,
@@ -171,7 +172,10 @@ def build_supervisor_tools() -> list[BaseTool]:
             result,
             tool_name="ReleaseEvidence",
             channel_update={
-                "active_evidence_ops": [{"add": [], "remove": result["released_evidence_ids"]}],
+                "active_evidence_ids": {
+                    "add": [],
+                    "remove": result["released_evidence_ids"],
+                },
                 "working_set_revision": loop_state.working_set_revision,
             },
         )
@@ -194,7 +198,10 @@ def build_supervisor_tools() -> list[BaseTool]:
             result,
             tool_name="RestoreEvidence",
             channel_update={
-                "active_evidence_ops": [{"add": result["restored_evidence_ids"], "remove": []}],
+                "active_evidence_ids": {
+                    "add": result["restored_evidence_ids"],
+                    "remove": [],
+                },
                 "working_set_revision": loop_state.working_set_revision,
             },
         )

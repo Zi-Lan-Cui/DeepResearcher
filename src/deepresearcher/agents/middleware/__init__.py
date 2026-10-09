@@ -1,4 +1,4 @@
-"""Agent 共享中间件、栈装配与调度原语。"""
+"""Agent 共享中间件与栈装配。"""
 
 from deepresearcher.agents.middleware.factory import (
     AGENT_RECURSION_LIMIT,
