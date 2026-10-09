@@ -81,7 +81,6 @@ src/deepresearcher/
 └── evidence/、reporting/、schemas/   证据模型、引用校验与渲染、数据契约
 tests/                    单元与集成测试(make test)
 evals/                    质量基准与行为断言两套评测(见 evals/README.md)
-docs/                     技术报告与演进计划
 docker/、docker-compose.yml         本地依赖与可选的自建观测栈
 env/.env.example          全部配置项与注释
 ```
