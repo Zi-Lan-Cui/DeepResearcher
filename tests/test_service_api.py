@@ -26,7 +26,7 @@ def _auth(token: str) -> dict[str, str]:
 @pytest_asyncio.fixture
 async def client(tmp_path, monkeypatch):
     # 已提交帧的推送节奏在 sqlite 下只靠 SSE_DB_POLL_SECONDS 轮询,没有 NOTIFY 可用;
-    # 压到 0.1s 以免 tail 轮询吃掉用例超时。生产常量由 verify_m8 在 PG 上验证。
+    # 压到 0.1s 以免 tail 轮询吃掉用例超时。生产常量由 verify_service 在 PG 上验证。
     from deepresearcher.service.web.routes import events as events_route
 
     monkeypatch.setattr(events_route, "SSE_DB_POLL_SECONDS", 0.1)

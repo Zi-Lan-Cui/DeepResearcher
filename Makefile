@@ -1,4 +1,4 @@
-.PHONY: quality lint typecheck test coverage check verify-m8
+.PHONY: quality lint typecheck test coverage check verify-service
 
 quality: lint typecheck test coverage
 
@@ -23,5 +23,5 @@ check:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q -p pytest_asyncio.plugin
 
 # 启动真实 API/Worker 子进程，但使用无 LLM 费用的可控 Graph。
-verify-m8:
-	uv run python tests/verify_m8_processes.py
+verify-service:
+	uv run python tests/verify_service_processes.py

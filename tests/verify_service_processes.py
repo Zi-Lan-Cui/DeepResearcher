@@ -1,4 +1,4 @@
-"""无 LLM 的 M8 进程、故障接管与 HTTP/SSE 容量验证。
+"""无 LLM 的 API 与 Worker 进程、故障接管与 HTTP/SSE 容量验证。
 
 本脚本对着显式配置的 PostgreSQL 启动真实 Uvicorn API 与两个真实
 Worker OS 进程。图仅供测试、以文件同步,不产生模型/搜索/抓取费用。
@@ -30,7 +30,7 @@ from deepresearcher.service.persistence.models import Run, RunEvent, User
 from deepresearcher.service.settings import get_service_config
 
 ROOT = Path(__file__).resolve().parents[1]
-PASSWORD = "m8-automation-password"
+PASSWORD = "service-automation-password"
 
 
 def _free_port() -> int:
@@ -186,20 +186,20 @@ async def _cleanup(database_url: str, email: str, run_ids: list[str]) -> None:
 async def verify(args: argparse.Namespace) -> dict[str, Any]:
     database_url = args.database_url or get_service_config().database_url
     if not database_url.startswith("postgresql"):
-        raise ValueError("M8 process verification requires PostgreSQL")
+        raise ValueError("Service process verification requires PostgreSQL")
 
     port = args.port or _free_port()
     base_url = f"http://127.0.0.1:{port}"
-    email = f"m8-{uuid4().hex}@test.invalid"
+    email = f"service-{uuid4().hex}@test.invalid"
     run_ids: list[str] = []
-    work_dir = Path(tempfile.mkdtemp(prefix="deepresearcher-m8-"))
+    work_dir = Path(tempfile.mkdtemp(prefix="deepresearcher-service-"))
     marker_dir = work_dir / "markers"
     marker_dir.mkdir()
     env = {
         **os.environ,
         "DEEPRESEARCHER_ENV_FILE": str(work_dir / "no-env-file"),
         "SERVICE_DATABASE_URL": database_url,
-        "SERVICE_JWT_SECRET": "m8-automation-secret-must-be-at-least-32-chars",
+        "SERVICE_JWT_SECRET": "service-automation-secret-must-be-at-least-32-chars",
         "SERVICE_HOST": "127.0.0.1",
         "SERVICE_PORT": str(port),
         "SERVICE_MAX_CONCURRENT_RUNS_PER_USER": "32",
@@ -212,13 +212,13 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
         "SERVICE_LOG_DIR": str(work_dir / "service"),
         "OBSERVABILITY_LOG_DIR": str(work_dir / "logs"),
         "TOOL_CACHE_ENABLED": "false",
-        "M8_MARKER_DIR": str(marker_dir),
+        "WORKER_MARKER_DIR": str(marker_dir),
         "APP_ENV": "development",
     }
     group = ProcessGroup(env=env, log_dir=work_dir)
-    api = group.start("api-1", sys.executable, "server.py")
+    api = group.start("api-1", sys.executable, "-m", "deepresearcher.service.main")
     workers = [
-        group.start(f"worker-{index}", sys.executable, "tests/m8_fake_worker.py")
+        group.start(f"worker-{index}", sys.executable, "tests/fake_service_worker.py")
         for index in (1, 2)
     ]
     started = time.monotonic()
@@ -236,7 +236,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             response.raise_for_status()
             token = response.json()["token"]
 
-            failover_run = await _create_run(client, token, "M8 kill takeover")
+            failover_run = await _create_run(client, token, "Service kill takeover")
             run_ids.append(failover_run)
             await _eventually(
                 lambda: _run_detail(client, token, failover_run),
@@ -271,7 +271,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
 
             # 滚动替换 API,Worker 持有的图全程阻塞。
             group.stop(api)
-            api = group.start("api-2", sys.executable, "server.py")
+            api = group.start("api-2", sys.executable, "-m", "deepresearcher.service.main")
             await _wait_api(base_url)
             rolled = await _eventually(
                 lambda: _run_detail(client, token, failover_run),
@@ -298,16 +298,16 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=20,
                 label="takeover completion",
             )
-            assert completed["report_markdown"].startswith("# M8")
+            assert completed["report_markdown"].startswith("# Service")
             await _validate_database(database_url, failover_run)
 
-            # F2: 优雅 SIGTERM -> interrupted -> checkpoint 续跑。
+            # 优雅 SIGTERM -> interrupted -> checkpoint 续跑。
             # Worker 优雅停止时通过干净的租约释放把运行中的 run 落为 interrupted,
             # 与前面验证的租约过期接管是两条路径。轮询循环只领 queued、租约清扫
             # 只处理过期的 running,都续不上这种行,只有 Worker 启动 reconcile 会
             # 提交显式 resume=True 领取。本段在一个专用 run 上走完这条路径,该
             # run 此时仍阻塞在 release 标记上。
-            graceful_run = await _create_run(client, token, "M8 graceful resume")
+            graceful_run = await _create_run(client, token, "Service graceful resume")
             run_ids.append(graceful_run)
             await _eventually(
                 lambda: _run_detail(client, token, graceful_run),
@@ -339,7 +339,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             # 新启动 Worker 的 startup reconcile 从 checkpoint 续跑该 run;
             # 以新 PID 重入图。
             resume_worker = group.start(
-                "worker-f2-resume", sys.executable, "tests/m8_fake_worker.py"
+                "worker-resume", sys.executable, "tests/fake_service_worker.py"
             )
             workers.append(resume_worker)
             resumed = await _eventually(
@@ -362,19 +362,19 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=20,
                 label="graceful resume completion",
             )
-            assert completed_graceful["report_markdown"].startswith("# M8")
+            assert completed_graceful["report_markdown"].startswith("# Service")
             await _validate_database(database_url, graceful_run)
 
             # 恢复两个在跑的 Worker,再按 1/2/4/8 验证队列与容量。
             workers.append(
-                group.start("worker-replacement", sys.executable, "tests/m8_fake_worker.py")
+                group.start("worker-replacement", sys.executable, "tests/fake_service_worker.py")
             )
             concurrency_results: dict[int, float] = {}
             for level in args.concurrency_levels:
                 wave_started = time.monotonic()
                 wave = await asyncio.gather(
                     *[
-                        _create_run(client, token, f"M8 concurrency {level}/{index}")
+                        _create_run(client, token, f"Service concurrency {level}/{index}")
                         for index in range(level)
                     ]
                 )

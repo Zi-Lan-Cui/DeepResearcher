@@ -28,7 +28,7 @@ class HarnessState(TypedDict, total=False):
 
 
 def build_harness_graph(*, event_sink, checkpointer=None, **_kwargs):
-    marker_dir = Path(os.environ["M8_MARKER_DIR"])
+    marker_dir = Path(os.environ["WORKER_MARKER_DIR"])
 
     async def checkpoint_ready(_state: HarnessState) -> dict:
         # 先提交一个空 superstep 作为恢复点,controlled_work 才被文件信号阻塞。
@@ -51,7 +51,7 @@ def build_harness_graph(*, event_sink, checkpointer=None, **_kwargs):
         return {
             "run": {"phase": "completed", "terminal_reason": "harness_completed"},
             "answer_mode": "deep_research",
-            "report": f"# M8 自动验收\n\nRun `{run_id}` completed.",
+            "report": f"# Service 自动验收\n\nRun `{run_id}` completed.",
             "citations": [],
             "evidence_count": 0,
             "source_count": 0,

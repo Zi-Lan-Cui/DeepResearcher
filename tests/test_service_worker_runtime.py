@@ -98,7 +98,7 @@ async def _wait_graph_count(graphs, expected):
 
 
 async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path):
-    """在一个共享持久数据库上验证 M8 的进程边界。"""
+    """在一个共享持久数据库上验证服务进程的接管边界。"""
     settings = service_settings(tmp_path)
     config = service_config(tmp_path, worker_poll_seconds=0.01)
     gate = asyncio.Event()
@@ -121,7 +121,7 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
                 ) as first_client:
                     registered = await first_client.post(
                         "/api/register",
-                        json={"email": "m8@test.dev", "password": "goodpassword"},
+                        json={"email": "service@test.dev", "password": "goodpassword"},
                     )
                     token = registered.json()["token"]
                     created = await first_client.post(

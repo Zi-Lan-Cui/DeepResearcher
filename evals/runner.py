@@ -7,7 +7,7 @@
   要原始事件序列;harness 用操作者视图,产品 API 不为评测需求扩展。
 
 故障注入中 kill/stop 接管类需要 harness 掌控 worker 进程生命周期,按
-tests/verify_m8_processes.py 的模式在第二阶段接线;本文件已覆盖
+tests/verify_service_processes.py 的模式在第二阶段接线;本文件已覆盖
 fault=none/rerun_cache 与 duplicate_answer。
 """
 
@@ -203,7 +203,7 @@ class RunHarness:
         if case.fault in {"kill", "stop", "stop_during_awaiting"}:
             raise NotImplementedError(
                 f"{case.case_id} 的故障注入（fault={case.fault}）需要 harness 掌控 worker "
-                "进程，第二阶段按 tests/verify_m8_processes.py 模式接线。"
+                "进程，第二阶段按 tests/verify_service_processes.py 模式接线。"
             )
         async with httpx.AsyncClient(timeout=60.0) as client:
             artifacts = [await self._drive_once(case, client)]
