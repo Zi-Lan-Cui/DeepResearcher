@@ -29,3 +29,11 @@ var/
 
 # eval outputs (contains reports/scores; datasets are never vendored here)
 evals/results/
+
+# Impeccable design artifacts (local working context, not shipped)
+PRODUCT.md
+DESIGN.md
+/.impeccable/
+
+# 本地运行日志（进程输出，不入库）
+/*.log
