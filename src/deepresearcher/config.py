@@ -4,6 +4,7 @@
 ``get_settings()`` 获取只读配置，或在测试/依赖注入时显式传入 ``Settings``。
 """
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
     value = _env(name, default).lower()
     return value if value in choices else default
+
+
+def _cidr_list_env(name: str) -> tuple[str, ...]:
+    """读取 CIDR 清单：dotenv 多行引号值或逗号分隔均可；未配置返回空。"""
+    return tuple(item.strip() for item in re.split(r"[,\n]", _env(name)) if item.strip())
 
 
 def _ordered_choices_env(name: str, default: str, choices: set[str]) -> tuple[str, ...]:
@@ -201,6 +207,9 @@ class SearchConfig:
     max_concurrent_requests: int = 2
     max_concurrent_fetches: int = 6
     tavily_include_raw_content: bool = True
+    # SSRF 守卫拦截清单的唯一来源；未配置 = 不拦截地址段（URL 语法与凭据检查仍在）。
+    # 支持逐行或逗号分隔两种写法；网段合法性由 PublicUrlGuard 构造时校验。
+    ssrf_block_cidrs: tuple[str, ...] = ()
 
     @property
     def configured(self) -> bool:
@@ -375,6 +384,7 @@ def _search_config() -> SearchConfig:
         max_concurrent_requests=max(1, _int_env("SEARCH_MAX_CONCURRENT_REQUESTS", 2)),
         max_concurrent_fetches=max(1, _int_env("FETCH_MAX_CONCURRENT_REQUESTS", 6)),
         tavily_include_raw_content=_bool_env("TAVILY_INCLUDE_RAW_CONTENT", True),
+        ssrf_block_cidrs=_cidr_list_env("SSRF_BLOCK_CIDRS"),
     )
 
 

@@ -76,7 +76,7 @@ class HttpClient:
         # search/generic 走共享连接池、对端是自家 API，进程级固定一档即可；
         # fetch 每跳独立短会话，逐请求轮换不构成连接复用问题，保持随机。
         self._pinned_impersonate = random.choice(_IMPERSONATE_TARGETS)
-        self._url_guard = url_guard or PublicUrlGuard()
+        self._url_guard = url_guard or PublicUrlGuard(config.ssrf_block_cidrs)
         self._capacity = {
             "search": asyncio.Semaphore(config.max_concurrent_requests),
             "fetch": asyncio.Semaphore(config.max_concurrent_fetches),

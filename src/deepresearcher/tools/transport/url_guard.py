@@ -8,6 +8,7 @@
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
@@ -32,7 +33,17 @@ class ResolvedPublicUrl:
 
 
 class PublicUrlGuard:
-    """只解析并放行普通的公网 HTTP(S) 目标。"""
+    """按拦截清单判定目标地址可连接性的 HTTP(S) 目标守卫。
+
+    清单唯一来源是部署方的 SSRF_BLOCK_CIDRS 配置：不配置=不拦截
+    （URL 语法与凭据检查仍在）。判定只有清单成员资格一条规则，
+    代码里不留任何内置默认——配置里看到的清单就是实际执行的清单。
+    """
+
+    def __init__(self, block_cidrs: Sequence[str] = ()):
+        self._block: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
+            ipaddress.ip_network(item.strip(), strict=False) for item in block_cidrs if item.strip()
+        )
 
     async def resolve(self, url: str) -> ResolvedPublicUrl:
         parsed = self._parse(url)
@@ -47,10 +58,9 @@ class PublicUrlGuard:
         resolved = await self._resolve_addresses(ascii_hostname, port)
         if not resolved:
             raise UnsafeUrlError("URL 主机名没有可连接的地址。")
-        # 双栈主机同时返回 A 与 AAAA，个别记录可能落在非全局段：存在全局
-        # 地址即放行并把连接固定到全局地址集合；全部非全局（真 SSRF）才拒绝。
-        # 按"任一地址非全局即整源拒绝"会错误拦下大量合法来源。
-        addresses = tuple(a for a in resolved if self._is_global(a))
+        # 双栈主机同时返回 A 与 AAAA，个别记录可能落在拦截段：存在可连接
+        # 地址即放行并把连接固定到这些地址；全部被拦（真 SSRF）才拒绝。
+        addresses = tuple(a for a in resolved if self._is_connectable(a))
         if not addresses:
             raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
 
@@ -78,21 +88,23 @@ class PublicUrlGuard:
             raise UnsafeUrlError("URL 主机名无法解析。") from exc
         return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
 
-    @staticmethod
-    def _is_global(address: str) -> bool:
+    def _is_connectable(self, address: str) -> bool:
         try:
-            return ipaddress.ip_address(address).is_global
+            ip = ipaddress.ip_address(address)
         except ValueError:
             return False
+        return not self._in_block_list(ip)
 
-    @staticmethod
-    def ensure_public_ip(address: str) -> None:
-        # 用于重定向逐跳校验：单个目标地址非全局即拒绝。
+    def _in_block_list(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return any(ip.version == network.version and ip in network for network in self._block)
+
+    def ensure_public_ip(self, address: str) -> None:
+        # 用于重定向逐跳校验：命中拦截清单即拒绝。
         try:
             ip = ipaddress.ip_address(address)
         except ValueError as exc:
             raise UnsafeUrlError("目标地址不是有效的 IP 地址。") from exc
-        if not ip.is_global:
+        if self._in_block_list(ip):
             raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
 
     @staticmethod
