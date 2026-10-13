@@ -256,7 +256,7 @@ def test_grep_lines_window_tail_cut_is_marked_and_skipped_on_next_page():
 
 
 def test_grep_lines_page_total_never_exceeds_char_budget():
-    """整页字符和是硬顶:多窗口挤预算时宁少发窗口,不超支。"""
+    """整页字符总和不超过 max_chars:预算不足时少发窗口,不超额发出。"""
     lines = [f"needle {index} " + "w" * 300 for index in range(30)]
     result = grep_lines(
         lines,

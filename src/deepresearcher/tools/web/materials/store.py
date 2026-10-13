@@ -151,11 +151,11 @@ def grep_lines(
     GrepDocument 实现，该工具非 serial，因此不存在跨查询词相互占用窗口的情况，
     offset 的含义就是跳过该词去重后的前 N 个窗口。
 
-    预算分三层且都是硬顶：整页 max_chars、每页窗口数 max_matches、单行
-    max_line_chars。超长行裁切并标注剩余字符数；窗口因页预算被裁尾时，
+    预算分三层上限：整页字符上限 max_chars、每页窗口数上限 max_matches、单行字符
+    上限 max_line_chars。超长行裁切并标注剩余字符数；窗口因页预算被裁尾时，
     裁掉的行数记在 tail_omitted_lines 并在正文容得下时补一行标注——
     被裁的尾部不属于下一页，offset 按窗口整体推进，补读走 ReadDocument 按行号。
-    单行在预算内必先裁切再计入，因此每页至少发出一个窗口首行，翻页必定前进。
+    单行先裁切再计入预算，每页至少发出一个窗口首行，翻页必定前进。
     """
 
     needle = query.strip().casefold()
