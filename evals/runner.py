@@ -3,7 +3,7 @@
 分工刻意为之：
 - 提交、澄清回答、取消、详情全部经 API:评测必须跑在与真实用户相同的路径上,
   绕过 API 就测不到用户可见行为;
-- run_events 原始记录、runs.attempt 等走 DB 直读:SSE 只有投影帧,行为断言需
+- run_events 原始记录、runs.fence_token 等走 DB 直读:SSE 只有投影帧,行为断言需
   要原始事件序列;harness 用操作者视图,产品 API 不为评测需求扩展。
 
 故障注入中 kill/stop 接管类需要 harness 掌控 worker 进程生命周期,按
@@ -191,7 +191,7 @@ class RunHarness:
                 {}
                 if run is None
                 else {
-                    "attempt": run.attempt,
+                    "fence_token": run.fence_token,
                     "status": run.status,
                     "lease_owner": run.lease_owner,
                     "terminal_reason": run.terminal_reason,

@@ -187,7 +187,7 @@ class RunExecutor:
                 session_id=run_id,
                 input={"query": query},
                 metadata={
-                    "attempt": claim.attempt if claim is not None else 0,
+                    "fence_token": claim.fence_token if claim is not None else 0,
                     "resume": resume,
                     "worker": claim.lease_owner if claim is not None else "",
                 },
@@ -343,7 +343,9 @@ class RunExecutor:
             else nullcontext()
         )
         with scope:
-            result, interruption = await self._run_graph(run_id, graph, inputs, callbacks=callbacks)
+            result, interruption = await self._run_graph(
+                run_id, graph, inputs, callbacks=callbacks, claim=claim
+            )
         if interruption is not None:
             spans.record_output({"phase": "awaiting_input"})
             if not await self._persist_awaiting_input(run_id, claim=claim):
@@ -378,7 +380,13 @@ class RunExecutor:
         return False
 
     async def _run_graph(
-        self, run_id: str, graph: Any, inputs: Any, *, callbacks: list[Any] | None = None
+        self,
+        run_id: str,
+        graph: Any,
+        inputs: Any,
+        *,
+        callbacks: list[Any] | None = None,
+        claim: RunWork | None = None,
     ) -> tuple[dict, dict | None]:
         """从图流式输出根状态、中断与安全的 token 预览。"""
         final: dict = {}
@@ -396,7 +404,7 @@ class RunExecutor:
                     headline = str(chunk.get("run_headline") or "")
                     if headline and not headline_persisted:
                         headline_persisted = True
-                        if await self._persist_headline(run_id, headline):
+                        if await self._persist_headline(run_id, headline, claim=claim):
                             # 落库成功即推帧：进行中的头部当场从长问题收敛为短题。
                             # 根 values 块在 clarify 那一超步后即携带 run_headline，
                             # 因此本帧在澄清中断处发出，而非 run 结束时。
@@ -468,7 +476,7 @@ class RunExecutor:
     ) -> bool:
         """确认该行处于 running 且仍由本次执行持有,否则返回 False。
 
-        claim 路径:领取的 UPDATE 已把行置为 running,这里只核实租约与 attempt;
+        claim 路径:领取的 UPDATE 已把行置为 running,这里只核实租约与 fence_token;
         直连路径(claim=None):按 mark_running 迁移把行写进 running。
         """
         transitioned = False
@@ -479,7 +487,7 @@ class RunExecutor:
                     run is None
                     or run.status != "running"
                     or run.lease_owner != claim.lease_owner
-                    or run.attempt != claim.attempt
+                    or run.fence_token != claim.fence_token
                 ):
                     return False
                 transitioned = True
@@ -493,17 +501,26 @@ class RunExecutor:
             await self.publish_status(run_id, "running")
         return transitioned
 
-    async def _persist_headline(self, run_id: str, headline: str) -> bool:
+    async def _persist_headline(
+        self, run_id: str, headline: str, *, claim: RunWork | None = None
+    ) -> bool:
         """澄清完成即把历史标题写进行:列表行从原 query 收敛为浓缩标题。
 
         只写未落过 headline 的行——首个有效标题为准,重复到达幂等丢弃。
+        claim 路径补与终态写入同款租约谓词:headline 槽位一生只写一次,
+        不套 fence 的话,过期持有者复活会抢占槽位、把现任持有者的标题挡在门外。
         返回是否由本次调用写入(决定要不要向 SSE 推更新帧)。
         """
+        conditions = [Run.id == run_id, Run.headline.is_(None)]
+        if claim is not None:
+            conditions += [
+                Run.status == "running",
+                Run.lease_owner == claim.lease_owner,
+                Run.fence_token == claim.fence_token,
+            ]
         async with self._session_factory() as session:
             result = await session.execute(
-                update(Run)
-                .where(Run.id == run_id, Run.headline.is_(None))
-                .values(headline=headline[:RUN_HEADLINE_MAX_CHARS])
+                update(Run).where(*conditions).values(headline=headline[:RUN_HEADLINE_MAX_CHARS])
             )
             await session.commit()
             return result.rowcount == 1
@@ -519,7 +536,7 @@ class RunExecutor:
                         Run.id == run_id,
                         Run.status == "running",
                         Run.lease_owner == claim.lease_owner,
-                        Run.attempt == claim.attempt,
+                        Run.fence_token == claim.fence_token,
                     )
                     .values(**side_effects("awaiting_input", now=_utcnow()))
                 )
@@ -573,7 +590,7 @@ class RunExecutor:
         参数:
             run_id: 目标 run。
             status: 目标状态。
-            claim: 提供时用 owner+attempt CAS 写，防止过期持有者覆盖。
+            claim: 提供时用 owner+fence_token CAS 写，防止过期持有者覆盖。
             **extra: 附加列；None 值跳过。
 
         返回:
@@ -591,7 +608,7 @@ class RunExecutor:
                         Run.id == run_id,
                         Run.status == "running",
                         Run.lease_owner == claim.lease_owner,
-                        Run.attempt == claim.attempt,
+                        Run.fence_token == claim.fence_token,
                     )
                     .values(**values)
                 )

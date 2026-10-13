@@ -16,8 +16,8 @@ def _clean_env(monkeypatch, tmp_path):
         "SERVICE_JWT_SECRET",
         "SERVICE_TOKEN_TTL_HOURS",
         "SERVICE_MAX_CONCURRENT_RUNS_PER_USER",
-        "SERVICE_MAX_GLOBAL_RUNNING_RUNS",
         "SERVICE_MAX_GLOBAL_QUEUED_RUNS",
+        "SERVICE_WORKER_MAX_RUNNING_RUNS",
         "SERVICE_WORKER_LEASE_SECONDS",
         "SERVICE_WORKER_HEARTBEAT_SECONDS",
         "SERVICE_WORKER_POLL_SECONDS",
@@ -57,7 +57,7 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert len(config.jwt_secret) >= 32
     assert config.token_ttl_hours == 12
     assert config.max_concurrent_runs_per_user == 2
-    assert config.max_global_running_runs == 3
+    assert config.worker_max_running_runs == 3
     assert config.max_global_queued_runs == 100
     assert config.worker_lease_seconds == 60
     assert config.worker_heartbeat_seconds == 20

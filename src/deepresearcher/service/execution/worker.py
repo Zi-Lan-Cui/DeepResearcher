@@ -7,12 +7,12 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 
 from langgraph.types import Command
+from sqlalchemy.exc import OperationalError
 
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.observability.tracing.context import new_id
 from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.execution.queue import (
-    ClaimCapacitySaturated,
     PostgresRunQueue,
     RunWork,
 )
@@ -109,13 +109,6 @@ class RunWorker:
                     lease_seconds=self._lease_seconds,
                     preferred=preferred,
                 )
-                if isinstance(work, ClaimCapacitySaturated):
-                    # 容量满不代表 preferred 过期：弹出的显式任务放回队首并结束本轮，
-                    # 等下一次信号、轮询或 reap 唤醒；丢弃会让 resume 行再无被领取机会。
-                    if preferred is not None:
-                        self._explicit.appendleft(preferred)
-                        self._explicit_ids.add(preferred.run_id)
-                    return
                 if work is None:
                     # 过期的显式条目不应挡住普通的排队工作。
                     if preferred is not None:
@@ -279,6 +272,13 @@ class RunWorker:
         await asyncio.gather(*(task for _run_id, task, _work in live), return_exceptions=True)
         for _run_id, _task, work in live:
             if work is not None:
-                await self._queue.release(
-                    work, status="interrupted", terminal_reason="server_shutdown"
-                )
+                try:
+                    await self._queue.release(
+                        work, status="interrupted", terminal_reason="server_shutdown"
+                    )
+                except OperationalError:
+                    # 关机释放是尽力而为：写锁超时时该行留在 running+租约，
+                    # 下次启动按租约过期归类接管，锁等待超时不中断关机流程。
+                    logger.warning(
+                        "worker_release_lock_timeout run_id=%s", work.run_id, exc_info=True
+                    )

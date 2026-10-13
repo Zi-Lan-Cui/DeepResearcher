@@ -9,9 +9,9 @@ import pytest
 from sqlalchemy import delete, update
 
 from deepresearcher.observability.tracing.context import new_id
+from deepresearcher.service.events.hub import RunEventHub
 from deepresearcher.service.events.store import RunEventStore
 from deepresearcher.service.execution.queue import (
-    ClaimCapacitySaturated,
     PostgresRunQueue,
     RunWork,
 )
@@ -124,23 +124,27 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
         )
         winners = [claim for claim in (first, second) if claim is not None]
         assert len(winners) == 1
-        assert winners[0].attempt == 1
+        assert winners[0].fence_token == 1
 
+        # seq 并发安全直测 store:append 只负责事务内编号落库,不承担通知。
+        store = RunEventStore(factory)
+        batches = await asyncio.gather(
+            store.append(run_id, [{"event_type": "pg-event-a", "payload": {}}]),
+            store.append(run_id, [{"event_type": "pg-event-b", "payload": {}}]),
+        )
+        assert sorted(batch[0]["seq"] for batch in batches) == [1, 2]
+
+        # committed 唤醒经 hub.flush 投递,按该路径断言。
         sender = PostgresSignalBus()
         receiver = PostgresSignalBus()
         await sender.start(database_url)
         await receiver.start(database_url)
         notify_key, notification = receiver.subscribe_event(run_id)
         try:
-            batches = await asyncio.gather(
-                RunEventStore(factory, signal_bus=sender).append(
-                    run_id, [{"event_type": "pg-event-a", "payload": {}}]
-                ),
-                RunEventStore(factory, signal_bus=sender).append(
-                    run_id, [{"event_type": "pg-event-b", "payload": {}}]
-                ),
-            )
-            assert sorted(batch[0]["seq"] for batch in batches) == [1, 2]
+            hub = RunEventHub(session_factory=factory, store=store, signal_bus=sender)
+            hub.open(run_id)
+            hub.write({"run_id": run_id, "event_type": "pg-event-c", "payload": {}})
+            await hub.flush(run_id)
             await asyncio.wait_for(notification.get(), timeout=2)
         finally:
             receiver.unsubscribe("event_committed", notify_key)
@@ -185,7 +189,7 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
         )
         assert takeover is not None
         assert takeover.lease_owner == "replacement-worker"
-        assert takeover.attempt == 2
+        assert takeover.fence_token == 2
         assert await takeover_queue.release(
             takeover, status="interrupted", terminal_reason="integration_test"
         )
@@ -200,24 +204,16 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
                 ]
             )
             await session.commit()
-        limited_a = PostgresRunQueue(factory, max_global_running=1)
-        limited_b = PostgresRunQueue(factory, max_global_running=1)
+        # 领取的 FOR UPDATE SKIP LOCKED 效果:双实例并发领取队首,
+        # 两边互不等待,各领到不同的行。
+        queue_a = PostgresRunQueue(factory)
+        queue_b = PostgresRunQueue(factory)
         slot_claims = await asyncio.gather(
-            limited_a.claim(
-                worker_id="pg-worker-a",
-                lease_seconds=60,
-                preferred=RunWork(second_run_id, user_id, "slot a"),
-            ),
-            limited_b.claim(
-                worker_id="pg-worker-b",
-                lease_seconds=60,
-                preferred=RunWork(third_run_id, user_id, "slot b"),
-            ),
+            queue_a.claim(worker_id="pg-worker-a", lease_seconds=60),
+            queue_b.claim(worker_id="pg-worker-b", lease_seconds=60),
         )
-        # 未领到的一方必须返回容量饱和而非 None;wake 靠这个区分把 preferred
-        # 弹回队列,否则 resume 任务会在容量满时被丢弃。
-        assert sum(isinstance(claim, RunWork) for claim in slot_claims) == 1
-        assert sum(isinstance(claim, ClaimCapacitySaturated) for claim in slot_claims) == 1
+        assert all(claim is not None for claim in slot_claims)
+        assert {claim.run_id for claim in slot_claims} == {second_run_id, third_run_id}
 
     finally:
         async with factory() as session:

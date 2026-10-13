@@ -10,8 +10,6 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 
-from deepresearcher.service.coordination import RUN_CLAIM_CAPACITY_LOCK_ID
-from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.runs.transitions import (
@@ -22,19 +20,6 @@ from deepresearcher.service.runs.transitions import (
 
 
 @dataclass(frozen=True)
-class ClaimCapacitySaturated:
-    """全局并发上限已满、本轮无法领取，与"没有可领取的行"是两种语义。
-
-    调用方 worker 的 wake 路径据此把显式 preferred 放回队列；若混同为 None，
-    容量满瞬间从 recover/settle 弹出的 resume 任务会被吞掉，
-    该 interrupted 行会停留到下次进程重启。
-    """
-
-
-CAPACITY_SATURATED = ClaimCapacitySaturated()
-
-
-@dataclass(frozen=True)
 class RunWork:
     run_id: str
     user_id: int
@@ -42,30 +27,31 @@ class RunWork:
     resume: bool = False
     resume_payload: dict[str, Any] | None = None
     lease_owner: str | None = None
-    attempt: int = 0
+    fence_token: int = 0
 
     @property
     def claimed(self) -> bool:
-        return self.lease_owner is not None and self.attempt > 0
+        return self.lease_owner is not None and self.fence_token > 0
 
 
 class PostgresRunQueue:
     """按数据库所有权与到期租约领取排队工作。
 
     单一胜者由条件 UPDATE 本身保证（status ∈ sources + 取消守卫 +
-    attempt 递增）：对行来说是原子 CAS，落败的领取者看到 rowcount 0。
-    PostgreSQL 额外用 ``FOR UPDATE SKIP LOCKED`` 选候选，并在计数与领取之前
-    持事务级 advisory lock 完成容量检查。``_claim_lock`` 只串行化本实例
-    自身的 poll/wake 路径——多宿主正确性（如测试中两个 worker 共用一个
-    SQLite 文件）依赖 CAS，不依赖该锁。
+    fence_token 递增）：对行来说是原子 CAS，落败的领取者看到 rowcount 0。
+    PostgreSQL 用 ``FOR UPDATE SKIP LOCKED`` 选候选，多个领取者因此
+    互不等待。``_claim_lock`` 只串行化本实例自身的 poll/wake 路径——
+    多宿主正确性（如测试中两个 worker 共用一个 SQLite 文件）依赖 CAS，
+    不依赖该锁。
+
+    本类**不**约束跨实例的同时执行总量：并发上限由调用方的本地槽位数
+    （``RunWorker.max_running``）决定。多副本部署时全局总量等于
+    槽位数乘以副本数，这是预期行为——上限的语义是「当前资源能支撑的
+    并发数」，资源扩容后它本就该跟着涨。
     """
 
-    def __init__(
-        self, session_factory: Callable[[], Any], *, max_global_running: int | None = None
-    ) -> None:
+    def __init__(self, session_factory: Callable[[], Any]) -> None:
         self._session_factory = session_factory
-        # 下限钳制住在 settings 加载层;None 表示不设全局上限。
-        self._max_global_running = max_global_running
         self._claim_lock = asyncio.Lock()
 
     async def claim(
@@ -74,7 +60,7 @@ class PostgresRunQueue:
         worker_id: str,
         lease_seconds: int,
         preferred: RunWork | None = None,
-    ) -> RunWork | ClaimCapacitySaturated | None:
+    ) -> RunWork | None:
         """领取一行排队工作并建立租约。
 
         参数:
@@ -83,22 +69,12 @@ class PostgresRunQueue:
             preferred: 显式待领取项（resume/恢复路径）。
 
         返回:
-            RunWork | ClaimCapacitySaturated | None:
-                领取成功 / 全局容量已满 / 本轮无可领取行。
+            RunWork | None: 领取成功 / 本轮无可领取行
+            （含 preferred 已被取消或已被其他 worker 领走）。
         """
         async with self._claim_lock:
             async with self._session_factory() as session:
                 now = _utcnow()
-                if self._max_global_running is not None:
-                    # PostgreSQL 上用事务 advisory lock 串行化“计数+领取”；
-                    # SQLite 测试路径下,各实例的 _claim_lock 只串行化本实例。
-                    await acquire_xact_lock(session, RUN_CLAIM_CAPACITY_LOCK_ID)
-                    running = await session.scalar(
-                        select(func.count()).select_from(Run).where(Run.status == "running")
-                    )
-                    if int(running or 0) >= self._max_global_running:
-                        await session.rollback()
-                        return CAPACITY_SATURATED
                 claim_name = "claim"
                 if preferred is None:
                     candidate = (
@@ -124,10 +100,10 @@ class PostgresRunQueue:
                         status=claim_transition.target,
                         lease_owner=worker_id,
                         lease_expires_at=now + timedelta(seconds=lease_seconds),
-                        attempt=Run.attempt + 1,
+                        fence_token=Run.fence_token + 1,
                         started_at=func.coalesce(Run.started_at, now),
                     )
-                    .returning(Run.id, Run.user_id, Run.query, Run.attempt, Run.resume_payload)
+                    .returning(Run.id, Run.user_id, Run.query, Run.fence_token, Run.resume_payload)
                 )
                 row = result.first()
                 await session.commit()
@@ -139,7 +115,7 @@ class PostgresRunQueue:
                     resume=base.resume or row.resume_payload is not None,
                     resume_payload=row.resume_payload,
                     lease_owner=worker_id,
-                    attempt=row.attempt,
+                    fence_token=row.fence_token,
                 )
 
     async def renew(self, work: RunWork, *, lease_seconds: int) -> bool:
@@ -152,7 +128,7 @@ class PostgresRunQueue:
                     Run.id == work.run_id,
                     Run.status == "running",
                     Run.lease_owner == work.lease_owner,
-                    Run.attempt == work.attempt,
+                    Run.fence_token == work.fence_token,
                     Run.cancellation_requested_at.is_(None),
                 )
                 .values(lease_expires_at=_utcnow() + timedelta(seconds=lease_seconds))
@@ -169,7 +145,7 @@ class PostgresRunQueue:
                     Run.id == work.run_id,
                     Run.status == "running",
                     Run.lease_owner == work.lease_owner,
-                    Run.attempt == work.attempt,
+                    Run.fence_token == work.fence_token,
                 )
             )
             return value is not None
@@ -177,7 +153,7 @@ class PostgresRunQueue:
     async def release(
         self, work: RunWork, *, status: str, terminal_reason: str | None = None
     ) -> bool:
-        """以 owner+attempt CAS 释放领取，通常用于优雅 shutdown。
+        """以 owner+fence_token CAS 释放领取，通常用于优雅 shutdown。
 
         参数:
             work: 本 worker 持有的领取凭据。
@@ -209,7 +185,7 @@ class PostgresRunQueue:
                     Run.id == work.run_id,
                     Run.status == "running",
                     Run.lease_owner == work.lease_owner,
-                    Run.attempt == work.attempt,
+                    Run.fence_token == work.fence_token,
                 )
                 .values(**values)
             )

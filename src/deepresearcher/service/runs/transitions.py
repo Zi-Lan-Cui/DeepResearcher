@@ -16,7 +16,7 @@ side_effects 只收目标状态唯一决定的值（lease/finished_at/resume_pay
 terminal_reason 只在它由动因纯决定时随迁移行固定：reap 与 release 是同一条
 边、仅 reason 不同，可见 reason 无法由目标状态单独推出。引擎产出的动态原因
 （finish/fail）与用户文案（error_message）不经表，由调用点覆写。
-两类内容刻意不进表：lease_owner 与 attempt 是所有权谓词，回答谁能推进而非
+两类内容刻意不进表：lease_owner 与 fence_token 是所有权谓词，回答谁能推进而非
 能否推进；无 claim 的对账写（执行器把状态机真相回写进行）只受 may_overwrite
 的不覆盖终态约束，不属于命名迁移。
 """

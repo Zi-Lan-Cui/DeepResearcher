@@ -356,13 +356,13 @@ def test_lease_takeover_and_cache_reuse():
         )
     )
     takeover = _artifact(
-        run_row={"attempt": 2},
+        run_row={"fence_token": 2},
         detail={**_artifact().detail, "cache_hit_count": 3, "saved_external_request_count": 5},
     )
     results = score_artifact(takeover, case)
     assert next(r for r in results if r.criterion_id == "tk").verdict == "yes"
     assert next(r for r in results if r.criterion_id == "cr").verdict == "yes"
-    cold = _artifact(run_row={"attempt": 1})
+    cold = _artifact(run_row={"fence_token": 1})
     results = score_artifact(cold, case)
     assert next(r for r in results if r.criterion_id == "tk").verdict == "unknown"
     assert next(r for r in results if r.criterion_id == "cr").verdict == "no"

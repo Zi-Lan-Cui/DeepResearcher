@@ -5,7 +5,7 @@
    下标,来源条目 url/quote 非空。运行期校验已保证过,评测独立复算是为了让
    报告质量分不会失去引用完整性这一下限。
 2. 状态机行为断言,behavior 维:澄清流程、run_done 恰好一次、seq 连续、恢复
-   接管。attempt/lease 直读 DB,评测 harness 用操作者视图,产品 API 保持用
+   接管。fence_token/lease 直读 DB,评测 harness 用操作者视图,产品 API 保持用
    户最小面。
 3. 过程指标只记录不判分,成本、时长、缓存命中随 artifact 落盘。
 
@@ -34,7 +34,7 @@ class Artifact:
     run_id: str
     detail: dict[str, Any]  # GET /api/runs/{id} 返回
     events: list[dict[str, Any]] = field(default_factory=list)  # run_events.record
-    run_row: dict[str, Any] = field(default_factory=dict)  # runs 表行,含 attempt
+    run_row: dict[str, Any] = field(default_factory=dict)  # runs 表行
     control: dict[str, Any] = field(default_factory=dict)  # runner 侧记录,如重复回答的 HTTP 码
     # 从 LangGraph checkpoint 直读的评测/审计材料，不来自产品 API。
     evidences: list[dict[str, Any]] = field(default_factory=list)
@@ -181,10 +181,10 @@ def check_duplicate_answer_rejected(artifact: Artifact, criterion: Criterion) ->
 
 
 def check_lease_takeover(artifact: Artifact, criterion: Criterion) -> CriterionResult:
-    """worker 强杀接管后校验 attempt>=2、run_done 恰一次、seq 跨接管仍连续。"""
-    attempt = int(artifact.run_row.get("attempt") or 0)
-    if attempt < 2:
-        return _result(artifact, criterion, "unknown", f"attempt={attempt}，故障注入未生效？")
+    """worker 强杀接管后校验 fence_token>=2、run_done 恰一次、seq 跨接管仍连续。"""
+    fence_token = int(artifact.run_row.get("fence_token") or 0)
+    if fence_token < 2:
+        return _result(artifact, criterion, "unknown", f"fence_token={fence_token}，故障注入未生效？")
     dones = len(artifact.events_of("run_done"))
     seqs = [int(e["seq"]) for e in artifact.events if "seq" in e]
     ok = dones == 1 and seqs == list(range(1, len(seqs) + 1))
@@ -192,7 +192,7 @@ def check_lease_takeover(artifact: Artifact, criterion: Criterion) -> CriterionR
         artifact,
         criterion,
         "yes" if ok else "no",
-        f"attempt={attempt} done={dones} seq={'连续' if seqs == list(range(1, len(seqs) + 1)) else '断裂'}",
+        f"fence_token={fence_token} done={dones} seq={'连续' if seqs == list(range(1, len(seqs) + 1)) else '断裂'}",
     )
 
 
@@ -200,10 +200,10 @@ def check_graceful_interrupt_resume(artifact: Artifact, criterion: Criterion) ->
     statuses = artifact.status_sequence()
     if "resuming" not in statuses:
         return _result(artifact, criterion, "no", "未见 resuming 播报")
-    attempt = int(artifact.run_row.get("attempt") or 0)
-    if attempt < 2:
-        return _result(artifact, criterion, "unknown", f"attempt={attempt} 非接管产物")
-    return _result(artifact, criterion, "yes", f"interrupted→resuming，attempt={attempt}")
+    fence_token = int(artifact.run_row.get("fence_token") or 0)
+    if fence_token < 2:
+        return _result(artifact, criterion, "unknown", f"fence_token={fence_token} 非接管产物")
+    return _result(artifact, criterion, "yes", f"interrupted→resuming，fence_token={fence_token}")
 
 
 def check_cache_reuse(artifact: Artifact, criterion: Criterion) -> CriterionResult:

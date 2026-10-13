@@ -72,10 +72,7 @@ class WorkerRuntime:
             requests_per_minute=settings.llm.provider_requests_per_minute,
             tokens_per_minute=settings.llm.provider_tokens_per_minute,
         )
-        self.queue = PostgresRunQueue(
-            session_factory,
-            max_global_running=config.max_global_running_runs,
-        )
+        self.queue = PostgresRunQueue(session_factory)
         self.executor = RunExecutor(
             settings=settings,
             session_factory=session_factory,
@@ -93,7 +90,7 @@ class WorkerRuntime:
         self.worker = RunWorker(
             queue=self.queue,
             executor=self.executor,
-            max_running=config.max_global_running_runs,
+            max_running=config.worker_max_running_runs,
             lease_seconds=config.worker_lease_seconds,
             heartbeat_seconds=config.worker_heartbeat_seconds,
             poll_seconds=config.worker_poll_seconds,

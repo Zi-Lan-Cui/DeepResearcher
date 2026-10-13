@@ -131,7 +131,8 @@ class Run(Base):
     retention_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(96), index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    # 领取世代:fence token,仅在 claim 成功时 +1,所有权谓词的一部分。
+    fence_token: Mapped[int] = mapped_column(Integer, default=0)
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # none_as_null=True：清空载荷必须写 SQL NULL，才能被 resume 的 `is_(None)` CAS 命中；
     # 默认 False 会把 None 序列化成 JSON 字面量 null，令"单次消费"守卫永远落空（真实澄清后无法恢复）。

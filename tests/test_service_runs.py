@@ -589,7 +589,7 @@ async def test_two_queue_instances_claim_a_run_only_once(manager):
     winners = [claim for claim in claims if claim is not None]
     assert len(winners) == 1
     assert winners[0].run_id == run_id
-    assert winners[0].attempt == 1
+    assert winners[0].fence_token == 1
 
 
 async def test_worker_polling_claims_run_created_by_another_process(manager):
@@ -1127,7 +1127,7 @@ def _heartbeat_worker(queue, executor):
 async def test_heartbeat_survives_transient_db_errors():
     from deepresearcher.service.execution.queue import RunWork
 
-    work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", attempt=1)
+    work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", fence_token=1)
     queue = _FlakyRenewQueue(fail_rounds=2)
     executor = _RecordingLeaseExecutor()
     worker = _heartbeat_worker(queue, executor)
@@ -1145,7 +1145,7 @@ async def test_heartbeat_survives_transient_db_errors():
 async def test_heartbeat_escalates_persistent_db_errors_to_lease_lost():
     from deepresearcher.service.execution.queue import RunWork
 
-    work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", attempt=1)
+    work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", fence_token=1)
     queue = _FlakyRenewQueue(fail_rounds=99)
     executor = _RecordingLeaseExecutor()
     worker = _heartbeat_worker(queue, executor)
@@ -1209,20 +1209,3 @@ async def test_poll_loop_survives_transient_claim_error():
     finally:
         poll.cancel()
         await worker.shutdown()
-
-
-async def test_wake_requeues_preferred_when_capacity_saturated():
-    """容量满 ≠ preferred 过期:显式 resume 任务弹回队首等下轮,而非被静默吞掉。"""
-    from deepresearcher.service.execution.queue import ClaimCapacitySaturated, RunWork
-
-    work = RunWork(run_id="run-resume-saturated", user_id=1, query="q", resume=True)
-    queue = _ScriptedClaimQueue([ClaimCapacitySaturated(), ClaimCapacitySaturated()])
-    worker = _scripted_worker(queue, poll_seconds=600)
-
-    await worker.submit(work)
-    assert list(worker._explicit) == [work]  # noqa: SLF001 - 饱和回弹,未丢弃
-    assert "run-resume-saturated" in worker._explicit_ids  # noqa: SLF001
-
-    await worker.wake()
-    assert queue.claims == [work, work]  # 下轮唤醒重新弹出同一个 preferred,直到容量腾出
-    await worker.shutdown()

@@ -144,7 +144,7 @@ async def _validate_database(database_url: str, run_id: str) -> None:
             run = await session.get(Run, run_id)
             assert run is not None
             assert run.status == "completed"
-            assert run.attempt == 2, f"expected takeover attempt=2, got {run.attempt}"
+            assert run.fence_token == 2, f"expected takeover fence_token=2, got {run.fence_token}"
             done_count = await session.scalar(
                 select(func.count())
                 .select_from(RunEvent)
@@ -203,7 +203,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
         "SERVICE_HOST": "127.0.0.1",
         "SERVICE_PORT": str(port),
         "SERVICE_MAX_CONCURRENT_RUNS_PER_USER": "32",
-        "SERVICE_MAX_GLOBAL_RUNNING_RUNS": "8",
+        "SERVICE_WORKER_MAX_RUNNING_RUNS": "8",
         "SERVICE_MAX_GLOBAL_QUEUED_RUNS": "100",
         "SERVICE_WORKER_LEASE_SECONDS": str(args.lease_seconds),
         "SERVICE_WORKER_HEARTBEAT_SECONDS": "1",
@@ -423,7 +423,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             "sse_connections": args.sse_connections,
             "http_requests": args.request_count,
             "concurrency_seconds": concurrency_results,
-            "failover_attempt": 2,
+            "failover_fence_token": 2,
             "run_done_count": 1,
             "graceful_shutdown_recovered": True,
         }

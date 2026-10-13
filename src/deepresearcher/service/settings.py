@@ -37,8 +37,11 @@ class ServiceConfig:
     jwt_secret: str
     token_ttl_hours: int = 12
     max_concurrent_runs_per_user: int = 2
-    max_global_running_runs: int = 3
     max_global_queued_runs: int = 100
+    # 单个 worker 进程的同时执行槽位;多副本部署时全局总量等于该值乘以副本数,
+    # 对上游供应商的总量保护由每进程的 LLM_PROVIDER_RPM/TPM 按副本数折算承担。
+    # 与 max_global_queued_runs 是两件事:那是准入侧排队长度上限,这是执行侧并发数。
+    worker_max_running_runs: int = 3
     worker_lease_seconds: int = 60
     worker_heartbeat_seconds: int = 20
     worker_poll_seconds: float = 15.0
@@ -102,8 +105,8 @@ def get_service_config() -> ServiceConfig:
         jwt_secret=jwt_secret,
         token_ttl_hours=max(1, _int_env("SERVICE_TOKEN_TTL_HOURS", 12)),
         max_concurrent_runs_per_user=max(1, _int_env("SERVICE_MAX_CONCURRENT_RUNS_PER_USER", 2)),
-        max_global_running_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_RUNNING_RUNS", 3)),
         max_global_queued_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_QUEUED_RUNS", 100)),
+        worker_max_running_runs=max(1, _int_env("SERVICE_WORKER_MAX_RUNNING_RUNS", 3)),
         worker_lease_seconds=max(10, _int_env("SERVICE_WORKER_LEASE_SECONDS", 60)),
         worker_heartbeat_seconds=max(1, _int_env("SERVICE_WORKER_HEARTBEAT_SECONDS", 20)),
         worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 15.0)),
