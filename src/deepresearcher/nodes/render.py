@@ -21,11 +21,6 @@ async def render_final_report_node(state: ResearchState):
     report = state.get("report", "")
     if run.phase == "failed":
         return {"report": report, "run": run}
-    if state.get("answer_mode") == "clarification_needed":
-        return {
-            "report": report,
-            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.CLARIFICATION_NEEDED),
-        }
     if state.get("answer_mode") == "quick_answer":
         return {
             "report": report,
@@ -61,9 +56,6 @@ async def render_final_report_node(state: ResearchState):
         draft = state.get("report_draft", "")
         if citations and draft:
             report = render_final_report(
-                clarified_query=str(state.get("clarified_query", state.get("query", ""))),
-                current_round=research.current_round,
-                evidence_count=int(state.get("evidence_count", len(state.get("evidences", [])))),
                 body=draft,
                 citations=citations,
                 title=str(state.get("report_title") or ""),
@@ -96,9 +88,6 @@ async def render_final_report_node(state: ResearchState):
         }
     return {
         "report": render_final_report(
-            clarified_query=str(state.get("clarified_query", state.get("query", ""))),
-            current_round=research.current_round,
-            evidence_count=int(state.get("evidence_count", len(state.get("evidences", [])))),
             body=draft,
             citations=citations,
             title=str(state.get("report_title") or ""),

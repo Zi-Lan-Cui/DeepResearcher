@@ -45,9 +45,6 @@ def _strip_reference_section(body: str) -> str:
 
 def render_final_report(
     *,
-    clarified_query: str,
-    current_round: int,
-    evidence_count: int,
     body: str,
     citations: list[Citation],
     title: str | None = None,
@@ -56,23 +53,15 @@ def render_final_report(
 
     编号按正文首次出现顺序分配；未在正文出现的 citation 不进入证据来源表
     （Writer 的声明列表只是工作集提示，不是最终事实绑定）。
+    研究问题与轮次统计由页面展示，不写入报告正文。
     """
-    rendered_body, display_order, used_ids = _render_body_markers(_strip_reference_section(body))
+    rendered_body, display_order, _used_ids = _render_body_markers(_strip_reference_section(body))
     by_id = {item.id: item for item in citations}
-    used_citations = [by_id[source_id] for source_id in display_order if source_id in by_id]
     display = {source_id: f"证据{index}" for index, source_id in enumerate(display_order, 1)}
-    source_count = len({item.url for item in used_citations if item.url})
 
-    # 文章结构：H1 是 Writer 拟的标题，为空时用默认标题；研究问题与审计信息放在文末一行。
+    # 文章结构：H1 是 Writer 拟的标题，为空时用默认标题。
     heading = (title or "").strip() or "研究报告"
-    footer = (
-        "\n\n---\n\n"
-        f"> 研究问题：{clarified_query}；完成 {current_round} 轮研究，"
-        f"使用 {source_count} 个来源和 {evidence_count} 条证据。"
-    )
-    return f"# {heading}\n\n{rendered_body}{footer}" + _reference_list(
-        display_order, display, by_id
-    )
+    return f"# {heading}\n\n{rendered_body}" + _reference_list(display_order, display, by_id)
 
 
 def _render_body_markers(body: str) -> tuple[str, list[str], set[str]]:

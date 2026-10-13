@@ -57,8 +57,8 @@ def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
         summary["route_reason"] = str(result["route_reason"])[:240]
     if "clarified_query" in result:
         summary["clarified_query"] = str(result["clarified_query"])[:300]
-    if "research_brief" in result:
-        summary["research_brief"] = str(result["research_brief"])[:max_text_chars]
+    if "intent_summary" in result:
+        summary["intent_summary"] = str(result["intent_summary"])[:max_text_chars]
     run = result.get("run")
     if run is not None:
         summary["phase"] = getattr(run, "phase", None)
@@ -281,7 +281,7 @@ def build_graph(
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
         ),
-        # clarification_needed 与 terminal phase 都直达渲染终点；destinations 是图形状
+        # terminal phase 的失败/收束会直达渲染终点；destinations 是图形状
         # 唯一机器可读声明，必须包含 RENDER_FINAL_REPORT，漏掉会误导读者与绘图工具。
         destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
     )

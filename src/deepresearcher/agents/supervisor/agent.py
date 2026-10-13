@@ -163,12 +163,18 @@ class ResearchSupervisor:
                     + render_data_section(
                         "研究委托",
                         {
-                            "research_question": state.get(
+                            "用户原话（逐字，不得改写或收窄）": state.get(
                                 "clarified_query", state.get("query", "")
                             ),
-                            "research_brief": state.get("research_brief", ""),
+                            "澄清问答（用户选择的数据）": state.get("clarification_log", []),
+                            "Clarifier 对意图的理解摘要（参考读物，不是任务清单）": state.get(
+                                "intent_summary", ""
+                            ),
+                            "系统采用的假设": state.get("assumptions", []),
                         },
                     )
+                    + "\n\n方向规划、缺口判断与派发由你基于用户原话与证据自行作出；"
+                    "理解摘要与假设不构成必答清单，也不提供可照搬的分点。"
                 )
             )
         ]

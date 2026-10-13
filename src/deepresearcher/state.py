@@ -117,7 +117,11 @@ class ResearchState(TypedDict, total=False):
     route: str
     route_reason: str
     answer_mode: AnswerMode
-    research_brief: str
+    # Clarifier 的交付面：逐字原话之外，意图摘要、系统假设与逐轮问答留痕分键存放，
+    # supervisor 委托段按身份分小节消费。
+    intent_summary: str
+    assumptions: list[str]
+    clarification_log: Annotated[list[dict[str, object]], add]
     draft_answer: str
 
     supervisor_messages: Annotated[list[BaseMessage], add]

@@ -18,7 +18,8 @@ from deepresearcher.schemas.sections import ReviewIssue
 
 
 class RouteDecision(BaseModel):
-    route: Literal["quick_answer", "deep_research", "clarify_needed"]
+    # 只裁决"直答还是深研"；是否需要澄清由 Clarifier 子图自行判断，路由不设第三种交付形态。
+    route: Literal["quick_answer", "deep_research"]
     reason: str
 
 

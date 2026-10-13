@@ -21,9 +21,6 @@ from fakes import make_evidence as _ev
 
 def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
     report = render_final_report(
-        clarified_query="A 的性能",
-        current_round=2,
-        evidence_count=2,
         body=(
             "## 结论\n\n"
             "第二条 Evidence 支持的结论。[[cite:e2]]\n\n"
@@ -74,9 +71,6 @@ def test_render_final_report_strips_writer_authored_reference_section():
         ),
     ]
     report = render_final_report(
-        clarified_query="q",
-        current_round=1,
-        evidence_count=2,
         body=(
             "## 结论\n\n龙的形象综合。[[cite:e2]]\n\n"
             "### 主要参考\n- 来源二：[[cite:e2]]\n- 来源一：[[cite:e1]]\n"
@@ -93,9 +87,6 @@ def test_render_final_report_strips_writer_authored_reference_section():
 
 def test_render_final_report_strip_stops_at_next_same_level_heading():
     report = render_final_report(
-        clarified_query="q",
-        current_round=1,
-        evidence_count=2,
         body=(
             "前言[[cite:e2]]\n\n## 参考来源\n- 旧[[cite:e1]]\n\n"
             "## 补充论证\n这里还要引用[[cite:e1]]收尾。"
@@ -126,9 +117,6 @@ def test_render_final_report_strip_stops_at_next_same_level_heading():
 
 def test_render_final_report_ignores_cite_markers_inside_code():
     report = render_final_report(
-        clarified_query="测试代码隔离",
-        current_round=1,
-        evidence_count=1,
         body=(
             "## 示例\n\n"
             "`[[cite:e2]]`\n\n"
@@ -294,9 +282,6 @@ def test_rendered_report_preserves_auditable_quotes_in_reference_list():
         ),
     ]
     report = render_final_report(
-        clarified_query="问题",
-        current_round=1,
-        evidence_count=2,
         body="第一条结论。[[cite:e1]]\n\n第二条结论。[[cite:e2]]",
         citations=citations,
     )
@@ -328,9 +313,6 @@ def test_reference_table_survives_ghost_cite():
     from deepresearcher.reporting import render_final_report
 
     report = render_final_report(
-        clarified_query="q",
-        current_round=1,
-        evidence_count=1,
         body="事实一句。[[cite:e1]] 幽灵句。[[cite:ghost]]",
         citations=[
             Citation(id="e1", url="https://example.com/a", quote="事实一句。", claim="事实一句")
@@ -343,23 +325,18 @@ def test_reference_table_survives_ghost_cite():
 
 def test_final_report_is_article_shaped_with_model_title():
     report = render_final_report(
-        clarified_query="A 的性能",
-        current_round=2,
-        evidence_count=3,
         body="结论句。",
         citations=[],
         title="A 的真相",
     )
     assert report.startswith("# A 的真相\n")
     assert "## 研究问题" not in report  # 不再输出系统结构小节
-    assert "> 研究问题：A 的性能" in report  # 追溯信息收进文末一行
+    assert "研究问题" not in report  # 问题与统计由页面展示,不写入报告正文
     assert "## 证据来源" in report
 
 
 def test_final_report_without_title_falls_back_to_system_heading():
-    report = render_final_report(
-        clarified_query="q", current_round=1, evidence_count=0, body="正文", citations=[]
-    )
+    report = render_final_report(body="正文", citations=[])
     assert report.startswith("# 研究报告\n")
 
 

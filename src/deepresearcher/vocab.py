@@ -4,11 +4,6 @@
 会形成 evidence 与 schemas 的循环导入,模块在半初始化状态下就会报错。
 本模块只依赖 typing。
 
-两组刻意相近但分属不同域的词汇,读码时勿混:
-- ``RouteDecision.route`` 的 ``clarify_needed``:路由节点的即时判定,wire 值已冻结;
-- ``AnswerMode`` 的 ``clarification_needed``:run 的最终交付形态。
-一字之差,语义互不包含,因此不合并。
-
 "一个研究方向"在链上有三个名字,各司其职,不要再新增别名:
 - ``topic``:Supervisor 派发工具 ResearchDelegate 的入参;
 - ``task`` / ``task_id``:状态簿记,含 SubTask、事件字段、ResearchDirectionResult;
@@ -28,13 +23,13 @@ ResearchStatus = Literal["not_started", "running", "completed", "incomplete", "f
 
 # Writer 可交付的四种答案形态。
 WriterAnswerMode = Literal["quick_answer", "deep_research", "research_incomplete", "review_limited"]
-# State 顶层 answer_mode 通道:Writer 的四种交付形态,外加路由侧的澄清值。
+# State 顶层 answer_mode 通道:与 Writer 交付形态同集。等待澄清由 run 的运行状态
+# awaiting_input 承载,不进交付形态词表。
 AnswerMode = Literal[
     "quick_answer",
     "deep_research",
     "research_incomplete",
     "review_limited",
-    "clarification_needed",
 ]
 
 # retrieval_method 词表:默认与回退共用 origin_fetch,每种来源路径各一个常量。

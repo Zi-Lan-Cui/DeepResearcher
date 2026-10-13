@@ -61,7 +61,6 @@ def test_complete_is_the_only_submission_signal():
         _tool("ClarificationComplete").coroutine(
             headline="两方案成本效果对比",
             intent_summary="比较两种方案",
-            research_focus=["成本", "效果"],
             assumptions=["按公开资料评估"],
             runtime=runtime,
         )
@@ -70,7 +69,8 @@ def test_complete_is_the_only_submission_signal():
     assert command.update["clarification_completed"] is True
     assert command.update["run_headline"] == "两方案成本效果对比"
     assert command.update["intent_summary"] == "比较两种方案"
-    assert command.update["research_focus"] == ["成本", "效果"]
+    # 研究重点不再由 Clarifier 表达：方向规划归 Supervisor，工具面没有这个键。
+    assert "research_focus" not in command.update
 
 
 def test_clarifier_normalizes_string_encoded_list_arguments():
@@ -78,7 +78,6 @@ def test_clarifier_normalizes_string_encoded_list_arguments():
         {
             "headline": "不争思想研究",
             "intent_summary": "研究不争思想",
-            "research_focus": '["《道德经》中"不争"思想", "现代应用"]',
             "assumptions": '["采用通行译本"]',
         }
     )
@@ -86,7 +85,6 @@ def test_clarifier_normalizes_string_encoded_list_arguments():
         {"question": "选择范围", "options": '["古代", "现代", "跨时期"]'}
     )
 
-    assert complete.research_focus == ['《道德经》中"不争"思想', "现代应用"]
     assert complete.assumptions == ["采用通行译本"]
     assert ask.options == ["古代", "现代", "跨时期"]
 
@@ -135,7 +133,7 @@ def test_clarifier_graph_preserves_parent_state_contract():
     assert result["query"] == "原问题"
     assert result["run_id"] == "run-parent"
     assert result["clarified_query"] == "原问题"
-    assert result["research_brief"] == "已确认的研究范围"
+    assert result["intent_summary"] == "已确认的研究范围"
 
 
 def test_clarifier_headline_propagates_to_parent_state():
@@ -168,7 +166,6 @@ def test_clarifier_subgraph_interrupt_resumes_through_parent_checkpoint():
         if answered:
             return {
                 "intent_summary": "评估方案效果",
-                "research_focus": ["效果"],
                 "clarification_completed": True,
             }
         return {
@@ -192,4 +189,12 @@ def test_clarifier_subgraph_interrupt_resumes_through_parent_checkpoint():
 
     resumed = asyncio.run(compiled.ainvoke(Command(resume={"answer": "效果"}), config))
     assert resumed["clarified_query"] == "比较两个方案"
-    assert "评估方案效果" in resumed["research_brief"]
+    assert resumed["intent_summary"] == "评估方案效果"
+    # 问答留痕走结构化通道进主图：原话、问题、选项、答案各归其位，供委托段分小节渲染。
+    assert resumed["clarification_log"] == [
+        {
+            "question": "你更关心哪一方面？",
+            "options": ["成本", "效果", "风险"],
+            "answer": "效果",
+        }
+    ]

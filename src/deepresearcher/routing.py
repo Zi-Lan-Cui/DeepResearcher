@@ -60,12 +60,9 @@ def route_after_router(state: Mapping[str, object]) -> str:
 
 
 def route_after_clarify(state: Mapping[str, object]) -> str:
-    return route_after(
-        state,
-        NodeName.RENDER_FINAL_REPORT
-        if state.get("answer_mode") == "clarification_needed"
-        else NodeName.SUPERVISOR,
-    )
+    # 澄清完成（含轮次用尽按原问题收束）后一律进 Supervisor；
+    # terminal phase 的直达渲染收口由 route_after 统一处理。
+    return route_after(state, NodeName.SUPERVISOR)
 
 
 def route_after_quick_answer(state: Mapping[str, object]) -> str:

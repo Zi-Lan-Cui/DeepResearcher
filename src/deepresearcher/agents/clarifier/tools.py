@@ -10,7 +10,6 @@ from deepresearcher.agents.clarifier.state import ClarifierAgentState, Clarifier
 from deepresearcher.schemas import AskClarificationArgs, ClarificationCompleteArgs
 from deepresearcher.schemas.limits import (
     CLARIFICATION_ASSUMPTION_LIMIT,
-    CLARIFICATION_FOCUS_LIMIT,
     CLARIFICATION_OPTION_COUNT,
     MAX_CLARIFICATION_ROUNDS,
     RUN_HEADLINE_MAX_CHARS,
@@ -66,22 +65,20 @@ def build_clarifier_tools():
     async def clarification_complete(
         headline: str,
         intent_summary: str,
-        research_focus: list[str],
         assumptions: list[str],
         runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
     ) -> Command:
-        """确认用户意图与研究边界已经足以规划研究，并提交结构化研究简报。
+        """确认用户意图与研究边界已经足以开始研究，并提交意图摘要与假设。
 
-        当原问题本身已经明确，或用户回答已消除关键歧义时使用。可在 assumptions 中记录
-        不影响继续研究的合理假设。不得用普通文本结束；这是 Clarifier 的唯一完成信号。
+        当原问题本身已经明确，或用户回答已消除关键歧义时使用。只写用户要什么、
+        边界在哪；研究重点与方向的规划是 Supervisor 的职责，不在此表达。
+        可在 assumptions 中记录不影响继续研究的合理假设。
+        不得用普通文本结束；这是 Clarifier 的唯一完成信号。
         """
         return Command(
             update={
                 "run_headline": headline.strip()[:RUN_HEADLINE_MAX_CHARS],
                 "intent_summary": intent_summary.strip(),
-                "research_focus": [item.strip() for item in research_focus if item.strip()][
-                    :CLARIFICATION_FOCUS_LIMIT
-                ],
                 "assumptions": [item.strip() for item in assumptions if item.strip()][
                     :CLARIFICATION_ASSUMPTION_LIMIT
                 ],

@@ -1,6 +1,7 @@
 """Clarifier 子图与 Agent 的持久化 State。"""
 
 from dataclasses import dataclass
+from operator import add
 from typing import Annotated
 
 from langchain.agents import AgentState
@@ -34,12 +35,14 @@ class ClarifierDialogue(TypedDict, total=False):
 
     query: str
     intent_summary: str
-    research_focus: list[str]
     assumptions: list[str]
     clarification_completed: bool
     clarification_rounds: int
     pending_question: str
     pending_options: list[str]
+    # 逐轮澄清问答留痕 {question, options, answer};reducer 只在外层图的
+    # Annotated 通道生效,内层 Agent 不写它。
+    clarification_log: list[dict[str, object]]
     # ClarificationComplete 提交的历史浓缩标题;必须在此数据契约中声明,
     # 未声明的键会被子图按未知通道静默丢弃,主图取不到值,headline 无法落库。
     run_headline: str
@@ -52,8 +55,9 @@ class ClarifierAgentState(AgentState, ClarifierDialogue, total=False):
 class ClarifierGraphState(ClarifierDialogue, total=False):
     run_id: str
     messages: Annotated[list[AnyMessage], add_messages]
+    # ask 节点逐轮追加问答留痕，需要外层图的 add reducer。
+    clarification_log: Annotated[list[dict[str, object]], add]
     # finalize 节点产出、交还主图的出口字段。
     clarified_query: str
-    research_brief: str
     answer_mode: str
     run: RunStatus

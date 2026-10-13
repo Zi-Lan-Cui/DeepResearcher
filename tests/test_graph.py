@@ -73,7 +73,7 @@ async def _deep_research_route(_state, _llm, **_kwargs):
 
 async def _clarify_success(state, _llm):
     query = state["query"]
-    return {"clarified_query": query, "research_brief": "测试研究方向"}
+    return {"clarified_query": query, "intent_summary": "测试研究方向"}
 
 
 class _FakeClarifier:
@@ -108,7 +108,7 @@ def _fake_clarifier_graph(node):
     async def invoke(state):
         result = await node(state, None)
         return {
-            "intent_summary": result.get("research_brief", "测试研究方向"),
+            "intent_summary": result.get("intent_summary", "测试研究方向"),
             "clarification_completed": True,
         }
 

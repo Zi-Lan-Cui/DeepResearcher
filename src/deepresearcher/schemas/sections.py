@@ -171,7 +171,6 @@ class RenderOutcome(StrEnum):
     server_shutdown,是第三域,仅登记于 DB 侧,不经此枚举。
     """
 
-    CLARIFICATION_NEEDED = "clarification_needed"
     QUICK_ANSWER = "quick_answer"
     WRITER_EXHAUSTED = "writer_exhausted"
     RESEARCH_INCOMPLETE = "research_incomplete"
@@ -186,7 +185,6 @@ class RenderOutcome(StrEnum):
 
 
 _RENDER_OUTCOME_DESCRIPTIONS: dict[RenderOutcome, str] = {
-    RenderOutcome.CLARIFICATION_NEEDED: "等待用户澄清后才能继续。",
     RenderOutcome.QUICK_ANSWER: "以即时回答方式交付。",
     RenderOutcome.WRITER_EXHAUSTED: "报告写作未通过引用协议校验。",
     RenderOutcome.RESEARCH_INCOMPLETE: "研究未完成。",
@@ -274,6 +272,9 @@ class ResearchDirectionResult(BaseModel):
     task_index: int = Field(default=0, ge=0)
     question: str
     research_direction: str
+    # 方向卡短题，供 Supervisor 证据视图回查方向归属；老检查点缺省为空，
+    # 卡片渲染回退长契约截断。
+    display_title: str = ""
     # 执行生命周期与研究覆盖度分离，避免 completed 被误读为方向已解决。
     execution_status: Literal["completed", "failed", "cancelled"]
     coverage_status: Literal["sufficient", "partial", "insufficient"]

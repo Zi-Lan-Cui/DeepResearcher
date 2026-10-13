@@ -42,7 +42,7 @@ async def router(state, llm, *, agent_config: AgentConfig, invoke_structured):
             ],
         )
         return {
-            "route": "deep_research" if result.route == "clarify_needed" else result.route,
+            "route": result.route,
             "route_reason": result.reason,
             "run": RunStatus(phase="routing"),
         }

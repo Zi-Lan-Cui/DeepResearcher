@@ -54,6 +54,10 @@ def build_clarifier_graph(agent: ClarifierAgentNode):
         return {
             "pending_question": "",
             "pending_options": [],
+            # 问答留痕进结构化通道：supervisor 委托段据此区分用户原话与 Clarifier 的理解。
+            "clarification_log": [
+                {"question": question, "options": options, "answer": answer_text}
+            ],
             "messages": [
                 HumanMessage(
                     content=render_data_section(
@@ -78,16 +82,14 @@ def build_clarifier_graph(agent: ClarifierAgentNode):
     async def finalize(state: ClarifierGraphState):
         query = str(state.get("query") or "").strip()
         summary = str(state.get("intent_summary") or query)
-        focus = [str(item) for item in state.get("research_focus", []) if str(item)]
         assumptions = [str(item) for item in state.get("assumptions", []) if str(item)]
         if not state.get("clarification_completed"):
             assumptions.append("未取得额外澄清，按原问题并列覆盖合理解释。")
-        parts = [summary, *focus]
-        if assumptions:
-            parts.append("研究假设：" + "、".join(assumptions))
+        # 只交结构化分键。"；" 长串会把判断文书伪装成任务清单被下游模仿。
         return {
             "clarified_query": query,
-            "research_brief": "；".join(part for part in parts if part),
+            "intent_summary": summary,
+            "assumptions": assumptions,
             "answer_mode": "deep_research",
             "run": RunStatus(phase="researching"),
         }

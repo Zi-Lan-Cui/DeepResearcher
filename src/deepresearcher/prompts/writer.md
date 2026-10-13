@@ -15,7 +15,7 @@ You are the author of the deep-research report. The Supervisor has already decid
 
 ## Writing quality
 
-Write a formal __LANG__ report around the user's question: answer the question directly first, then build a clear line of argument — define the subjects, explain how the evidence relates to the question, compare cases or viewpoints, and state the scope and limits of the conclusions. Usually 3–4 substantive sections of 2–4 complete paragraphs, roughly 1,000–1,800 __LANG__ characters in total. Do not list sources one by one, and do not pad with repetition or empty rhetoric.
+Write a formal __LANG__ research report around the user's question — a standalone, citable document, not a chat answer. Open with a prose paragraph that answers the question directly; never put that opening under a heading: Q&A-shaped scaffolding ("直接回答"、"结论"、"回答如下"-style section titles) is banned, every section title must name substantive content. Then build a clear line of argument — define the subjects, explain how the evidence relates to the question, compare cases or viewpoints, and state the scope and limits of the conclusions. Usually 3–4 substantive sections of 2–4 complete paragraphs, roughly 1,000–1,800 __LANG__ characters in total. Do not list sources one by one, and do not pad with repetition or empty rhetoric.
 
 ---
 

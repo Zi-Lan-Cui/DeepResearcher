@@ -163,6 +163,53 @@ def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
     assert card["decision_rationale"] == "决策理由"
 
 
+def test_working_set_snapshot_resolves_direction_titles_both_forms() -> None:
+    """方向短题从 task_results 回查（BaseModel 与检查点 dict 双形态）；无短题回退长契约截断。"""
+    from deepresearcher.agents.supervisor.state import working_set_snapshot
+
+    titled = evidence("titled", task_id="task-0001")
+    titled.research_direction = "梳理软件服务一般特征的权威定义与出处边界并逐条标注出处要求"
+    dict_titled = evidence("dict", task_id="task-0002")
+    dict_titled.research_direction = "长契约文本不该出现在带短题的卡上"
+    fallback = evidence("fallback", task_id="task-0004")  # 无 task_result：短契约原样显示
+    fallback.research_direction = "短方向"
+    long_without_title = evidence("long", task_id="task-0003")
+    long_without_title.research_direction = "甲" * 60
+
+    class _SnapshotState:
+        def __init__(self) -> None:
+            self.evidences = [titled, dict_titled, fallback, long_without_title]
+            self.active_evidence_ids = {titled.evidence_id}
+            self.active_evidence_limit = 6
+            self.working_set_revision = 1
+            self.task_results = [
+                ResearchDirectionResult(
+                    task_id="task-0001",
+                    round=1,
+                    question=titled.research_direction,
+                    research_direction=titled.research_direction,
+                    display_title="特征体系",
+                    execution_status="completed",
+                    coverage_status="sufficient",
+                    evidence_count=1,
+                    source_count=1,
+                    stop_reason=DirectionStopReason.COMPLETE,
+                ),
+                {"task_id": "task-0002", "display_title": "世代语境"},
+            ]
+
+        def active_evidences(self) -> list:
+            return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
+
+    snapshot = working_set_snapshot(_SnapshotState())
+
+    assert snapshot["active_evidence"][0]["direction_title"] == "特征体系"
+    reserve_cards = {card["direction_title"] for card in snapshot["reserve_evidence"]}
+    assert "世代语境" in reserve_cards  # dict 恢复形态
+    assert "甲" * 29 + "…" in reserve_cards  # 无短题的长契约截断到 30 字符
+    assert "短方向" in reserve_cards
+
+
 class SupervisorLLM:
     """工具调用协议的 Supervisor fake:按消息历史无状态决策,并发安全。
 
