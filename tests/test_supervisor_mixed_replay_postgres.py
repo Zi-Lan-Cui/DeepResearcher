@@ -144,7 +144,12 @@ def _make_saver():
     from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
     from deepresearcher.service.settings import checkpoint_dsn, get_service_config
 
-    dsn = checkpoint_dsn(get_service_config().database_url)
+    try:
+        database_url = get_service_config().database_url
+    except ValueError:
+        # CI 环境无 SERVICE_DATABASE_URL,与缺省非 postgresql 形态同等处理。
+        return None
+    dsn = checkpoint_dsn(database_url)
     if dsn is None:
         return None
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
