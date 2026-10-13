@@ -96,6 +96,7 @@ class MemoryResearchMaterialStore:
         context_lines: int,
         max_matches: int,
         max_chars: int,
+        max_line_chars: int,
         offset: int = 0,
     ) -> GrepResult:
         document = await self._document(document_id)
@@ -105,6 +106,7 @@ class MemoryResearchMaterialStore:
             context_lines=context_lines,
             max_matches=max_matches,
             max_chars=max_chars,
+            max_line_chars=max_line_chars,
             offset=offset,
         )
 

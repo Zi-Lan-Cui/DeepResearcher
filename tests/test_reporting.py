@@ -56,6 +56,28 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
     assert "https://example.com/one" in report
 
 
+def test_render_final_report_collapses_multiline_title_and_quote():
+    """标题/引文内嵌换行必须折成单行：来源表按行消费，前端逐行解析，
+    换行会把一条记录劈断导致整条失配（实场 Adams Historical Returns 无来源事故）。"""
+    report = render_final_report(
+        body="正文。[[cite:e1]]",
+        citations=[
+            Citation(
+                id="e1",
+                url="https://example.com/one",
+                title="Historical \n    Returns on Stocks: 1928-2024",
+                quote="多行\n  引文\n片段",
+                claim="结论",
+            )
+        ],
+    )
+    reference_lines = [line for line in report.splitlines() if line.startswith("- [证据")]
+    assert len(reference_lines) == 1
+    assert "Historical Returns on Stocks: 1928-2024: https://example.com/one" in reference_lines[0]
+    quote_lines = [line for line in report.splitlines() if line.strip().startswith("> 「")]
+    assert quote_lines == ["  > 「多行 引文 片段」"]
+
+
 def test_render_final_report_strips_writer_authored_reference_section():
     """Writer 自写来源小节时由程序剥除,参考表以管道追加的一段为准。
 

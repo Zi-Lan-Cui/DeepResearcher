@@ -16,7 +16,7 @@ from deepresearcher.agents.researcher.state import (
     evidence_observation_card,
 )
 from deepresearcher.errors import clip_text
-from deepresearcher.evidence.models import Evidence
+from deepresearcher.evidence.models import Evidence, normalize_title_whitespace
 from deepresearcher.evidence.validator import anchor_resolve, collapse_whitespace
 from deepresearcher.observability.events.names import EventName
 from deepresearcher.schemas import DirectionStopReason
@@ -321,6 +321,7 @@ async def grep_document(
         context_lines=min(context_lines, deps.config.document_grep_context_lines),
         max_matches=deps.config.document_grep_max_matches,
         max_chars=deps.config.document_grep_max_chars,
+        max_line_chars=deps.config.document_grep_max_line_chars,
         offset=max(0, offset),
     )
     return {
@@ -438,7 +439,7 @@ async def _validate_submissions(
             claim=claim,
             quote=quote,
             source_url=document.source_url,
-            source_title=document.title,
+            source_title=normalize_title_whitespace(document.title),
             published_at=document.published_at,
             source_profile=describe_source(document.source_url),
             retrieval_method=document.retrieval_method,

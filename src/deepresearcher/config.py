@@ -126,6 +126,7 @@ class AgentConfig:
         12  # 单个查询词一次调用的返回窗口上限；多词靠并行多次调用，不是跨词总数
     )
     document_grep_max_chars: int = 12_000
+    document_grep_max_line_chars: int = 2_000
     evidence_add_batch_size: int = 8
     # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     research_agent_max_turns: int = 12
@@ -331,6 +332,9 @@ def _agent_config() -> AgentConfig:
         document_grep_context_lines=max(0, _int_env("AGENT_DOCUMENT_GREP_CONTEXT_LINES", 2)),
         document_grep_max_matches=max(1, _int_env("AGENT_DOCUMENT_GREP_MAX_MATCHES", 12)),
         document_grep_max_chars=max(1_000, _int_env("AGENT_DOCUMENT_GREP_MAX_CHARS", 12_000)),
+        document_grep_max_line_chars=max(
+            100, _int_env("AGENT_DOCUMENT_GREP_MAX_LINE_CHARS", 2_000)
+        ),
         evidence_add_batch_size=max(1, _int_env("AGENT_EVIDENCE_ADD_BATCH_SIZE", 8)),
         research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 12)),
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),

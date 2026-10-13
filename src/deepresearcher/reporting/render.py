@@ -9,6 +9,7 @@ import re
 from typing import cast
 from urllib.parse import urlsplit
 
+from deepresearcher.evidence.models import normalize_title_whitespace
 from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INLINE_CODE
 from deepresearcher.schemas import Citation, ResearchDirectionResult, RunError, SupervisorProgress
 from deepresearcher.state import ResearchState, section
@@ -116,9 +117,13 @@ def _reference_list(
         if citation is None:
             continue  # 正文引用了无元数据的 id：降级为只显示编号，不中断终检
         label = citation.title or urlsplit(citation.url).netloc or display[source_id]
-        lines.append(f"- [{display[source_id]}] {label}: {citation.url}")
+        # 表行按行消费，标题或引文中残留的换行会把一条记录劈断（前端按行解析即失配），
+        # 生成侧统一折行兜底，存量数据重渲染同样受护。
+        lines.append(
+            f"- [{display[source_id]}] {normalize_title_whitespace(label)}: {citation.url}"
+        )
         if citation.quote:
-            lines.append(f"  > 「{citation.quote}」")
+            lines.append(f"  > 「{normalize_title_whitespace(citation.quote)}」")
     return "\n".join(lines)
 
 

@@ -26,7 +26,7 @@ Call `SearchSources` with one or two queries that precisely target primary sourc
 
 `SearchSources` stores the full result set and returns a compact preview, a `search_id`, and paging positions. When the preview suffices, go straight to `ReadSources`; to compare more candidates, page through `ListSearchResults`. Never read every page just to finish the catalogue — once a few high-value sources are found, move on to reading them.
 
-`ReadSources` returns a `document_id` for each successfully read source. Short documents come back with the full numbered text; long ones only with metadata and a table of contents. For a long document, first locate keywords with one batched `GrepDocument`, then read only the needed windows with one batched `ReadDocument`. Never guess at parts you have not read.
+`ReadSources` returns a `document_id` for each successfully read source. Short documents come back with the full numbered text; long ones only with metadata and a table of contents. For a long document, first locate keywords with one batched `GrepDocument`, then read only the needed windows with one batched `ReadDocument`. Grep and read output clip oversized lines and window tails with an explicit marker; clipped content never reappears on a later page — widen to that line range with `ReadDocument` instead. Never guess at parts you have not read.
 
 Once text directly supporting the local question is found, do not wait for all searching to finish: after each batch of reads, if any verifiable text exists, submit it with one batched `AddEvidence` before the next search, page, or widening. Do not call `AddEvidence` per sentence or per window. After a valid batch submission, judge whether more sources are needed.
 

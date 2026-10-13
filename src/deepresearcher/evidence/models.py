@@ -29,6 +29,15 @@ def normalize_evidence_ids(values: object) -> object:
     return normalized
 
 
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def normalize_title_whitespace(value: str) -> str:
+    """把网页标题里的换行与连续空白折成单空格：标题会被逐行消费（证据来源表），
+    内嵌换行会把一行记录劈成两行，下游按行解析即整条失配。"""
+    return _WHITESPACE_RUN_RE.sub(" ", value).strip()
+
+
 class Evidence(BaseModel):
     evidence_id: str
     subtask_id: str

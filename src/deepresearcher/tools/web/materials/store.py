@@ -57,10 +57,28 @@ class ResearchMaterialStore(Protocol):
         context_lines: int,
         max_matches: int,
         max_chars: int,
+        max_line_chars: int,
         offset: int = 0,
     ) -> GrepResult: ...
 
     async def close(self) -> None: ...
+
+
+_READ_LINE_OMITTED_TEMPLATE = "……[本行其余 {omitted} 字符未显示]"
+_GREP_LINE_OMITTED_TEMPLATE = "……[本行其余 {omitted} 字符未显示，整行请用 ReadDocument 补读]"
+_GREP_WINDOW_OMITTED_TEMPLATE = (
+    "……[本窗口其余 {lines} 行（L{start}-L{end}）未显示，请用 ReadDocument 补读]"
+)
+
+
+def _clip_line(text: str, budget: int, omitted_template: str) -> str:
+    """渲染行超出字符预算时裁切，并标注剩余字符数。"""
+
+    if len(text) <= budget:
+        return text
+    marker_bound = omitted_template.format(omitted=len(text))
+    visible = max(0, budget - len(marker_bound))
+    return text[:visible] + omitted_template.format(omitted=len(text) - visible)
 
 
 def read_lines(
@@ -70,7 +88,10 @@ def read_lines(
     max_lines: int,
     max_chars: int,
 ) -> list[DocumentReadRange]:
-    """对已加载文本做有界行号读取；存储后端共用同一语义。"""
+    """对已加载文本做有界行号读取；存储后端共用同一语义。
+
+    整行超预算时裁切标注而非静默截断——静默截断会被模型当成完整原文引用。
+    """
 
     results: list[DocumentReadRange] = []
     used_lines = 0
@@ -94,7 +115,7 @@ def read_lines(
             if rendered_chars + separator_chars + len(item) > remaining_chars:
                 if rendered:
                     break
-                item = item[:remaining_chars]
+                item = _clip_line(item, remaining_chars, _READ_LINE_OMITTED_TEMPLATE)
             rendered.append(item)
             rendered_chars += separator_chars + len(item)
             if rendered_chars >= remaining_chars:
@@ -121,17 +142,20 @@ def grep_lines(
     context_lines: int,
     max_matches: int,
     max_chars: int,
+    max_line_chars: int,
     offset: int = 0,
 ) -> GrepResult:
     """对已加载文本执行单查询词的字面检索，返回截断可见、可续读的窗口结果。
 
     一次调用只查一个词；批量查多个词由 agent 在同一回合并行发起多个
     GrepDocument 实现，该工具非 serial，因此不存在跨查询词相互占用窗口的情况，
-    offset 的含义就是跳过该词去重后的前 N 个窗口。截断受 max_matches 与 max_chars
-    约束，截断情况经 total_matches、has_more、next_offset 显式回报。
-    max_chars 触顶时不拆行截断单个窗口，未发出的窗口整窗留到下一页。
-    为保证翻页必定前进，当本次调用尚未发出任何窗口、而下一个窗口超出字符预算时，
-    仍整窗发出这一个；单个窗口受 context_lines 上限约束，大小有限。
+    offset 的含义就是跳过该词去重后的前 N 个窗口。
+
+    预算分三层且都是硬顶：整页 max_chars、每页窗口数 max_matches、单行
+    max_line_chars。超长行裁切并标注剩余字符数；窗口因页预算被裁尾时，
+    裁掉的行数记在 tail_omitted_lines 并在正文容得下时补一行标注——
+    被裁的尾部不属于下一页，offset 按窗口整体推进，补读走 ReadDocument 按行号。
+    单行在预算内必先裁切再计入，因此每页至少发出一个窗口首行，翻页必定前进。
     """
 
     needle = query.strip().casefold()
@@ -151,17 +175,45 @@ def grep_lines(
             seen.add(window)
             windows.append(window)
 
+    line_budget = min(max_line_chars, max_chars)
     matches: list[DocumentGrepMatch] = []
     used_chars = 0
     for start, end in windows[offset : offset + max_matches]:
-        content = "\n".join(
-            f"L{line_number}: {lines[line_number - 1]}" for line_number in range(start, end + 1)
-        )
-        # 预算按整窗消耗；仅在已发出至少一个窗口时才因字符预算停止，保证每页前进、不死循环。
-        if matches and used_chars + len(content) > max_chars:
+        rendered: list[str] = []
+        window_chars = 0
+        cut_line: int | None = None
+        for line_number in range(start, end + 1):
+            item = _clip_line(
+                f"L{line_number}: {lines[line_number - 1]}",
+                line_budget,
+                _GREP_LINE_OMITTED_TEMPLATE,
+            )
+            separator_chars = 1 if rendered else 0
+            if used_chars + window_chars + separator_chars + len(item) > max_chars:
+                cut_line = line_number
+                break
+            rendered.append(item)
+            window_chars += separator_chars + len(item)
+        if not rendered:
             break
+        emitted_line_count = len(rendered)
+        tail_omitted_lines = end - cut_line + 1 if cut_line is not None else 0
+        if tail_omitted_lines:
+            note = _GREP_WINDOW_OMITTED_TEMPLATE.format(
+                lines=tail_omitted_lines, start=cut_line, end=end
+            )
+            if used_chars + window_chars + 1 + len(note) <= max_chars:
+                rendered.append(note)
+                window_chars += 1 + len(note)
+        content = "\n".join(rendered)
         matches.append(
-            DocumentGrepMatch(query=query, start_line=start, end_line=end, content=content)
+            DocumentGrepMatch(
+                query=query,
+                start_line=start,
+                end_line=start + emitted_line_count - 1,
+                content=content,
+                tail_omitted_lines=tail_omitted_lines,
+            )
         )
         used_chars += len(content)
 

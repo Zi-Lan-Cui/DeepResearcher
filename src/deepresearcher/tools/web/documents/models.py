@@ -43,12 +43,14 @@ class DocumentGrepMatch(BaseModel):
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
     content: str
+    # 窗口尾部因页字符预算未发出的行数；0 表示窗口完整。补读走 ReadDocument 按行号。
+    tail_omitted_lines: int = Field(default=0, ge=0)
 
 
 class GrepResult(BaseModel):
     """单个查询词一次 grep 的结果：命中窗口，外加说明截断程度与续读方式的三个字段。
 
-    截断、翻页与整窗不拆行的完整行为契约见实现所在 materials.store.grep_lines；
+    截断、翻页与行级裁切的完整行为契约见实现所在 materials.store.grep_lines；
     本处只描述字段级语义。
     """
 
