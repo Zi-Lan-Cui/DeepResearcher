@@ -57,6 +57,17 @@ def test_supervisor_prompt_carries_dispatch_fewshots():
     assert "round_budget_exhausted" in prompt
 
 
+def test_supervisor_prompt_documents_workbench_protocol():
+    prompt = load_prompt("supervisor")
+    assert "### `UpdateWorkbench`" in prompt
+    assert '"op": "upsert_aspect"' in prompt
+    assert '"op": "acknowledge"' not in prompt  # 操作表里 acknowledge 单列,示例不演示空转表态
+    assert "acknowledge" in prompt
+    assert "ResearchComplete` refuses" in prompt
+    assert "ReviseResearchSynthesis" not in prompt
+    assert "ReleaseEvidence" not in prompt
+
+
 def test_prompts_keep_markdown_section_snapshot():
     expected_sections = {
         "clarifier": ("# Role", "## Decision tools", "## When to ask", "## Round budget"),
@@ -64,7 +75,7 @@ def test_prompts_keep_markdown_section_snapshot():
         "supervisor": (
             "# Role",
             "## Scope",
-            "## Tools",
+            "## The workbench",
             "## Budget and completion contract",
             "## Examples",
         ),

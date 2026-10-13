@@ -16,17 +16,13 @@ from langgraph.types import Command
 from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
     SupervisorLoopContext,
-    working_set_snapshot,
+    workbench_view,
 )
-from deepresearcher.agents.working_set import release_working_set, restore_working_set
 from deepresearcher.schemas import (
-    ReadWorkingSet,
-    ReleaseEvidence,
-    ResearchAspect,
+    ReadWorkbench,
     ResearchComplete,
     ResearchDelegate,
-    RestoreEvidence,
-    ReviseResearchSynthesis,
+    UpdateWorkbench,
     WaitDirection,
     format_tool_receipt,
 )
@@ -107,21 +103,16 @@ def build_supervisor_tools() -> list[BaseTool]:
         task_ids: list[str],
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
-        """等待在途方向到达并收取其方向报告；无在途时返回提示，不挂死。"""
+        """等待在途方向到达并收取其方向报告；钉不中回 unknown_task_ids，无在途回 no_inflight，都不挂死。"""
         ctx = runtime.context
         reports, delta = await services.wait_for_directions(
             ctx.deps, ctx.loop_state, ctx.direction_tasks, task_ids=list(task_ids or [])
         )
-        payload: dict[str, object] = {
-            "status": "completed" if reports else "no_inflight",
-            "directions": reports,
-            "working_set_revision": ctx.loop_state.working_set_revision,
-            "inflight": sorted(ctx.loop_state.pending_directions),
-        }
-        if not reports:
-            payload["instruction"] = (
-                "没有在途方向。请按当前工作集修订综合稿后 ResearchComplete，或继续派发补缺口。"
-            )
+        payload = services.compose_wait_receipt(
+            reports,
+            set(ctx.loop_state.pending_directions),
+            ctx.loop_state.working_set_revision,
+        )
         return _channel_command(runtime, payload, tool_name="WaitDirection", channel_update=delta)
 
     # 不设 return_direct、不用 Command 做循环控制:实测 Command(goto) 会跳过中间件
@@ -130,13 +121,12 @@ def build_supervisor_tools() -> list[BaseTool]:
     # 在下一跳退出循环。
     @tool("ResearchComplete", args_schema=ResearchComplete)
     async def research_complete(
-        synthesis_revision: int,
         reason: str,
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
-        """冻结最新且未过期的研究综合稿；被拒则按回执 rejection_cause 处理。"""
+        """冻结最新且已与桌面核对的研究综合稿；被拒则按回执 rejection_cause 处理。"""
         ctx = runtime.context
-        result = services.freeze_synthesis(ctx.loop_state, synthesis_revision, reason)
+        result = services.freeze_synthesis(ctx.loop_state, reason)
         return _channel_command(
             runtime,
             result,
@@ -148,114 +138,42 @@ def build_supervisor_tools() -> list[BaseTool]:
             },
         )
 
-    @tool("ReviseResearchSynthesis", args_schema=ReviseResearchSynthesis)
-    async def revise_research_synthesis(
-        expected_revision: int,
-        expected_working_set_revision: int,
-        answer_goal: str,
-        overall_summary: str,
-        aspects: list[ResearchAspect],
-        open_gaps: list[str],
-        conflicts: list[str],
-        next_actions: list[str],
-        decision_rationale: str,
+    @tool("UpdateWorkbench", args_schema=UpdateWorkbench)
+    async def update_workbench(
+        changes: list[Any],
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
-        """用最新方向结果修订当前唯一的研究综合稿；不会结束研究。
-
-        仅当新的研究结果实质改变结论、Evidence 选择、缺口、冲突、下一步或
-        结论状态时使用。它不是工具日志；所有事实总结必须绑定当前活跃
-        Evidence。aspects 是跨 Researcher 方向的认知组织单元，系统会从其
-        evidence_ids 稳定推导总选择集。调用 ResearchComplete 前必须先让本综合稿
-        对齐最新 working_set_revision。
-        """
+        """工作台唯一写入口：提交带 op 判别字段的操作列表，每个操作整值替换其目标段。"""
         ctx = runtime.context
-        result = services.revise_synthesis(
-            ctx.loop_state,
-            expected_revision=expected_revision,
-            expected_working_set_revision=expected_working_set_revision,
-            answer_goal=answer_goal,
-            overall_summary=overall_summary,
-            aspects=aspects,
-            open_gaps=open_gaps,
-            conflicts=conflicts,
-            next_actions=next_actions,
-            decision_rationale=decision_rationale,
-        )
-        return _channel_command(
-            runtime,
-            result,
-            tool_name="ReviseResearchSynthesis",
-            channel_update={"research_synthesis": ctx.loop_state.research_synthesis},
-        )
+        result = services.apply_workbench_changes(ctx.loop_state, changes)
+        delta: dict[str, Any] = {}
+        if result.get("status") == "applied":
+            delta = {
+                "research_synthesis": ctx.loop_state.research_synthesis,
+                "plan": [dict(item) for item in ctx.loop_state.plan],
+                "working_set_revision": ctx.loop_state.working_set_revision,
+            }
+            removals = result.get("slot_removals")
+            additions = result.get("slot_additions")
+            added = [str(item) for item in additions] if isinstance(additions, list) else []
+            removed = [str(item) for item in removals] if isinstance(removals, list) else []
+            if added or removed:
+                delta["active_evidence_ids"] = {"add": added, "remove": removed}
+        return _channel_command(runtime, result, tool_name="UpdateWorkbench", channel_update=delta)
 
-    @tool("ReadWorkingSet", args_schema=ReadWorkingSet)
-    async def read_working_set(
+    @tool("ReadWorkbench", args_schema=ReadWorkbench)
+    async def read_workbench(
         reason: str,
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> str:
-        """查看当前活跃 Evidence 的轻量摘要。"""
+        """查看工作台全景：计划、在途、各方向档案、活跃/储备证据与综合稿。"""
         del reason
-        return format_tool_receipt(working_set_snapshot(runtime.context.loop_state))
-
-    @tool("ReleaseEvidence", args_schema=ReleaseEvidence)
-    async def release_evidence(
-        evidence_ids: list[str],
-        reason: str,
-        runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> Command:
-        """释放当前工作集中的 Evidence，但不删除全局 Evidence。"""
-        del reason
-        ctx = runtime.context
-        loop_state = ctx.loop_state
-        result = release_working_set(
-            loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
-        )
-        return _channel_command(
-            runtime,
-            result,
-            tool_name="ReleaseEvidence",
-            channel_update={
-                "active_evidence_ids": {
-                    "add": [],
-                    "remove": result["released_evidence_ids"],
-                },
-                "working_set_revision": loop_state.working_set_revision,
-            },
-        )
-
-    @tool("RestoreEvidence", args_schema=RestoreEvidence)
-    async def restore_evidence(
-        evidence_ids: list[str],
-        reason: str,
-        runtime: ToolRuntime[SupervisorLoopContext],
-    ) -> Command:
-        """从全局 Evidence 档案恢复候选，不超过活跃工作集上限。"""
-        del reason
-        ctx = runtime.context
-        loop_state = ctx.loop_state
-        result = restore_working_set(
-            loop_state, evidence_ids, snapshot=lambda: working_set_snapshot(loop_state)
-        )
-        return _channel_command(
-            runtime,
-            result,
-            tool_name="RestoreEvidence",
-            channel_update={
-                "active_evidence_ids": {
-                    "add": result["restored_evidence_ids"],
-                    "remove": [],
-                },
-                "working_set_revision": loop_state.working_set_revision,
-            },
-        )
+        return format_tool_receipt(workbench_view(runtime.context.loop_state))
 
     return [
         research_delegate,
         wait_direction,
-        revise_research_synthesis,
+        update_workbench,
         research_complete,
-        read_working_set,
-        release_evidence,
-        restore_evidence,
+        read_workbench,
     ]

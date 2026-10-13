@@ -34,6 +34,8 @@ class ReportBrief(BaseModel):
     """Supervisor 交给 Writer 的任务书；不携带 Evidence 正文。"""
 
     answer_goal: str
+    # 全文核心主张:Writer 组织报告的脊柱;partial 兜底交接时为空串,Writer 自行归纳。
+    thesis: str = ""
     covered_topics: list[CoveredTopic] = Field(
         min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
     )
@@ -42,6 +44,13 @@ class ReportBrief(BaseModel):
     )
     # 日常裁剪由 AGENT_REPORT_MAX_CAVEATS 控制；这里仅防御异常膨胀。
     caveats: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
+
+
+class PlanItem(BaseModel):
+    """工作台计划便签的一条;顺序即列表位置,不另设 order 字段。"""
+
+    content: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    status: Literal["not_started", "in_progress", "done"] = "not_started"
 
 
 class ResearchAspect(BaseModel):
@@ -88,9 +97,11 @@ class ResearchSynthesis(BaseModel):
 
     revision: int = Field(ge=1)
     based_on_working_set_revision: int = Field(ge=0)
-    answer_goal: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
-    overall_summary: str = Field(min_length=1, max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
-    aspects: list[ResearchAspect] = Field(min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    # 草稿期允许先立一块 aspect 再逐步补齐;answer_goal/thesis/decision_rationale 齐备
+    # 是 ResearchComplete 的验收项(freeze_synthesis),不是入场项。
+    answer_goal: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    thesis: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    aspects: list[ResearchAspect] = Field(max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     selected_evidence_ids: list[str] = Field(
         default_factory=list,
         max_length=EVIDENCE_REFERENCES_HARD_LIMIT,
@@ -98,10 +109,7 @@ class ResearchSynthesis(BaseModel):
     )
     open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    next_actions: list[str] = Field(
-        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
-    )
-    decision_rationale: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    decision_rationale: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchSynthesis":

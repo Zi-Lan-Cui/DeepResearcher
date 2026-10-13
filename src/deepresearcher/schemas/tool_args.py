@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from deepresearcher.evidence.models import normalize_evidence_ids
 from deepresearcher.schemas.limits import (
@@ -23,10 +24,9 @@ from deepresearcher.schemas.limits import (
     SEARCH_RESULTS_PREVIEW_COUNT,
     SOURCE_CANDIDATES_PER_READ,
     STRUCTURED_COLLECTION_HARD_LIMIT,
-    STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
     STRUCTURED_TEXT_HARD_LIMIT_CHARS,
 )
-from deepresearcher.schemas.reporting import ResearchAspect
+from deepresearcher.schemas.reporting import PlanItem, ResearchAspect
 from deepresearcher.vocab import Support
 
 
@@ -75,6 +75,8 @@ class GrepDocument(BaseModel):
     需要检索多个关键词时,在同一回合**并行发起多个 GrepDocument 调用**(该工具可
     并行)。不提供 queries 批量接口——单查询让每个词各自分页、互不抢占,也无需
     跨词配额簿记。返回带 total_matches/has_more/next_offset,用 offset 翻页取后续。
+    超长行与窗口尾部会裁切并标注,裁掉的内容不在后续页里——按标注行号用
+    ReadDocument 补读。
     """
 
     document_id: str = Field(
@@ -133,9 +135,15 @@ class AddEvidence(BaseModel):
 
 
 class ReadWorkingSet(BaseModel):
-    """查看当前 Agent 工作集的轻量摘要。"""
+    """查看当前 Agent 工作集的轻量摘要（ResearchAgent 侧）。"""
 
     reason: str = Field(default="", description="说明需要重新检查工作集的原因。")
+
+
+class ReadWorkbench(BaseModel):
+    """Supervisor 重读工作台全景的入参。"""
+
+    reason: str = Field(default="", description="说明需要重新查看工作台的原因。")
 
 
 class ReleaseEvidence(BaseModel):
@@ -215,59 +223,171 @@ class WaitDirection(BaseModel):
         description="要等待的方向 task_id 列表；留空表示等待任意一个在途方向到货。",
     )
 
+    @field_validator("task_ids", mode="before")
+    @classmethod
+    def strip_injected_whitespace(cls, value: object) -> object:
+        """剔除模型在长 id 流中夹入的空白与控制字符(实场 run-88c4:task\\r-0001 钉不中在途)。"""
+        if not isinstance(value, list):
+            return value
+        cleaned = [re.sub(r"[\s\x00-\x1f\x7f]", "", str(item)) for item in value]
+        return [item for item in cleaned if item]
+
 
 class ResearchComplete(BaseModel):
-    """冻结最新研究综合稿并终止研究阶段。"""
+    """冻结最新研究综合稿并终止研究阶段；版本对账由程序完成，不需要报版本号。"""
 
-    synthesis_revision: int = Field(ge=1)
-    reason: str = Field(description="为什么该综合版本已经足以形成完整报告。")
+    reason: str = Field(description="为什么当前综合稿已经足以形成完整报告。")
 
 
-class ReviseResearchSynthesis(BaseModel):
-    """提交 Supervisor 对当前研究状态的下一版完整规范化综合稿。"""
+class SynthesisFraming(BaseModel):
+    """framing 操作的整值:只带要修改的字段,省略即不动;未知字段名直接拒绝。"""
 
-    expected_revision: int = Field(
-        ge=0,
-        description="当前综合稿版本；尚未建立综合稿时传 0。",
-    )
-    expected_working_set_revision: int = Field(
-        ge=0,
-        description="当前工具观察到的 Evidence/任务工作集版本。",
-    )
-    answer_goal: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
-    overall_summary: str = Field(
-        min_length=1,
-        max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS,
-        description=(
-            "证据面现状的描述：answer_goal 之下哪些部分有足够支撑、哪些薄弱或缺失。"
-            "只写现状；判断的根据写 decision_rationale，后续动作写 next_actions。"
-        ),
-    )
-    aspects: list[ResearchAspect] = Field(
-        min_length=1,
-        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
-        description=(
-            "Supervisor 跨研究方向建立的完整证据支撑认知单元列表；"
-            "不是 Researcher 方向或固定报告章节。covered 必须绑定 Evidence；"
-            "partial、uncovered、conflicted 必须说明 remaining_gap。"
-        ),
-    )
-    open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    next_actions: list[str] = Field(
-        default_factory=list,
-        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
-        description="建议性后续研究动作；是否执行由后续的显式工具调用决定，系统不会自动执行。",
-    )
-    decision_rationale: str = Field(
+    model_config = ConfigDict(extra="forbid")
+
+    answer_goal: str | None = Field(default=None, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    thesis: str | None = Field(
+        default=None,
         min_length=1,
         max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
         description=(
-            "本次修订各判断的根据：为什么这些 aspect 定为 covered/partial/conflicted、"
-            "证据绑定为何取舍、缺口与冲突为何如此记录。不复述 overall_summary 的现状描述；"
-            "不得引入未经 Evidence 支持的新事实。"
+            "全文核心主张：一句话到一小段、可被 active Evidence 辩护的判断，"
+            "各 aspect 为它服务或限定它。研究现状不需要在这里复述——工作台视图自带。"
         ),
     )
+    open_gaps: list[str] | None = Field(
+        default=None,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
+        description=(
+            "影响交付诚实性的缺口声明；每条都以拉低交付成色为代价。"
+            "aspect 内可消化的注脚留在该 aspect 的 remaining_gap，不要复制到这里。"
+        ),
+    )
+    conflicts: list[str] | None = Field(default=None, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    decision_rationale: str | None = Field(
+        default=None,
+        max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+        description=(
+            "本次变更各判断的根据：aspect 状态为何如此、证据绑定为何取舍、缺口为何入列。"
+            "可分批补写，冻结验收时非空。"
+        ),
+    )
+
+    @field_validator("answer_goal", "thesis", "decision_rationale", mode="before")
+    @classmethod
+    def empty_string_means_untouched(cls, value: object) -> object:
+        """显式空串按"本字段不改"处理:空值不是内容,拒它只是白烧回合(实场 run-3234 T01 实证)。"""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
+class WorkbenchUpsertAspect(BaseModel):
+    """整值替换一个 aspect；身份只取 aspect.aspect_id。"""
+
+    op: Literal["upsert_aspect"]
+    aspect: ResearchAspect
+
+
+class WorkbenchRemoveAspect(BaseModel):
+    """删除一个 aspect。"""
+
+    op: Literal["remove_aspect"]
+    aspect_id: str = Field(min_length=1)
+
+
+class WorkbenchUpdateFraming(BaseModel):
+    """只改 framing 中给出的字段，省略即不动。"""
+
+    op: Literal["framing"]
+    framing: SynthesisFraming
+
+
+class WorkbenchSetPlan(BaseModel):
+    """plan 整列表替换。"""
+
+    op: Literal["plan"]
+    items: list[PlanItem] = Field(max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+
+
+class WorkbenchMoveEvidence(BaseModel):
+    """活跃证据槽位差量。"""
+
+    op: Literal["evidence"]
+    add: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    remove: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+
+
+class WorkbenchAcknowledge(BaseModel):
+    """工作台变动后确认现稿仍成立：只重盖 based_on 时间戳，不改稿。"""
+
+    op: Literal["acknowledge"]
+
+
+WorkbenchIntent = Annotated[
+    Union[
+        WorkbenchUpsertAspect,
+        WorkbenchRemoveAspect,
+        WorkbenchUpdateFraming,
+        WorkbenchSetPlan,
+        WorkbenchMoveEvidence,
+        WorkbenchAcknowledge,
+    ],
+    Field(discriminator="op"),
+]
+
+WORKBENCH_INTENT_ADAPTER: TypeAdapter[WorkbenchIntent] = TypeAdapter(WorkbenchIntent)
+
+
+def _normalize_changes(value: object) -> object:
+    """修复模型把 changes 数组或其中单个操作再次编码成 JSON 字符串的常见偏差。
+
+    实场 run-88c4 实证:嵌套越深模型越倾向把整个 changes 序列化成字符串;
+    列表元素类型收紧后这种偏差会在工具调用框架层报错,到不了拒绝回执,
+    所以在此处先行还原,让 services 的判别并集继续给出具名反馈。
+    """
+    if isinstance(value, str):
+        raw = value.strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return [raw]
+        return parsed if isinstance(parsed, list) else [parsed]
+    if isinstance(value, list):
+        normalized: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                try:
+                    normalized.append(json.loads(item))
+                except json.JSONDecodeError:
+                    normalized.append(item)
+            else:
+                normalized.append(item)
+        return normalized
+    return value
+
+
+class UpdateWorkbench(BaseModel):
+    """工作台唯一写入口：提交操作列表，每个操作整值替换其目标段。
+
+    形状校验在此层保持宽松（changes 收原始对象），由 services 用判别并集解析后
+    统一转成拒绝回执——工具调用层的校验错误到不了 rejections 的 did_you_mean 通道。
+    """
+
+    changes: list[Any] = Field(
+        min_length=1,
+        max_length=32,
+        description=(
+            '操作对象列表，每项带 op 判别字段：{"op":"upsert_aspect","aspect":{…完整 aspect}} | '
+            '{"op":"remove_aspect","aspect_id":"…"} | {"op":"framing","framing":{…只带来改的字段}} | '
+            '{"op":"plan","items":[…]} | {"op":"evidence","add":[…],"remove":[…]} | '
+            '{"op":"acknowledge"}'
+        ),
+    )
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def normalize_changes(cls, value: object) -> object:
+        return _normalize_changes(value)
 
 
 # 工具回执前缀:模型靠它区分工具结果与用户补充;observability 剥同一前缀
@@ -278,7 +398,7 @@ TOOL_RECEIPT_PREFIX = "【系统工具执行结果"
 def format_tool_receipt(payload: object) -> str:
     """统一工具回执格式:前缀行 + JSON 串(或原样字符串)。"""
     body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    return f"{TOOL_RECEIPT_PREFIX}；不是用户补充】\n{body}"
+    return f"{TOOL_RECEIPT_PREFIX}；非用户补充】\n{body}"
 
 
 def _normalize_string_list(value: object) -> object:

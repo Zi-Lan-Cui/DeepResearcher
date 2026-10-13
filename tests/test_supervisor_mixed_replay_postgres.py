@@ -2,9 +2,9 @@
 
 形态:max_parallel_workers=2、supervisor_max_active_evidences=2,首轮一条 AIMessage 并发派
 两个 ResearchDelegate(派发批只登记 pending,不等待方向完成),模型经 WaitDirection 收
-A 的到达后,后台的 B 抛 BaseException 杀死节点,再同 thread 恢复。实测合同:节点失败使
-其范围内全部吸收随写回丢弃(WaitDirection 收据也不例外——内层 superstep 的通道写入只在
-节点成功返回时提交),恢复靠派发批 journal 命中不重跑方向体,欠账一律判 lost 结算。
+A 的到达后,后台的 B 抛 BaseException 杀死节点,再同 thread 恢复。合同边界按消费划:
+WaitDirection 正常返回的吸收已随内层 superstep 提交,恢复后保留;崩溃时刻仍未被消费的
+在途一律判 lost 结算,恢复不重跑方向体(派发批 journal 命中)。
 本测试锁定的不变式:恢复后编号按调用位置稳定、两方向结果互不吞、无残留半吸收。
 
 模块同时导出 _build_app/_MixedResearchAgent/_TwoDirectionSupervisorModel,供 SIGKILL 形态
@@ -188,35 +188,47 @@ async def _drive(saver):
 
     thread = "mixed-" + uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread}}
-    killed = False
     try:
-        await app.ainvoke({"done": False}, config)
-    except _ProcessKilled:
-        killed = True
-    async for _ in app.astream(None, config=config):
-        pass
+        killed = False
+        try:
+            await app.ainvoke({"done": False}, config)
+        except _ProcessKilled:
+            killed = True
+        async for _ in app.astream(None, config=config):
+            pass
 
-    update = outcome.get("update") or {}
-    task_results = list(update.get("task_results") or [])
-    return {
-        "killed": killed,
-        "calls": research_agent.calls,
-        "task_count": len(task_results),
-        "task_ids": sorted(item.task_id for item in task_results),
-        "a_task_id": next(
-            (item.task_id for item in task_results if item.question.startswith("方向A")), ""
-        ),
-        "a_status": next(
-            (item.execution_status for item in task_results if item.question.startswith("方向A")),
-            "",
-        ),
-        "b_status": next(
-            (item.execution_status for item in task_results if item.question.startswith("方向B")),
-            "",
-        ),
-        "evidences": len(update.get("evidences") or []),
-        "active_count": len(update.get("active_evidence_ids") or []),
-    }
+        update = outcome.get("update") or {}
+        task_results = list(update.get("task_results") or [])
+        return {
+            "killed": killed,
+            "calls": research_agent.calls,
+            "task_count": len(task_results),
+            "task_ids": sorted(item.task_id for item in task_results),
+            "a_task_id": next(
+                (item.task_id for item in task_results if item.question.startswith("方向A")), ""
+            ),
+            "a_status": next(
+                (
+                    item.execution_status
+                    for item in task_results
+                    if item.question.startswith("方向A")
+                ),
+                "",
+            ),
+            "b_status": next(
+                (
+                    item.execution_status
+                    for item in task_results
+                    if item.question.startswith("方向B")
+                ),
+                "",
+            ),
+            "evidences": len(update.get("evidences") or []),
+            "active_count": len(update.get("active_evidence_ids") or []),
+        }
+    finally:
+        # 演示同库不留测试线程:崩溃路径同样回收,否则每跑一次批就往生产 checkpoint 里漏一批行。
+        await saver.adelete_thread(thread)
 
 
 def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
@@ -239,13 +251,14 @@ def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 派发制合同:方向体是后台任务,其产物只有在节点成功返回时才进外层 State。
-    # 崩溃使一切节点内吸收作废——恢复不重跑(receipts/编号有 journal),只把欠账判 lost。
+    # 派发制合同:WaitDirection 正常返回即完成消费,其吸收随内层 superstep 提交并在恢复后保留;
+    # 崩溃时仍欠的是"未被消费的在途"——恢复不重跑(receipts/编号有 journal),只把欠账判 lost。
+    # B 的抛错发生在外层节点体 drain 阶段,内层图已正常结束,A 的收据不在丢弃范围内。
     assert facts["calls"] == {"A": 1, "B": 1}, facts["calls"]
     assert facts["task_count"] == 2, facts
     assert facts["task_ids"] == ["task-0001", "task-0002"], facts["task_ids"]
     assert facts["a_task_id"] == "task-0001", facts["a_task_id"]
-    assert facts["a_status"] == "failed", facts
+    assert facts["a_status"] == "completed", facts
     assert facts["b_status"] == "failed", facts
-    assert facts["evidences"] == 0, facts  # 未随成功节点提交的吸收不留残值
-    assert facts["active_count"] == 0, facts
+    assert facts["evidences"] == 2, facts  # A 已消费的随内层检查点恢复
+    assert facts["active_count"] == 2, facts

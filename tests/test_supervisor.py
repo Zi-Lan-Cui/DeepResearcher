@@ -7,6 +7,7 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
+from pydantic import ValidationError
 
 from deepresearcher.agents.channels import (
     merge_active_set,
@@ -30,40 +31,47 @@ from deepresearcher.agents.supervisor.tools import build_supervisor_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
+    WORKBENCH_INTENT_ADAPTER,
     DirectionStopReason,
     PendingDirection,
     ResearchAgentResult,
     ResearchAspect,
     ResearchDirectionResult,
     ResearchSynthesis,
-    ReviseResearchSynthesis,
     StopReason,
+    SynthesisFraming,
+    UpdateWorkbench,
+    WaitDirection,
+    WorkbenchUpdateFraming,
 )
 from fakes import evidence, make_evidence
 
 
-def test_synthesis_arguments_leave_selected_evidence_union_to_handler():
-    arguments = ReviseResearchSynthesis.model_validate(
+def test_workbench_arguments_leave_selected_derivation_to_program():
+    batch = UpdateWorkbench.model_validate(
         {
-            "expected_revision": 0,
-            "expected_working_set_revision": 1,
-            "answer_goal": "回答问题",
-            "overall_summary": "已有一项事实。",
-            "aspects": [
+            "changes": [
                 {
-                    "aspect_id": "core",
-                    "topic": "核心",
-                    "role": "主线",
-                    "status": "covered",
-                    "summary": "已有依据",
-                    "evidence_ids": ["e1"],
-                }
-            ],
-            "decision_rationale": "足以部分交付",
+                    "op": "upsert_aspect",
+                    "aspect": {
+                        "aspect_id": "core",
+                        "topic": "核心",
+                        "role": "主线",
+                        "status": "covered",
+                        "summary": "已有依据",
+                        "evidence_ids": ["e1"],
+                    },
+                },
+                {"op": "framing", "framing": {"thesis": "已有一项事实。"}},
+            ]
         }
     )
-
-    assert "selected_evidence_ids" not in arguments.model_dump()
+    assert "selected_evidence_ids" not in str(batch.model_dump())
+    intent = WORKBENCH_INTENT_ADAPTER.validate_python(batch.changes[1])
+    assert isinstance(intent, WorkbenchUpdateFraming)
+    assert intent.framing.answer_goal is None  # 省略字段=不动,由候选合成沿用现稿
+    with pytest.raises(ValidationError):  # 拼错的 framing 字段名当场拒绝,不静默丢弃
+        SynthesisFraming.model_validate({"unknown_field": 1})
 
 
 def test_synthesis_derives_stable_evidence_union_from_aspects() -> None:
@@ -72,7 +80,7 @@ def test_synthesis_derives_stable_evidence_union_from_aspects() -> None:
             "revision": 1,
             "based_on_working_set_revision": 2,
             "answer_goal": "回答问题",
-            "overall_summary": "综合结论",
+            "thesis": "综合结论",
             "aspects": [
                 {
                     "aspect_id": "a",
@@ -102,7 +110,7 @@ def test_synthesis_rejects_duplicate_aspect_ids() -> None:
         "revision": 1,
         "based_on_working_set_revision": 1,
         "answer_goal": "回答问题",
-        "overall_summary": "综合结论",
+        "thesis": "综合结论",
         "aspects": [
             {
                 "aspect_id": "same",
@@ -148,7 +156,7 @@ def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
             "revision": 1,
             "based_on_working_set_revision": 1,
             "answer_goal": "回答问题",
-            "overall_summary": "综合结论",
+            "thesis": "综合结论",
             "aspects": [
                 {
                     "aspect_id": "core",
@@ -173,7 +181,7 @@ def test_supervisor_views_preserve_metadata_without_exposing_quote() -> None:
 
 def test_working_set_snapshot_resolves_direction_titles_both_forms() -> None:
     """方向短题从 task_results 回查（BaseModel 与检查点 dict 双形态）；无短题回退长契约截断。"""
-    from deepresearcher.agents.supervisor.state import working_set_snapshot
+    from deepresearcher.agents.supervisor.state import workbench_view as working_set_snapshot
 
     titled = evidence("titled", task_id="task-0001")
     titled.research_direction = "梳理软件服务一般特征的权威定义与出处边界并逐条标注出处要求"
@@ -191,6 +199,11 @@ def test_working_set_snapshot_resolves_direction_titles_both_forms() -> None:
             self.active_evidence_limit = 6
             self.working_set_revision = 1
             self.pending_directions: dict = {}
+            self.plan: list = []
+            self.provider_exhausted = False
+            self.research_synthesis = None
+            self.max_research_rounds = 1
+            self.current_round = 1
             self.task_results = [
                 ResearchDirectionResult(
                     task_id="task-0001",
@@ -223,7 +236,7 @@ class SupervisorLLM:
     """工具调用协议的 Supervisor fake:按消息历史无状态决策,并发安全。
 
     回合节奏与生产契约一致:派发 → WaitDirection 收到达(收据含 "directions")→
-    Revise → Complete;派发回执本身不含证据,不触发修订分支。
+    UpdateWorkbench 建稿 → Complete;派发回执本身不含证据,不触发修订分支。
 
     bind_tools 返回的模型直接返回带 tool_calls 的 AIMessage。
     """
@@ -243,24 +256,21 @@ class SupervisorLLM:
                 message
                 for message in reversed(messages)
                 if isinstance(message, ToolMessage)
-                and message.name == "ReviseResearchSynthesis"
-                and '"status": "accepted"' in str(message.content)
+                and message.name == "UpdateWorkbench"
+                and '"status": "applied"' in str(message.content)
+                and '"synthesis_revision": 0' not in str(message.content)
             ),
             None,
         )
         if self.ready and revised is not None:
             return AIMessage(content="已建立可部分交付的综合稿，但尚未达到完整标准。")
         if self.complete_args is not None and revised is not None:
-            payload = json.loads(str(revised.content).split("\n", 1)[-1])
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "ResearchComplete",
-                        "args": {
-                            "synthesis_revision": payload["synthesis_revision"],
-                            "reason": self.complete_args["reason"],
-                        },
+                        "args": {"reason": self.complete_args["reason"]},
                         "id": "call_complete",
                     }
                 ],
@@ -279,43 +289,43 @@ class SupervisorLLM:
                 tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
             )
         if (self.complete_args is not None or self.ready) and (
-            '"directions":' in history or not self.delegate_topics
+            has_wait_receipt or not self.delegate_topics
         ):
             evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
             if evidence_ids:
-                revisions = [
-                    int(item) for item in re.findall(r'"working_set_revision":\s*(\d+)', history)
-                ]
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
-                            "name": "ReviseResearchSynthesis",
+                            "name": "UpdateWorkbench",
                             "args": {
-                                "expected_revision": 0,
-                                "expected_working_set_revision": max(revisions, default=0),
-                                "answer_goal": "回答测试问题",
-                                "overall_summary": "已有 Evidence 支撑核心结论。",
-                                "aspects": [
+                                "changes": [
                                     {
-                                        "aspect_id": "core",
-                                        "topic": "核心结论",
-                                        "role": "主线",
-                                        "required": True,
-                                        "status": "covered",
-                                        "summary": "直接回答问题",
-                                        "evidence_ids": evidence_ids,
-                                        "remaining_gap": "",
-                                    }
-                                ],
-                                "open_gaps": [],
-                                "conflicts": [],
-                                "next_actions": [],
-                                "decision_rationale": (
-                                    "已建立最小证据链。"
-                                    if self.ready
-                                    else self.complete_args["reason"]
-                                ),
+                                        "op": "framing",
+                                        "framing": {
+                                            "answer_goal": "回答测试问题",
+                                            "thesis": "已有 Evidence 支撑核心结论。",
+                                            "decision_rationale": (
+                                                "已建立最小证据链。"
+                                                if self.ready
+                                                else self.complete_args["reason"]
+                                            ),
+                                        },
+                                    },
+                                    {
+                                        "op": "upsert_aspect",
+                                        "aspect": {
+                                            "aspect_id": "core",
+                                            "topic": "核心结论",
+                                            "role": "主线",
+                                            "required": True,
+                                            "status": "covered",
+                                            "summary": "直接回答问题",
+                                            "evidence_ids": evidence_ids,
+                                            "remaining_gap": "",
+                                        },
+                                    },
+                                ]
                             },
                             "id": "call_revise",
                         }
@@ -326,7 +336,7 @@ class SupervisorLLM:
                 tool_calls=[
                     {
                         "name": "ResearchComplete",
-                        "args": self.complete_args,
+                        "args": {"reason": "fake 收尾理由。"},
                         "id": "call_complete",
                     },
                 ],
@@ -366,10 +376,7 @@ class FixedResearchAgent:
         )
 
 
-_COMPLETE_ARGS = {
-    "reason": "两个方向均有直接来源。",
-    "synthesis_revision": 1,
-}
+_COMPLETE_ARGS = {"reason": "两个方向均有直接来源。"}
 
 
 def test_supervisor_dispatches_independent_research_agents_concurrently():
@@ -398,7 +405,11 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
     assert any("研究委托" in message for message in context)
     # 派发批回执只表受理;方向报告经 WaitDirection 收据送达,含结论与该方向带回的 Evidence claim。
     assert len([message for message in context if '"status": "dispatched"' in message]) == 2
-    arrivals = [message for message in context if '"directions":' in message]
+    arrivals = [
+        message
+        for message in context
+        if '"status": "completed"' in message and '"directions":' in message
+    ]
     assert len(arrivals) == 1
     assert "task-0001" in arrivals[0] and "task-0002" in arrivals[0]
     assert all("直接事实" in message for message in arrivals)
@@ -561,7 +572,7 @@ def test_supervisor_rejects_completion_without_evidence():
 
 
 def test_supervisor_stale_complete_rejection_recovers_inside_loop():
-    """被拒的 ResearchComplete 留在环内恢复:带 revision 的回执后,模型改对综合稿再提即成立。"""
+    """被拒的 ResearchComplete 留在环内恢复:草稿未反映新桌面被拒,UpdateWorkbench 改对后再提即成立。"""
 
     class RejectThenRecoverLLM:
         def bind_tools(self, _tools, tool_choice="any"):
@@ -587,69 +598,67 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                     tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
                 )
             if '"status": "rejected"' not in history:
-                # 工作集已由 wait 吸收推进到 revision=1，故意引用过期的综合稿。
+                # wait 已把工作集推进到 revision=1,现稿仍基于 0——故意裸提冻结。
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
                             "name": "ResearchComplete",
-                            "args": {"synthesis_revision": 1, "reason": "错误使用旧版本"},
+                            "args": {"reason": "错误地直接冻结过期草稿"},
                             "id": "call_complete_stale",
                         }
                     ],
                 )
-            accepted_revise = next(
+            revised = next(
                 (
                     message
                     for message in reversed(messages)
                     if isinstance(message, ToolMessage)
-                    and message.name == "ReviseResearchSynthesis"
-                    and '"status": "accepted"' in str(message.content)
+                    and message.name == "UpdateWorkbench"
+                    and '"status": "applied"' in str(message.content)
                 ),
                 None,
             )
-            if accepted_revise is None:
+            if revised is None:
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
-                            "name": "ReviseResearchSynthesis",
+                            "name": "UpdateWorkbench",
                             "args": {
-                                "expected_revision": 1,
-                                "expected_working_set_revision": 1,
-                                "answer_goal": "回答研究问题",
-                                "overall_summary": "新增方向已覆盖核心结论。",
-                                "aspects": [
+                                "changes": [
                                     {
-                                        "aspect_id": "core",
-                                        "topic": "核心结论",
-                                        "role": "主线",
-                                        "required": True,
-                                        "status": "covered",
-                                        "summary": "直接回答问题",
-                                        "evidence_ids": evidence_ids[:1],
-                                        "remaining_gap": "",
-                                    }
-                                ],
-                                "open_gaps": [],
-                                "conflicts": [],
-                                "next_actions": [],
-                                "decision_rationale": "按拒绝回执对齐最新工作集后重提。",
+                                        "op": "framing",
+                                        "framing": {
+                                            "thesis": "新增方向已覆盖核心结论。",
+                                            "open_gaps": [],
+                                        },
+                                    },
+                                    {
+                                        "op": "upsert_aspect",
+                                        "aspect": {
+                                            "aspect_id": "core",
+                                            "topic": "核心结论",
+                                            "role": "主线",
+                                            "required": True,
+                                            "status": "covered",
+                                            "summary": "直接回答问题",
+                                            "evidence_ids": evidence_ids[:1],
+                                            "remaining_gap": "",
+                                        },
+                                    },
+                                ]
                             },
                             "id": "call_revise_fix",
                         }
                     ],
                 )
-            payload = json.loads(str(accepted_revise.content).split("\n", 1)[-1])
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "ResearchComplete",
-                        "args": {
-                            "synthesis_revision": payload["synthesis_revision"],
-                            "reason": "修正后完成研究。",
-                        },
+                        "args": {"reason": "修正后完成研究。"},
                         "id": "call_complete_fixed",
                     }
                 ],
@@ -671,7 +680,7 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                     "revision": 1,
                     "based_on_working_set_revision": 0,
                     "answer_goal": "回答研究问题",
-                    "overall_summary": "尚无新增方向结果。",
+                    "thesis": "尚无新增方向结果。",
                     "aspects": [
                         {
                             "aspect_id": "core",
@@ -707,23 +716,28 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
     assert result["writer_directive"].report_brief is not None
 
 
-def _revise_tool_messages(result: dict) -> list[ToolMessage]:
+def _workbench_tool_messages(result: dict) -> list[ToolMessage]:
     return [
         message
         for message in result["supervisor_messages"]
-        if isinstance(message, ToolMessage) and message.name == "ReviseResearchSynthesis"
+        if isinstance(message, ToolMessage) and message.name == "UpdateWorkbench"
     ]
 
 
-def test_revise_synthesis_rejects_stale_working_set_revision():
-    """模型基于过期观察提交综合稿：工具返回 stale，不落盘、不覆盖现有综合稿。"""
+def test_freeze_without_draft_loops_to_model_call_ceiling():
+    """无草稿冻结被拒且留环恢复;模型反复不成时,终态归属真实终止者=模型调用天花板。
 
-    class StaleReviseLLM:
+    键级协议下"过期版本"场景消失(时间戳程序盖章),留存的等价守卫是:
+    协议拒绝不得写进 coverage_gaps,循环靠天花板收敛。
+    """
+
+    class NoDraftFreezeLLM:
         def bind_tools(self, _tools, tool_choice="any"):
             return self
 
         async def ainvoke(self, messages):
             history = "\n".join(str(message.content) for message in messages)
+            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
             if "research_direction" not in history:
                 return AIMessage(
                     content="",
@@ -735,56 +749,24 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
                         }
                     ],
                 )
-            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
             if not evidence_ids:
                 return AIMessage(
                     content="",
                     tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
-                )
-            if '"status": "stale"' not in history:
-                # wait 的 absorb 已把工作集推进到 1；故意仍提交派发前看到的 0。
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "ReviseResearchSynthesis",
-                            "args": {
-                                "expected_revision": 0,
-                                "expected_working_set_revision": 0,
-                                "answer_goal": "回答测试问题",
-                                "overall_summary": "基于过期观察的综合稿。",
-                                "aspects": [
-                                    {
-                                        "aspect_id": "core",
-                                        "topic": "核心结论",
-                                        "role": "主线",
-                                        "required": True,
-                                        "status": "uncovered",
-                                        "remaining_gap": "尚未整合。",
-                                    }
-                                ],
-                                "open_gaps": [],
-                                "conflicts": [],
-                                "next_actions": [],
-                                "decision_rationale": "故意使用过期工作集版本。",
-                            },
-                            "id": "call_revise",
-                        }
-                    ],
                 )
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "ResearchComplete",
-                        "args": {"synthesis_revision": 1, "reason": "坚持冻结未落盘的综合稿"},
+                        "args": {"reason": "坚持在无综合稿时冻结"},
                         "id": "call_complete",
                     }
                 ],
             )
 
     supervisor = ResearchSupervisor(
-        StaleReviseLLM(),
+        NoDraftFreezeLLM(),
         AgentConfig(max_research_rounds=1),
         research_agent=FixedResearchAgent(),
     )
@@ -798,19 +780,22 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
         )
     )
 
-    revised = _revise_tool_messages(result)
-    assert len(revised) == 1
-    assert '"status": "stale"' in str(revised[0].content)
+    complete_receipts = [
+        message
+        for message in result["supervisor_messages"]
+        if isinstance(message, ToolMessage) and message.name == "ResearchComplete"
+    ]
+    assert len(complete_receipts) >= 2  # 反复坚持,每次都被拒
+    assert all('"status": "rejected"' in str(message.content) for message in complete_receipts)
     assert result["research_synthesis"] is None
     assert result["working_set_revision"] == 1
-    # 拒绝回执留环恢复;模型反复不成时,终态归属真实终止者,即模型调用天花板。
     assert "模型调用预算已耗尽" in result["writer"].feedback
     # 协议拒绝不得作为研究缺口写进用户报告的 coverage_gaps 清单。
     assert not any("ResearchComplete" in gap for gap in result["supervisor"].coverage_gaps)
 
 
-def test_revise_synthesis_rejects_evidence_outside_active_working_set():
-    """Evidence 仍在档案但已被释放：引用它被工具层拒绝，活跃性检查不与模型内部校验混层。"""
+def test_workbench_rejects_evidence_outside_active_working_set():
+    """Evidence 在档案但已释放:引用它的批整单点名拒绝——跨键不变式在候选终态上判。"""
 
     class ReleasedReferenceLLM:
         def bind_tools(self, _tools, tool_choice="any"):
@@ -838,64 +823,53 @@ def test_revise_synthesis_rejects_evidence_outside_active_working_set():
                     content="",
                     tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
                 )
-            if '"released_evidence_ids"' not in history:
+            if '"slot_removals"' not in history:
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
-                            "name": "ReleaseEvidence",
-                            "args": {
-                                "evidence_ids": evidence_ids[:1],
-                                "reason": "释放以测试引用边界",
-                            },
+                            "name": "UpdateWorkbench",
+                            "args": {"changes": [{"op": "evidence", "remove": evidence_ids[:1]}]},
                             "id": "call_release",
                         }
                     ],
                 )
             if '"invalid_evidence_ids"' not in history:
-                revisions = [
-                    int(item) for item in re.findall(r'"working_set_revision":\s*(\d+)', history)
-                ]
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
-                            "name": "ReviseResearchSynthesis",
+                            "name": "UpdateWorkbench",
                             "args": {
-                                "expected_revision": 0,
-                                "expected_working_set_revision": max(revisions, default=0),
-                                "answer_goal": "回答测试问题",
-                                "overall_summary": "引用已释放 Evidence 的综合稿。",
-                                "aspects": [
+                                "changes": [
                                     {
-                                        "aspect_id": "core",
-                                        "topic": "核心结论",
-                                        "role": "主线",
-                                        "required": True,
-                                        "status": "covered",
-                                        "summary": "仅有已释放的依据。",
-                                        "evidence_ids": evidence_ids[:1],
-                                    }
-                                ],
-                                "open_gaps": [],
-                                "conflicts": [],
-                                "next_actions": [],
-                                "decision_rationale": "故意引用非活跃 Evidence。",
+                                        "op": "framing",
+                                        "framing": {
+                                            "answer_goal": "回答测试问题",
+                                            "thesis": "引用已释放 Evidence 的综合稿。",
+                                            "decision_rationale": "故意引用非活跃 Evidence。",
+                                        },
+                                    },
+                                    {
+                                        "op": "upsert_aspect",
+                                        "aspect": {
+                                            "aspect_id": "core",
+                                            "topic": "核心结论",
+                                            "role": "主线",
+                                            "required": True,
+                                            "status": "covered",
+                                            "summary": "仅有已释放的依据。",
+                                            "evidence_ids": evidence_ids[:1],
+                                            "remaining_gap": "",
+                                        },
+                                    },
+                                ]
                             },
                             "id": "call_revise",
                         }
                     ],
                 )
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "ResearchComplete",
-                        "args": {"synthesis_revision": 1, "reason": "坚持终止研究"},
-                        "id": "call_complete",
-                    }
-                ],
-            )
+            return AIMessage(content="桌面已空且无法成稿,结束本轮。")
 
     supervisor = ResearchSupervisor(
         ReleasedReferenceLLM(),
@@ -912,13 +886,14 @@ def test_revise_synthesis_rejects_evidence_outside_active_working_set():
         )
     )
 
-    revised = _revise_tool_messages(result)
-    assert len(revised) == 1
-    content = str(revised[0].content)
-    assert '"status": "rejected"' in content
-    assert "研究综合稿只能引用当前活跃" in content
+    batches = _workbench_tool_messages(result)
+    assert len(batches) == 2  # 一单释放 applied、一单越权整单拒
+    rejected = str(batches[1].content)
+    assert '"status": "rejected"' in rejected
+    assert '"invalid_evidence_ids"' in rejected
+    assert "终态活跃证据" in rejected
     assert result["research_synthesis"] is None
-    # 活跃集已空且没有落盘综合稿：不能进入写作。
+    # 活跃集已空且没有落盘综合稿:不能进入写作。
     assert result["supervisor_next"] == "render_final_report"
 
 
@@ -994,7 +969,7 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
             "revision": 1,
             "based_on_working_set_revision": 1,
             "answer_goal": "回答研究问题",
-            "overall_summary": "已有一项可交付结论。",
+            "thesis": "已有一项可交付结论。",
             "aspects": [
                 {
                     "aspect_id": "core",
@@ -1125,7 +1100,7 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
                     "revision": 1,
                     "based_on_working_set_revision": 1,
                     "answer_goal": "回答研究问题",
-                    "overall_summary": "已有事实可以支撑改写。",
+                    "thesis": "已有事实可以支撑改写。",
                     "aspects": [
                         {
                             "aspect_id": "core",
@@ -1235,22 +1210,18 @@ class _DelegateUntilBlockedLLM:
                 message
                 for message in reversed(messages)
                 if isinstance(message, ToolMessage)
-                and message.name == "ReviseResearchSynthesis"
-                and '"status": "accepted"' in str(message.content)
+                and message.name == "UpdateWorkbench"
+                and '"status": "applied"' in str(message.content)
             ),
             None,
         )
         if revised is not None:
-            payload = json.loads(str(revised.content).split("\n", 1)[-1])
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "ResearchComplete",
-                        "args": {
-                            "synthesis_revision": payload["synthesis_revision"],
-                            "reason": "轮次耗尽，现有综合稿足以成文。",
-                        },
+                        "args": {"reason": "轮次耗尽，现有综合稿足以成文。"},
                         "id": "call_done",
                     }
                 ],
@@ -1258,34 +1229,35 @@ class _DelegateUntilBlockedLLM:
         if "limit exceeded" in tool_output or "round_budget_exhausted" in tool_output:
             history = "\n".join(str(message.content) for message in messages)
             evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
-            revisions = [
-                int(item) for item in re.findall(r'"working_set_revision":\s*(\d+)', history)
-            ]
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "ReviseResearchSynthesis",
+                        "name": "UpdateWorkbench",
                         "args": {
-                            "expected_revision": 0,
-                            "expected_working_set_revision": max(revisions, default=0),
-                            "answer_goal": "回答测试问题",
-                            "overall_summary": "现有事实足以回答问题。",
-                            "aspects": [
+                            "changes": [
                                 {
-                                    "aspect_id": "core",
-                                    "topic": "核心结论",
-                                    "role": "主线",
-                                    "required": True,
-                                    "status": "covered",
-                                    "summary": "已有直接事实",
-                                    "evidence_ids": evidence_ids,
-                                }
-                            ],
-                            "open_gaps": [],
-                            "conflicts": [],
-                            "next_actions": [],
-                            "decision_rationale": "轮次耗尽且现有材料足以成文。",
+                                    "op": "framing",
+                                    "framing": {
+                                        "answer_goal": "回答测试问题",
+                                        "thesis": "现有事实足以回答问题。",
+                                        "decision_rationale": "轮次耗尽且现有材料足以成文。",
+                                    },
+                                },
+                                {
+                                    "op": "upsert_aspect",
+                                    "aspect": {
+                                        "aspect_id": "core",
+                                        "topic": "核心结论",
+                                        "role": "主线",
+                                        "required": True,
+                                        "status": "covered",
+                                        "summary": "已有直接事实",
+                                        "evidence_ids": evidence_ids,
+                                        "remaining_gap": "",
+                                    },
+                                },
+                            ]
                         },
                         "id": "call_revise",
                     }
@@ -1367,7 +1339,7 @@ def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
             return AIMessage(
                 content="",
                 tool_calls=[
-                    {"name": "ReadWorkingSet", "args": {"reason": "查看"}, "id": "call_read"}
+                    {"name": "ReadWorkbench", "args": {"reason": "查看"}, "id": "call_read"}
                 ],
             )
 
@@ -1717,6 +1689,61 @@ def test_wait_direction_blocks_then_returns_reports():
     asyncio.run(scenario())
 
 
+def test_wait_direction_returns_immediately_when_arrivals_pending():
+    """实场 run-3234 回归:已有到货、另有方向仍在途时,wait 按契约立即返回波次,
+    不得把已到的挂起等最后一路——那正是到达制要消灭的批次屏障。"""
+
+    async def scenario():
+        agent = _GatedResearchAgent()
+        supervisor, context = _delegate_context_for(agent)
+        deps = _capturing_deps(supervisor, [])
+        arrived_execution = TaskExecution(
+            task_result=ResearchDirectionResult(
+                task_id="task-0001",
+                round=1,
+                task_index=1,
+                question="已到方向",
+                research_direction="已到方向",
+                execution_status="completed",
+                coverage_status="sufficient",
+                evidence_count=1,
+                source_count=1,
+                stop_reason="complete",
+            ),
+            evidences=[],
+            selected_evidence_ids=[],
+            source_refs=[],
+        )
+        arrived_task: asyncio.Future = asyncio.get_running_loop().create_future()
+        arrived_task.set_result(arrived_execution)
+        context.loop_state.pending_directions = {
+            "task-0001": _pending_entry("task-0001", "已到", "已到")
+        }
+        context.direction_tasks["task-0001"] = arrived_task
+
+        slow_entry = _pending_entry("task-0002", "仍在途", "在途")
+        context.loop_state.pending_directions["task-0002"] = slow_entry
+        slow_task = asyncio.ensure_future(
+            services._execute_research_task(deps, slow_entry["subtask"])  # type: ignore[arg-type]
+        )
+        context.direction_tasks["task-0002"] = slow_task
+        await asyncio.sleep(0.05)  # slow 已进 gate 等待:在途而非欠账,不得被清算判 lost
+
+        try:
+            reports, _delta = await asyncio.wait_for(
+                services.wait_for_directions(deps, context.loop_state, context.direction_tasks),
+                timeout=1,
+            )
+        finally:
+            agent.gate.set()  # 放行避免悬挂任务
+            await asyncio.wait([slow_task])
+        assert [item["task_id"] for item in reports] == ["task-0001"]
+        assert "task-0001" not in context.direction_tasks
+        assert "task-0002" in context.direction_tasks  # 在途的继续挂后台,不被裹挟
+
+    asyncio.run(scenario())
+
+
 def test_wait_direction_without_inflight_returns_hint():
     async def scenario():
         supervisor, context = _delegate_context_for(FixedResearchAgent())
@@ -1727,6 +1754,27 @@ def test_wait_direction_without_inflight_returns_hint():
         assert delta == {}
 
     asyncio.run(scenario())
+
+
+def test_wait_direction_receipts_distinguish_unpinned_from_empty_table():
+    """实场 run-88c4/185e 回归:钉不中与无在途必须是两种回执,不能谎报 no_inflight。"""
+    with_pinned_mismatch = services.compose_wait_receipt([], {"task-0001"}, 3)
+    assert with_pinned_mismatch["status"] == "unknown_task_ids"
+    assert with_pinned_mismatch["inflight"] == ["task-0001"]
+    assert "task_ids" in str(with_pinned_mismatch["instruction"])
+
+    empty_table = services.compose_wait_receipt([], set(), 3)
+    assert empty_table["status"] == "no_inflight"
+
+    landed = services.compose_wait_receipt([{"task_id": "task-0001"}], {"task-0002"}, 4)
+    assert landed["status"] == "completed"
+    assert "instruction" not in landed
+
+
+def test_wait_direction_args_strip_injected_control_characters():
+    """模型流式长 id 时夹入 \\r(实场 task\\r-0001 全部钉空),入参净化后才进匹配。"""
+    parsed = WaitDirection.model_validate({"task_ids": ["task\r-0001", "task-0002 ", ""]})
+    assert parsed.task_ids == ["task-0001", "task-0002"]
 
 
 def test_wait_direction_settles_lost_entries_before_waiting():
@@ -1792,6 +1840,124 @@ class _ExitAttemptThenWaitModel:
         return AIMessage(content="我以为可以直接结束。")
 
 
+class _PlanAndDispatchSameReplyModel:
+    """首回合混批:UpdateWorkbench 记计划与 ResearchDelegate 派发同单发出,两者都执行。"""
+
+    def bind_tools(self, _tools, tool_choice="any"):
+        return self
+
+    async def ainvoke(self, messages):
+        saw_delegate = any(
+            isinstance(message, ToolMessage) and message.name == "ResearchDelegate"
+            for message in messages
+        )
+        saw_workbench = any(
+            isinstance(message, ToolMessage) and message.name == "UpdateWorkbench"
+            for message in messages
+        )
+        saw_wait = any(
+            isinstance(message, ToolMessage) and message.name == "WaitDirection"
+            for message in messages
+        )
+        if saw_delegate and saw_workbench and not saw_wait:
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "WaitDirection", "args": {}, "id": "w1"}],
+            )
+        if saw_wait:
+            return AIMessage(content="结束。")
+        if not (saw_delegate and saw_workbench):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "UpdateWorkbench",
+                        "args": {
+                            "changes": [
+                                {
+                                    "op": "plan",
+                                    "items": [{"content": "收集复利定义", "status": "in_progress"}],
+                                }
+                            ]
+                        },
+                        "id": "u1",
+                    },
+                    {
+                        "name": "ResearchDelegate",
+                        "args": {"display_title": "定义方向", "research_topic": "复利的定义"},
+                        "id": "d1",
+                    },
+                ],
+            )
+        return AIMessage(content="结束。")
+
+
+def test_workbench_and_delegate_may_share_a_reply():
+    """实跑 run-bb3b 回归:混批不再被串行整批驳回,"先写计划再派活"是一等公民。"""
+    supervisor = ResearchSupervisor(
+        _PlanAndDispatchSameReplyModel(),
+        AgentConfig(max_research_rounds=1, max_subtasks_per_round=1),
+        research_agent=FixedResearchAgent(),
+    )
+    result = asyncio.run(supervisor.run({"query": "q", "clarified_query": "q", "evidences": []}))
+
+    receipts = [
+        message
+        for message in result["supervisor_messages"]
+        if isinstance(message, ToolMessage)
+        and message.name in {"UpdateWorkbench", "ResearchDelegate"}
+    ]
+    assert len(receipts) == 2  # 两个工具都执行了,而非一条 mixed-batch 驳回
+    assert [item.task_id for item in result["task_results"]] == ["task-0001"]
+
+
+class _NarrateWithoutDispatchModel:
+    """只说"接下来派发"不发调用 → 空手文本退场被拦回,第二次才真派发(实跑 run-bb3b 回归)。"""
+
+    def bind_tools(self, _tools, tool_choice="any"):
+        return self
+
+    async def ainvoke(self, messages):
+        history = "\n".join(str(message.content) for message in messages)
+        if "现在还不是收尾时" not in history:
+            return AIMessage(content="接下来我将派发一个方向补足缺口。")
+        saw_delegate_receipt = any(
+            isinstance(message, ToolMessage) and message.name == "ResearchDelegate"
+            for message in messages
+        )
+        if not saw_delegate_receipt:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ResearchDelegate",
+                        "args": {"display_title": "被提醒后", "research_topic": "真实派发"},
+                        "id": "d1",
+                    }
+                ],
+            )
+        return AIMessage(content="派发过方向,带着结果收尾。")
+
+
+def test_bare_exit_without_draft_or_dispatch_is_nudged(tmp_path):
+    """无在途但草稿与派发两手空空时,纯文本不算收尾:nudge 后模型补发派发动作。"""
+    from deepresearcher.observability.events import JsonlSink
+    from fakes import event_types
+
+    sink = JsonlSink(tmp_path / "events.jsonl")
+    supervisor = ResearchSupervisor(
+        _NarrateWithoutDispatchModel(),
+        AgentConfig(max_research_rounds=1),
+        research_agent=FixedResearchAgent(),
+        event_sink=sink,
+    )
+    result = asyncio.run(supervisor.run({"query": "q", "clarified_query": "q", "evidences": []}))
+
+    assert "supervisor_tool_loop_nudged" in event_types(tmp_path / "events.jsonl")
+    assert [item.task_id for item in result["task_results"]] == ["task-0001"]
+    assert "派发过方向" in str(result["supervisor_messages"][-1].content)
+
+
 def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
     """有欠账的文本结束被 submission_guard 拦回(不新建中间件,复用收尾提醒);
     模型改用 WaitDirection 后正常收尾,结果经 wait_tool 吸收而非 drain 兜底。"""
@@ -1819,6 +1985,409 @@ def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
     assert any("端到端延迟" in message and "evidence" in message for message in context)
 
 
+def _apply_fixture() -> SupervisorLoopState:
+    loop_state = SupervisorLoopState(
+        {
+            "query": "q",
+            "evidences": [make_evidence("e1", "事实一"), make_evidence("e2", "事实二")],
+            "active_evidence_ids": ["e1"],
+        },
+        current_round=1,
+        active_evidence_limit=6,
+    )
+    return loop_state
+
+
+def test_workbench_repairs_double_encoded_changes_payload():
+    """模型把 changes 整体或单条操作二次编码成 JSON 字符串时(实场 run-88c4 实证),
+    在 schema 层还原后照常走拒绝/施加管线,不得升级为工具调用框架层报错。"""
+    framing_op = {"op": "framing", "framing": {"thesis": "现状。"}}
+    whole_array = UpdateWorkbench.model_validate(
+        {"changes": json.dumps([framing_op, {"op": "acknowledge"}], ensure_ascii=False)}
+    )
+    assert all(isinstance(item, dict) for item in whole_array.changes)
+    per_element = UpdateWorkbench.model_validate(
+        {"changes": [json.dumps(framing_op, ensure_ascii=False), {"op": "acknowledge"}]}
+    )
+    assert isinstance(per_element.changes[0], dict)
+
+    loop_state = _apply_fixture()
+    broken = services.apply_workbench_changes(loop_state, ["not-json"])
+    assert broken["status"] == "rejected"  # 无法还原的残串仍进拒绝回执,不触框架层
+    assert "op" in str(broken["rejections"][0]["reason"])
+
+
+def test_workbench_rejects_unknown_op_duplicates_and_malformed_aspect():
+    loop_state = _apply_fixture()
+
+    unknown = services.apply_workbench_changes(
+        loop_state, [{"op": "reserve_evidence", "value": []}]
+    )
+    assert unknown["status"] == "rejected"
+    assert "framing" in str(unknown["rejections"][0]["reason"])  # 可写清单随行告知
+
+    framing_op = {
+        "op": "framing",
+        "framing": {
+            "answer_goal": "目标",
+            "thesis": "现状。",
+            "decision_rationale": "理由。",
+        },
+    }
+    duplicated = services.apply_workbench_changes(loop_state, [framing_op, framing_op])
+    assert duplicated["status"] == "rejected"
+    assert duplicated["rejections"][0]["key"] == "framing"
+
+    # aspect 身份只来自 value:键值双写不再可表达,形状错误由 pydantic 逐字段点名。
+    malformed = services.apply_workbench_changes(
+        loop_state, [{"op": "upsert_aspect", "aspect": {"aspect_id": "core"}}]
+    )
+    assert malformed["status"] == "rejected"
+    assert all(
+        issue["field"].startswith("upsert_aspect.aspect.")
+        for issue in malformed["rejections"][0]["issues"]
+    )
+    assert loop_state.research_synthesis is None  # 拒绝批不落盘
+
+
+def test_workbench_plan_roundtrip_and_aspect_lifecycle():
+    loop_state = _apply_fixture()
+    applied = services.apply_workbench_changes(
+        loop_state,
+        [
+            {
+                "op": "plan",
+                "items": [{"content": "核对来源", "status": "in_progress"}],
+            },
+            {
+                "op": "framing",
+                "framing": {
+                    "answer_goal": "目标",
+                    "thesis": "现状。",
+                    "decision_rationale": "理由。",
+                },
+            },
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "s",
+                    "evidence_ids": ["e1"],
+                    "remaining_gap": "",
+                },
+            },
+        ],
+    )
+    assert applied["status"] == "applied"
+    assert applied["synthesis_revision"] == 1
+    assert loop_state.plan == [{"content": "核对来源", "status": "in_progress"}]
+    assert loop_state.research_synthesis.selected_evidence_ids == ["e1"]
+
+    removed = services.apply_workbench_changes(
+        loop_state, [{"op": "remove_aspect", "aspect_id": "core"}]
+    )
+    # 草稿期合法:aspect 删空、framing 仍在,稿子存在但过不了竣工验收。
+    assert removed["status"] == "applied"
+    assert loop_state.research_synthesis is not None
+    assert loop_state.research_synthesis.aspects == []
+    rejected_freeze = services.freeze_synthesis(loop_state, "空块冻结")
+    assert rejected_freeze["status"] == "rejected"
+    assert "aspect" in rejected_freeze["rejection_cause"]
+
+    ghost = services.apply_workbench_changes(
+        loop_state, [{"op": "remove_aspect", "aspect_id": "ghost"}]
+    )
+    assert ghost["status"] == "rejected"
+    assert "known_aspect_ids" in str(ghost["rejections"][0])
+
+    # plan 通道随 initial/from 往返。
+    seeded = loop_state.initial_channel_state()
+    restored = SupervisorLoopState.from_channel_values(
+        {"plan": seeded["plan"]},
+        research_query="q",
+        current_round=1,
+        active_evidence_limit=6,
+    )
+    assert restored.plan == loop_state.plan
+
+
+def test_synthesis_draft_is_free_form_and_acceptance_deferred_to_freeze():
+    """草稿期怎么搭都行:单块 aspect 可建稿;三件齐备与至少一块 aspect 全在冻结验收,
+    缺谁点名谁;变更后全空则清回未开稿;旧检查点(overall_summary)照读不误。"""
+    loop_state = _apply_fixture()
+    seeded = services.apply_workbench_changes(
+        loop_state,
+        [
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "s",
+                    "evidence_ids": ["e1"],
+                    "remaining_gap": "",
+                },
+            }
+        ],
+    )
+    assert seeded["status"] == "applied"  # 无 framing 也能开稿
+    assert loop_state.research_synthesis.answer_goal == ""
+
+    rejected = services.freeze_synthesis(loop_state, "急着收尾")
+    assert rejected["status"] == "rejected"
+    cause = rejected["rejection_cause"]
+    assert "answer_goal" in cause and "thesis" in cause and "decision_rationale" in cause
+
+    completed = services.apply_workbench_changes(
+        loop_state,
+        [
+            {
+                "op": "framing",
+                "framing": {
+                    "answer_goal": "目标",
+                    "thesis": "这是全文要辩护的那一句。",
+                    "decision_rationale": "依据。",
+                },
+            }
+        ],
+    )
+    assert completed["status"] == "applied"
+    assert services.freeze_synthesis(loop_state, "验收通过")["status"] == "accepted"
+    brief = services.report_brief_from_synthesis(loop_state.completed_synthesis, max_caveats=6)
+    assert brief.thesis == "这是全文要辩护的那一句。"
+
+    cleared = services.apply_workbench_changes(
+        loop_state,
+        [
+            {"op": "remove_aspect", "aspect_id": "core"},
+            {"op": "framing", "framing": {"open_gaps": [], "conflicts": []}},
+        ],
+    )
+    assert cleared["status"] == "applied"  # 三件非空,稿子还在但再次过不了验收
+    assert services.freeze_synthesis(loop_state, "拆过头")["status"] == "rejected"
+
+    legacy = ResearchSynthesis.model_validate(
+        {
+            "revision": 3,
+            "based_on_working_set_revision": 2,
+            "answer_goal": "旧稿目标",
+            "overall_summary": "旧进度摘要被忽略",
+            "thesis": "旧稿没有总纲,验收时补。",
+            "aspects": [],
+            "open_gaps": [],
+            "conflicts": [],
+            "decision_rationale": "旧依据。",
+        }
+    )
+    assert legacy.thesis == "旧稿没有总纲,验收时补。"
+
+
+def test_framing_explicit_empty_string_counts_as_untouched():
+    """实场 run-3234 回归:模型显式提交 thesis:"" 曾按 min_length 拒绝,白烧一回合;
+    空串是不带内容的意图,视作省略,稿子不动、版本不 bump。"""
+    framing = SynthesisFraming.model_validate({"thesis": "", "answer_goal": "   "})
+    assert framing.thesis is None and framing.answer_goal is None
+
+    loop_state = _apply_fixture()
+    services.apply_workbench_changes(
+        loop_state, [{"op": "framing", "framing": {"answer_goal": "目标"}}]
+    )
+    revision_before = loop_state.research_synthesis.revision
+    noop = services.apply_workbench_changes(
+        loop_state, [{"op": "framing", "framing": {"thesis": ""}}]
+    )
+    assert noop["status"] == "applied"
+    assert loop_state.research_synthesis.revision == revision_before
+    assert loop_state.research_synthesis.thesis == ""
+
+
+def test_workbench_evidence_is_set_semantic_with_same_batch_slot_release():
+    """add/remove 是集合语义:id 不得同时出现在两侧(打回);
+    先释放后找回,同批腾出的槽位立即可用,回执与落盘只有一个事实源。"""
+    loop_state = SupervisorLoopState(
+        {
+            "query": "q",
+            "evidences": [make_evidence("e1", "事实一"), make_evidence("e2", "事实二")],
+            "active_evidence_ids": ["e1"],
+        },
+        current_round=1,
+        active_evidence_limit=1,
+    )
+
+    conflict = services.apply_workbench_changes(
+        loop_state, [{"op": "evidence", "add": ["e2"], "remove": ["e2"]}]
+    )
+    assert conflict["status"] == "rejected"
+    assert conflict["rejections"][0]["conflicting_evidence_ids"] == ["e2"]
+
+    swap = services.apply_workbench_changes(
+        loop_state, [{"op": "evidence", "add": ["e2"], "remove": ["e1"]}]
+    )
+    assert swap["status"] == "applied"
+    assert swap["slot_additions"] == ["e2"]
+    assert swap["slot_removals"] == ["e1"]
+    assert set(loop_state.active_evidence_ids) == {"e2"}
+    assert "skipped_restore_evidence_ids" not in swap
+
+
+def test_workbench_batch_resolves_cross_op_dependencies_by_final_state():
+    """同批操作间依赖按终态判定:remove 先于 upsert 折叠,结果与模型提交顺序无关;
+    evidence 找回与绑定它的 aspect 同批提交即合法。"""
+    loop_state = _apply_fixture()  # e1 活跃、e2 在档案
+    built = services.apply_workbench_changes(
+        loop_state,
+        [
+            {
+                "op": "framing",
+                "framing": {
+                    "answer_goal": "目标",
+                    "thesis": "现状。",
+                    "decision_rationale": "理由。",
+                },
+            },
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "s",
+                    "evidence_ids": ["e1"],
+                    "remaining_gap": "",
+                },
+            },
+        ],
+    )
+    assert built["status"] == "applied"
+
+    restored_and_bound = services.apply_workbench_changes(
+        loop_state,
+        [
+            {"op": "evidence", "add": ["e2"]},
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "补回 e2 后同批绑定",
+                    "evidence_ids": ["e1", "e2"],
+                    "remaining_gap": "",
+                },
+            },
+        ],
+    )
+    assert restored_and_bound["status"] == "applied"
+    assert "e2" in loop_state.active_evidence_ids
+    assert loop_state.research_synthesis.selected_evidence_ids == ["e1", "e2"]
+
+    churn = services.apply_workbench_changes(
+        loop_state,
+        [
+            {"op": "remove_aspect", "aspect_id": "core"},
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "删后重挂",
+                    "evidence_ids": ["e1"],
+                    "remaining_gap": "",
+                },
+            },
+        ],
+    )
+    assert churn["status"] == "applied"
+    aspects = loop_state.research_synthesis.aspects
+    assert [aspect.aspect_id for aspect in aspects] == ["core"]
+    assert aspects[0].summary == "删后重挂"
+
+
+def test_workbench_acknowledge_restamps_without_editing_draft():
+    loop_state = _apply_fixture()
+    built = services.apply_workbench_changes(
+        loop_state,
+        [
+            {
+                "op": "framing",
+                "framing": {
+                    "answer_goal": "目标",
+                    "thesis": "现状。",
+                    "decision_rationale": "理由。",
+                },
+            },
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "covered",
+                    "summary": "s",
+                    "evidence_ids": ["e1"],
+                    "remaining_gap": "",
+                },
+            },
+        ],
+    )
+    assert built["status"] == "applied"
+    frozen_before = loop_state.research_synthesis
+    assert frozen_before.based_on_working_set_revision == loop_state.working_set_revision
+
+    loop_state._bump_working_set()  # 模拟:一波到达吸收了
+    assert not loop_state.synthesis_is_fresh(frozen_before)
+    rejected_freeze = services.freeze_synthesis(loop_state, "提前冻结")
+    assert rejected_freeze["status"] == "rejected"
+
+    ack = services.apply_workbench_changes(loop_state, [{"op": "acknowledge"}])
+    assert ack["status"] == "applied"
+    assert loop_state.research_synthesis.revision == 1  # 只重盖章,稿内容与版本不动
+    accepted = services.freeze_synthesis(loop_state, "表态后冻结")
+    assert accepted["status"] == "accepted"
+
+    eager = services.apply_workbench_changes(
+        loop_state,
+        [
+            {"op": "acknowledge"},
+            {"op": "framing", "framing": {"thesis": "又改。"}},
+        ],
+    )
+    assert eager["status"] == "rejected"  # 与实改同单时 acknowledge 冗余,拒绝引导单发
+
+
+def test_workbench_view_shape_lock():
+    loop_state = _apply_fixture()
+    from deepresearcher.agents.supervisor.state import workbench_view
+
+    view = workbench_view(loop_state)
+    assert set(view) == {
+        "workbench_revision",
+        "plan",
+        "inflight",
+        "directions",
+        "active_evidence",
+        "active_evidence_count",
+        "active_evidence_limit",
+        "reserve_evidence",
+        "reserve_evidence_count",
+        "flags",
+        "synthesis_revision",
+        "research_synthesis",
+    }
+    assert view["reserve_evidence"][0]["evidence_id"] == "e2"  # 未激活即 reserve 全卡
+    assert [item["evidence_id"] for item in view["active_evidence"]] == ["e1"]
+    assert view["flags"] == {"provider_exhausted": False, "rounds_left": 0}
+
+
 def test_freeze_rejected_while_directions_running():
     supervisor, context = _delegate_context_for(FixedResearchAgent())
     context.loop_state.pending_directions = {
@@ -1826,7 +2395,7 @@ def test_freeze_rejected_while_directions_running():
             task_id="task-0001", subtask={"id": "task-0001", "question": "在途"}, round=1
         ).model_dump()
     }
-    receipt = services.freeze_synthesis(context.loop_state, 0, "想收口")
+    receipt = services.freeze_synthesis(context.loop_state, "想收口")
     assert receipt["status"] == "rejected"
     assert receipt["directions_running"] == ["task-0001"]
     assert "在途" in receipt["rejection_cause"]
@@ -1972,36 +2541,40 @@ def _blank_state() -> dict:
 
 
 def _revise_evidenceless(loop_state: SupervisorLoopState) -> dict:
-    current = loop_state.research_synthesis
-    return services.revise_synthesis(
+    return services.apply_workbench_changes(
         loop_state,
-        expected_revision=current.revision if current else 0,
-        expected_working_set_revision=loop_state.working_set_revision,
-        answer_goal="回答研究问题",
-        overall_summary="搜索供应商账户级不可用,无任何证据。",
-        aspects=[
-            ResearchAspect(
-                aspect_id="core",
-                topic="核心结论",
-                role="主线",
-                required=True,
-                status="uncovered",
-                remaining_gap="无法获取材料。",
-            )
+        [
+            {
+                "op": "framing",
+                "framing": {
+                    "answer_goal": "回答研究问题",
+                    "thesis": "搜索供应商账户级不可用,无任何证据。",
+                    "open_gaps": ["无法获取材料。"],
+                    "conflicts": [],
+                    "decision_rationale": "执行故障收束。",
+                },
+            },
+            {
+                "op": "upsert_aspect",
+                "aspect": {
+                    "aspect_id": "core",
+                    "topic": "核心结论",
+                    "role": "主线",
+                    "required": True,
+                    "status": "uncovered",
+                    "remaining_gap": "无法获取材料。",
+                },
+            },
         ],
-        open_gaps=["无法获取材料。"],
-        conflicts=[],
-        next_actions=[],
-        decision_rationale="执行故障收束。",
     )
 
 
 def test_freeze_synthesis_rejects_evidenceless_without_certification():
     """零证据综合稿默认被拒绝,拒绝回执必须带可行动原因。"""
     loop_state = _blank_loop_state()
-    assert _revise_evidenceless(loop_state)["status"] == "accepted"
+    assert _revise_evidenceless(loop_state)["status"] == "applied"
 
-    receipt = services.freeze_synthesis(loop_state, 1, "请求无证据提交")
+    receipt = services.freeze_synthesis(loop_state, "请求无证据提交")
 
     assert receipt["status"] == "rejected"
     assert "Evidence" in str(receipt["rejection_cause"])
@@ -2015,8 +2588,8 @@ def test_absorb_certifies_provider_exhaustion_then_freeze_accepts_evidenceless()
     loop_state.absorb(_exhausted_direction_execution())
     assert loop_state.provider_exhausted is True
 
-    assert _revise_evidenceless(loop_state)["status"] == "accepted"
-    receipt = services.freeze_synthesis(loop_state, 1, "熔断认证后无证据收束")
+    assert _revise_evidenceless(loop_state)["status"] == "applied"
+    receipt = services.freeze_synthesis(loop_state, "熔断认证后无证据收束")
 
     assert receipt["status"] == "accepted"
     assert loop_state.completed_synthesis is not None
@@ -2058,10 +2631,11 @@ def _replace_semantics_channels() -> set[str]:
     return {name for name, hint in hints.items() if _reducer_of(hint) in replace_reducers}
 
 
-def test_only_research_delegate_is_concurrent():
-    """§5 静态守卫:除 ResearchDelegate 外的每个工具都必须落在串行名单内。"""
+def test_only_research_delegate_and_workbench_are_concurrent():
+    """§5 静态守卫:除 ResearchDelegate 与 UpdateWorkbench(通道互不相交,可混批)外
+    每个工具都必须落在串行名单内。"""
     tool_names = {item.name for item in build_supervisor_tools()}
-    assert tool_names - set(SUPERVISOR_SERIAL_TOOLS) == {"ResearchDelegate"}
+    assert tool_names - set(SUPERVISOR_SERIAL_TOOLS) == {"ResearchDelegate", "UpdateWorkbench"}
 
 
 def test_concurrent_delegate_never_snapshots_replace_channels():
@@ -2155,7 +2729,7 @@ def test_merge_registry_by_key_applies_add_and_remove_deltas():
 
 
 def test_pending_directions_round_trip_and_inflight_snapshot():
-    from deepresearcher.agents.supervisor.state import working_set_snapshot
+    from deepresearcher.agents.supervisor.state import workbench_view as working_set_snapshot
 
     entry = PendingDirection(
         task_id="task-0001",
@@ -2194,7 +2768,9 @@ def test_rebuild_middleware_discards_uncommitted_memory():
     # abefore_model 触 loop_state、两个标量与 deps.config 里的上限,scope 用占位对象即可。
     context = SupervisorLoopContext(
         scope=SimpleNamespace(),
-        deps=SimpleNamespace(config=SimpleNamespace(supervisor_max_active_evidences=6)),
+        deps=SimpleNamespace(
+            config=SimpleNamespace(supervisor_max_active_evidences=6, max_research_rounds=1)
+        ),
         loop_state=committed,
         research_query="q",
         current_round=1,

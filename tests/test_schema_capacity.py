@@ -25,7 +25,7 @@ def _synthesis(aspect_count: int) -> ResearchSynthesis:
         revision=1,
         based_on_working_set_revision=1,
         answer_goal="回答研究问题",
-        overall_summary="当前材料可以形成报告。",
+        thesis="当前材料可以形成报告。",
         aspects=aspects,
         decision_rationale="按证据支撑程度组织。",
     )

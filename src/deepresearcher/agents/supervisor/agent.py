@@ -27,8 +27,7 @@ from deepresearcher.agents.supervisor.state import (
     SupervisorDeps,
     SupervisorLoopContext,
     SupervisorLoopState,
-    synthesis_card,
-    working_set_snapshot,
+    workbench_view,
 )
 from deepresearcher.agents.supervisor.tools import (
     build_supervisor_tools,
@@ -58,20 +57,36 @@ from deepresearcher.state import ResearchState, SubTask, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 
-# 除 ResearchDelegate 外的写通道工具与只读 ReadWorkingSet 是串行工具,必须单独一轮:
-# 与任何其他调用同批时,SerialToolMiddleware 在模型输出后整批驳回、打回模型重规划,
-# 避免并发整字段快照互相覆盖。名单约束由 tests/test_supervisor.py 的静态守卫测试校验
-# (方案 §5 分类守卫)。
+# 整字段快照互覆风险的写工具必须单独一轮(ResearchComplete 的 completed_synthesis);
+# ResearchDelegate 与 UpdateWorkbench 通道互不相交,可互相混批——"先写计划再派方向"
+# 在同一回合发出。名单约束由 tests/test_supervisor.py 的静态守卫测试校验(方案 §5 分类守卫)。
 SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
-        "ReadWorkingSet",
-        "ReleaseEvidence",
-        "RestoreEvidence",
-        "ReviseResearchSynthesis",
+        "ReadWorkbench",
         "ResearchComplete",
         "WaitDirection",
     }
 )
+
+
+def _may_conclude(context: Any) -> bool:
+    """纯文本收尾的合法态:无在途,且桌上已有可交付的苗头。
+
+    两手空空不算收尾:既无草稿又无任何派发时,文本多半是模型"说了要派但没发调用"的
+    协议滑漏,放行使整场以 0 证据收场(实跑 run-bb3b 实证),退回让它在"等/派/建稿"里选。
+    """
+    loop_state = getattr(context, "loop_state", None)
+    if loop_state is None:
+        return True
+    if loop_state.pending_directions:
+        return False
+    if loop_state.research_synthesis is None and not loop_state.task_results:
+        return bool(
+            loop_state.provider_exhausted
+            or loop_state.stop_reason
+            in {StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED, StopReason.ROUND_BUDGET_EXHAUSTED}
+        )
+    return True
 
 
 # 模型调用上限消息恒在会话尾部数条内;扫描窗口多留几条冗余,防 after-hook 顺序变化漏检。
@@ -138,17 +153,15 @@ class ResearchSupervisor:
                             retry_tools=[["ResearchDelegate"]],
                             serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
                             tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
-                            # 有欠账的文本结束不算合法收尾:派完就跑会绕开模型对到达结果的处置,
-                            # 退回要求 WaitDirection/续派;封顶放行后仍由 drain 收口,不死锁。
+                            # 有欠账或两手空空的文本结束不算合法收尾:派完就跑绕开模型对到达
+                            # 的处置,空桌退场浪费整场(实跑实证);封顶放行后仍由 drain 收口。
                             submission_guard=SubmissionGuard(
                                 nudge_message=(
-                                    "仍有在途方向未返回：调用 WaitDirection 收取到达，"
-                                    "或继续派发补缺口；在途未清零不要以纯文本结束本轮。"
+                                    "现在还不是收尾时:在途方向未返回就调用 WaitDirection 或继续"
+                                    "派发;桌面还空着就先 ResearchDelegate 或 UpdateWorkbench 建稿。"
+                                    "在途未清零、无草稿无派发时不要以纯文本结束本轮。"
                                 ),
-                                submitted_probe=lambda ctx: (
-                                    not getattr(ctx, "loop_state", None)
-                                    or not ctx.loop_state.pending_directions
-                                ),
+                                submitted_probe=_may_conclude,
                                 max_nudges=2,
                             ),
                             # 收束信号读通道 completed_synthesis,与崩溃恢复共用同一事实源。
@@ -235,17 +248,14 @@ class ResearchSupervisor:
             state,
             current_round=round_no,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
+            max_research_rounds=self.config.max_research_rounds,
         )
         # research_query 派生一次即定;批重建循环只需它作标量,上下文不持有整份外层 State。
         research_query = loop_state.research_query
         # 轮次预算不注入观察:由 services.dispatch_research 的执行越界硬校验以回执告知。
         self._append_research_observation(
             history,
-            {
-                "working_set_revision": loop_state.working_set_revision,
-                "working_set": working_set_snapshot(loop_state, include_reserve=False),
-                "research_synthesis": synthesis_card(loop_state.research_synthesis),
-            },
+            {"workbench": workbench_view(loop_state)},
         )
 
         loop_context = SupervisorLoopContext(
@@ -283,6 +293,7 @@ class ResearchSupervisor:
                 research_query=research_query,
                 current_round=round_no,
                 active_evidence_limit=self.config.supervisor_max_active_evidences,
+                max_research_rounds=self.config.max_research_rounds,
             )
             if not loop_state.sufficient and _model_call_limit_hit(generated):
                 # 真实终止原因是模型调用上限;set_stop_reason 的声明式 rank 保证它强于
@@ -372,7 +383,7 @@ class ResearchSupervisor:
         history: list[BaseMessage],
         payload: dict[str, object],
     ) -> None:
-        """把当前工作集与综合稿快照作为轮次观察追加进 Supervisor 历史。"""
+        """把工作台现值作为轮次观察追加进 Supervisor 历史。"""
         history.append(HumanMessage(content=render_data_section("研究管理观察", payload)))
 
     def _emit_round_completed(

@@ -48,15 +48,22 @@ def _merge_stop_reason_by_rank(
 
 
 def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
-    """在发起本次执行的 AIMessage 的 tool_calls 序列中定位该调用的下标。"""
+    """在发起本次执行的 AIMessage 中定位该派发在 ResearchDelegate 序列里的序。
+
+    只数派发调用而非整批 tool_calls 下标:UpdateWorkbench 与派发混批时
+    编号照样连续,且对同一 AIMessage 的重放仍确定。
+    """
     entries = messages if isinstance(messages, list) else []
     for message in reversed(entries):
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
             continue
-        for index, call in enumerate(tool_calls):
+        position = 0
+        for call in tool_calls:
             if call.get("id") == tool_call_id:
-                return index
+                return position
+            if call.get("name") == "ResearchDelegate":
+                position += 1
         break
     return None
 
@@ -65,7 +72,7 @@ class SupervisorAgentState(AgentState):
     """Supervisor 内层图的 state_schema:循环业务状态的持久化载体。
 
     reducer 按工具的串行/并发身份选择,共用 reducer 见 agents/channels.py:
-    ResearchDelegate 同批并发,只写合并语义通道;Release、Restore、Revise、
+    ResearchDelegate 同批并发,只写合并语义通道;UpdateWorkbench、
     ResearchComplete 串行,可写 replace 通道。active 工作集通道存集合本身,
     工具出口只交 {add,remove} 差量,避免并发整字段快照互相覆盖。
     """
@@ -86,6 +93,8 @@ class SupervisorAgentState(AgentState):
     # 在途方向登记表 {task_id: PendingDirection.model_dump()}:派发批并发 add,
     # 到达吸收与丢失判定在独占批 remove。崩溃重放时通道值是"哪些方向欠账"的唯一事实源。
     pending_directions: Annotated[dict[str, dict], merge_registry_by_key]
+    # 计划便签 [PlanItem.model_dump()]:UpdateWorkbench 独写(key="plan"),不进外层持久化。
+    plan: Annotated[list[dict], replace_channel]
 
 
 # 老检查点的方向结果没有短题时,卡片回退用长契约截断到此长度。
@@ -130,14 +139,14 @@ def synthesis_card(synthesis: ResearchSynthesis | None) -> dict[str, object] | N
     if synthesis is None:
         return None
     return {
-        "based_on_working_set_revision": synthesis.based_on_working_set_revision,
+        # 模型可见面统一工作台措辞;schema 字段 based_on_working_set_revision 是持久化名,不随视图改名。
+        "based_on_workbench_revision": synthesis.based_on_working_set_revision,
         "answer_goal": synthesis.answer_goal,
-        "overall_summary": synthesis.overall_summary,
+        "thesis": synthesis.thesis,
         "aspects": [aspect.model_dump(mode="json") for aspect in synthesis.aspects],
         "selected_evidence_ids": synthesis.selected_evidence_ids,
         "open_gaps": synthesis.open_gaps,
         "conflicts": synthesis.conflicts,
-        "next_actions": synthesis.next_actions,
         "decision_rationale": synthesis.decision_rationale,
     }
 
@@ -194,6 +203,7 @@ class SupervisorLoopContext:
             research_query=self.research_query,
             current_round=self.current_round,
             active_evidence_limit=self.deps.config.supervisor_max_active_evidences,
+            max_research_rounds=self.deps.config.max_research_rounds,
         )
 
 
@@ -250,7 +260,11 @@ class SupervisorLoopState:
         *,
         current_round: int,
         active_evidence_limit: int,
+        max_research_rounds: int = 0,
     ):
+        # 计划便签:工作台的一个键,轮内便签不进外层持久化;dict 形态存储(PlanItem.model_dump)。
+        self.plan = [dict(item) for item in (state.get("plan") or []) if isinstance(item, dict)]
+        self.max_research_rounds = max_research_rounds
         self.evidences = list(state.get("evidences", []))
         active_ids = state.get("active_evidence_ids")
         self.active_evidence_ids = (
@@ -300,8 +314,9 @@ class SupervisorLoopState:
         research_query: str,
         current_round: int,
         active_evidence_limit: int,
+        max_research_rounds: int = 0,
     ) -> "SupervisorLoopState":
-        """从内层通道现值重建状态对象:仅依赖三个标量与通道,不持有外层 State。
+        """从内层通道现值重建状态对象:仅依赖标量参数与通道,不持有外层 State。
 
         缺席键回落到空态默认(等同尚无工具写入的新建状态)。
         """
@@ -310,6 +325,7 @@ class SupervisorLoopState:
             {},
             current_round=current_round,
             active_evidence_limit=active_evidence_limit,
+            max_research_rounds=max_research_rounds,
         )
         view.research_query = research_query
         if "evidences" in values:
@@ -349,6 +365,8 @@ class SupervisorLoopState:
             view._task_counter = max(int(values["task_index_counter"] or 0), view._task_counter)
         if "pending_directions" in values:
             view.pending_directions = dict(values["pending_directions"] or {})
+        if "plan" in values:
+            view.plan = [dict(item) for item in values["plan"] or [] if isinstance(item, dict)]
         return view
 
     def initial_channel_state(self) -> dict[str, Any]:
@@ -367,6 +385,7 @@ class SupervisorLoopState:
             "provider_exhausted": self.provider_exhausted,
             "stop_reason": self.stop_reason,
             "task_index_counter": self._task_counter,
+            "plan": [dict(item) for item in self.plan],
         }
 
     @property
@@ -472,25 +491,45 @@ class SupervisorLoopState:
         return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
 
 
-def working_set_snapshot(
-    loop_state: "SupervisorLoopState", *, include_reserve: bool = True
-) -> dict[str, object]:
-    """Supervisor 工作集目录的唯一构造处。
+_WORKBENCH_CONCLUSION_CHARS = 120
+_WORKBENCH_RESERVE_CARD_LIMIT = 20
 
-    tools.py 的 ReadWorkingSet 与拒绝回执用全量,即 include_reserve=True;
-    轮次观察只取 active 以省 token。两处共用同一卡片形状与 revision 字段,
-    不要各自演化出不同的子集。
+
+def workbench_view(loop_state: "SupervisorLoopState") -> dict[str, object]:
+    """Supervisor 桌面的唯一视图构造处:模型每回合、ReadWorkbench、拒绝回执都读它。
+
+    设计不变式:通道持有的运行事实都要在这里有窗,或不给模型看并说明理由
+    (failure_details 属后者)。收据会随压缩腐烂,directions 段是它的持久档案。
     """
     titles = _direction_titles(loop_state)
     active = loop_state.active_evidences()
-    snapshot: dict[str, object] = {
-        "working_set_revision": loop_state.working_set_revision,
-        "active_evidence": [
-            evidence_card(item, titles.get(item.subtask_id, "")) for item in active
-        ],
-        "active_evidence_count": len(active),
-        "active_evidence_limit": loop_state.active_evidence_limit,
-        # 在途方向清单恒有键:派发去重与收口判断都要求模型每回合看得到"还在跑什么"。
+    directions: list[dict[str, object]] = []
+    for result in loop_state.task_results:
+        getter = (
+            result.get
+            if isinstance(result, dict)
+            else (lambda key, item=result: getattr(item, key, None))
+        )
+        conclusion = str(getter("conclusion") or "")
+        if len(conclusion) > _WORKBENCH_CONCLUSION_CHARS:
+            conclusion = conclusion[: _WORKBENCH_CONCLUSION_CHARS - 1] + "…"
+        task_id = str(getter("task_id") or "")
+        directions.append(
+            {
+                "task_id": task_id,
+                "display_title": str(getter("display_title") or titles.get(task_id, "")),
+                "execution_status": str(getter("execution_status") or ""),
+                "evidence_count": int(getter("evidence_count") or 0),
+                "conclusion": conclusion,
+                "shortfalls": [str(item) for item in (getter("remaining_gaps") or [])],
+            }
+        )
+    active_ids = {item.evidence_id for item in active}
+    reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
+    rounds_left = max(0, loop_state.max_research_rounds - loop_state.current_round)
+    return {
+        "workbench_revision": loop_state.working_set_revision,
+        "plan": [dict(item) for item in loop_state.plan],
         "inflight": [
             {
                 "task_id": str(entry.get("task_id") or key),
@@ -499,15 +538,26 @@ def working_set_snapshot(
             }
             for key, entry in sorted(loop_state.pending_directions.items())
         ],
+        "directions": directions,
+        "active_evidence": [
+            evidence_card(item, titles.get(item.subtask_id, "")) for item in active
+        ],
+        "active_evidence_count": len(active),
+        "active_evidence_limit": loop_state.active_evidence_limit,
+        "reserve_evidence": [
+            evidence_card(item, titles.get(item.subtask_id, ""))
+            for item in reserve[:_WORKBENCH_RESERVE_CARD_LIMIT]
+        ],
+        "reserve_evidence_count": len(reserve),
+        "flags": {
+            "provider_exhausted": bool(loop_state.provider_exhausted),
+            "rounds_left": rounds_left,
+        },
+        "synthesis_revision": (
+            loop_state.research_synthesis.revision if loop_state.research_synthesis else 0
+        ),
+        "research_synthesis": synthesis_card(loop_state.research_synthesis),
     }
-    if include_reserve:
-        active_ids = {item.evidence_id for item in active}
-        reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
-        snapshot["reserve_evidence"] = [
-            evidence_card(item, titles.get(item.subtask_id, "")) for item in reserve
-        ]
-        snapshot["reserve_evidence_count"] = len(reserve)
-    return snapshot
 
 
 def _direction_titles(loop_state: "SupervisorLoopState") -> dict[str, str]:

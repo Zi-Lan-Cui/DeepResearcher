@@ -6,6 +6,7 @@ ToolMessage。子 Agent 并发受 deps.worker_limit 限制;对 loop_state 的改
 """
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import cast
 
 from pydantic import ValidationError
@@ -16,7 +17,6 @@ from deepresearcher.agents.supervisor.state import (
     TaskExecution,
     evidence_card,
     synthesis_snapshot,
-    working_set_snapshot,
 )
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
@@ -24,6 +24,7 @@ from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
+    WORKBENCH_INTENT_ADAPTER,
     CoveredTopic,
     PendingDirection,
     ReportBrief,
@@ -36,6 +37,13 @@ from deepresearcher.schemas import (
     StopReason,
     SupervisorProgress,
     SupervisorStateUpdate,
+    WorkbenchAcknowledge,
+    WorkbenchIntent,
+    WorkbenchMoveEvidence,
+    WorkbenchRemoveAspect,
+    WorkbenchSetPlan,
+    WorkbenchUpdateFraming,
+    WorkbenchUpsertAspect,
     WriterDirective,
     WriterProgress,
 )
@@ -117,7 +125,7 @@ def dispatch_research(
         "task_id": task["id"],
         "display_title": task["display_title"],
         "research_direction": topic,
-        "working_set_revision": loop_state.working_set_revision,
+        "workbench_revision": loop_state.working_set_revision,
         "instruction": (
             "方向已入队后台执行，本回执只代表受理。请勿对在途主题重复派发；"
             "可继续派发互补方向、修订综合稿，或调用 WaitDirection 收取到达的结果。"
@@ -240,7 +248,7 @@ async def wait_for_directions(
     *,
     task_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """到达的唯一消费点:先欠账清算,再阻塞到至少一个到货,吸收整波已到。
+    """到达的唯一消费点:先欠账清算;已有到货立即吸收整波返回,无到货才阻塞等待。
 
     仅由 WaitDirection 工具调用——方向结果由此只有一种注入形态(收据),
     不再有中间件观察的第二入口。任务体是 total 函数,除取消外不抛;
@@ -257,8 +265,11 @@ async def wait_for_directions(
         targets = [registry[tid] for tid in task_ids if tid in registry]
     else:
         targets = list(registry.values())
+    # 契约是"阻塞到至少一个到货":已有完成未收的立即返回(实场 run-3234:两个方向完成后
+    # 挂置 372-382s,只因另一路未回就把波次收口押在最后回货上,吞掉了边到边处置)。
+    arrived = any(task.done() for task in registry.values())
     live = [item for item in targets if not item.done()]
-    if live:
+    if not arrived and live:
         await asyncio.wait(live, return_when=asyncio.FIRST_COMPLETED)
 
     for task_id in sorted(list(registry)):
@@ -275,6 +286,40 @@ async def wait_for_directions(
         reports.append(report)
         _merge_channel_delta(delta, task_delta)
     return reports, delta
+
+
+def compose_wait_receipt(
+    reports: list[dict[str, object]],
+    pending_task_ids: set[str],
+    working_set_revision: int,
+) -> dict[str, object]:
+    """WaitDirection 回执:三种终形各有明说,不把"钉不中"谎报成"无在途"。
+
+    无报告但在途非空只可能是钉待的 id 全不在册——实场 run-88c4/185e 模型均被
+    "no_inflight + 在途列表非空"的自相矛盾回执烧掉一回合,此处显式给出纠偏指令。
+    """
+    if reports:
+        status = "completed"
+    elif pending_task_ids:
+        status = "unknown_task_ids"
+    else:
+        status = "no_inflight"
+    payload: dict[str, object] = {
+        "status": status,
+        "directions": reports,
+        "workbench_revision": working_set_revision,
+        "inflight": sorted(pending_task_ids),
+    }
+    if status == "unknown_task_ids":
+        payload["instruction"] = (
+            "指定的 task_ids 没有一个在途(以本回执 inflight 为准)。核对 id 后重试，"
+            "或留空 task_ids 等待任意一个方向到货。"
+        )
+    elif status == "no_inflight":
+        payload["instruction"] = (
+            "没有在途方向。请按工作台现值修订综合稿后 ResearchComplete，或继续派发补缺口。"
+        )
+    return payload
 
 
 def _task_context(deps: SupervisorDeps, task: SubTask) -> dict[str, object]:
@@ -351,7 +396,7 @@ def absorb_arrival(
         "remaining_gaps": task_result.remaining_gaps,
         "conclusion": task_result.conclusion,
         "failures": task_result.failures,
-        "working_set_revision": loop_state.working_set_revision,
+        "workbench_revision": loop_state.working_set_revision,
         "evidence": [
             evidence_card(item, task_result.display_title)
             for item in execution.evidences
@@ -384,25 +429,360 @@ def absorb_arrival(
     return direction_report, delta
 
 
+def _candidate_synthesis(
+    loop_state: SupervisorLoopState,
+    framing_updates: dict[str, object],
+    aspect_upserts: dict[str, ResearchAspect],
+    aspect_removals: list[str],
+) -> ResearchSynthesis | None:
+    """把 framing 与 aspect 变更套到现稿上,产出候选稿;纯函数不落盘。
+
+    aspect 顺序:沿用现稿次序,同 id upsert 原位替换,新 id 追加。
+    草稿期不要求任何字段齐备;变更后全空(无 aspect、三件与声明皆空)返回 None,
+    调用方据此把稿子清回未开稿状态——拆脚手架重来是合法动作。
+    """
+    current = loop_state.research_synthesis
+    aspects: dict[str, ResearchAspect] = {}
+    if current is not None:
+        aspects = {aspect.aspect_id: aspect for aspect in current.aspects}
+        order = [aspect.aspect_id for aspect in current.aspects]
+    else:
+        order = []
+    for aspect_id in aspect_removals:
+        if aspect_id in aspects:
+            del aspects[aspect_id]
+            order.remove(aspect_id)
+    for aspect_id, aspect in aspect_upserts.items():
+        if aspect_id not in aspects:
+            order.append(aspect_id)
+        aspects[aspect_id] = aspect
+    payload: dict[str, object] = {
+        "answer_goal": current.answer_goal if current else "",
+        "thesis": current.thesis if current else "",
+        "open_gaps": list(current.open_gaps) if current else [],
+        "conflicts": list(current.conflicts) if current else [],
+        "decision_rationale": current.decision_rationale if current else "",
+    }
+    payload.update(framing_updates)
+
+    def string_list(value: object) -> list[str]:
+        return [str(item) for item in value] if isinstance(value, list) else []
+
+    final_open_gaps = string_list(payload["open_gaps"])
+    final_conflicts = string_list(payload["conflicts"])
+    everything_empty = (
+        not aspects
+        and not any(
+            payload.get(key) not in (None, "")
+            for key in ("answer_goal", "thesis", "decision_rationale")
+        )
+        and not final_open_gaps
+        and not final_conflicts
+    )
+    if everything_empty:
+        return None
+
+    return ResearchSynthesis(
+        revision=(current.revision if current else 0) + 1,
+        based_on_working_set_revision=loop_state.working_set_revision,
+        answer_goal=str(payload["answer_goal"] or ""),
+        thesis=str(payload["thesis"] or ""),
+        aspects=[aspects[aspect_id] for aspect_id in order],
+        open_gaps=final_open_gaps,
+        conflicts=final_conflicts,
+        decision_rationale=str(payload["decision_rationale"] or ""),
+    )
+
+
+def _rejection(op_name: str, reason: str, **extra: object) -> dict[str, object]:
+    return {"status": "rejected", "rejections": [{"key": op_name, "reason": reason, **extra}]}
+
+
+_WRITABLE_OPS_HINT = (
+    "不可写或未知的操作。可写操作：upsert_aspect | remove_aspect | framing | plan | "
+    "evidence | acknowledge。只读段（directions/inflight/reserve/flags）由程序维护。"
+)
+
+
+@dataclass
+class _SubmissionEdits:
+    """一次 UpdateWorkbench 提交归并后的编辑集：各段候选输入，尚未落盘。"""
+
+    framing_updates: dict[str, object] = field(default_factory=dict)
+    aspect_upserts: dict[str, ResearchAspect] = field(default_factory=dict)
+    aspect_removals: list[str] = field(default_factory=list)
+    plan_value: list[dict[str, object]] | None = None
+    evidence_add: list[str] = field(default_factory=list)
+    evidence_remove: list[str] = field(default_factory=list)
+    acknowledge: bool = False
+
+    @property
+    def edits_draft(self) -> bool:
+        return bool(self.framing_updates or self.aspect_upserts or self.aspect_removals)
+
+
+def _intent_identity(intent: WorkbenchIntent) -> str:
+    """去重身份按目标划:aspect 操作到单元粒度,其余 op 全局唯一。"""
+    if isinstance(intent, WorkbenchUpsertAspect):
+        return f"upsert_aspect:{intent.aspect.aspect_id}"
+    if isinstance(intent, WorkbenchRemoveAspect):
+        return f"remove_aspect:{intent.aspect_id}"
+    return intent.op
+
+
+_TAG_ERROR_TYPES = frozenset({"union_tag_invalid", "union_tag_not_found"})
+
+
+def _project_submission(
+    loop_state: SupervisorLoopState, changes: list[object]
+) -> tuple[_SubmissionEdits, list[dict[str, object]]]:
+    """判别并集解析 → 目标去重 → 逐条投影;返回(编辑集, 拒绝项)。"""
+    edits = _SubmissionEdits()
+    rejections: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw in changes:
+        if not isinstance(raw, dict):
+            rejections.append(
+                {
+                    "key": "changes",
+                    "reason": f"每个操作必须是带 op 字段的对象。{_WRITABLE_OPS_HINT}",
+                }
+            )
+            continue
+        try:
+            intent = WORKBENCH_INTENT_ADAPTER.validate_python(raw)
+        except ValidationError as exc:
+            op = str(raw.get("op", ""))
+            errors = exc.errors(include_url=False, include_input=False)
+            if any(error["type"] in _TAG_ERROR_TYPES for error in errors):
+                rejections.append({"key": op, "reason": _WRITABLE_OPS_HINT})
+            else:
+                rejections.append(
+                    {
+                        "key": op or "changes",
+                        "reason": f"op={op} 的参数不满足该操作的契约。",
+                        "issues": _issue_list(exc),
+                    }
+                )
+            continue
+        identity = _intent_identity(intent)
+        if identity in seen:
+            rejections.append(
+                {
+                    "key": identity,
+                    "reason": "同一目标在一次提交内只允许一条操作;合并两次意图后重发。",
+                }
+            )
+            continue
+        seen.add(identity)
+        problem = _project_intent(edits, loop_state, intent)
+        if problem is not None:
+            rejections.append(problem)
+    return edits, rejections
+
+
+def _project_intent(
+    edits: _SubmissionEdits, loop_state: SupervisorLoopState, intent: WorkbenchIntent
+) -> dict[str, object] | None:
+    """把一条形状已合法的 intent 归并进编辑集;只保留存在性前置(删除目标须在、
+    add/remove 不得同 id),终态一致性在提交前统一判。"""
+    if isinstance(intent, WorkbenchUpsertAspect):
+        edits.aspect_upserts[intent.aspect.aspect_id] = intent.aspect
+    elif isinstance(intent, WorkbenchRemoveAspect):
+        if intent.aspect_id not in _aspect_ids(loop_state):
+            return {
+                "key": f"remove_aspect:{intent.aspect_id}",
+                "reason": "要删除的 aspect_id 不存在。",
+                "known_aspect_ids": _aspect_ids(loop_state),
+            }
+        edits.aspect_removals.append(intent.aspect_id)
+    elif isinstance(intent, WorkbenchUpdateFraming):
+        edits.framing_updates.update(intent.framing.model_dump(exclude_none=True))
+    elif isinstance(intent, WorkbenchSetPlan):
+        edits.plan_value = [item.model_dump() for item in intent.items]
+    elif isinstance(intent, WorkbenchMoveEvidence):
+        overlap = set(intent.add) & set(intent.remove)
+        if overlap:
+            return {
+                "key": "evidence",
+                "reason": "add 与 remove 不得包含同一 evidence_id;按期望终态二选一后重发。",
+                "conflicting_evidence_ids": sorted(overlap),
+            }
+        edits.evidence_add = list(intent.add)
+        edits.evidence_remove = list(intent.remove)
+    elif isinstance(intent, WorkbenchAcknowledge):
+        edits.acknowledge = True
+    return None
+
+
+def _simulate_active_slots(
+    loop_state: SupervisorLoopState, evidence_add: list[str], evidence_remove: list[str]
+) -> tuple[set[str], list[str], list[str]]:
+    """在活跃集副本上算终态，先释放后找回，不落盘。
+
+    add 与 remove 已由投影层保证不相交,两段各是集合、段内无顺序语义;
+    先释放使同批腾出的槽位立即可用,与提交段的先后次序一致。
+    超槽跳过的 id 不在此预判——真实落盘由 restore_evidence 的上限守门,
+    回执从落盘后的现值如实标注,避免副本与提交各算一遍出两个答案。
+    返回 (终态活跃集, release 差量, restore 候选)。
+    """
+    simulated = set(loop_state.active_evidence_ids)
+    release_ids = [
+        evidence_id for evidence_id in dict.fromkeys(evidence_remove) if evidence_id in simulated
+    ]
+    simulated.difference_update(release_ids)
+    archive_ids = {item.evidence_id for item in loop_state.evidences}
+    restore_ids: list[str] = []
+    for evidence_id in dict.fromkeys(evidence_add):
+        if evidence_id in archive_ids and evidence_id not in simulated:
+            restore_ids.append(evidence_id)
+            if len(simulated) < loop_state.active_evidence_limit:
+                simulated.add(evidence_id)
+    return simulated, release_ids, restore_ids
+
+
+def _commit_edits(
+    loop_state: SupervisorLoopState,
+    edits: _SubmissionEdits,
+    candidate: ResearchSynthesis | None,
+    release_ids: list[str],
+    restore_ids: list[str],
+) -> dict[str, object]:
+    """全绿编辑集的正式落盘与回执装配。"""
+    applied: list[str] = []
+    active_delta: dict[str, list[str]] = {"add": [], "remove": []}
+    if release_ids:
+        active_delta["remove"] = loop_state.release_evidence(release_ids)
+        applied.append("evidence")
+    if restore_ids:
+        active_delta["add"] = loop_state.restore_evidence(
+            [item for item in restore_ids if item not in loop_state.active_evidence_ids]
+        )
+        if "evidence" not in applied:
+            applied.append("evidence")
+    if edits.acknowledge and loop_state.research_synthesis is not None:
+        loop_state.research_synthesis.based_on_working_set_revision = (
+            loop_state.working_set_revision
+        )
+        applied.append("acknowledge")
+    if edits.edits_draft:
+        # candidate 为 None 表示变更后全空:稿子清回未开稿状态,拆掉脚手架重来是合法动作。
+        if candidate is not None:
+            candidate.based_on_working_set_revision = loop_state.working_set_revision
+        loop_state.research_synthesis = candidate
+        if edits.framing_updates:
+            applied.append("framing")
+        applied.extend(f"upsert_aspect:{aspect_id}" for aspect_id in edits.aspect_upserts)
+        applied.extend(f"remove_aspect:{aspect_id}" for aspect_id in edits.aspect_removals)
+    if edits.plan_value is not None:
+        loop_state.plan = edits.plan_value
+        applied.append("plan")
+
+    synthesis = loop_state.research_synthesis
+    assigned = set(synthesis.selected_evidence_ids) if synthesis else set()
+    receipt: dict[str, object] = {
+        "status": "applied",
+        "applied": sorted(set(applied)),
+        "workbench_revision": loop_state.working_set_revision,
+        "synthesis_revision": synthesis.revision if synthesis else 0,
+        "active_evidence_count": len(loop_state.active_evidence_ids),
+        "unassigned_active_evidence_ids": [
+            item.evidence_id
+            for item in loop_state.active_evidences()
+            if item.evidence_id not in assigned
+        ],
+        "plan": [dict(item) for item in loop_state.plan],
+        # 槽位实际落盘差量,tools.py 据此写 active 通道(add/remove)。
+        "slot_additions": active_delta["add"],
+        "slot_removals": active_delta["remove"],
+    }
+    slots_full_skipped = [
+        item for item in restore_ids if item not in loop_state.active_evidence_ids
+    ]
+    if slots_full_skipped:
+        receipt["skipped_restore_evidence_ids"] = slots_full_skipped
+    return receipt
+
+
+def apply_workbench_changes(
+    loop_state: SupervisorLoopState, changes: list[object]
+) -> dict[str, object]:
+    """UpdateWorkbench 业务:工作台唯一写入口,操作级整值替换。
+
+    管线:_project_submission 判别并集解析+归并(形状校验由 pydantic 承担)→ 表态冲突检查 →
+    候选终态(稿/活跃集)在副本上算出 → 终态过一次跨操作不变式(aspect 绑定 ⊆ 终态活跃集)
+    → 全绿才落 loop_state。草稿期不要求稿子齐备,验收全在 freeze_synthesis。
+    任一项失败整单拒绝并点名操作——增量协议下重发只有几条操作,回滚成本可忽略。
+    framing/aspect 变更使 revision+1 并程序盖 based_on 时间戳;acknowledge 只重盖时间戳
+    (波到货但不改稿的合法表态);plan 与写作判定无关。
+    """
+    edits, rejections = _project_submission(loop_state, changes)
+    if rejections:
+        return {"status": "rejected", "rejections": rejections}
+    if edits.acknowledge and edits.edits_draft:
+        return _rejection(
+            "acknowledge", "同单已有 framing/aspect 变更时不需要 acknowledge,时间戳自动盖。"
+        )
+    if edits.acknowledge and loop_state.research_synthesis is None:
+        return _rejection(
+            "acknowledge", "尚无综合稿可表态;先用 UpdateWorkbench 记录 aspect 或 framing。"
+        )
+
+    final_active, release_ids, restore_ids = _simulate_active_slots(
+        loop_state, edits.evidence_add, edits.evidence_remove
+    )
+    candidate: ResearchSynthesis | None = None
+    if edits.edits_draft:
+        candidate = _candidate_synthesis(
+            loop_state, edits.framing_updates, edits.aspect_upserts, edits.aspect_removals
+        )
+        if candidate is not None:
+            dangling = sorted(
+                {evidence_id for aspect in candidate.aspects for evidence_id in aspect.evidence_ids}
+                - final_active
+            )
+            if dangling:
+                return _rejection(
+                    "aspect",
+                    "aspect 只能绑定终态活跃证据;下列 id 未活跃(在 reserve 或不存在),可先 restore 或改绑。",
+                    invalid_evidence_ids=dangling,
+                )
+    return _commit_edits(loop_state, edits, candidate, release_ids, restore_ids)
+
+
+def _aspect_ids(loop_state: SupervisorLoopState) -> list[str]:
+    synthesis = loop_state.research_synthesis
+    return [aspect.aspect_id for aspect in synthesis.aspects] if synthesis else []
+
+
+def _issue_list(exc: ValidationError) -> list[dict[str, str]]:
+    return [
+        {
+            "field": ".".join(str(part) for part in error["loc"]),
+            "message": error["msg"],
+        }
+        for error in exc.errors(include_url=False, include_input=False)
+    ]
+
+
 def freeze_synthesis(
     loop_state: SupervisorLoopState,
-    synthesis_revision: int,
     reason: str,
 ) -> dict[str, object]:
-    """ResearchComplete 业务:冻结最新且未过期的研究综合稿,返回给模型的完整回执。
+    """ResearchComplete 业务:冻结通过竣工验收的最新综合稿。
 
-    拒绝回执附 rejection_cause 与 requested、current 两个 revision:版本过期这类
-    协议漂移由模型同回合修正后重提即可,不写 failure_details——能自纠的协议失误不是
-    执行故障,反复不成立时终局落在模型调用上限。无证据的综合稿仅在 absorb 认证过账户级
-    熔断、即 loop_state.provider_exhausted 为真时接受,终态记
-    StopReason.PROVIDER_EXHAUSTED。接受时 completed_synthesis 已写入通道,
-    SubmittedExitMiddleware 在下一跳直接退出循环。
+    版本对账由程序完成(单写者、时间戳自动盖),模型不再报版本号:稿子落后于
+    桌面(有未处置的到达/槽位变化)即拒,提示 UpdateWorkbench 修订或 acknowledge。
+    草稿期不校验齐备,这里统一验收:answer_goal/thesis/decision_rationale 三件
+    非空且至少一块 aspect——撤脚手架前大楼必须成形。
+    无证据的稿仅在 provider_exhausted 认证后可冻结,终态记 PROVIDER_EXHAUSTED。
+    接受时 completed_synthesis 写通道,SubmittedExitMiddleware 下一跳退出循环。
     """
     synthesis = loop_state.research_synthesis
     accepted = bool(
         not loop_state.pending_directions
         and synthesis is not None
-        and synthesis.revision == synthesis_revision
+        and _completion_missing_fields(synthesis) == []
         and loop_state.synthesis_is_fresh(synthesis)
         and (synthesis.selected_evidence_ids or loop_state.provider_exhausted)
     )
@@ -423,130 +803,60 @@ def freeze_synthesis(
     receipt: dict[str, object] = {
         "status": "accepted" if accepted else "rejected",
         "reason": reason,
-        "requested_revision": synthesis_revision,
-        "current_working_set_revision": loop_state.working_set_revision,
+        "workbench_revision": loop_state.working_set_revision,
         **synthesis_snapshot(synthesis),
     }
     if not accepted:
-        receipt["rejection_cause"] = _freeze_rejection_cause(
-            loop_state, synthesis, synthesis_revision
-        )
+        receipt["rejection_cause"] = _freeze_rejection_cause(loop_state, synthesis)
         if loop_state.pending_directions:
             receipt["directions_running"] = sorted(loop_state.pending_directions)
     return receipt
 
 
+def _completion_missing_fields(synthesis: ResearchSynthesis) -> list[str]:
+    """竣工验收清单:缺哪个点名哪个;三件+至少一块 aspect 齐了才够格冻结。"""
+    missing = [
+        field_name
+        for field_name in ("answer_goal", "thesis", "decision_rationale")
+        if not getattr(synthesis, field_name)
+    ]
+    if not synthesis.aspects:
+        missing.append("aspect")
+    return missing
+
+
 def _freeze_rejection_cause(
     loop_state: SupervisorLoopState,
     synthesis: ResearchSynthesis | None,
-    synthesis_revision: int,
 ) -> str:
-    """对照 freeze_synthesis 的接受条件逐项给出拒绝原因,让模型拿到可行动的下一步。
-
-    缺原因时模型只能从 revision 数字猜拒绝理由,倾向再派新方向重试,
-    反而推翻熔断回执中的停止派发指令。
-    """
+    """对照 freeze_synthesis 的接受条件逐项给出可行动的拒绝原因。"""
     if loop_state.pending_directions:
         running = "、".join(
             str(entry.get("display_title") or entry.get("task_id") or "")
             for entry in loop_state.pending_directions.values()
         )
         return (
-            f"仍有在途方向未返回：{running}。调用 WaitDirection 收取到达后对齐版本再冻结；"
+            f"仍有在途方向未返回：{running}。调用 WaitDirection 收取到达后修订再冻结；"
             "也可继续派发互补方向，但不要在途未清零时结束本轮。"
         )
     if synthesis is None:
-        return "尚无研究综合稿；先调用 ReviseResearchSynthesis 产出综合稿，再冻结。"
-    if synthesis.revision != synthesis_revision:
+        return "尚无研究综合稿；用 UpdateWorkbench 记录 aspect 或 framing 后再冻结。"
+    missing = _completion_missing_fields(synthesis)
+    if missing:
         return (
-            f"synthesis_revision 不一致：当前综合稿为 {synthesis.revision}，"
-            "按 current_synthesis_revision 对齐后重提。"
+            f"综合稿未通过竣工验收,缺少：{'、'.join(missing)}。"
+            "用 UpdateWorkbench 的 framing 补齐 answer_goal/thesis/decision_rationale"
+            "(thesis 是全文要辩护的那一句核心主张),用 upsert_aspect 立块,再冻结。"
         )
     if not loop_state.synthesis_is_fresh(synthesis):
-        return "综合稿基于已过期的工作集版本；先按当前 working set 修订，再冻结。"
+        return (
+            "桌面在成稿后又有变化(到达或槽位调整)未反映:请修订 framing/aspect,"
+            "或确认无需改动时用 acknowledge 表态后再冻结。"
+        )
     return (
         "研究综合稿未引用任何活跃 Evidence。未认证账户级搜索故障时无证据不可冻结："
         "继续派发研究，或若研究已无法进行，直接结束本轮（不调用工具），系统按 partial 交付。"
     )
-
-
-def revise_synthesis(
-    loop_state: SupervisorLoopState,
-    *,
-    expected_revision: int,
-    expected_working_set_revision: int,
-    answer_goal: str,
-    overall_summary: str,
-    aspects: list[ResearchAspect],
-    open_gaps: list[str],
-    conflicts: list[str],
-    next_actions: list[str],
-    decision_rationale: str,
-) -> dict[str, object]:
-    """ReviseResearchSynthesis 业务:版本对账、引用越权校验、构造并落盘新综合稿。
-
-    返回回执 dict(stale/rejected/accepted 三态);接受前完成 loop_state 变更。
-    """
-    current_revision = (
-        loop_state.research_synthesis.revision if loop_state.research_synthesis else 0
-    )
-    if (
-        expected_revision != current_revision
-        or expected_working_set_revision != loop_state.working_set_revision
-    ):
-        return {
-            "status": "stale",
-            # 回执给的是系统当前值,与模型提交的 expected_* 分属两域,键名必须区分开。
-            "current_synthesis_revision": current_revision,
-            "current_working_set_revision": loop_state.working_set_revision,
-        }
-    active_ids = set(loop_state.active_evidence_ids)
-    referenced_ids = {evidence_id for aspect in aspects for evidence_id in aspect.evidence_ids}
-    unknown_ids = sorted(referenced_ids - active_ids)
-    if unknown_ids:
-        return {
-            "status": "rejected",
-            "reason": "研究综合稿只能引用当前活跃 Evidence。",
-            "invalid_evidence_ids": unknown_ids,
-            **working_set_snapshot(loop_state),
-        }
-    try:
-        synthesis = ResearchSynthesis(
-            revision=current_revision + 1,
-            based_on_working_set_revision=loop_state.working_set_revision,
-            answer_goal=answer_goal,
-            overall_summary=overall_summary,
-            aspects=aspects,
-            open_gaps=open_gaps,
-            conflicts=conflicts,
-            next_actions=next_actions,
-            decision_rationale=decision_rationale,
-        )
-    except ValidationError as exc:
-        issues = [
-            {
-                "field": ".".join(str(part) for part in error["loc"]),
-                "message": error["msg"],
-            }
-            for error in exc.errors(include_url=False, include_input=False)
-        ]
-        return {
-            "status": "rejected",
-            "reason": "研究综合稿不满足提交契约，请按 issues 修正后重试。",
-            "issues": issues,
-            **working_set_snapshot(loop_state),
-        }
-    loop_state.research_synthesis = synthesis
-    assigned_ids = set(synthesis.selected_evidence_ids)
-    return {
-        "status": "accepted",
-        **synthesis_snapshot(synthesis),
-        "unassigned_active_evidence_ids": [
-            item.evidence_id
-            for item in loop_state.active_evidences()
-            if item.evidence_id not in assigned_ids
-        ],
-    }
 
 
 def compose_final_update(
@@ -629,11 +939,21 @@ def partial_synthesis(
     loop_state: SupervisorLoopState,
     latest: ResearchSynthesis | None,
 ) -> ResearchSynthesis | None:
-    """选择可部分交付的最新综合稿；无综合稿时生成最小固定版。"""
+    """选择可部分交付的最新综合稿；稿缺验收件时补齐中性值，无稿时生成最小固定版。"""
     active_ids = set(loop_state.active_evidence_ids)
     if latest is not None and latest.selected_evidence_ids:
         if set(latest.selected_evidence_ids).issubset(active_ids):
-            return latest
+            # partial 交付没有资格虚构总纲:缺什么补中性值,由 Writer 从材料自行归纳。
+            return latest.model_copy(
+                update={
+                    "answer_goal": latest.answer_goal
+                    or loop_state.research_query
+                    or "回答用户的研究问题",
+                    "thesis": latest.thesis or "",
+                    "decision_rationale": latest.decision_rationale
+                    or "系统在研究结束时按最新工作台部分交付。",
+                }
+            )
     evidences = loop_state.active_evidences()
     if not evidences:
         return None
@@ -648,7 +968,6 @@ def partial_synthesis(
         revision=(latest.revision + 1 if latest is not None else 1),
         based_on_working_set_revision=loop_state.working_set_revision,
         answer_goal=loop_state.research_query or "回答用户的研究问题",
-        overall_summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
         aspects=[
             ResearchAspect(
                 aspect_id="fallback-evidence",
@@ -663,7 +982,6 @@ def partial_synthesis(
         selected_evidence_ids=selected_ids,
         open_gaps=[gap],
         conflicts=[],
-        next_actions=[],
         decision_rationale="系统在研究结束时基于当前活跃 Evidence 生成最小可交付综合稿。",
     )
 
@@ -731,6 +1049,7 @@ def report_brief_from_synthesis(synthesis: ResearchSynthesis, *, max_caveats: in
     ]
     return ReportBrief(
         answer_goal=synthesis.answer_goal,
+        thesis=synthesis.thesis,
         covered_topics=topics,
         required_points=[aspect.topic for aspect in synthesis.aspects if aspect.required],
         caveats=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[:max_caveats],
