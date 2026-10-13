@@ -84,7 +84,7 @@ async def me(request: Request, user: User = Depends(current_user)) -> dict[str, 
             .where(Run.user_id == user.id, Run.status.in_(OUTSTANDING_STATUSES))
         )
         cost_today = await session.scalar(
-            select(func.coalesce(func.sum(RunUsage.cost_usd), 0))
+            select(func.coalesce(func.sum(RunUsage.cost_cny), 0))
             .join(Run, RunUsage.run_id == Run.id)
             .where(
                 Run.user_id == user.id,
@@ -98,11 +98,11 @@ async def me(request: Request, user: User = Depends(current_user)) -> dict[str, 
         "email": user.email,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "runs": {"total": total_runs or 0, "active": active_runs or 0},
-        "usage_today": {"cost_usd": float(cost_today or 0)},
+        "usage_today": {"cost_cny": float(cost_today or 0)},
         "quotas": {
             "max_concurrent_runs_per_user": state.config.max_concurrent_runs_per_user,
             "max_tokens_per_run": budgets.max_tokens_per_run,
-            "max_cost_usd_per_run": budgets.max_cost_usd_per_run,
-            "max_cost_usd_per_user_daily": budgets.max_cost_usd_per_user_daily,
+            "max_cost_cny_per_run": budgets.max_cost_cny_per_run,
+            "max_cost_cny_per_user_daily": budgets.max_cost_cny_per_user_daily,
         },
     }

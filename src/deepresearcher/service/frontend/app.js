@@ -77,13 +77,13 @@ async function loadAccount() {
   $("account-email").textContent = me.email;
   $("account-since").textContent = me.created_at
     ? "注册于 " + new Date(me.created_at).toLocaleDateString("zh-CN") : "";
-  const fmtUsd = (value) => (!value ? "0.00" : value < 0.01 ? value.toFixed(4) : value.toFixed(2));
+  const fmtCostCny = (value) => (!value ? "0.00" : value < 0.01 ? value.toFixed(4) : value.toFixed(2));
   const metrics = $("account-metrics");
   metrics.innerHTML = "";
   const tiles = [
     { value: String(me.runs.total), label: "研究总数" },
     { value: String(me.runs.active), label: "进行中" },
-    { value: fmtUsd(me.usage_today.cost_usd), label: "今日花费（美元）" },
+    { value: fmtCostCny(me.usage_today.cost_cny), label: "今日花费（元）" },
   ];
   for (const tile of tiles) {
     const el = document.createElement("div"); el.className = "metric";

@@ -29,7 +29,7 @@ def run_summary(run: Run) -> dict[str, Any]:
         "cached_input_tokens": run.cached_input_tokens,
         "external_request_count": run.external_request_count,
         "peak_llm_concurrency": run.peak_llm_concurrency,
-        "estimated_cost_usd": float(run.estimated_cost_usd or 0),
+        "estimated_cost_cny": float(run.estimated_cost_cny or 0),
         "cache_hit_count": run.cache_hit_count,
         "saved_external_request_count": run.saved_external_request_count,
         "elapsed_ms": elapsed_ms,

@@ -31,7 +31,7 @@ class UsageRecorder(Protocol):
         input_tokens: int = 0,
         output_tokens: int = 0,
         cached_input_tokens: int = 0,
-        cost_usd: Decimal = Decimal("0"),
+        cost_cny: Decimal = Decimal("0"),
         duration_ms: int = 0,
         active: int = 0,
         detail: dict[str, Any] | None = None,

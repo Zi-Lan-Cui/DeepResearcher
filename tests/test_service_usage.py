@@ -8,6 +8,7 @@ import pytest_asyncio
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import select
 
+from deepresearcher import pricing
 from deepresearcher.config import LLMConfig
 from deepresearcher.observability.tracing import spans
 from deepresearcher.observability.tracing.context import bind_context, current_span_context
@@ -45,15 +46,10 @@ async def usage_db(tmp_path):
         await engine.dispose()
 
 
-async def test_usage_store_records_details_and_aggregates(usage_db):
+async def test_usage_store_records_details_and_aggregates(usage_db, monkeypatch):
     store = UsageStore(usage_db)
-    config = LLMConfig(
-        model="test-model",
-        input_usd_per_million=1.0,
-        output_usd_per_million=2.0,
-        cached_input_usd_per_million=0.5,
-        price_version="test-v1",
-    )
+    monkeypatch.setitem(pricing.MODEL_PRICES, "test-model", pricing.ModelPrice(1.0, 0.5, 2.0))
+    config = LLMConfig(model="test-model", price_version="test-v1")
     callback = RunUsageCallback(
         run_id="run-usage",
         store=store,
@@ -107,7 +103,7 @@ async def test_usage_store_records_details_and_aggregates(usage_db):
     assert run.cached_input_tokens == 40
     assert run.external_request_count == 1
     assert run.peak_llm_concurrency == 1
-    assert Decimal(run.estimated_cost_usd) == Decimal("0.00012000")
+    assert Decimal(str(run.estimated_cost_cny)) == Decimal("0.00012000")
     assert [(record.category, record.status) for record in records] == [
         ("llm", "completed"),
         ("search", "completed"),
@@ -140,10 +136,10 @@ async def test_daily_user_cost_budget_uses_usage_details(usage_db):
         category="llm",
         component="router",
         status="completed",
-        cost_usd=Decimal("0.25"),
+        cost_cny=Decimal("0.25"),
     )
     with pytest.raises(UsageBudgetExceeded, match="user_daily_cost_budget_exhausted"):
-        await store.enforce_budget("run-usage", LLMConfig(max_cost_usd_per_user_daily=0.2))
+        await store.enforce_budget("run-usage", LLMConfig(max_cost_cny_per_user_daily=0.2))
 
 
 async def test_callback_checks_budget_for_every_provider_attempt(usage_db):
@@ -185,3 +181,76 @@ async def test_capacity_and_rate_limiters_bound_requests():
     started = asyncio.get_running_loop().time()
     await limiter.acquire(1)
     assert asyncio.get_running_loop().time() - started >= 0.015
+
+
+def _actual_usage_response() -> SimpleNamespace:
+    return SimpleNamespace(
+        generations=[
+            [
+                SimpleNamespace(
+                    text="answer",
+                    message=AIMessage(
+                        content="answer",
+                        usage_metadata={
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                            "input_token_details": {"cache_read": 40},
+                        },
+                    ),
+                )
+            ]
+        ],
+        llm_output={},
+    )
+
+
+async def test_unlisted_model_records_zero_cost_and_unpriced_stamp(usage_db):
+    """价表未登记的模型：token 照记，成本记 0，版本戳如实落 unpriced。"""
+    store = UsageStore(usage_db)
+    callback = RunUsageCallback(
+        run_id="run-usage",
+        store=store,
+        gate=CapacityGate(1),
+        rate_limiter=ProviderRateLimiter(requests_per_minute=0, tokens_per_minute=0),
+        config=LLMConfig(model="unlisted-model-x", price_version="table-v9"),
+    )
+    run_id = uuid4()
+    await callback.on_chat_model_start(
+        {}, [[HumanMessage(content="prompt")]], run_id=run_id, metadata={}
+    )
+    await callback.on_llm_end(_actual_usage_response(), run_id=run_id)
+
+    async with usage_db() as session:
+        record = (await session.scalars(select(RunUsage).where(RunUsage.category == "llm"))).one()
+        run = await session.get(Run, "run-usage")
+    assert record.usage_estimated is False
+    assert record.input_tokens == 100
+    assert Decimal(str(record.cost_cny)) == Decimal("0")
+    assert record.detail_json["price_version"] == "unpriced"
+    assert Decimal(str(run.estimated_cost_cny)) == Decimal("0")
+
+
+async def test_estimated_failure_row_carries_tokens_but_zero_cost(usage_db, monkeypatch):
+    """estimated 行 token 是 char/4 估算：即便模型在价表内也不计成本，防伪造数字污染对账。"""
+    monkeypatch.setitem(pricing.MODEL_PRICES, "test-model", pricing.ModelPrice(1.0, 0.5, 2.0))
+    store = UsageStore(usage_db)
+    callback = RunUsageCallback(
+        run_id="run-usage",
+        store=store,
+        gate=CapacityGate(1),
+        rate_limiter=ProviderRateLimiter(requests_per_minute=0, tokens_per_minute=0),
+        config=LLMConfig(model="test-model", price_version="table-v9"),
+    )
+    run_id = uuid4()
+    await callback.on_chat_model_start(
+        {}, [[HumanMessage(content="p" * 400)]], run_id=run_id, metadata={}
+    )
+    await callback.on_llm_error(RuntimeError("provider down"), run_id=run_id)
+
+    async with usage_db() as session:
+        record = (await session.scalars(select(RunUsage).where(RunUsage.category == "llm"))).one()
+    assert record.status == "failed"
+    assert record.usage_estimated is True
+    assert record.input_tokens > 0
+    assert Decimal(str(record.cost_cny)) == Decimal("0")

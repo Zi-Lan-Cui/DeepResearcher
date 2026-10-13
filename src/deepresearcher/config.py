@@ -16,6 +16,7 @@ from deepresearcher.env import env_bool as _bool_env
 from deepresearcher.env import env_float as _float_env
 from deepresearcher.env import env_int as _int_env
 from deepresearcher.env import env_str as _env
+from deepresearcher.pricing import PRICE_TABLE_VERSION
 from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
     REPORT_CAVEATS_HARD_LIMIT,
@@ -69,14 +70,12 @@ class LLMConfig:
     provider_tokens_per_minute: int = 0
     provider_output_token_reserve: int = 1_024
     max_tokens_per_run: int = 0
-    max_cost_usd_per_run: float = 0.0
-    max_cost_usd_per_user_daily: float = 0.0
-    max_cost_usd_platform_hourly: float = 0.0
-    max_cost_usd_platform_daily: float = 0.0
-    input_usd_per_million: float = 0.0
-    output_usd_per_million: float = 0.0
-    cached_input_usd_per_million: float = 0.0
-    price_version: str = "unpriced"
+    max_cost_cny_per_run: float = 0.0
+    max_cost_cny_per_user_daily: float = 0.0
+    max_cost_cny_platform_hourly: float = 0.0
+    max_cost_cny_platform_daily: float = 0.0
+    # 单价不落这里：按行模型查 pricing 价表（人民币），全局标量撑不住多模型价差。
+    price_version: str = PRICE_TABLE_VERSION
     # 内容级修复预算：结构化输出不合规时重新提交给模型修复的次数。传输级重试
     # 由 openai SDK 内建机制处理，循环级重试由 ModelRetryMiddleware 用自带参数
     # 处理，本字段只管内容级这一层。
@@ -279,14 +278,11 @@ def _llm_config() -> LLMConfig:
         provider_tokens_per_minute=max(0, _int_env("LLM_PROVIDER_TPM", 0)),
         provider_output_token_reserve=max(0, _int_env("LLM_PROVIDER_OUTPUT_TOKEN_RESERVE", 1_024)),
         max_tokens_per_run=max(0, _int_env("LLM_MAX_TOKENS_PER_RUN", 0)),
-        max_cost_usd_per_run=max(0.0, _float_env("LLM_MAX_COST_USD_PER_RUN", 0.0)),
-        max_cost_usd_per_user_daily=max(0.0, _float_env("LLM_MAX_COST_USD_PER_USER_DAILY", 0.0)),
-        max_cost_usd_platform_hourly=max(0.0, _float_env("LLM_MAX_COST_USD_PLATFORM_HOURLY", 0.0)),
-        max_cost_usd_platform_daily=max(0.0, _float_env("LLM_MAX_COST_USD_PLATFORM_DAILY", 0.0)),
-        input_usd_per_million=max(0.0, _float_env("LLM_INPUT_USD_PER_MILLION", 0.0)),
-        output_usd_per_million=max(0.0, _float_env("LLM_OUTPUT_USD_PER_MILLION", 0.0)),
-        cached_input_usd_per_million=max(0.0, _float_env("LLM_CACHED_INPUT_USD_PER_MILLION", 0.0)),
-        price_version=_env("LLM_PRICE_VERSION", "unpriced") or "unpriced",
+        max_cost_cny_per_run=max(0.0, _float_env("LLM_MAX_COST_CNY_PER_RUN", 0.0)),
+        max_cost_cny_per_user_daily=max(0.0, _float_env("LLM_MAX_COST_CNY_PER_USER_DAILY", 0.0)),
+        max_cost_cny_platform_hourly=max(0.0, _float_env("LLM_MAX_COST_CNY_PLATFORM_HOURLY", 0.0)),
+        max_cost_cny_platform_daily=max(0.0, _float_env("LLM_MAX_COST_CNY_PLATFORM_DAILY", 0.0)),
+        price_version=_env("LLM_PRICE_VERSION", PRICE_TABLE_VERSION) or PRICE_TABLE_VERSION,
         structured_repair_attempts=max(0, _int_env("LLM_STRUCTURED_REPAIR_ATTEMPTS", 1)),
     )
 

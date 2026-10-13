@@ -16,6 +16,8 @@ from sqlalchemy import case, func, select, update
 
 from deepresearcher.config import LLMConfig
 from deepresearcher.observability.tracing.context import current_span_context, new_id
+from deepresearcher.pricing import cost_cny as pricing_cost_cny
+from deepresearcher.pricing import price_for_model
 from deepresearcher.service.persistence.models import Run, RunUsage
 from deepresearcher.usage_runtime import (
     UsageBudgetExceeded,
@@ -129,7 +131,7 @@ class UsageStore:
         input_tokens: int = 0,
         output_tokens: int = 0,
         cached_input_tokens: int = 0,
-        cost_usd: Decimal = Decimal("0"),
+        cost_cny: Decimal = Decimal("0"),
         duration_ms: int = 0,
         active: int = 0,
         detail: dict[str, Any] | None = None,
@@ -148,7 +150,7 @@ class UsageStore:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cached_input_tokens=cached_input_tokens,
-                    cost_usd=cost_usd,
+                    cost_cny=cost_cny,
                     duration_ms=duration_ms,
                     detail_json=detail,
                 )
@@ -164,7 +166,7 @@ class UsageStore:
                         (Run.peak_llm_concurrency < active, active),
                         else_=Run.peak_llm_concurrency,
                     ),
-                    "estimated_cost_usd": Run.estimated_cost_usd + cost_usd,
+                    "estimated_cost_cny": Run.estimated_cost_cny + cost_cny,
                 }
             elif category in {"search", "fetch"}:
                 values = {"external_request_count": Run.external_request_count + 1}
@@ -190,10 +192,10 @@ class UsageStore:
         if not any(
             (
                 config.max_tokens_per_run,
-                config.max_cost_usd_per_run,
-                config.max_cost_usd_per_user_daily,
-                config.max_cost_usd_platform_hourly,
-                config.max_cost_usd_platform_daily,
+                config.max_cost_cny_per_run,
+                config.max_cost_cny_per_user_daily,
+                config.max_cost_cny_platform_hourly,
+                config.max_cost_cny_platform_daily,
             )
         ):
             return
@@ -204,16 +206,16 @@ class UsageStore:
             total_tokens = run.input_tokens + run.output_tokens
             if config.max_tokens_per_run and total_tokens >= config.max_tokens_per_run:
                 raise UsageBudgetExceeded("run_token_budget_exhausted")
-            if config.max_cost_usd_per_run and run.estimated_cost_usd >= Decimal(
-                str(config.max_cost_usd_per_run)
+            if config.max_cost_cny_per_run and run.estimated_cost_cny >= Decimal(
+                str(config.max_cost_cny_per_run)
             ):
                 raise UsageBudgetExceeded("run_cost_budget_exhausted")
             now = datetime.now(timezone.utc)
             day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             hour_start = now - timedelta(hours=1)
-            if config.max_cost_usd_per_user_daily:
+            if config.max_cost_cny_per_user_daily:
                 user_cost = await session.scalar(
-                    select(func.coalesce(func.sum(RunUsage.cost_usd), 0))
+                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0))
                     .join(Run, Run.id == RunUsage.run_id)
                     .where(
                         Run.user_id == run.user_id,
@@ -221,23 +223,23 @@ class UsageStore:
                         RunUsage.created_at >= day_start,
                     )
                 )
-                if Decimal(user_cost or 0) >= Decimal(str(config.max_cost_usd_per_user_daily)):
+                if Decimal(user_cost or 0) >= Decimal(str(config.max_cost_cny_per_user_daily)):
                     raise UsageBudgetExceeded("user_daily_cost_budget_exhausted")
-            if config.max_cost_usd_platform_hourly:
+            if config.max_cost_cny_platform_hourly:
                 hourly_cost = await session.scalar(
-                    select(func.coalesce(func.sum(RunUsage.cost_usd), 0)).where(
+                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0)).where(
                         RunUsage.category == "llm", RunUsage.created_at >= hour_start
                     )
                 )
-                if Decimal(hourly_cost or 0) >= Decimal(str(config.max_cost_usd_platform_hourly)):
+                if Decimal(hourly_cost or 0) >= Decimal(str(config.max_cost_cny_platform_hourly)):
                     raise UsageBudgetExceeded("platform_hourly_cost_budget_exhausted")
-            if config.max_cost_usd_platform_daily:
+            if config.max_cost_cny_platform_daily:
                 daily_cost = await session.scalar(
-                    select(func.coalesce(func.sum(RunUsage.cost_usd), 0)).where(
+                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0)).where(
                         RunUsage.category == "llm", RunUsage.created_at >= day_start
                     )
                 )
-                if Decimal(daily_cost or 0) >= Decimal(str(config.max_cost_usd_platform_daily)):
+                if Decimal(daily_cost or 0) >= Decimal(str(config.max_cost_cny_platform_daily)):
                     raise UsageBudgetExceeded("platform_daily_cost_budget_exhausted")
 
 
@@ -350,23 +352,32 @@ class RunUsageCallback(AsyncCallbackHandler):
         metadata: dict[str, Any],
         detail: dict[str, Any] | None = None,
     ) -> None:
+        row_model = str(metadata.get("ls_model_name") or self._config.model) or None
         try:
             await self._store.record(
                 run_id=self._run_id,
                 category="llm",
                 component=str(metadata.get("langgraph_node") or "model"),
                 provider=str(metadata.get("ls_provider") or "") or None,
-                model=str(metadata.get("ls_model_name") or self._config.model) or None,
+                model=row_model,
                 status=status,
                 estimated=estimated,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cached_input_tokens=cached_tokens,
-                cost_usd=_cost(self._config, input_tokens, output_tokens, cached_tokens),
+                # estimated 行的 token 是 char/4 估算而非真实回执；估算只记用量不计成本，
+                # 否则伪造数字会污染成本闸与对账。
+                cost_cny=(
+                    Decimal("0")
+                    if estimated
+                    else pricing_cost_cny(row_model, input_tokens, output_tokens, cached_tokens)
+                ),
                 duration_ms=round((monotonic() - started) * 1000),
                 active=active,
                 detail={
-                    "price_version": self._config.price_version,
+                    "price_version": self._config.price_version
+                    if price_for_model(row_model)
+                    else "unpriced",
                     **{
                         key: metadata[key]
                         for key in ("trace_id", "span_id", "node_id")
@@ -411,13 +422,3 @@ def _response_chars(response: Any) -> int:
         for batch in getattr(response, "generations", ()) or ()
         for generation in batch
     )
-
-
-def _cost(config: LLMConfig, input_tokens: int, output_tokens: int, cached: int) -> Decimal:
-    uncached = max(0, input_tokens - cached)
-    total = (
-        Decimal(uncached) * Decimal(str(config.input_usd_per_million))
-        + Decimal(cached) * Decimal(str(config.cached_input_usd_per_million))
-        + Decimal(output_tokens) * Decimal(str(config.output_usd_per_million))
-    ) / Decimal(1_000_000)
-    return total.quantize(Decimal("0.00000001"))

@@ -215,9 +215,9 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
     token = await register(client)
     fresh = (await client.get("/api/me", headers=_auth(token))).json()
     assert fresh["runs"] == {"total": 0, "active": 0}
-    assert fresh["usage_today"] == {"cost_usd": 0.0}
+    assert fresh["usage_today"] == {"cost_cny": 0.0}
     assert fresh["quotas"]["max_concurrent_runs_per_user"] == 2
-    assert fresh["quotas"]["max_cost_usd_per_user_daily"] == 0.0
+    assert fresh["quotas"]["max_cost_cny_per_user_daily"] == 0.0
 
     from deepresearcher.service.persistence.models import Run, RunUsage
 
@@ -240,7 +240,7 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
                     category="llm",
                     component="openai",
                     status="ok",
-                    cost_usd=0.25,
+                    cost_cny=0.25,
                 ),
                 RunUsage(
                     id="usage-view-2",
@@ -248,7 +248,7 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
                     category="llm",
                     component="openai",
                     status="ok",
-                    cost_usd=7.0,
+                    cost_cny=7.0,
                 ),
                 RunUsage(
                     id="usage-view-3",
@@ -256,7 +256,7 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
                     category="search",
                     component="baidu",
                     status="ok",
-                    cost_usd=3.0,
+                    cost_cny=3.0,
                 ),
             ]
         )
@@ -265,7 +265,7 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
     view = (await client.get("/api/me", headers=_auth(token))).json()
     assert view["runs"] == {"total": 2, "active": 1}
     # 当日花费只聚合本用户的 llm 类记录:他人的行与非模型支出不计入。
-    assert view["usage_today"]["cost_usd"] == pytest.approx(0.25)
+    assert view["usage_today"]["cost_cny"] == pytest.approx(0.25)
 
 
 async def test_cross_user_access_always_404(client):

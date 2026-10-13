@@ -143,7 +143,8 @@ class Run(Base):
     cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     external_request_count: Mapped[int] = mapped_column(Integer, default=0)
     peak_llm_concurrency: Mapped[int] = mapped_column(Integer, default=0)
-    estimated_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
+    # 成本一律人民币元，价表见 deepresearcher.pricing。
+    estimated_cost_cny: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     cache_hit_count: Mapped[int] = mapped_column(Integer, default=0)
     # 缓存节省只计"少出网的外部请求"这一条口径；评测不得拿恒零的估计字段下结论。
     saved_external_request_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -198,7 +199,7 @@ class RunUsage(Base):
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
+    cost_cny: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     detail_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

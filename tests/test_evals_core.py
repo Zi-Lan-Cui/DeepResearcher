@@ -267,7 +267,7 @@ def test_process_metrics_carries_cache_and_token_fields():
             "external_request_count": 59,
             "llm_call_count": 93,
             "cache_hit_count": 12,
-            "estimated_cost_usd": 0.0,
+            "estimated_cost_cny": 0.0,
             "elapsed_ms": 1234,
         }
     )
