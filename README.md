@@ -2,17 +2,19 @@
 
 [![quality](https://github.com/Zi-Lan-Cui/deepresearcher/actions/workflows/quality.yml/badge.svg)](https://github.com/Zi-Lan-Cui/deepresearcher/actions/workflows/quality.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 
-可自部署的深度研究服务：围绕一个复杂问题，自动完成澄清、检索、精读、证据校验、撰写与审阅，交付一份每条关键结论均可追溯至出处的报告，检索与精读过程实时可见。
+可部署的深度研究服务：围绕复杂问题自动完成检索、精读、证据校验与撰写审阅，交付论点明确、结论可溯源的研究报告。无需逐篇查阅资料即可获得可用结论，核对任一论断也无需依赖信任。
 
 [快速开始](#快速开始) · [运作方式](#运作方式) · [使用](#使用) · [配置](#配置) · [开发](#开发)
 
+![首页输入研究问题开始任务，页面下方为历史研究列表](assets/screenshots/home.png)
+
 ## 特性
 
-- 证据均为对系统实际所读原文的逐字摘录；报告的关键结论附引用编号，文末来源表逐条列明标题、链接及支撑该结论的原文语句，任一结论均可核查至出处；
-- 检索与精读进度实时推送；研究在服务端排队执行，提交后关闭页面不影响进度，可随时取消，服务重启等中断后可从断点恢复；
-- 多个研究方向并行推进；审阅未通过的稿件自动打回，经补充研究或重写后再次送审；证据不足时交付部分报告，并明确列出未覆盖的内容；
-- 一次研究内重复的检索仅发起一次；网页正文按来源地址缓存，在有效时间窗内跨研究复用，重复提问无需重新抓取已读正文；
-- 全部组件自托管，任务记录、证据与报告均存储于你自己的数据库，用户并发数与单次研究的 token 用量及花费均可设定上限。
+- **每一结论均可核查**：关键结论附带引用编号，文末来源表逐条列明标题、链接及逐字摘录的原文语句，任一论断都能回溯至出处验证；
+- **报告是论述而非汇编**：全文围绕一条核心主张组织，各章节为其成立而研究、为其论证而落笔，交付的是已经形成的判断，而非需要再次消化的资料汇总；
+- **提交后即可离开**：研究方向并行推进、结果动态汇入，整体耗时接近最慢的单一方向；任务在服务端持续执行，关闭页面不影响进度，可随时取消，服务重启后从断点接续，全过程进度实时可见；
+- **投入与成本可控**：研究深度、每轮方向数与证据池规模按账号预先设定，创建研究时冻结生效；每日 token 用量与花费逐日可查，并可为单次研究设定 token 与费用上限；
+- **数据自主保管**：模型与搜索服务均使用自备凭据，任务记录、证据与报告全部存储于自有数据库；已完成研究的过程数据到期自动清理，报告永久保留。
 
 ## 快速开始
 
@@ -26,7 +28,7 @@ cp env/.env.example env/.env   # 填入模型配置 LLM_API_KEY / LLM_BASE_URL /
 docker compose up -d --build   # 一次拉起 API、Worker、Postgres 和 Redis
 ```
 
-打开 <http://localhost:8080> 注册账号并提一个研究问题：详情页会随研究推进逐阶段更新，完成后直接在页面上阅读报告、复制或导出 PDF。所有可调项都在 [env/.env.example](env/.env.example) 里逐项注释，包括研究轮数、各类预算和可选的流式进度开关。
+打开 <http://localhost:8080> 注册账号并提交一个研究问题：详情页随研究推进逐阶段更新，完成后直接在页面阅读报告、复制或导出 PDF。全部可调项在 [env/.env.example](env/.env.example) 逐项注释，含研究轮数、各类预算与可选的流式进度开关。
 
 开发模式下应用跑在宿主机上，日志与运行态直接可见：
 
@@ -60,14 +62,24 @@ flowchart LR
 
 ### 网页
 
-注册登录后输入问题；若问题不够明确，系统会先弹出一组澄清选项，回答后开始研究；详情页实时滚动进度；完成后直接阅读报告、复制或导出 PDF。
+注册登录后输入问题；若问题不够明确，系统先给出一组澄清选项，回答后开始研究。详情页实时呈现当前阶段、各研究方向的进展与证据累计数量。
+
+![详情页：阶段时间线与研究进度实时呈现](assets/screenshots/progress.png)
+
+完成后直接阅读报告、复制或导出 PDF。报告正文的关键结论均附引用编号，文末来源表逐条列明标题、链接及逐字摘录的原文语句，任一结论均可直接核对：
+
+![来源表：每条结论对应逐字摘录的原文与出处链接](assets/screenshots/quotes.png)
+
+账户页可按账号设定研究轮数、每轮方向数、单方向深度与证据池规模，并逐日呈现 token 用量与花费，缓存命中与新计算输入分色标注：
+
+![账户页：研究偏好设定与逐日 token 用量图](assets/screenshots/account.png)
 
 ### API
 
 服务本身是一组普通 HTTP 接口，网页只是第一个客户端：
 
 ```bash
-# 注册并拿到访问令牌
+# 注册并获取访问令牌
 TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/register \
   -H 'Content-Type: application/json' \
   -d '{"email":"me@example.com","password":"<好密码>"}' | jq -r .token)
@@ -95,8 +107,11 @@ curl -N http://127.0.0.1:8080/api/runs/<run_id>/events \
 | `SERVICE_JWT_SECRET` | 登录令牌签名 | 正式部署必填 | 本地试用可不填 |
 | `AGENT_MAX_RESEARCH_ROUNDS` | 研究轮数上限 | 否 | 2 |
 | `SERVICE_MAX_CONCURRENT_RUNS_PER_USER` | 单个用户同时进行的研究数 | 否 | 2 |
-| `LLM_MAX_TOKENS_PER_RUN` / `LLM_MAX_COST_USD_PER_RUN` | 单次研究的 token 与花费上限 | 否 | 0，不限制 |
+| `LLM_MAX_TOKENS_PER_RUN` / `LLM_MAX_COST_CNY_PER_RUN` | 单次研究的 token 与花费上限，花费以人民币元计 | 否 | 0，不限制 |
+| `SERVICE_RUN_TRACE_RETENTION_DAYS` | 已完成研究的过程数据保留天数，报告不受影响 | 否 | 14 |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | 执行时间线观测 | 否 | 缺任一即关闭 |
+
+模型花费由代码内置价表 `src/deepresearcher/pricing.py` 按人民币自动折算；接入新模型时在表中补一行即可，表中没有价格的模型用量照记、成本留空。
 
 ## 项目结构
 
