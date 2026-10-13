@@ -119,9 +119,8 @@ def dispatch_research(
         "research_direction": topic,
         "working_set_revision": loop_state.working_set_revision,
         "instruction": (
-            "方向已入队后台执行，本回执只代表受理。完成或失败时结果会吸收进工作集，"
-            "并以研究管理观察送达你的下一个回合。请勿对在途主题重复派发；"
-            "可继续派发互补方向、修订综合稿，或结束派发等待到达。"
+            "方向已入队后台执行，本回执只代表受理。请勿对在途主题重复派发；"
+            "可继续派发互补方向、修订综合稿，或调用 WaitDirection 收取到达的结果。"
         ),
     }
     return task, receipt, entry
@@ -178,8 +177,8 @@ def absorb_lost_registrations(
 ) -> list[tuple[dict[str, object], dict[str, object]]]:
     """崩溃欠账清算:通道有登记、进程无活任务体的方向一律判 failed 并销账。
 
-    中间件(还有模型回合要来,需差量回写通道)与节点收口 drain(回合可能已直接
-    走向 END,不会再触发中间件)都必须调用本函数——只在一处结算会漏掉后者,
+    WaitDirection(消费前先把幽灵结算成收据)与节点收口 drain(模型经 nudge 封顶后
+    仍直接结束时的最后兜底)都必须调用本函数——只在一处结算会漏掉后者,
     在途方向就无声消失。返回逐项 (方向报告, 通道差量)。
     """
     results: list[tuple[dict[str, object], dict[str, object]]] = []
@@ -200,6 +199,82 @@ def absorb_lost_registrations(
             absorb_arrival(deps, loop_state, typed_subtask, execution, merged_via="lost")
         )
     return results
+
+
+def _merge_channel_delta(delta: dict[str, object], part: dict[str, object]) -> None:
+    """把逐项吸收差量并入总差量;两个差量通道按各自形态合并,其余键后写覆盖(值同源幂等)。"""
+    for key, value in part.items():
+        if key in ("active_evidence_ids", "pending_directions"):
+            if key not in delta:
+                delta[key] = {
+                    "add": {} if key == "pending_directions" else [],
+                    "remove": [],
+                }
+            existing = delta[key]
+            assert isinstance(existing, dict)
+            incoming = value if isinstance(value, dict) else {}
+            add_key = "add" if key == "pending_directions" else "add"
+            if key == "pending_directions":
+                merged_add = existing.get(add_key)
+                assert isinstance(merged_add, dict)
+                add_update = incoming.get(add_key) or {}
+                assert isinstance(add_update, dict)
+                merged_add.update(add_update)
+            else:
+                merged_add_list = existing.get(add_key)
+                assert isinstance(merged_add_list, list)
+                existing[add_key] = sorted(
+                    set(merged_add_list) | set((incoming.get(add_key) or []))
+                )
+            merged_remove = existing.get("remove")
+            assert isinstance(merged_remove, list)
+            existing["remove"] = sorted(set(merged_remove) | set(incoming.get("remove") or []))
+        else:
+            delta[key] = value
+
+
+async def wait_for_directions(
+    deps: SupervisorDeps,
+    loop_state: SupervisorLoopState,
+    registry: dict[str, asyncio.Task],
+    *,
+    task_ids: list[str] | None = None,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """到达的唯一消费点:先欠账清算,再阻塞到至少一个到货,吸收整波已到。
+
+    仅由 WaitDirection 工具调用——方向结果由此只有一种注入形态(收据),
+    不再有中间件观察的第二入口。任务体是 total 函数,除取消外不抛;
+    指定 id 全部不在途(或已被清算)时不挂死,以现有结果即返。
+    返回 (方向报告列表, 通道差量),差量只含 merge 语义通道,由串行批的 Command 提交。
+    """
+    reports: list[dict[str, object]] = []
+    delta: dict[str, object] = {}
+    for report, lost_delta in absorb_lost_registrations(deps, loop_state, set(registry)):
+        reports.append(report)
+        _merge_channel_delta(delta, lost_delta)
+
+    if task_ids:
+        targets = [registry[tid] for tid in task_ids if tid in registry]
+    else:
+        targets = list(registry.values())
+    live = [item for item in targets if not item.done()]
+    if live:
+        await asyncio.wait(live, return_when=asyncio.FIRST_COMPLETED)
+
+    for task_id in sorted(list(registry)):
+        task = registry[task_id]
+        if not task.done():
+            continue
+        execution = task.result()
+        entry = loop_state.pending_directions.get(task_id) or {}
+        subtask = cast(SubTask, dict(entry.get("subtask") or {"id": task_id, "question": ""}))
+        registry.pop(task_id)
+        report, task_delta = absorb_arrival(
+            deps, loop_state, subtask, execution, merged_via="wait_tool"
+        )
+        reports.append(report)
+        _merge_channel_delta(delta, task_delta)
+    return reports, delta
 
 
 def _task_context(deps: SupervisorDeps, task: SubTask) -> dict[str, object]:
@@ -223,8 +298,8 @@ def absorb_arrival(
 ) -> tuple[dict[str, object], dict[str, object]]:
     """方向到达的同步收口段:absorb、销账、发事件,返回方向报告与通道差量。
 
-    段内禁引入 await(同旧 absorb 纪律)。调用方是到达中间件与节点收口 drain,
-    都在循环线程上同步执行。差量只碰 merge 语义通道;事件在此发出使
+    段内禁引入 await(同旧 absorb 纪律)。调用方是 WaitDirection 工具与节点收口
+    drain,都在循环线程上同步执行。差量只碰 merge 语义通道;事件在此发出使
     task_done 帧与"证据已入工作集"同一时刻,卡片绿色即模型可见。
     merged_via 记录到达通道:model_turn|drain|lost。
     """
@@ -377,8 +452,8 @@ def _freeze_rejection_cause(
             for entry in loop_state.pending_directions.values()
         )
         return (
-            f"仍有在途方向未返回：{running}。继续派发互补方向或修订综合稿；"
-            "到达会自动送进你的下一回合，无需等待——也可直接结束本轮，系统在收口时等齐全部方向。"
+            f"仍有在途方向未返回：{running}。调用 WaitDirection 收取到达后对齐版本再冻结；"
+            "也可继续派发互补方向，但不要在途未清零时结束本轮。"
         )
     if synthesis is None:
         return "尚无研究综合稿；先调用 ReviseResearchSynthesis 产出综合稿，再冻结。"

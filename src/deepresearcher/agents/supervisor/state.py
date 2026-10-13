@@ -181,8 +181,6 @@ class SupervisorLoopContext:
     # 派发出去的在途方向后台任务 {task_id: Task[TaskExecution]};进程级,不进通道不进 checkpoint。
     # "哪些方向欠账"的事实源是 loop_state.pending_directions(通道),这里只是执行载体。
     direction_tasks: dict[str, "asyncio.Task[TaskExecution]"] = field(default_factory=dict)
-    # ResearchComplete 因在途方向被拒后置真:下一个模型回合前等待一个到达而非空转。
-    arrival_wait_requested: bool = False
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
         """每次模型回合前从通道现值重建状态对象,替代上一批的内存对象。

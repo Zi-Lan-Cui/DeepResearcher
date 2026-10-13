@@ -1,11 +1,11 @@
-"""supervisor 混合重放合并一致性:真 AsyncPostgresSaver 上验证,可被子进程形态复用。
+"""supervisor 崩溃恢复合同:真 AsyncPostgresSaver 上验证,可被子进程形态复用。
 
 形态:max_parallel_workers=2、supervisor_max_active_evidences=2,首轮一条 AIMessage 并发派
-两个 ResearchDelegate(派发批只登记 pending,不等待方向完成);A 的后台任务先完成、经
-DirectionArrivalsMiddleware 吸收为已提交 superstep,随后 B 抛 BaseException 杀死节点,再同
-thread 恢复。恢复混合了两类写入:已提交通道的 A 吸收(journal 命中,方向体不重跑)与
-收口清算的 B 丢失判定(重执行段)。本测试锁定其合并不变式:编号按调用位置稳定、
-两方向结果互不吞、工作集上限不穿、A 的证据不因 B 的死亡被重复计入或丢失。
+两个 ResearchDelegate(派发批只登记 pending,不等待方向完成),模型经 WaitDirection 收
+A 的到达后,后台的 B 抛 BaseException 杀死节点,再同 thread 恢复。实测合同:节点失败使
+其范围内全部吸收随写回丢弃(WaitDirection 收据也不例外——内层 superstep 的通道写入只在
+节点成功返回时提交),恢复靠派发批 journal 命中不重跑方向体,欠账一律判 lost 结算。
+本测试锁定的不变式:恢复后编号按调用位置稳定、两方向结果互不吞、无残留半吸收。
 
 模块同时导出 _build_app/_MixedResearchAgent/_TwoDirectionSupervisorModel,供 SIGKILL 形态
 探针以子进程模式挂起 B(不写 __error__,观察纯外部进程死亡后的 journal 消费语义)。
@@ -31,7 +31,7 @@ class _ProcessKilled(BaseException):
 
 
 class _TwoDirectionSupervisorModel:
-    """首轮并发派两个方向;拿到两份回执后收尾。"""
+    """首轮并发派两个方向;先 WaitDirection 收第一波到货(使 A 的吸收落进已提交通道),再收尾。"""
 
     def bind_tools(self, _tools, **_kwargs):
         return self
@@ -43,6 +43,17 @@ class _TwoDirectionSupervisorModel:
             if getattr(message, "name", None) == "ResearchDelegate"
             and getattr(message, "type", None) == "tool"
         ]
+        wait_receipts = [
+            message
+            for message in messages
+            if getattr(message, "name", None) == "WaitDirection"
+            and getattr(message, "type", None) == "tool"
+        ]
+        if delegate_receipts and not wait_receipts:
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "WaitDirection", "args": {}, "id": "w1"}],
+            )
         if delegate_receipts:
             return AIMessage(content="研究结束,交回。")
         return AIMessage(
@@ -209,7 +220,8 @@ async def _drive(saver):
 
 
 def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
-    """恢复后 A(已吸收)与 B(丢失清算)并存、active 不超上限、A 证据不重不丢;编号按调用位置稳定。"""
+    """崩溃恢复:派发批 journal 命中不重跑方向体,节点内吸收(含 WaitDirection)随失败丢弃,
+    欠账在收口处全部判 lost 结算;编号稳定、两方向不互吞。"""
     saver_context = _make_saver()
     if saver_context is None:
         pytest.skip("checkpointer 未配置(非 postgresql 部署形态)")
@@ -227,12 +239,13 @@ def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 派发制下方向体是后台任务:恢复只做"已吸收保留 + 欠账清算",不重跑任何方向。
+    # 派发制合同:方向体是后台任务,其产物只有在节点成功返回时才进外层 State。
+    # 崩溃使一切节点内吸收作废——恢复不重跑(receipts/编号有 journal),只把欠账判 lost。
     assert facts["calls"] == {"A": 1, "B": 1}, facts["calls"]
     assert facts["task_count"] == 2, facts
     assert facts["task_ids"] == ["task-0001", "task-0002"], facts["task_ids"]
     assert facts["a_task_id"] == "task-0001", facts["a_task_id"]
-    assert facts["a_status"] == "completed", facts
+    assert facts["a_status"] == "failed", facts
     assert facts["b_status"] == "failed", facts
-    assert facts["active_count"] <= 2, facts
-    assert facts["evidences"] == 2, facts  # A 的两条在,不因 B 死亡丢失或翻倍
+    assert facts["evidences"] == 0, facts  # 未随成功节点提交的吸收不留残值
+    assert facts["active_count"] == 0, facts

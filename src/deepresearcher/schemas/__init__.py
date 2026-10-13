@@ -64,6 +64,7 @@ from deepresearcher.schemas.tool_args import (
     RestoreEvidence,
     ReviseResearchSynthesis,
     SearchSources,
+    WaitDirection,
     format_tool_receipt,
 )
 
@@ -114,6 +115,7 @@ __all__ = [
     "terminal_reason_text",
     "SourceProfile",
     "SupervisorStateUpdate",
+    "WaitDirection",
     "WriterDirective",
     "WriterProgress",
     "WriterResult",

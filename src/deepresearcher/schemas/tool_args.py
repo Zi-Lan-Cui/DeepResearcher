@@ -207,6 +207,15 @@ class ResearchDelegate(BaseModel):
     )
 
 
+class WaitDirection(BaseModel):
+    """等待在途方向到达并收取方向报告；无在途时返回提示，不挂死。"""
+
+    task_ids: list[str] = Field(
+        default_factory=list,
+        description="要等待的方向 task_id 列表；留空表示等待任意一个在途方向到货。",
+    )
+
+
 class ResearchComplete(BaseModel):
     """冻结最新研究综合稿并终止研究阶段。"""
 

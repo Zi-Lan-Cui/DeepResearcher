@@ -222,8 +222,8 @@ def test_working_set_snapshot_resolves_direction_titles_both_forms() -> None:
 class SupervisorLLM:
     """工具调用协议的 Supervisor fake:按消息历史无状态决策,并发安全。
 
-    - 历史中没有研究工具结果(以 ToolMessage 载荷标记 "research_direction")时:派发 ResearchDelegate;
-    - 已有研究工具结果时:按 complete 参数决定输出 ResearchComplete(或继续派发)。
+    回合节奏与生产契约一致:派发 → WaitDirection 收到达(收据含 "directions")→
+    Revise → Complete;派发回执本身不含证据,不触发修订分支。
 
     bind_tools 返回的模型直接返回带 tool_calls 的 AIMessage。
     """
@@ -265,8 +265,21 @@ class SupervisorLLM:
                     }
                 ],
             )
+        has_wait_receipt = any(
+            isinstance(message, ToolMessage) and message.name == "WaitDirection"
+            for message in messages
+        )
+        has_delegate_receipt = any(
+            isinstance(message, ToolMessage) and message.name == "ResearchDelegate"
+            for message in messages
+        )
+        if has_delegate_receipt and not has_wait_receipt:
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
+            )
         if (self.complete_args is not None or self.ready) and (
-            "research_direction" in history or not self.delegate_topics
+            '"directions":' in history or not self.delegate_topics
         ):
             evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
             if evidence_ids:
@@ -383,9 +396,9 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
     assert result["supervisor_next"] == "writer"
     context = [str(message.content) for message in result["supervisor_messages"]]
     assert any("研究委托" in message for message in context)
-    # 派发批回执只表受理;方向报告随到达观察送进模型,含结论与该方向带回的 Evidence claim。
+    # 派发批回执只表受理;方向报告经 WaitDirection 收据送达,含结论与该方向带回的 Evidence claim。
     assert len([message for message in context if '"status": "dispatched"' in message]) == 2
-    arrivals = [message for message in context if "方向到达" in message]
+    arrivals = [message for message in context if '"directions":' in message]
     assert len(arrivals) == 1
     assert "task-0001" in arrivals[0] and "task-0002" in arrivals[0]
     assert all("直接事实" in message for message in arrivals)
@@ -568,8 +581,13 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                         }
                     ],
                 )
+            if not evidence_ids:
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
+                )
             if '"status": "rejected"' not in history:
-                # 工作集已由 delegate 推进到 revision=1，故意引用过期的综合稿。
+                # 工作集已由 wait 吸收推进到 revision=1，故意引用过期的综合稿。
                 return AIMessage(
                     content="",
                     tool_calls=[
@@ -717,8 +735,14 @@ def test_revise_synthesis_rejects_stale_working_set_revision():
                         }
                     ],
                 )
+            evidence_ids = list(dict.fromkeys(re.findall(r'"evidence_id":\s*"([^"]+)"', history)))
+            if not evidence_ids:
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
+                )
             if '"status": "stale"' not in history:
-                # delegate 的 absorb 已把工作集推进到 1；故意仍提交派发前看到的 0。
+                # wait 的 absorb 已把工作集推进到 1；故意仍提交派发前看到的 0。
                 return AIMessage(
                     content="",
                     tool_calls=[
@@ -808,6 +832,11 @@ def test_revise_synthesis_rejects_evidence_outside_active_working_set():
                             "id": "call_delegate",
                         }
                     ],
+                )
+            if not evidence_ids:
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": "WaitDirection", "args": {}, "id": "call_wait"}],
                 )
             if '"released_evidence_ids"' not in history:
                 return AIMessage(
@@ -1627,143 +1656,167 @@ def test_research_delegate_reentry_creates_single_task():
     asyncio.run(scenario())
 
 
-def _arrival_runtime(context):
-    return SimpleNamespace(context=context)
+def _pending_entry(task_id: str, question: str, title: str) -> dict:
+    sequence = int(task_id.split("-")[1])
+    subtask = {
+        "id": task_id,
+        "run_id": "run-g",
+        "question": question,
+        "display_title": title,
+        "round": 1,
+        "sequence": sequence,
+        "worker_id": f"w-{task_id}",
+        "worker_index": sequence,
+        "parent_task_id": "",
+        "operation_id": f"o-{task_id}",
+    }
+    return PendingDirection(
+        task_id=task_id, subtask=subtask, display_title=title, round=1
+    ).model_dump()
 
 
-def test_arrivals_middleware_absorbs_completed_directions():
-    from deepresearcher.agents.middleware.direction_arrivals import DirectionArrivalsMiddleware
+def _capturing_deps(supervisor, events: list):
+    def capture(event_type, payload, **_kwargs):
+        events.append((event_type, payload))
+
+    return dataclasses.replace(supervisor._deps, emit=capture)
+
+
+def test_wait_direction_blocks_then_returns_reports():
+    """唯一消费口:无到货即挂起,到货后收据含完整方向报告并销账。"""
 
     async def scenario():
-        agent = FixedResearchAgent()
+        events: list[tuple[str, dict]] = []
+        agent = _GatedResearchAgent()
         supervisor, context = _delegate_context_for(agent)
-        entry = PendingDirection(
-            task_id="task-0001",
-            subtask={
-                "id": "task-0001",
-                "run_id": "run-g",
-                "question": "方向",
-                "display_title": "短题",
-                "round": 1,
-                "sequence": 1,
-                "worker_id": "w",
-                "worker_index": 1,
-                "parent_task_id": "",
-                "operation_id": "o",
-            },
-            display_title="短题",
-            round=1,
-        ).model_dump()
+        deps = _capturing_deps(supervisor, events)
+        entry = _pending_entry("task-0001", "等待方向", "等待")
         context.loop_state.pending_directions = {"task-0001": entry}
-        execution = await supervisor._deps.research_agent.run(
-            entry["subtask"]  # type: ignore[arg-type]
+        context.direction_tasks["task-0001"] = asyncio.ensure_future(
+            services._execute_research_task(deps, entry["subtask"])  # type: ignore[arg-type]
         )
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        future.set_result(execution)
-        context.direction_tasks["task-0001"] = future  # type: ignore[assignment]
 
-        updates = await DirectionArrivalsMiddleware().abefore_model({}, _arrival_runtime(context))
-        assert updates is not None
-        assert "方向到达" in str(updates["messages"][0].content)
-        assert updates["pending_directions"] == {"add": {}, "remove": ["task-0001"]}
+        waiter = asyncio.ensure_future(
+            services.wait_for_directions(deps, context.loop_state, context.direction_tasks)
+        )
+        await asyncio.sleep(0.05)
+        assert not waiter.done()  # 门未开:唯一合法的挂起点就是 wait
+
+        agent.gate.set()
+        reports, delta = await waiter
+        assert [item["task_id"] for item in reports] == ["task-0001"]
+        assert reports[0]["evidence_count"] == 1
+        assert delta["pending_directions"] == {"add": {}, "remove": ["task-0001"]}
         assert [item.task_id for item in context.loop_state.task_results] == ["task-0001"]
-        assert len(context.loop_state.evidences) == 1
+        arrival = next(
+            payload for event_type, payload in events if event_type == "direction_arrival_merged"
+        )
+        assert arrival["merged_via"] == "wait_tool"
         assert context.direction_tasks == {}
 
     asyncio.run(scenario())
 
 
-def test_arrivals_middleware_marks_lost_direction_after_restart():
-    """通道有登记、进程无任务体:判 failed 销账,事件对成 STARTED 缺失容忍的收束语义。"""
-    from deepresearcher.agents.middleware.direction_arrivals import DirectionArrivalsMiddleware
+def test_wait_direction_without_inflight_returns_hint():
+    async def scenario():
+        supervisor, context = _delegate_context_for(FixedResearchAgent())
+        reports, delta = await services.wait_for_directions(
+            context.deps, context.loop_state, context.direction_tasks
+        )
+        assert reports == []
+        assert delta == {}
+
+    asyncio.run(scenario())
+
+
+def test_wait_direction_settles_lost_entries_before_waiting():
+    """通道有登记、进程无任务体:wait 先清算欠账(merged_via=lost),绝不挂死等幽灵。"""
 
     async def scenario():
         events: list[tuple[str, dict]] = []
-
-        def capture(event_type, payload, **_kwargs):
-            events.append((event_type, payload))
-
-        agent = FixedResearchAgent()
-        supervisor, context = _delegate_context_for(agent)
-        context.deps = dataclasses.replace(supervisor._deps, emit=capture)
+        supervisor, context = _delegate_context_for(FixedResearchAgent())
+        deps = _capturing_deps(supervisor, events)
         context.loop_state.pending_directions = {
-            "task-0001": PendingDirection(
-                task_id="task-0001",
-                subtask={
-                    "id": "task-0001",
-                    "run_id": "run-g",
-                    "question": "丢失方向",
-                    "display_title": "丢失",
-                    "round": 1,
-                    "sequence": 1,
-                    "worker_id": "w",
-                    "worker_index": 1,
-                    "parent_task_id": "",
-                    "operation_id": "o",
-                },
-                display_title="丢失",
-                round=1,
-            ).model_dump()
+            "task-0001": _pending_entry("task-0001", "丢失方向", "丢失")
         }
-
-        updates = await DirectionArrivalsMiddleware().abefore_model({}, _arrival_runtime(context))
-        assert updates is not None
-        assert "丢失" in str(updates["messages"][0].content)
-        names = [event_type for event_type, _ in events]
-        assert "research_task_failed" in names
+        reports, delta = await asyncio.wait_for(
+            services.wait_for_directions(deps, context.loop_state, context.direction_tasks),
+            timeout=1,
+        )
+        assert reports[0]["status"] == "failed"
+        assert "丢失" in reports[0]["research_direction"] or reports[0]["failures"]
+        assert delta["pending_directions"]["remove"] == ["task-0001"]
         arrival = next(
             payload for event_type, payload in events if event_type == "direction_arrival_merged"
         )
         assert arrival["merged_via"] == "lost"
-        assert context.loop_state.pending_directions == {}
         assert context.loop_state.task_results[0].execution_status == "failed"
 
     asyncio.run(scenario())
 
 
-def test_arrivals_wait_flag_blocks_until_first_completion():
-    """等待模式:无已到结果时中间件挂起,直到一个方向完成再吸收进模型回合。"""
-    from deepresearcher.agents.middleware.direction_arrivals import DirectionArrivalsMiddleware
+class _ExitAttemptThenWaitModel:
+    """派完先以纯文本逃逸;被 nudge 退回后改调 WaitDirection;收据到手再收尾。"""
 
-    async def scenario():
-        agent = _GatedResearchAgent()
-        supervisor, context = _delegate_context_for(agent)
-        entry = PendingDirection(
-            task_id="task-0001",
-            subtask={
-                "id": "task-0001",
-                "run_id": "run-g",
-                "question": "等待方向",
-                "display_title": "等待",
-                "round": 1,
-                "sequence": 1,
-                "worker_id": "w",
-                "worker_index": 1,
-                "parent_task_id": "",
-                "operation_id": "o",
-            },
-            display_title="等待",
-            round=1,
-        ).model_dump()
-        context.loop_state.pending_directions = {"task-0001": entry}
-        context.arrival_wait_requested = True
-        task = asyncio.ensure_future(
-            services._execute_research_task(context.deps, entry["subtask"])  # type: ignore[arg-type]
+    def bind_tools(self, _tools, **_kwargs):
+        return self
+
+    async def ainvoke(self, messages):
+        saw_delegate = any(
+            getattr(m, "name", None) == "ResearchDelegate" and getattr(m, "type", None) == "tool"
+            for m in messages
         )
-        context.direction_tasks["task-0001"] = task
-        middleware_task = asyncio.ensure_future(
-            DirectionArrivalsMiddleware().abefore_model({}, _arrival_runtime(context))
+        saw_wait = any(
+            getattr(m, "name", None) == "WaitDirection" and getattr(m, "type", None) == "tool"
+            for m in messages
         )
-        await asyncio.sleep(0.05)
-        assert not middleware_task.done()  # 门未开:中间件挂起等待,模型不被空转调用
+        nudged = any("在途方向未返回" in str(getattr(m, "content", "")) for m in messages)
+        if saw_wait:
+            return AIMessage(content="已到齐，交回。")
+        if not saw_delegate:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ResearchDelegate",
+                        "args": {"display_title": "延迟", "research_topic": "端到端延迟"},
+                        "id": "d1",
+                    }
+                ],
+            )
+        if nudged:
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "WaitDirection", "args": {}, "id": "w1"}],
+            )
+        return AIMessage(content="我以为可以直接结束。")
 
-        agent.gate.set()
-        updates = await middleware_task
-        assert updates is not None
-        assert updates["pending_directions"]["remove"] == ["task-0001"]
-        assert context.arrival_wait_requested is False  # 收口后标志复位
 
-    asyncio.run(scenario())
+def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
+    """有欠账的文本结束被 submission_guard 拦回(不新建中间件,复用收尾提醒);
+    模型改用 WaitDirection 后正常收尾,结果经 wait_tool 吸收而非 drain 兜底。"""
+    from deepresearcher.observability.events import JsonlSink
+    from fakes import event_types
+
+    sink = JsonlSink(tmp_path / "events.jsonl")
+    supervisor = ResearchSupervisor(
+        _ExitAttemptThenWaitModel(),
+        AgentConfig(max_research_rounds=1, max_subtasks_per_round=1),
+        research_agent=FixedResearchAgent(),
+        event_sink=sink,
+    )
+    result = asyncio.run(
+        supervisor.run({"query": "端到端延迟", "clarified_query": "端到端延迟", "evidences": []})
+    )
+
+    types = event_types(tmp_path / "events.jsonl")
+    assert "supervisor_tool_loop_nudged" in types
+    assert "direction_arrival_merged" in types
+    assert [item.task_id for item in result["task_results"]] == ["task-0001"]
+    assert result["task_results"][0].execution_status == "completed"
+    # 收据是到达的唯一注入形态:历史里有 WaitDirection 的 ToolMessage。
+    context = [str(m.content) for m in result["supervisor_messages"]]
+    assert any("端到端延迟" in message and "evidence" in message for message in context)
 
 
 def test_freeze_rejected_while_directions_running():

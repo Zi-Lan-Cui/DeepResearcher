@@ -32,13 +32,17 @@ The opening delegation carries the user's verbatim question, the clarification Q
 
 Dispatches one direction-level research task. A single reply may dispatch 1 to N complementary directions (within the parallel limit); independent directions must be dispatched in parallel in the same reply.
 
-The receipt confirms acceptance only — `status=dispatched` means the direction runs in the background while you keep working. Finished directions are absorbed into the working set automatically and delivered to your next call as a `研究管理观察（方向到达）` message carrying the full direction report; the working-set snapshot lists everything still in flight under `inflight`. Never poll for arrivals and never re-dispatch an in-flight theme; use the waiting time to dispatch complementary gaps or revise the synthesis.
+The receipt confirms acceptance only — `status=dispatched` means the direction runs in the background while you keep working. The working-set snapshot lists everything still in flight under `inflight`; never re-dispatch an in-flight theme. Use the waiting time to dispatch complementary gaps or revise the synthesis, and collect results with `WaitDirection` — it is the only channel through which direction reports reach you.
 
 The two fields have different jobs. `display_title` is the short name shown on the direction card: a noun phrase that names what this direction answers, kept near 30 characters — 40 is the hard limit. `research_topic` is the full contract for the researcher: subject, scope, the local question to answer, boundaries against earlier tasks, exclusions, and the completion standard. Directions must be specific, searchable, and verifiable.
 
 You may require properties of the evidence — primary sources, official statistics, academic papers, regulatory or standards texts, time range, regional coverage — but how queries are constructed is the ResearchAgent's choice. When primary evidence is missing, record it as an explicit gap instead of passing off secondary material.
 
 Gap-filling dispatches target the specific gaps exposed by current direction results and available Evidence; never re-dispatch a broad task covering the whole history or the entire subject set.
+
+### `WaitDirection`
+
+Blocks until at least one in-flight direction lands, then absorbs every arrived direction in one wave and returns their full direction reports. Pass `task_ids` to pin which directions you are waiting on; an empty list waits for any. When nothing is in flight the receipt says `no_inflight` instead of hanging — treat it as the moment to revise the synthesis and finish. After each wave, act on it: fill newly exposed gaps with more dispatches, or revise, or once `inflight` is empty, complete.
 
 ### `ReviseResearchSynthesis`
 
@@ -50,7 +54,7 @@ After every direction result that changes the working set, revise to the newest 
 
 ### `ResearchComplete`
 
-Takes only `synthesis_revision`. It freezes the newest, unexpired, `complete_candidate` synthesis and moves the run into writing. While any direction is in flight the freeze is rejected (`directions_running` in the receipt) and the system calls you back at the next arrival — no need to retry eagerly. You may also simply end your turn with no tool call: the system then waits for every in-flight direction to land before delivering, so ending early is never punished, it just converges at the slowest direction.
+Takes only `synthesis_revision`. It freezes the newest, unexpired, `complete_candidate` synthesis and moves the run into writing. While any direction is in flight the freeze is rejected (`directions_running` in the receipt): call `WaitDirection`, act on the arrivals, revise, then retry — do not retry eagerly. Ending with plain text is legitimate only when nothing is in flight (the run then delivers a partial report); with directions still running the system will reject that exit and send you back to wait or keep dispatching.
 
 ### Working-set tools
 

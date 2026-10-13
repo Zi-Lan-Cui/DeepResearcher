@@ -27,6 +27,7 @@ from deepresearcher.schemas import (
     ResearchDelegate,
     RestoreEvidence,
     ReviseResearchSynthesis,
+    WaitDirection,
     format_tool_receipt,
 )
 
@@ -101,6 +102,28 @@ def build_supervisor_tools() -> list[BaseTool]:
             },
         )
 
+    @tool("WaitDirection", args_schema=WaitDirection)
+    async def wait_direction(
+        task_ids: list[str],
+        runtime: ToolRuntime[SupervisorLoopContext],
+    ) -> Command:
+        """等待在途方向到达并收取其方向报告；无在途时返回提示，不挂死。"""
+        ctx = runtime.context
+        reports, delta = await services.wait_for_directions(
+            ctx.deps, ctx.loop_state, ctx.direction_tasks, task_ids=list(task_ids or [])
+        )
+        payload: dict[str, object] = {
+            "status": "completed" if reports else "no_inflight",
+            "directions": reports,
+            "working_set_revision": ctx.loop_state.working_set_revision,
+            "inflight": sorted(ctx.loop_state.pending_directions),
+        }
+        if not reports:
+            payload["instruction"] = (
+                "没有在途方向。请按当前工作集修订综合稿后 ResearchComplete，或继续派发补缺口。"
+            )
+        return _channel_command(runtime, payload, tool_name="WaitDirection", channel_update=delta)
+
     # 不设 return_direct、不用 Command 做循环控制:实测 Command(goto) 会跳过中间件
     # 流水线,反复拒绝时一路运行到 recursion 上限报错。两个分支都回 plain 回执,
     # 默认边自然把拒绝送回模型自行修正;接受后由 SubmittedExitMiddleware 的 jump_to
@@ -114,9 +137,6 @@ def build_supervisor_tools() -> list[BaseTool]:
         """冻结最新且未过期的研究综合稿；被拒则按回执 rejection_cause 处理。"""
         ctx = runtime.context
         result = services.freeze_synthesis(ctx.loop_state, synthesis_revision, reason)
-        if result.get("directions_running"):
-            # 被在途方向拒绝:下一个模型回合前先等一个到达,不空转重试。
-            ctx.arrival_wait_requested = True
         return _channel_command(
             runtime,
             result,
@@ -232,6 +252,7 @@ def build_supervisor_tools() -> list[BaseTool]:
 
     return [
         research_delegate,
+        wait_direction,
         revise_research_synthesis,
         research_complete,
         read_working_set,

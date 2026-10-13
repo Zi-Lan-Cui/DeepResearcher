@@ -17,9 +17,9 @@ from deepresearcher.agents.middleware import (
     LIMIT_MESSAGE_MARKER,
     LoopStateRebuildMiddleware,
     MiddlewareProfile,
+    SubmissionGuard,
     build_agent_middleware,
 )
-from deepresearcher.agents.middleware.direction_arrivals import DirectionArrivalsMiddleware
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
@@ -69,6 +69,7 @@ SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
         "RestoreEvidence",
         "ReviseResearchSynthesis",
         "ResearchComplete",
+        "WaitDirection",
     }
 )
 
@@ -126,7 +127,6 @@ class ResearchSupervisor:
                 Any,
                 [
                     LoopStateRebuildMiddleware(),
-                    DirectionArrivalsMiddleware(),
                     *build_agent_middleware(
                         MiddlewareProfile(
                             agent_name="Supervisor",
@@ -138,6 +138,19 @@ class ResearchSupervisor:
                             retry_tools=[["ResearchDelegate"]],
                             serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
                             tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
+                            # 有欠账的文本结束不算合法收尾:派完就跑会绕开模型对到达结果的处置,
+                            # 退回要求 WaitDirection/续派;封顶放行后仍由 drain 收口,不死锁。
+                            submission_guard=SubmissionGuard(
+                                nudge_message=(
+                                    "仍有在途方向未返回：调用 WaitDirection 收取到达，"
+                                    "或继续派发补缺口；在途未清零不要以纯文本结束本轮。"
+                                ),
+                                submitted_probe=lambda ctx: (
+                                    not getattr(ctx, "loop_state", None)
+                                    or not ctx.loop_state.pending_directions
+                                ),
+                                max_nudges=2,
+                            ),
                             # 收束信号读通道 completed_synthesis,与崩溃恢复共用同一事实源。
                             exit_probe=lambda _ctx, state: bool(
                                 state.get("completed_synthesis") is not None
@@ -299,7 +312,7 @@ class ResearchSupervisor:
         残余任务交 finally 终止。
         """
         registry = loop_context.direction_tasks
-        # 崩溃恢复后若模型不再被调用,中间件没机会跑——欠账在收口处同样结算。
+        # nudge 封顶后模型仍直接结束、或崩溃恢复后循环不再进模型:欠账在收口处结算。
         for _report, _delta in services.absorb_lost_registrations(
             loop_context.deps, loop_state, set(registry)
         ):
