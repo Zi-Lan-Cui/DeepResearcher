@@ -126,17 +126,21 @@ async def _drive_two_directions(saver):
 
     thread = "itest-" + uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread}}
-    for attempt in range(2):
-        try:
-            await app.ainvoke({"done": False} if attempt == 0 else None, config)
-        except BaseException:
-            pass
+    try:
+        for attempt in range(2):
+            try:
+                await app.ainvoke({"done": False} if attempt == 0 else None, config)
+            except BaseException:
+                pass
 
-    nested_ns = set()
-    async for checkpoint_tuple in saver.alist(config):
-        ns = (checkpoint_tuple.config or {}).get("configurable", {}).get("checkpoint_ns", "")
-        if ns:
-            nested_ns.add(ns)
+        nested_ns = set()
+        async for checkpoint_tuple in saver.alist(config):
+            ns = (checkpoint_tuple.config or {}).get("configurable", {}).get("checkpoint_ns", "")
+            if ns:
+                nested_ns.add(ns)
+    finally:
+        # 演示同库不留测试线程:断言失败也要回收,否则每次跑批都往生产 checkpoint 里漏行。
+        await saver.adelete_thread(thread)
     return counters["evidence"], nested_ns, thread
 
 

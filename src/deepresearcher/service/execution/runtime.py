@@ -8,6 +8,8 @@ http_client 仅 role="worker" 时创建。本文件保留的 Worker 独有差异
 
 from __future__ import annotations
 
+import asyncio
+import random
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -19,7 +21,7 @@ from deepresearcher.graph import build_graph
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.coordination import WORKER_STARTUP_RECOVERY_LOCK_ID
 from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.execution.executor import RunExecutor, prune_event_jsonl
+from deepresearcher.service.execution.executor import RunExecutor
 from deepresearcher.service.execution.queue import PostgresRunQueue, RunWork
 from deepresearcher.service.execution.telemetry import (
     configure_tracer_provider,
@@ -31,12 +33,16 @@ from deepresearcher.service.persistence.advisory_lock import held_session_lock
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.preview.protocol import EphemeralEventBus
+from deepresearcher.service.retention import prune_event_jsonl, sweep_run_traces
 from deepresearcher.service.runs.transitions import apply_transition
 from deepresearcher.service.runtime_stack import build_runtime_stack
 from deepresearcher.service.settings import ServiceConfig, get_service_config
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 logger = get_logger("deepresearcher.service.execution.runtime")
+
+# 保留清扫循环首轮延迟:等连接池与启动归类收口,随机抖动另防副本齐动。
+_FIRST_SWEEP_DELAY_SECONDS = 60
 
 
 class WorkerRuntime:
@@ -58,6 +64,8 @@ class WorkerRuntime:
         self._session_factory = session_factory
         self._hub = hub
         self._checkpointer = checkpointer
+        self._config = config
+        self._retention_task: asyncio.Task[None] | None = None
         self.usage_store = UsageStore(session_factory)
         self.llm_gate = CapacityGate(settings.llm.max_concurrent_requests)
         self.llm_rate_limiter = ProviderRateLimiter(
@@ -103,6 +111,7 @@ class WorkerRuntime:
 
     async def start(self) -> None:
         await self.worker.start()
+        self._start_retention_loop()
 
     async def wake(self) -> None:
         await self.worker.wake()
@@ -111,7 +120,55 @@ class WorkerRuntime:
         """跨进程取消的快速路径：先回查队列行再行动。"""
         await self.worker.cancel_if_requested(run_id)
 
+    def _start_retention_loop(self) -> None:
+        config = self._config
+        if config.run_trace_retention_days <= 0 and config.jsonl_retention_days <= 0:
+            return
+        self._retention_task = asyncio.create_task(
+            self._retention_loop(), name=f"retention-sweep-{self.worker.worker_id}"
+        )
+
+    async def _retention_loop(self) -> None:
+        """保留期清扫的常驻循环：首轮短延迟后错峰，此后按配置间隔。
+
+        首轮不等满一个间隔，让重启也起到清淤作用；随机抖动防多副本齐动。
+        清扫与在线执行争用同一 DB 是设计内的：批次小、幂等、advisory lock
+        互斥，任何一轮失败只等下一轮，不影响在线路径。
+        """
+        config = self._config
+        logger.info(
+            "retention_loop_started trace_days=%d jsonl_days=%d interval_seconds=%d",
+            config.run_trace_retention_days,
+            config.jsonl_retention_days,
+            config.retention_sweep_interval_seconds,
+        )
+        delay_seconds = _FIRST_SWEEP_DELAY_SECONDS + random.uniform(0.0, 30.0)
+        try:
+            while True:
+                await asyncio.sleep(delay_seconds)
+                delay_seconds = config.retention_sweep_interval_seconds
+                try:
+                    summary = await sweep_run_traces(
+                        self._session_factory,
+                        self._checkpointer,
+                        retention_days=config.run_trace_retention_days,
+                    )
+                    pruned_files = prune_event_jsonl(
+                        config.service_log_dir / "events", config.jsonl_retention_days
+                    )
+                except Exception:  # noqa: BLE001 - 瞬断下轮重试，清扫不得波及在线与关停
+                    logger.warning("retention_sweep_failed", exc_info=True)
+                    continue
+                if summary or pruned_files:
+                    logger.info("retention_sweep summary=%s jsonl_files=%d", summary, pruned_files)
+        except asyncio.CancelledError:
+            return
+
     async def shutdown(self) -> None:
+        if self._retention_task is not None:
+            self._retention_task.cancel()
+            await asyncio.gather(self._retention_task, return_exceptions=True)
+            self._retention_task = None
         await self.worker.shutdown()
         self.executor.shutdown_langfuse()
 
@@ -238,11 +295,8 @@ async def worker_lifespan(
     # 先于 RunExecutor(首次 Langfuse())装配全局 provider,让 langfuse 接管同一棵树。
     configure_tracer_provider(service_config)
     async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:
-        pruned = prune_event_jsonl(
-            service_config.service_log_dir / "events", service_config.jsonl_retention_days
-        )
-        if pruned:
-            logger.info("jsonl_event_logs_pruned count=%d", pruned)
+        # 保留期清扫(jsonl + run 过程数据)统一由 WorkerRuntime 的背景循环承担,
+        # 启动路径不再各自做一次性清理。
         worker = WorkerRuntime(
             settings=engine_settings,
             session_factory=stack.session_factory,

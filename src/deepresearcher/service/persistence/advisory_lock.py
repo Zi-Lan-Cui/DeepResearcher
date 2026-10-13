@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import text
 
 _XACT_LOCK = text("SELECT pg_advisory_xact_lock(:lock_id)")
+_XACT_TRY_LOCK = text("SELECT pg_try_advisory_xact_lock(:lock_id)")
 _SESSION_LOCK = text("SELECT pg_advisory_lock(:lock_id)")
 _SESSION_UNLOCK = text("SELECT pg_advisory_unlock(:lock_id)")
 
@@ -34,6 +35,18 @@ async def acquire_xact_lock(session_or_connection: Any, key: int) -> None:
     """取事务级 advisory 锁;非 PG 上空操作(各调用点的进程内锁负责降级)。"""
     if _is_postgres(session_or_connection):
         await session_or_connection.execute(_XACT_LOCK, {"lock_id": key})
+
+
+async def try_acquire_xact_lock(session_or_connection: Any, key: int) -> bool:
+    """非阻塞事务级 advisory 锁:抢到 True,已被占 False;非 PG 恒 True(单进程)。
+
+    周期清扫用——拿不到锁的副本本轮直接跳过,不与持有者排队,
+    否则 N 个 worker 会在锁上串成一条比清扫本身更长的队。
+    """
+    if not _is_postgres(session_or_connection):
+        return True
+    result = await session_or_connection.execute(_XACT_TRY_LOCK, {"lock_id": key})
+    return bool(result.scalar())
 
 
 @asynccontextmanager

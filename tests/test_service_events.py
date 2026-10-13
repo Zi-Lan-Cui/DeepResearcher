@@ -305,7 +305,7 @@ async def test_prune_event_jsonl_by_mtime(tmp_path):
     import os
     import time as _time
 
-    from deepresearcher.service.execution.executor import prune_event_jsonl
+    from deepresearcher.service.retention import prune_event_jsonl
 
     events = tmp_path / "events"
     events.mkdir()

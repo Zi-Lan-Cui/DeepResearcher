@@ -61,6 +61,10 @@ class ServiceConfig:
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
     jsonl_events: bool = True
     jsonl_retention_days: int = 14
+    # 终态 run 过程数据(events/usage 行 + checkpoint 线程)的保留窗口与清扫间隔;
+    # 报告与 runs 行不在清除范围。retention_days=0 关闭清扫。
+    run_trace_retention_days: int = 14
+    retention_sweep_interval_seconds: int = 21_600
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_base_url: str = ""
@@ -127,6 +131,10 @@ def get_service_config() -> ServiceConfig:
         service_log_dir=project_path_env("SERVICE_LOG_DIR", _PROJECT_ROOT / "var" / "service"),
         jsonl_events=_bool_env("SERVICE_JSONL_EVENTS", True),
         jsonl_retention_days=max(0, _int_env("SERVICE_JSONL_RETENTION_DAYS", 14)),
+        run_trace_retention_days=max(0, _int_env("SERVICE_RUN_TRACE_RETENTION_DAYS", 14)),
+        retention_sweep_interval_seconds=max(
+            60, _int_env("SERVICE_RETENTION_SWEEP_INTERVAL_SECONDS", 21_600)
+        ),
         langfuse_public_key=_env("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=_env("LANGFUSE_SECRET_KEY"),
         langfuse_base_url=_env("LANGFUSE_BASE_URL"),

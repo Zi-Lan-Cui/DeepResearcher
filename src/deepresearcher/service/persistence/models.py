@@ -9,12 +9,29 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Run.status 用普通 str 而非枚举/CHECK 约束:增删状态不触发 ALTER。
 # 终态是唯一需要跨层共识的子集——SSE 兜底、claim 排除、租约结算共用这一份清单。
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
+_RETENTION_SWEEP_PREDICATE = text(
+    "status IN ('"
+    + "', '".join(TERMINAL_STATUSES)
+    + "') AND finished_at IS NOT NULL AND retention_pruned_at IS NULL"
+)
 
 
 def utcnow() -> datetime:
@@ -56,6 +73,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # 个人研究偏好整份集(账户页"研究偏好"保存);生效值 = 服务器默认 ⊕ 此列 ⊕ 创建时冻结。
+    preferences: Mapped[dict | None] = mapped_column(JSON)
 
     runs: Mapped[list["Run"]] = relationship(back_populates="user")
 
@@ -74,6 +93,15 @@ class LoginThrottle(Base):
 
 class Run(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        # retention sweep 只需"终态、已到期、未清理"这一窄集;两侧方言都支持部分索引。
+        Index(
+            "ix_runs_retention_sweep",
+            "finished_at",
+            postgresql_where=_RETENTION_SWEEP_PREDICATE,
+            sqlite_where=_RETENTION_SWEEP_PREDICATE,
+        ),
+    )
 
     # 文本主键 "run-<hex>"：与引擎 run_id 同源，避免自增 id 泄露运行总量。
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -90,11 +118,17 @@ class Run(Base):
     report_markdown: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(String(160))
     citations_json: Mapped[list | None] = mapped_column(JSON)
+    # 创建时刻冻结的个人偏好全量快照:run 一生用它,用户中途改偏好不回溯;
+    # resume 从本行重读同一份,不取用户现值。键为 AgentConfig 字段名。
+    preferences_snapshot: Mapped[dict | None] = mapped_column(JSON)
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # retention sweep 打标：终态且过期的 run 清完过程数据后置此，报告本体与行不删。
+    # 部分索引 ix_runs_retention_sweep 靠它把"待清理"候选集压成窄集，重扫成本 O(1)。
+    retention_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(96), index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0)

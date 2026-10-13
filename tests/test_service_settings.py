@@ -31,6 +31,8 @@ def _clean_env(monkeypatch, tmp_path):
         "SERVICE_LOGIN_BLOCK_SECONDS",
         "SERVICE_FORWARDED_ALLOW_IPS",
         "SERVICE_PORT",
+        "SERVICE_RUN_TRACE_RETENTION_DAYS",
+        "SERVICE_RETENTION_SWEEP_INTERVAL_SECONDS",
         "APP_ENV",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -59,6 +61,9 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert config.max_global_queued_runs == 100
     assert config.worker_lease_seconds == 60
     assert config.worker_heartbeat_seconds == 20
+    assert config.jsonl_retention_days == 14
+    assert config.run_trace_retention_days == 14
+    assert config.retention_sweep_interval_seconds == 21_600
     assert config.worker_poll_seconds == 15.0
     assert config.redis_preview_enabled is False
     assert config.redis_url == "redis://127.0.0.1:6379/0"
@@ -88,8 +93,12 @@ def test_env_overrides_are_clamped(_clean_env, monkeypatch):
     monkeypatch.setenv("SERVICE_WORKER_POLL_SECONDS", "0")
     monkeypatch.setenv("SERVICE_REDIS_PREVIEW_ENABLED", "true")
     monkeypatch.setenv("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", "0")
+    monkeypatch.setenv("SERVICE_RUN_TRACE_RETENTION_DAYS", "-5")
+    monkeypatch.setenv("SERVICE_RETENTION_SWEEP_INTERVAL_SECONDS", "1")
     config = get_service_config()
     assert config.token_ttl_hours == 1
+    assert config.run_trace_retention_days == 0
+    assert config.retention_sweep_interval_seconds == 60
     assert config.max_concurrent_runs_per_user == 2
     assert config.worker_poll_seconds == 0.05
     assert config.redis_preview_enabled is True

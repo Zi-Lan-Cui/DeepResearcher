@@ -200,26 +200,30 @@ async def _drive(saver):
 
     thread = "e2e-" + uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread}}
-    killed = False
     try:
-        await app.ainvoke({"done": False}, config)
-    except _ProcessKilled:
-        killed = True
-    # 执行器恢复用的正是 astream(None)+同 thread。
-    async for _ in app.astream(None, config=config):
-        pass
+        killed = False
+        try:
+            await app.ainvoke({"done": False}, config)
+        except _ProcessKilled:
+            killed = True
+        # 执行器恢复用的正是 astream(None)+同 thread。
+        async for _ in app.astream(None, config=config):
+            pass
 
-    result = outcome.get("result")
-    return {
-        "killed": killed,
-        "search_calls": search.calls,
-        "fetch_calls": fetcher.calls,
-        "execution_status": getattr(result.task_result, "execution_status", None)
-        if result
-        else None,
-        "evidence_count": len(result.evidences) if result else -1,
-        "evidence_id": result.evidences[0].evidence_id if result and result.evidences else None,
-    }
+        result = outcome.get("result")
+        return {
+            "killed": killed,
+            "search_calls": search.calls,
+            "fetch_calls": fetcher.calls,
+            "execution_status": getattr(result.task_result, "execution_status", None)
+            if result
+            else None,
+            "evidence_count": len(result.evidences) if result else -1,
+            "evidence_id": result.evidences[0].evidence_id if result and result.evidences else None,
+        }
+    finally:
+        # 演示同库不留测试线程:崩溃路径同样回收,否则每跑一次批就往生产 checkpoint 里漏一批行。
+        await saver.adelete_thread(thread)
 
 
 def test_e2e_researcher_resumes_without_rerunning_search_on_postgres():
@@ -323,29 +327,35 @@ async def _drive_supervisor(saver):
 
     thread = "sup-e2e-" + uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
-    killed = False
     try:
-        await app.ainvoke({"done": False}, {"configurable": {"thread_id": thread}})
-    except _ProcessKilled:
-        killed = True
-    # 崩溃后、恢复前:reconcile._has_checkpoint 用的正是 aget_tuple(thread),证明确有可续检查点。
-    checkpoint_after_crash = await saver.aget_tuple(config)
-    # 执行器恢复经 reconcile、resume_runs、execute(resume=True),最终都走 astream(None)。
-    async for _ in app.astream(None, config={"configurable": {"thread_id": thread}}):
-        pass
+        killed = False
+        try:
+            await app.ainvoke({"done": False}, {"configurable": {"thread_id": thread}})
+        except _ProcessKilled:
+            killed = True
+        # 崩溃后、恢复前:reconcile._has_checkpoint 用的正是 aget_tuple(thread),证明确有可续检查点。
+        checkpoint_after_crash = await saver.aget_tuple(config)
+        # 执行器恢复经 reconcile、resume_runs、execute(resume=True),最终都走 astream(None)。
+        async for _ in app.astream(None, config={"configurable": {"thread_id": thread}}):
+            pass
 
-    update = outcome.get("update") or {}
-    task_results = update.get("task_results") or []
-    absorbed = update.get("evidences") or []
-    return {
-        "killed": killed,
-        "search_calls": search.calls,
-        "fetch_calls": fetcher.calls,
-        "has_checkpoint_after_crash": checkpoint_after_crash is not None,
-        "task_count": len(task_results),
-        "task_status": getattr(task_results[0], "execution_status", None) if task_results else None,
-        "absorbed_evidence": len(absorbed),
-    }
+        update = outcome.get("update") or {}
+        task_results = update.get("task_results") or []
+        absorbed = update.get("evidences") or []
+        return {
+            "killed": killed,
+            "search_calls": search.calls,
+            "fetch_calls": fetcher.calls,
+            "has_checkpoint_after_crash": checkpoint_after_crash is not None,
+            "task_count": len(task_results),
+            "task_status": getattr(task_results[0], "execution_status", None)
+            if task_results
+            else None,
+            "absorbed_evidence": len(absorbed),
+        }
+    finally:
+        # 演示同库不留测试线程:崩溃路径同样回收,否则每跑一次批就往生产 checkpoint 里漏一批行。
+        await saver.adelete_thread(thread)
 
 
 def test_e2e_supervisor_nested_researcher_resumes_on_postgres():
