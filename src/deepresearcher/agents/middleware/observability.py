@@ -49,6 +49,9 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         self.run_limit = run_limit
         self._emit = emit
         self._logger = get_logger("deepresearcher.agents.middleware.observability")
+        # awrap_model_call 探到的回合耗时按 AIMessage id 挂账,aafter_model 取走。
+        # 跳回/驳回丢弃的消息条目靠上限淘汰;单次请求的账在 run_usage,两处不互推。
+        self._turn_durations: dict[str, int] = {}
 
     @staticmethod
     def _call_count(state: Any) -> int:
@@ -67,9 +70,32 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return fields
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        """在每个 Agent 模型回合前检查 run/user/platform 预算。"""
+        """在每个 Agent 模型回合前检查预算，并记录本回合的墙上耗时。
+
+        计时包含位于本中间件下层的重试等待,口径是"这个回合花了多久";
+        单次 HTTP 尝试的账在 run_usage,两处不互推。
+        """
         await enforce_usage_budget()
-        return await handler(request)
+        started = monotonic()
+        response = await handler(request)
+        duration_ms = elapsed_ms(started)
+        for message in self._response_messages(response):
+            if isinstance(message, AIMessage) and message.id:
+                self._turn_durations[str(message.id)] = duration_ms
+                if len(self._turn_durations) > 64:
+                    self._turn_durations.pop(next(iter(self._turn_durations)))
+        return response
+
+    @staticmethod
+    def _response_messages(response: Any) -> list[Any]:
+        """兼容 handler 返回 AIMessage 本体或含 result/messages 列表的响应对象。"""
+        if isinstance(response, AIMessage):
+            return [response]
+        for attribute in ("result", "messages"):
+            value = getattr(response, attribute, None)
+            if isinstance(value, list):
+                return value
+        return []
 
     async def aafter_model(self, state: Any, runtime: Any) -> None:
         messages = state.get("messages", []) if isinstance(state, dict) else []
@@ -78,17 +104,18 @@ class AgentObservabilityMiddleware(AgentMiddleware):
             return
         turn = self._call_count(state)
         content = last.text or ""
-        self._log_event(
-            f"{self._slug}_model_turn",
-            {
-                **self._event_context(runtime),
-                "turn": turn,
-                "run_limit": self.run_limit,
-                "tool_names": [str(call.get("name", "")) for call in last.tool_calls or []],
-                "content_chars": len(content),
-                "content_preview": content[:EVENT_CONTENT_PREVIEW_CHARS],
-            },
-        )
+        duration_ms = self._turn_durations.pop(str(last.id), None)
+        payload: dict[str, object] = {
+            **self._event_context(runtime),
+            "turn": turn,
+            "run_limit": self.run_limit,
+            "tool_names": [str(call.get("name", "")) for call in last.tool_calls or []],
+            "content_chars": len(content),
+            "content_preview": content[:EVENT_CONTENT_PREVIEW_CHARS],
+        }
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        self._log_event(f"{self._slug}_model_turn", payload)
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         """记录工具调用边界，不改变返回值、异常或取消语义。"""

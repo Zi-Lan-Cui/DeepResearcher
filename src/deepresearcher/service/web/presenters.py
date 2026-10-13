@@ -33,6 +33,8 @@ def run_summary(run: Run) -> dict[str, Any]:
         "cache_hit_count": run.cache_hit_count,
         "saved_external_request_count": run.saved_external_request_count,
         "elapsed_ms": elapsed_ms,
+        # 已提交事件的水位：前端据此区分"回放段"与"live 段"，历史 clarification 帧不再劫持页面。
+        "event_seq": run.event_seq,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,

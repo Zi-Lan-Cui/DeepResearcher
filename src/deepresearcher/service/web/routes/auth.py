@@ -1,10 +1,11 @@
 """注册、登录与当前用户路由。"""
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from deepresearcher.service.auth import (
@@ -13,7 +14,8 @@ from deepresearcher.service.auth import (
     password_policy_ok,
     verify_password,
 )
-from deepresearcher.service.persistence.models import User
+from deepresearcher.service.persistence.models import Run, RunUsage, User
+from deepresearcher.service.runs.transitions import OUTSTANDING_STATUSES
 from deepresearcher.service.web.dependencies import app_state, current_user
 from deepresearcher.service.web.schemas import LoginBody, RegisterBody
 
@@ -68,9 +70,39 @@ async def login(body: LoginBody, request: Request) -> dict[str, Any]:
 
 
 @router.get("/me")
-async def me(user: User = Depends(current_user)) -> dict[str, Any]:
+async def me(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
+    """当前用户的身份与账本视图。"""
+    state = app_state(request)
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with state.session_factory() as session:
+        total_runs = await session.scalar(
+            select(func.count()).select_from(Run).where(Run.user_id == user.id)
+        )
+        active_runs = await session.scalar(
+            select(func.count())
+            .select_from(Run)
+            .where(Run.user_id == user.id, Run.status.in_(OUTSTANDING_STATUSES))
+        )
+        cost_today = await session.scalar(
+            select(func.coalesce(func.sum(RunUsage.cost_usd), 0))
+            .join(Run, RunUsage.run_id == Run.id)
+            .where(
+                Run.user_id == user.id,
+                RunUsage.category == "llm",
+                RunUsage.created_at >= day_start,
+            )
+        )
+    budgets = state.settings.llm
     return {
         "id": user.id,
         "email": user.email,
         "created_at": user.created_at.isoformat() if user.created_at else None,
+        "runs": {"total": total_runs or 0, "active": active_runs or 0},
+        "usage_today": {"cost_usd": float(cost_today or 0)},
+        "quotas": {
+            "max_concurrent_runs_per_user": state.config.max_concurrent_runs_per_user,
+            "max_tokens_per_run": budgets.max_tokens_per_run,
+            "max_cost_usd_per_run": budgets.max_cost_usd_per_run,
+            "max_cost_usd_per_user_daily": budgets.max_cost_usd_per_user_daily,
+        },
     }

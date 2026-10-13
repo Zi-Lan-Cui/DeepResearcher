@@ -46,13 +46,16 @@ def test_node_completed_closes_stage_with_conclusion():
         _record(
             "node_completed",
             {
-                "research_brief": "重点比较 Redis 在传统后端与 Agent 中的用途",
+                "intent_summary": "重点比较 Redis 在传统后端与 Agent 中的用途",
                 "clarified_query": "Redis 有什么作用？",
             },
             node="clarify",
         )
     )
     assert clarified.data["text"] == "重点比较 Redis 在传统后端与 Agent 中的用途"
+    # 澄清结论行有上界：再长的意图摘要也只投一行截断文本，不倾倒文书。
+    long_intent = project(_record("node_completed", {"intent_summary": "长" * 200}, node="clarify"))
+    assert len(long_intent.data["text"]) == 160
     clarify_fallback = project(
         _record(
             "node_completed",
@@ -193,6 +196,50 @@ def test_supervisor_turn_exports_only_written_thought():
     assert "SECRET" not in json.dumps(thought.data, ensure_ascii=False)
 
 
+def test_supervisor_turn_dumping_tool_markup_is_dropped():
+    """网关把工具调用体当正文吐出时，整条旁白不出帧——协议文本不进用户时间线。"""
+    leaked = (
+        "我先基于用户原话拆解缺口。"
+        + "<function=ResearchDelegate><parameter=display_title>"
+        + "复利话术的骗局包装方式</function> null"
+    )
+    assert (
+        project(
+            {
+                "event_type": "supervisor_model_turn",
+                "run_id": "r",
+                "seq": 8,
+                "payload": {"turn": 3, "content_preview": leaked, "tool_names": []},
+            }
+        )
+        is None
+    )
+    assert (
+        project(
+            {
+                "event_type": "supervisor_model_turn",
+                "run_id": "r",
+                "seq": 9,
+                "payload": {"turn": 3, "content_preview": "<antml:parameter>x", "tool_names": []},
+            }
+        )
+        is None
+    )
+    normal = project(
+        {
+            "event_type": "supervisor_model_turn",
+            "run_id": "r",
+            "seq": 10,
+            "payload": {
+                "turn": 3,
+                "content_preview": "先读《经济学人》的两篇综述。",
+                "tool_names": [],
+            },
+        }
+    )
+    assert normal is not None and normal.event == "plan"
+
+
 def test_node_started_supervisor_opens_stage():
     frame = project(_record("node_started", node="supervisor"))
     assert (frame.event, frame.data["stage"]) == ("stage_open", "supervisor")
@@ -287,7 +334,7 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert all_rejected.data["text"] == "证据提交未通过，按回执修正中"
+    assert all_rejected.data["text"] == "证据未通过校验，正在修正"
     empty_audit = project(_record("direction_evidence_added", {"task_id": "task-0001"}))
     assert empty_audit is None  # 零入池零退回的审计记录不打扰用户
     done = project(

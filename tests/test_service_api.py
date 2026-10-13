@@ -86,12 +86,11 @@ async def wait_status(client, token, run_id, statuses, timeout=5.0):
             await asyncio.sleep(0.02)
 
 
-async def read_sse(client, token, run_id, timeout=10.0):
+async def read_sse(client, token, run_id, timeout=10.0, extra_headers=None):
     text = ""
+    headers = {**_auth(token), **(extra_headers or {})}
     async with asyncio.timeout(timeout):
-        async with client.stream(
-            "GET", f"/api/runs/{run_id}/events", headers=_auth(token)
-        ) as response:
+        async with client.stream("GET", f"/api/runs/{run_id}/events", headers=headers) as response:
             assert response.status_code == 200
             async for chunk in response.aiter_text():
                 text += chunk
@@ -210,6 +209,63 @@ async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
             assert cancelled.json()["status"] == "cancelled"
             frames = await read_sse(isolated, token, created.json()["run_id"])
             assert [event for event, _data in frames][-1] == "done"
+
+
+async def test_me_account_view_aggregates_own_runs_and_usage(client):
+    token = await register(client)
+    fresh = (await client.get("/api/me", headers=_auth(token))).json()
+    assert fresh["runs"] == {"total": 0, "active": 0}
+    assert fresh["usage_today"] == {"cost_usd": 0.0}
+    assert fresh["quotas"]["max_concurrent_runs_per_user"] == 2
+    assert fresh["quotas"]["max_cost_usd_per_user_daily"] == 0.0
+
+    from deepresearcher.service.persistence.models import Run, RunUsage
+
+    bob = await register(client, "bob@test.dev")
+    bob_id = (await client.get("/api/me", headers=_auth(bob))).json()["id"]
+    async with client.app.state.session_factory() as session:
+        session.add_all(
+            [
+                Run(id="run-view-active", user_id=fresh["id"], query="a", status="running"),
+                Run(id="run-view-done", user_id=fresh["id"], query="b", status="completed"),
+                Run(id="run-view-bob", user_id=bob_id, query="c", status="queued"),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                RunUsage(
+                    id="usage-view-1",
+                    run_id="run-view-active",
+                    category="llm",
+                    component="openai",
+                    status="ok",
+                    cost_usd=0.25,
+                ),
+                RunUsage(
+                    id="usage-view-2",
+                    run_id="run-view-bob",
+                    category="llm",
+                    component="openai",
+                    status="ok",
+                    cost_usd=7.0,
+                ),
+                RunUsage(
+                    id="usage-view-3",
+                    run_id="run-view-done",
+                    category="search",
+                    component="baidu",
+                    status="ok",
+                    cost_usd=3.0,
+                ),
+            ]
+        )
+        await session.commit()
+
+    view = (await client.get("/api/me", headers=_auth(token))).json()
+    assert view["runs"] == {"total": 2, "active": 1}
+    # 当日花费只聚合本用户的 llm 类记录:他人的行与非模型支出不计入。
+    assert view["usage_today"]["cost_usd"] == pytest.approx(0.25)
 
 
 async def test_cross_user_access_always_404(client):
@@ -340,6 +396,38 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
     done_data = frames[-1][1]
     assert done_data["status"] == "completed" and done_data["report_available"] is True
+
+
+async def test_sse_last_event_id_resumes_from_watermark(client):
+    """静默断线后重连带 Last-Event-ID：水位及以下的帧不再重发，续放到 done。"""
+    token = await register(client)
+    client.graphs.append(
+        FakeGraph(
+            emit=[
+                {"event_type": "node_started", "node": "router", "payload": {}},
+                {"event_type": "node_completed", "node": "router", "payload": {}},
+                {"event_type": "node_started", "node": "supervisor", "payload": {}},
+            ]
+        )
+    )
+    run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
+        "run_id"
+    ]
+    await wait_status(client, token, run_id, {"completed"})
+
+    full = await read_sse(client, token, run_id)
+    full_seqs = [data["seq"] for _, data in full]
+    assert len(full_seqs) >= 3
+    watermark = full_seqs[len(full_seqs) // 2]
+
+    resumed = await read_sse(client, token, run_id, extra_headers={"Last-Event-ID": str(watermark)})
+    resumed_seqs = [data["seq"] for _, data in resumed]
+    assert resumed_seqs, "水位之后仍有帧"
+    assert all(seq > watermark for seq in resumed_seqs)  # 已消费部分不重发
+    assert [event for event, _ in resumed][-1] == "done"  # 兜底终帧照常合成
+    # 非法水位回退全量回放，不因坏头断流。
+    broken = await read_sse(client, token, run_id, extra_headers={"Last-Event-ID": "not-a-number"})
+    assert [data["seq"] for _, data in broken] == full_seqs
 
 
 async def test_sse_live_backlog_and_gate_release(client):

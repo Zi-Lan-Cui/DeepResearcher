@@ -106,7 +106,7 @@ def test_clarifier_summary_survives_instrumentation_and_projection():
     payload = summarize_node_result(
         {
             "clarified_query": "Redis 有什么作用？",
-            "research_brief": "比较 Redis 在后端与 Agent 系统中的职责和知识要求",
+            "intent_summary": "比较 Redis 在后端与 Agent 系统中的职责和知识要求",
         },
         max_text_chars=1_000,
     )
@@ -119,9 +119,9 @@ def test_clarifier_summary_survives_instrumentation_and_projection():
         }
     )
 
-    assert payload["research_brief"] == "比较 Redis 在后端与 Agent 系统中的职责和知识要求"
+    assert payload["intent_summary"] == "比较 Redis 在后端与 Agent 系统中的职责和知识要求"
     assert frame is not None
-    assert frame.data["text"] == payload["research_brief"]
+    assert frame.data["text"] == payload["intent_summary"]
 
 
 def test_node_event_carries_correlation_fields():

@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -46,6 +47,10 @@ _STAGE_TITLES: dict[str, str] = {
     NodeName.REVIEWER: "审阅报告 · Reviewer",
     NodeName.RENDER_FINAL_REPORT: "生成最终报告",
 }
+
+# 工具调用协议的字面标记：网关偶发把调用体当正文吐出（function=、parameter=、
+# invoke name= 一类开标签，Claude 风格），这类回合的 text 不是旁白，整条丢弃。
+_TOOL_MARKUP_RE = re.compile(r"<\s*(?:function[= ]|parameter[= ]|invoke\s)|<\s*antml:", re.I)
 
 # source_read_skipped 的 reason_code 对应的用户可见措辞；未知码回退通用词，不透出机器码。
 _SOURCE_SKIP_LABELS: dict[str, str] = {
@@ -146,6 +151,10 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         return None
     if event_type == EventName.SUPERVISOR_MODEL_TURN:
         thought = _text(payload.get("content_preview"), EVENT_CONTENT_PREVIEW_CHARS)
+        # 网关偶发把工具调用体当正文吐出（见 _TOOL_MARKUP_RE）：那不是旁白，整条丢弃；
+        # 工具照常执行，用户不应在时间线里读到调用协议。
+        if thought and _TOOL_MARKUP_RE.search(thought):
+            return None
         return _plan(seq, NodeName.SUPERVISOR, thought) if thought else None
     # 方向卡：Supervisor 块内子项
     if event_type == EventName.RESEARCH_TASK_STARTED:
@@ -170,7 +179,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         if accepted > 0:
             return _task("task_update", seq, payload, {"text": f"证据入池 +{accepted}"})
         if _int(payload.get("rejected_count")) or _int(payload.get("duplicate_count")):
-            return _task("task_update", seq, payload, {"text": "证据提交未通过，按回执修正中"})
+            return _task("task_update", seq, payload, {"text": "证据未通过校验，正在修正"})
         return None
     if event_type == EventName.SOURCE_FETCH_STARTED:
         host = _display_host(payload.get("requested_url"))
@@ -309,9 +318,9 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
         reason = _text(payload.get("route_reason"), 120)
         return "；".join(part for part in (label, reason) if part)
     if node == NodeName.CLARIFY:
-        # Clarifier 的完成结论来自子图 finalize；没有触发 interrupt 时也应让
-        # 用户看到 Agent 确认后的研究范围，而不是留下一个空阶段卡片。
-        return _text(payload.get("research_brief"), 800) or _text(
+        # 澄清结论一行：模型自己的意图摘要截断；完整理解留在 supervisor 委托段，
+        # 时间线不倾倒判断文书。
+        return _text(payload.get("intent_summary"), 160) or _text(
             payload.get("clarified_query"), 300
         )
     if node == NodeName.SUPERVISOR:

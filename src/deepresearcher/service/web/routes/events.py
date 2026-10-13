@@ -50,7 +50,11 @@ async def run_events(
                 preview_subscription = await state.ephemeral_bus.subscribe(run.id)
             except Exception:  # noqa: BLE001 - durable DB stream remains available
                 logger.warning("preview_subscribe_failed run_id=%s", run.id, exc_info=True)
-        last_seq = 0
+        # 浏览器静默断线后的重连带 Last-Event-ID：从已收水位续放。
+        try:
+            last_seq = max(0, int(request.headers.get("last-event-id", "0")))
+        except ValueError:
+            last_seq = 0
         last_ping = asyncio.get_running_loop().time()
 
         def _drain(rows) -> tuple[list[str], bool]:

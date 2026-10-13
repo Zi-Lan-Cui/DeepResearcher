@@ -40,8 +40,26 @@ async function showView() {
   }
   const m = location.hash.match(/^#\/run\/(.+)$/);
   const loggedIn = !!localStorage.getItem(tokenKey);
-  if (m) { renderRun(m[1]); return; }
+  $("nav-account").classList.toggle("hide", !loggedIn);
+  $("nav-research").classList.toggle("hide", !loggedIn);
+  // 顶栏高亮跟区域走：详情属于研究动线，账户页只亮账户。
+  $("nav-research").classList.toggle("active", loggedIn && location.hash !== "#/account");
+  $("nav-account").classList.toggle("active", loggedIn && location.hash === "#/account");
+  if (m) {
+    if (loggedIn) {
+      $("logout").classList.remove("hide");
+      api("/api/me").then((me) => { $("whoami").textContent = me.email; }).catch(() => {});
+    }
+    renderRun(m[1]);
+    return;
+  }
   if (!loggedIn) { show($("view-auth")); return; }
+  if (location.hash === "#/account") {
+    show($("view-account"));
+    $("logout").classList.remove("hide");
+    loadAccount();
+    return;
+  }
   show($("view-home"));
   try {
     const me = await api("/api/me");
@@ -49,6 +67,46 @@ async function showView() {
     $("logout").classList.remove("hide");
     await refreshRuns();
   } catch (e) { $("whoami").textContent = ""; }
+}
+
+/* 账户视图：/api/me 的账本与配额，沿用首页卡与 chip 的版式语言。 */
+async function loadAccount() {
+  let me;
+  try { me = await api("/api/me"); } catch (e) { return; }
+  $("whoami").textContent = me.email;
+  $("account-email").textContent = me.email;
+  $("account-since").textContent = me.created_at
+    ? "注册于 " + new Date(me.created_at).toLocaleDateString("zh-CN") : "";
+  const fmtUsd = (value) => (!value ? "0.00" : value < 0.01 ? value.toFixed(4) : value.toFixed(2));
+  const metrics = $("account-metrics");
+  metrics.innerHTML = "";
+  const tiles = [
+    { value: String(me.runs.total), label: "研究总数" },
+    { value: String(me.runs.active), label: "进行中" },
+    { value: fmtUsd(me.usage_today.cost_usd), label: "今日花费（美元）" },
+  ];
+  for (const tile of tiles) {
+    const el = document.createElement("div"); el.className = "metric";
+    const v = document.createElement("div"); v.className = "metric-num"; v.textContent = tile.value;
+    const l = document.createElement("div"); l.className = "metric-label"; l.textContent = tile.label;
+    el.append(v, l); metrics.appendChild(el);
+  }
+  const rows = $("quota-rows");
+  rows.innerHTML = "";
+  const quotaLines = [
+    ["同时进行的研究数", String(me.quotas.max_concurrent_runs_per_user), false],
+    ["每次研究 token 上限", me.quotas.max_tokens_per_run ? me.quotas.max_tokens_per_run.toLocaleString("en-US") : "未设限", !me.quotas.max_tokens_per_run],
+    ["每次研究花费上限", me.quotas.max_cost_usd_per_run ? "$" + fmtUsd(me.quotas.max_cost_usd_per_run) : "未设限", !me.quotas.max_cost_usd_per_run],
+    ["每日花费上限", me.quotas.max_cost_usd_per_user_daily ? "$" + fmtUsd(me.quotas.max_cost_usd_per_user_daily) : "未设限", !me.quotas.max_cost_usd_per_user_daily],
+  ];
+  for (const [name, value, off] of quotaLines) {
+    const tr = document.createElement("tr");
+    const tdName = document.createElement("td"); tdName.textContent = name;
+    const tdValue = document.createElement("td");
+    tdValue.textContent = value;
+    if (off) tdValue.classList.add("off");
+    tr.append(tdName, tdValue); rows.appendChild(tr);
+  }
 }
 window.addEventListener("hashchange", showView);
 
@@ -59,12 +117,16 @@ function setAuthMode(mode) {
   $("auth-submit").textContent = mode === "login" ? "登录" : "注册";
   $("tab-login").disabled = mode === "login";
   $("tab-register").disabled = mode !== "login";
+  $("password-hint").classList.toggle("hide", mode === "login");
   $("auth-error").textContent = "";
 }
 $("tab-login").onclick = () => setAuthMode("login");
 $("tab-register").onclick = () => setAuthMode("register");
 $("auth-submit").onclick = async () => {
   $("auth-error").textContent = "";
+  const submitButton = $("auth-submit");
+  submitButton.disabled = true;
+  submitButton.textContent = authMode === "login" ? "登录中…" : "注册中…";
   try {
     const r = await api("/api/" + authMode, {
       method: "POST",
@@ -74,9 +136,21 @@ $("auth-submit").onclick = async () => {
     location.hash = "#/";
     showView();
   } catch (e) { $("auth-error").textContent = e.message; }
+  finally {
+    submitButton.disabled = false;
+    submitButton.textContent = authMode === "login" ? "登录" : "注册";
+  }
 };
 $("auth-password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("auth-submit").click(); });
 $("logout").onclick = logout;
+// 字标即首页：已在首页时拦截默认行为，直接聚焦输入框；
+// 延一拍执行，避开链接 mouseup 的原生焦点回收。
+$("nav-home").onclick = (event) => {
+  if (location.hash === "#/" || location.hash === "" || location.hash === "#") {
+    event.preventDefault();
+    window.setTimeout(() => $("query").focus(), 0);
+  }
+};
 
 /* ---------- 首页 ---------- */
 $("submit").onclick = async () => {
@@ -84,11 +158,13 @@ $("submit").onclick = async () => {
   $("home-error").textContent = "";
   if (!query) { $("home-error").textContent = "问题不能为空。"; return; }
   $("submit").disabled = true;
+  $("submit").textContent = "提交中…";
   try {
     const r = await api("/api/runs", { method: "POST", body: JSON.stringify({ query }) });
     location.hash = "#/run/" + r.run_id;
   } catch (e) { $("home-error").textContent = e.message; }
   $("submit").disabled = false;
+  $("submit").textContent = "开始研究";
 };
 $("query").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("submit").click();
@@ -135,14 +211,22 @@ function updateRunsPerPage() {
   runsPage = Math.floor(firstVisibleRun / runsPerPage);
 }
 
+let runsRenderKey = "";
+
 function renderRunsPage() {
   const runs = cachedRuns;
   const list = $("runs-list");
+  const pageCount = Math.ceil(runs.length / runsPerPage);
+  const start = runsPage * runsPerPage;
+  // 轮询大多拿到同一屏：本页可见行签名未变则整体跳过，保住悬停与点击。
+  const renderKey = runs.slice(start, start + runsPerPage)
+    .map((run) => [run.id, run.status, run.evidence_count, run.source_count, run.created_at].join("|"))
+    .join(";") + `#${runs.length}@${runsPerPage}`;
+  if (renderKey === runsRenderKey) return;
+  runsRenderKey = renderKey;
   list.innerHTML = "";
   $("runs-empty").classList.toggle("hide", runs.length > 0);
   $("runs-count").textContent = runs.length ? "共 " + runs.length + " 条" : "";
-  const pageCount = Math.ceil(runs.length / runsPerPage);
-  const start = runsPage * runsPerPage;
   for (const run of runs.slice(start, start + runsPerPage)) {
     const row = document.createElement("div");
     row.className = "run-row";
@@ -190,7 +274,13 @@ window.addEventListener("resize", () => {
     if (previous !== runsPerPage && !$("view-home").classList.contains("hide")) renderRunsPage();
   }, 150);
 });
-setInterval(() => { if ($("view-home").classList.contains("hide") === false) refreshRuns(); }, 5000);
+setInterval(() => {
+  if ($("view-home").classList.contains("hide")) return;
+  // 用户正在与列表交互（悬停或键盘焦点在内）：本轮跳过，不销毁其目标。
+  const list = $("runs-list");
+  if (list.matches(":hover") || list.contains(document.activeElement)) return;
+  refreshRuns();
+}, 5000);
 
 /* ---------- markdown 安全渲染 ---------- */
 /* 正文与进度文本都是模型产出，不是可信内容：marked 透传原始 HTML，
@@ -222,46 +312,92 @@ const taskCards = new Map();
 const stageBlocks = new Map();
 let taskSeq = 0;
 
-/* 阶段块按需创建：事件到达才出现（解决"还没执行框先出现"）；
-   running 绿点 → done 灰点 / failed 红点，三态不再复用灰色。 */
+/* 界面文案中文单语：剥除后端标题里的英文角色名后缀（"理解问题 · Router"），
+   无中文标题的节点用映射兜底。 */
+const STAGE_CN = {
+  router: "理解问题", clarify: "澄清范围", supervisor: "研究规划",
+  writer: "撰写报告", reviewer: "审阅报告", render_final_report: "终检渲染",
+};
+
+function stageLabel(stage, title) {
+  const raw = title || STAGE_CN[stage] || stage;
+  return raw.replace(/\s*·\s*[A-Za-z_ ]+$/, "");
+}
+
+/* 完成的段先保持展开让旁白读完，新段开始或整场收尾时才收起；
+   手动开合过的段以用户为准，不再自动收。
+   instant 用于刷新已完成 run 的回放：直接落终态收拢，不留"先展开再收起"的动画。 */
+let instantReplay = false;
+function collapseFinishedStages(instant) {
+  for (const block of stageBlocks.values()) {
+    if (block.classList.contains("collapsed") || block.dataset.touched) continue;
+    if (!block.classList.contains("done")) continue;
+    const wrap = block.querySelector(".stage-collapse");
+    if (instant || instantReplay) {
+      wrap.style.transition = "none";
+      block.classList.add("collapsed");
+      void wrap.offsetWidth;                       // 立即提交折叠，跳过过渡
+      wrap.style.transition = "";
+    } else {
+      block.classList.add("collapsed");
+    }
+    block.querySelector(".stage-head").setAttribute("aria-expanded", "false");
+  }
+}
+
+/* 阶段块按需创建：事件到达才出现，新块出现即收起此前的完成段；
+   running 绿点 → done 灰点 / failed 红点。 */
 function ensureStage(stage, title) {
   let block = stageBlocks.get(stage);
   if (!block) {
+    collapseFinishedStages();
     block = document.createElement("div");
-    block.className = "stage-block running";
+    // 回放整页瞬时落终态，不重演进场动画；只有实时看到的"新段到来"才流动。
+    block.className = "stage-block running" + (instantReplay ? "" : " anim-in");
     const head = document.createElement("div"); head.className = "stage-head";
     const dot = document.createElement("span"); dot.className = "dot";
     const t = document.createElement("span"); t.className = "stage-title";
     const count = document.createElement("span"); count.className = "stage-count";
     head.append(dot, t, count);
+    const collapse = document.createElement("div"); collapse.className = "stage-collapse";
     const body = document.createElement("div"); body.className = "stage-body";
-    block.append(head, body);
+    collapse.appendChild(body);
+    block.append(head, collapse);
     $("stages").appendChild(block);
     stageBlocks.set(stage, block);
   }
-  if (title) block.querySelector(".stage-title").textContent = title;
-  else if (!block.querySelector(".stage-title").textContent) {
-    block.querySelector(".stage-title").textContent = stage;
-  }
+  const titleEl = block.querySelector(".stage-title");
+  if (title) titleEl.textContent = stageLabel(stage, title);
+  else if (!titleEl.textContent) titleEl.textContent = stageLabel(stage, "");
   return block;
 }
 
 /* token 预览：delta 追加进 tentative 行（斜体）；该 stage 的聚合帧（带 seq、
    已落库、可回放）一旦到达即删除预览行、换成正式文本。掉线丢 delta 无碍。 */
 const tentative = new Map();
+// 网关偶发把工具调用体当正文流出来（function=、parameter= 等开标签）：
+// 累计文本一旦命中协议标记，该通道预览立即拉黑，聚合帧到达后自然恢复。
+const previewBlacklisted = new Set();
+const TOOL_MARKUP_HINT = /<\s*(?:function[= ]|parameter[= ]|invoke\s)|<\s*antml:/i;
 
 function deltaAppend(channel, text) {
-  if (!text) return;
+  if (!text || previewBlacklisted.has(channel)) return;
   const block = ensureStage(channel);
   let t = tentative.get(channel);
   if (!t) {
     const el = document.createElement("div");
-    el.className = "ln tentative";
+    el.className = "ln tentative anim";  // 预览行只在实时出现，进场一律带动效
     block.querySelector(".stage-body").appendChild(el);
     t = { el, text: "" };
     tentative.set(channel, t);
   }
   t.text += text;
+  if (TOOL_MARKUP_HINT.test(t.text)) {
+    t.el.remove();
+    tentative.delete(channel);
+    previewBlacklisted.add(channel);
+    return;
+  }
   t.el.textContent = t.text;
   const body = block.querySelector(".stage-body");
   if (body.lastChild !== t.el) body.appendChild(t.el);  // 聚合行插入后预览保持在底
@@ -270,36 +406,64 @@ function deltaAppend(channel, text) {
 function finalizeTentative(stage) {
   const t = tentative.get(stage);
   if (t) { t.el.remove(); tentative.delete(stage); }
+  previewBlacklisted.delete(stage);
 }
 
 function clearAllTentative() {
   for (const stage of [...tentative.keys()]) finalizeTentative(stage);
 }
 
+/* 旁白是模型逐回合的多行自由文本：逐行成条渲染。
+   行首 - / * / • 视为列表项，剥掉记号由 CSS 画点；每行仍走行内
+   markdown 消毒，CDN 缺失回退 textContent，不跳过消毒。 */
+function renderNarration(body, text, warn) {
+  let count = 0;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const item = /^[-*•]\s+/.test(line);
+    const content = item ? line.replace(/^[-*•]\s+/, "") : line;
+    const div = document.createElement("div");
+    div.className = "ln" + (item ? " ln-item" : "") + (warn ? " warn" : "")
+      + (instantReplay ? "" : " anim");
+    const html = markdownHtml(content, { inline: true });
+    if (html === null) div.textContent = content;
+    else div.innerHTML = html;
+    body.appendChild(div);
+    count++;
+  }
+  return count;
+}
+
+function trimStageNotes(body) {
+  let lines = body.querySelectorAll(":scope > .ln");
+  while (lines.length > 40) { lines[0].remove(); lines = body.querySelectorAll(":scope > .ln"); }
+}
+
 function stageNote(stage, text, warn) {
   const t = tentative.get(stage);
   if (t) {
     if (text && t.text.length > text.length) {
-      // 聚合帧比流式预览短（事件侧有界化必然存在）：晋升预览为正式行，
-      // 不做"打字完成后突然截短"的替换。
-      t.el.classList.remove("tentative");
-      if (warn) t.el.classList.add("warn");
+      // 聚合帧比流式预览短（事件侧有界化必然存在）：不打断阅读，
+      // 以打字完成的全文转正——但必须重过渲染器，裸 textContent 会把
+      // ** 与列表记号留在页面上。
+      t.el.remove();
       tentative.delete(stage);
+      previewBlacklisted.delete(stage);
+      if (t.text) {
+        const promoted = ensureStage(stage).querySelector(".stage-body");
+        renderNarration(promoted, t.text, warn);
+        trimStageNotes(promoted);
+      }
       return;
     }
     t.el.remove();
     tentative.delete(stage);
+    previewBlacklisted.delete(stage);
   }
   if (!text) return;
   const body = ensureStage(stage).querySelector(".stage-body");
-  const div = document.createElement("div");
-  div.className = "ln" + (warn ? " warn" : "");
-  const html = markdownHtml(text, { inline: true });
-  if (html === null) div.textContent = text;
-  else div.innerHTML = html;
-  body.appendChild(div);
-  const lines = body.querySelectorAll(":scope > .ln");
-  if (lines.length > 40) lines[0].remove();
+  if (renderNarration(body, text, warn)) trimStageNotes(body);
 }
 
 function ensureCard(id, title) {
@@ -344,11 +508,14 @@ function updateTaskCount() {
 function renderStats(data) {
   const el = $("run-metrics");
   el.innerHTML = "";
-  const chips = [
-    "第 " + data.round + " 轮",
-    "方向 " + data.tasks_completed + "/" + data.tasks_total,
-    "证据 +" + data.evidence_added + "（累计 " + data.evidence_total + "）",
-  ];
+  const chips = [];
+  if (data.round !== null) chips.push("研究轮次 " + data.round);
+  if (data.tasks_completed !== null) {
+    chips.push("方向 " + data.tasks_completed + "/" + data.tasks_total);
+    chips.push("证据 +" + data.evidence_added + "（累计 " + data.evidence_total + "）");
+  } else {
+    chips.push("证据 " + data.evidence_total + " · 来源 " + (data.source_count ?? 0));
+  }
   for (const text of chips) {
     const span = document.createElement("span");
     span.className = "chip";
@@ -371,7 +538,17 @@ function cardAction(card, text) {
   details.scrollTop = details.scrollHeight;
 }
 
+/* 占位空态只会被真正产出进度内容的帧收走；status/stats 等不产内容。 */
+const PROGRESS_VISUAL_EVENTS = new Set([
+  "text_delta", "tick", "stage_open", "plan", "stage_done", "error",
+  "task_open", "task_update", "task_done", "clarification",
+]);
+
 function handleFrame(event, data) {
+  if (PROGRESS_VISUAL_EVENTS.has(event)) {
+    const emptyNote = $("stages").querySelector(".progress-empty");
+    if (emptyNote) emptyNote.remove();
+  }
   if (typeof data.seq === "number") {
     if (data.seq <= lastSeq) return; // 回放/重连去重
     lastSeq = data.seq;
@@ -385,10 +562,28 @@ function handleFrame(event, data) {
     block.classList.remove("running");
     block.classList.add(data.status === "failed" ? "failed" : "done");
     stageNote(data.stage, data.text);
+    if (data.status !== "failed") {
+      // 折叠头是 div：补键盘操作与展开态语义，保证不用鼠标也能回看旁白。
+      const head = block.querySelector(".stage-head");
+      head.tabIndex = 0;
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", "true");   // 完成后先展开，收起由新段或收尾触发
+      const toggleExpanded = () => {
+        block.dataset.touched = "1";
+        const on = block.classList.toggle("expanded");
+        head.setAttribute("aria-expanded", on || !block.classList.contains("collapsed") ? "true" : "false");
+      };
+      head.onclick = toggleExpanded;
+      head.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleExpanded(); }
+      };
+      if (instantReplay) collapseFinishedStages(true);  // 回放：完成即收拢，不等下一段
+    }
   } else if (event === "error") progressLine(data.text, true);
   else if (event === "headline") {
     // 澄清完成时刻:头部当场从长问题收敛为浓缩标题（悬停仍是原问题）。
     $("run-title").textContent = "研究：" + data.text;
+    $("run-query").classList.remove("hide");   // 标题已收敛，原文行有了对照价值
   } else if (event === "status") {
     setStatus(data.status);
     // 任何非等待状态都收走澄清卡:重放历史帧时,已回答过的问题不能靠
@@ -411,8 +606,11 @@ function handleFrame(event, data) {
   } else if (event === "done") { clearAllTentative(); setStatus(data.status, data); onRunDone(data); }
 }
 
+/* 只渲染卡，不改流：clarification 帧在已完成 run 的回放里会原样重现，
+   曾在这里 abort 把整条重放流掐死（supervisor 段就此消失）。
+   等待与否由权威裁决——status 帧非 awaiting_input 时收走卡片（见 handleFrame），
+   流保持常开，resume 后新事件沿同一条流到达。 */
 function renderClarification(data) {
-  if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   $("clarification-card").classList.remove("hide");
   $("clarification-question").textContent = data.question || "请补充研究范围。";
   const box = $("clarification-options"); box.innerHTML = "";
@@ -430,11 +628,18 @@ function renderClarification(data) {
 }
 
 function resetProgressView() {
+  window.clearTimeout(settleCollapseTimer);
+  instantReplay = false;
   taskCards.clear();
   stageBlocks.clear();
   tentative.clear();
   taskSeq = 0;
+  $("stages").classList.remove("settled");
   $("stages").innerHTML = "";
+  const emptyNote = document.createElement("div");
+  emptyNote.className = "progress-empty";
+  emptyNote.textContent = "等待研究事件…";
+  $("stages").appendChild(emptyNote);
   $("global-log").innerHTML = "";
   $("run-metrics").innerHTML = "";
   $("clarification-card").classList.add("hide");
@@ -494,13 +699,19 @@ function setStatus(status, info) {
 
 /* 终态兜底清扫:取消/异常路径可能留下从未收到 stage_done/task_done 的运行中
    块——绿色停在"执行中"。done 之后所有块必须收口,进行中字样一并抹除。 */
+let settleCollapseTimer = 0;
 function settleRunningBlocks() {
+  $("stages").classList.add("settled");  // 主轴收齐到末节点，撤掉"仍在走"的渐隐
   for (const block of stageBlocks.values()) {
     if (block.classList.contains("running")) {
       block.classList.remove("running");
       block.classList.add("done");
     }
   }
+  // 最后一段的旁白留一拍读完，再整列收拢；回放无"正在读"，直接落终态。
+  window.clearTimeout(settleCollapseTimer);
+  if (instantReplay) collapseFinishedStages(true);
+  else settleCollapseTimer = window.setTimeout(collapseFinishedStages, 1600);
   for (const card of taskCards.values()) {
     if (card.classList.contains("running")) {
       card.classList.remove("running");
@@ -517,6 +728,9 @@ async function onRunDone(data) {
   try { detail = await api("/api/runs/" + currentRunId); } catch (e) { return; }
   // 用完整 detail 重设徽章：done 帧缺 terminal_reason，只有这里能判"部分报告"。
   setStatus(detail.status, detail);
+  // 实时跑完同样要回填卡片标题：正文 H1 与 detail.title 相同会被剥重，
+  // 这里不补，标题位在页面上就两头落空。
+  $("report-card-title").textContent = detail.title || "研究报告";
   if (detail.status === "awaiting_input") {
     if (detail.clarification) renderClarification(detail.clarification);
     return;
@@ -598,15 +812,63 @@ function parseReferences(referencesMarkdown) {
   return items;
 }
 
+/* 代码块增强：尝试 highlight.js 着色（CDN 缺失降级明文），并挂逐块复制按钮。 */
+function enhanceCodeBlocks(container) {
+  for (const pre of container.querySelectorAll("pre")) {
+    const codeEl = pre.querySelector("code");
+    if (codeEl && window.hljs && !window.__hljs_failed) {
+      try { window.hljs.highlightElement(codeEl); } catch { /* 高亮失败保持明文 */ }
+    }
+    if (pre.querySelector(".code-copy")) continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "code-copy";
+    btn.textContent = "复制";
+    btn.addEventListener("click", () => showActionResult(btn, "…", "已复制",
+      () => writeClipboard((codeEl || pre).innerText)));
+    pre.appendChild(btn);
+  }
+}
+
+/* 旧渲染器把研究问题与轮次统计拼成一条 "> 研究问题：" 横幅写进正文，
+   与卡片徽标、页头问题行重复；新报告已不再写入，存量报告展示时剥掉，
+   连同它前面的 --- 分隔线。 */
+function stripReportFooter(markdownText) {
+  const lines = markdownText.split("\n");
+  const kept = [];
+  for (const line of lines) {
+    if (/^>\s*研究问题：/.test(line.trim())) {
+      while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
+      if (kept.length && /^(-{3,}|\*{3,})$/.test(kept[kept.length - 1].trim())) kept.pop();
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/* 旧渲染器的正文自带标题行，与卡片标题一字不差——剥掉重复的首行标题。 */
+function stripDuplicatedTitle(bodyMarkdown, detail) {
+  const title = ((detail && detail.title) || "").trim();
+  if (!title) return bodyMarkdown;
+  const lines = bodyMarkdown.split("\n");
+  const heading = (lines[0] || "").trim().match(/^#{1,3}\s*(.+)$/);
+  if (heading && heading[1].trim() === title) return lines.slice(1).join("\n").replace(/^\n+/, "");
+  return bodyMarkdown;
+}
+
 function renderReport(markdownText, fallbackCitations, detail) {
-  const stripped = stripReportHead(markdownText);
+  const stripped = stripReportFooter(stripReportHead(markdownText));
   const [bodyMarkdown, referencesMarkdown, refHeading] = splitReport(stripped);
   renderReportMeta(detail);
   $("report-actions").classList.toggle("hide", !(detail && detail.report_markdown));
+  // 徽标与动作都缺席时（失败路径只有一行错误文本），整条眉题行不留空档。
+  $("report-toolbar").classList.toggle("hide",
+    $("report-meta").classList.contains("hide") && $("report-actions").classList.contains("hide"));
   const reportEl = $("report");
   // 论文式角标：[证据N] → <sup>[N]</sup> 可点击上标（存量报告的 [来源N] 同收）；
   // sup/a/href 均在 DOMPurify 默认白名单内，消毒只滤恶意载荷、不滤这个标记。
-  const linkified = bodyMarkdown.replace(
+  const linkified = stripDuplicatedTitle(bodyMarkdown, detail).replace(
     /\[(?:证据|来源)(\d+)\]/g,
     (_s, n) => `<sup class="cite-ref"><a href="#src-${n}">[${n}]</a></sup>`,
   );
@@ -617,6 +879,7 @@ function renderReport(markdownText, fallbackCitations, detail) {
     const pre = document.createElement("pre"); pre.textContent = stripped;
     reportEl.replaceChildren(pre);
   }
+  enhanceCodeBlocks(reportEl);
 
   const sourcesEl = $("sources");
   sourcesEl.innerHTML = "";
@@ -839,20 +1102,30 @@ $("report-download").onclick = () => showActionResult(
   },
 );
 
+/* SSE 无数据判定失联的阈值：服务端心跳 15s 一跳，三倍留余量。 */
+const SSE_STALL_MS = 45000;
 async function consumeStream(runId) {
-  // EventSource 无法携带 Authorization 头 → 用 fetch 流式解析 SSE（~20 行）。
+  // EventSource 无法携带 Authorization 头 → 用 fetch 流式解析 SSE。
   const ctrl = new AbortController();
+  const previous = streamAbort;
   streamAbort = ctrl;
+  if (previous) previous.abort();   // 重入（换 run / resume 后再订阅）先退掉旧流，避免双流并跑
   for (;;) {
     if (ctrl.signal.aborted) return;
     try {
-      const resp = await fetch("/api/runs/" + runId + "/events", { headers: authHeaders(), signal: ctrl.signal });
+      const headers = authHeaders();
+      // 带已消费水位续传：页面挂后台被静默掐断后，重连接续而非从头重放。
+      if (lastSeq > 0) headers["Last-Event-ID"] = String(lastSeq);
+      const resp = await fetch("/api/runs/" + runId + "/events", { headers, signal: ctrl.signal });
       if (resp.status === 401) { logout(); return; }
       const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       let sawDone = false;
       for (;;) {
+        // cancel() 让挂起的 read() 立即落地，失联连接不至于永远等下去。
+        const stall = setTimeout(() => { reader.cancel().catch(() => {}); }, SSE_STALL_MS);
         const { value, done } = await reader.read();
+        clearTimeout(stall);
         if (done) break;
         buf += value;
         let idx;
@@ -871,7 +1144,7 @@ async function consumeStream(runId) {
       }
       if (sawDone) return true;
       if (ctrl.signal.aborted) return false;
-      await new Promise((r) => setTimeout(r, 1000)); // 断线自动重连（服务端 seq 去重保证不重不漏）
+      await new Promise((r) => setTimeout(r, 1000)); // 断线自动重连（seq 去重保证不重不漏）
     } catch (e) {
       if (ctrl.signal.aborted) return false;
       await new Promise((r) => setTimeout(r, 2000));
@@ -891,14 +1164,29 @@ async function renderRun(runId) {
   let detail;
   try { detail = await api("/api/runs/" + runId); } catch (e) { progressLine(e.message, true); return; }
   $("run-query").textContent = detail.query;
+  // 未澄清时标题即原问题，下一行纯重复；澄清后标题收敛，原文行才有对照价值。
+  $("run-query").classList.toggle("hide", !detail.headline || detail.headline === detail.query);
   $("run-title").textContent = "研究：" + (detail.headline || detail.query);
   $("run-title").title = detail.query;
   $("report-card-title").textContent = detail.title || "研究报告";
   setStatus(detail.status, detail);
   if (["completed", "failed", "cancelled"].includes(detail.status)) {
+    // 终态先按 detail 落证据/来源底座；重放中的 stats 帧到达会整体替换。
+    renderStats({ round: null, tasks_completed: null, tasks_total: null,
+                  evidence_added: null, evidence_total: detail.evidence_count || 0,
+                  source_count: detail.source_count || 0 });
     // 已终结的 run 也要回放事件重建进度（卡片/规划旁白），不能只跳报告。
+    // 回放段全程瞬时收拢：刷新时不该看到"先展开再收起"的重演动画。
+    instantReplay = true;
     const replayedDone = await consumeStream(runId);
     if (!replayedDone) onRunDone({ status: detail.status });
+    const stages = $("stages");
+    if (!stages.querySelector(".stage-block")) {
+      const note = document.createElement("div");
+      note.className = "progress-empty";
+      note.textContent = "本次运行没有可回放的进度事件。";
+      stages.appendChild(note);
+    }
     return;
   }
   consumeStream(runId); // 进行中：订阅实时流（服务端会先回放已落库段）
@@ -906,6 +1194,7 @@ async function renderRun(runId) {
 
 $("run-back").onclick = () => { location.hash = "#/"; };
 $("run-cancel").onclick = async () => {
+  if (!window.confirm("取消后本次研究将停止，确定取消？")) return;
   $("run-cancel").disabled = true;
   try { await api("/api/runs/" + currentRunId + "/cancel", { method: "POST" }); }
   catch (e) { progressLine(e.message, true); $("run-cancel").disabled = false; }

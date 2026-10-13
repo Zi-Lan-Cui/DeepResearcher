@@ -225,7 +225,7 @@ async def test_document_tool_content_is_redacted_from_lifecycle_events():
     request.tool_call = {
         "name": "AddEvidence",
         "id": "call-sensitive",
-        "args": {"evidences": [{"quote": "不应进入事件的原文"}]},
+        "args": {"evidences": [{"quote_start": "不应进入事件的原文"}]},
     }
 
     async def handler(_request):
@@ -239,6 +239,45 @@ async def test_document_tool_content_is_redacted_from_lifecycle_events():
     assert started["arguments_preview"] == ""
     assert completed["content_redacted"] is True
     assert "content_preview" not in completed
+
+
+@pytest.mark.asyncio
+async def test_model_turn_event_carries_wall_duration():
+    """回合耗时在 awrap_model_call 探表、aafter_model 合入;未经探表的回合不硬塞键。"""
+    from langchain_core.messages import AIMessage
+
+    events: list[tuple[str, dict[str, object]]] = []
+    middleware = AgentObservabilityMiddleware(
+        "ResearchAgent",
+        event_slug="researcher",
+        run_limit=5,
+        emit=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    reply = AIMessage(content="思考文本", id="msg-1")
+    request = SimpleNamespace(
+        state={"run_model_call_count": 1},
+        runtime=SimpleNamespace(
+            context=SimpleNamespace(
+                scope=AgentExecutionScope(
+                    run_id="run-1", agent_name="ResearchAgent", task_id="task-1"
+                )
+            )
+        ),
+    )
+
+    async def handler(_request):
+        return reply
+
+    assert await middleware.awrap_model_call(request, handler) is reply
+    await middleware.aafter_model({"messages": [reply]}, request.runtime)
+    event_type, payload = events[0]
+    assert event_type == "researcher_model_turn"
+    assert isinstance(payload["duration_ms"], int)
+
+    await middleware.aafter_model(
+        {"messages": [AIMessage(content="另一回合", id="msg-2")]}, request.runtime
+    )
+    assert "duration_ms" not in events[1][1]
 
 
 @pytest.mark.asyncio

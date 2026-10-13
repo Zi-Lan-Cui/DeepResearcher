@@ -1,5 +1,12 @@
-  :root { --fg:#1c1e21; --mut:#68707a; --bd:#e3e6ea; --ac:#2563eb; --bg:#f7f8fa; }
+  :root { --fg:#1c1e21; --mut:#68707a; --bd:#e3e6ea; --ac:#0f766e; --bg:#f7f8fa; }
+  html { color-scheme: light; }
   * { box-sizing: border-box; }
+  /* 键盘焦点一律可见；跳转链接只在聚焦时现身。 */
+  :focus-visible { outline:2px solid var(--ac); outline-offset:2px; }
+  .skip-link { position:absolute; left:8px; top:-48px; z-index:10; background:#fff;
+               padding:8px 14px; border:1px solid var(--bd); border-radius:8px;
+               color:var(--ac); text-decoration:none; transition:top .15s; }
+  .skip-link:focus { top:8px; }
   body { margin:0; font:15px/1.65 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
          color:var(--fg); background:var(--bg); }
   header { display:flex; align-items:center; justify-content:space-between;
@@ -14,6 +21,11 @@
   button { background:var(--ac); color:#fff; border:0; border-radius:8px; padding:9px 18px;
            font:inherit; cursor:pointer; }
   button.secondary { background:#fff; color:var(--fg); border:1px solid var(--bd); }
+  /* 交互件补 hover/active：主按钮加深，次按钮描边变青，按下微沉。
+     主按钮规则用 :where 压到零权重，组件自述的 hover 不被覆盖。 */
+  button:not(:disabled):active { transform:translateY(1px); }
+  :where(button:not(.secondary):not(:disabled)):hover { background:#0d655e; }
+  button.secondary:not(:disabled):hover { border-color:var(--ac); color:var(--ac); }
   button:disabled { opacity:.5; cursor:default; }
   input { padding:9px 10px; border:1px solid var(--bd); border-radius:8px; font:inherit; width:100%; }
   .row { display:flex; gap:10px; align-items:center; }
@@ -27,26 +39,76 @@
   #global-log { font-size:12.5px; color:var(--mut); }
   #global-log .ln { padding:1px 0; }
   #global-log .ln.warn { color:#b42318; }
-  /* 阶段块：事件到达才创建（出现即开始），running 亮绿 → done 灰、failed 红 */
-  .stage-block { border:1px solid var(--bd); border-radius:8px; margin:8px 0; background:#fff; }
+  /* 主轴轨道：一整根连续的线画在轨道底（顶起于首节点中心），环状节点钉在线上，窗口居右；
+     进行中底端渐隐表"仍在走"，落终态后收齐到末节点圆心、去掉渐隐。
+     回放与 reduced-motion 下窗口无进场动效，轴本身是静态结构。 */
+  #stages { padding-left:26px; position:relative; }
+  #stages::before {
+    content:""; position:absolute; left:13px; top:20px; bottom:14px; width:2px;
+    background:#d4d9e0;
+    -webkit-mask-image:linear-gradient(#000 calc(100% - 26px), transparent);
+            mask-image:linear-gradient(#000 calc(100% - 26px), transparent); }
+  /* 收拢后末块高 39.1px、节点圆心在块顶 +20.6px：轨道底收到距容器底 18.6px 即对齐末环。 */
+  #stages.settled::before { bottom:18.6px; -webkit-mask-image:none; mask-image:none; }
+  #stages.settled:has(.stage-block:last-child:not(.collapsed))::before {
+    bottom:14px;
+    -webkit-mask-image:linear-gradient(#000 calc(100% - 26px), transparent);
+            mask-image:linear-gradient(#000 calc(100% - 26px), transparent); }
+  .stage-block { border:1px solid var(--bd); border-radius:8px; margin:18px 0 0; background:#fff;
+                 position:relative;
+                 transition:border-color .3s ease, background-color .3s ease; }
+  .stage-block:first-child { margin-top:0; }
+  .stage-block.anim-in { animation:stageIn .45s cubic-bezier(.23,1,.32,1) .12s backwards; }
+  @keyframes stageIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
   .stage-block.running { border-color:#bbf7d0; background:#f7fdf9; }
   .stage-block.done { background:#f9fafb; }
   .stage-block.failed { border-color:#fecaca; background:#fef2f2; }
   .stage-head { display:flex; align-items:center; gap:8px; padding:7px 12px;
                 font-weight:600; font-size:14px; color:var(--fg); }
   .stage-block.done .stage-head { color:var(--mut); }
-  .stage-head .dot { width:8px; height:8px; border-radius:99px; background:#22c55e; flex:none; }
+  /* 完成段先留全旁白，新段开始或收尾时才收拢成一行标题；
+     行高用 grid 0fr→1fr 原地过渡，悬停浮现"展开"提示、点击回看。 */
+  .stage-collapse { display:grid; grid-template-rows:1fr; visibility:visible;
+                    transition:grid-template-rows .3s cubic-bezier(.23,1,.32,1),
+                               opacity .22s ease, visibility 0s; }
+  .stage-block.collapsed:not(.expanded) .stage-collapse {
+    grid-template-rows:0fr; opacity:0; visibility:hidden;
+    transition:grid-template-rows .3s cubic-bezier(.23,1,.32,1),
+               opacity .22s ease, visibility 0s linear .3s; }
+  .stage-block.collapsed .stage-body { overflow:hidden; min-height:0;
+                                       transition:padding-bottom .3s cubic-bezier(.23,1,.32,1); }
+  /* 0fr 行轨会被 body 的下内边距顶住，收起时内边距同步归零。 */
+  .stage-block.collapsed:not(.expanded) .stage-body { padding-bottom:0; }
+  .stage-block.collapsed .stage-head { cursor:pointer; }
+  .stage-block.collapsed .stage-head::after { content:"展开"; margin-left:10px; font-weight:400;
+                                              font-size:12px; color:var(--ac);
+                                              opacity:0; transition:opacity .15s; }
+  .stage-block.collapsed .stage-head:hover::after,
+  .stage-block.collapsed.expanded .stage-head::after { opacity:1; }
+  .stage-block.collapsed.expanded .stage-head::after { content:"收起"; }
+  /* 节点：白底彩圈的环钉在轨道上，压住穿行其下的轴线；状态只换环色。 */
+  .stage-head .dot { position:absolute; left:-19.5px; top:13px; z-index:1;
+                     width:9px; height:9px; border-radius:99px; box-sizing:content-box;
+                     background:#fff; border:2px solid #22c55e; flex:none;
+                     transition:border-color .3s ease; }
   .stage-block.running .dot { animation:breathe 1.8s ease-in-out infinite; }
   @keyframes breathe {
-    0%, 100% { box-shadow:0 0 0 0 rgba(34,197,94,.45); transform:scale(1); }
-    50% { box-shadow:0 0 0 5px rgba(34,197,94,0); transform:scale(1.35); opacity:.7; }
+    0%, 100% { box-shadow:0 0 0 0 rgba(34,197,94,.45); }
+    50% { box-shadow:0 0 0 5px rgba(34,197,94,0); }
   }
-  .stage-block.done .dot { background:#9ca3af; }
-  .stage-block.failed .dot { background:#ef4444; }
-  .stage-head .stage-count { margin-left:auto; font-weight:400; font-size:12px; color:var(--mut); }
+  .stage-block.done .dot { border-color:#9ca3af; }
+  .stage-block.failed .dot { border-color:#ef4444; }
+  .stage-head .stage-count { margin-left:auto; font-weight:400; font-size:12px; color:var(--mut);
+                             font-variant-numeric:tabular-nums; }
   .stage-body { padding:0 12px 10px; font-size:12.5px; color:var(--mut); }
-  .stage-body .ln { padding:2px 0; }
+  .stage-body .ln { padding:2px 0; line-height:1.7; }
+  /* 旁白行进场的滑动幅度比方向卡预览再轻一档。 */
+  .stage-body .ln.anim { animation:lnIn .42s ease; }
+  @keyframes lnIn { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
   .stage-body .ln.warn { color:#b42318; }
+  /* 旁白列表项：记号已在渲染层剥除，圆点由 CSS 画，重量不超过正文行。 */
+  .stage-body .ln-item { position:relative; padding-left:15px; }
+  .stage-body .ln-item::before { content:"•"; position:absolute; left:4px; color:var(--mut); }
   .stage-body .ln.tentative { color:#64748b; font-style:italic; }
   /* 进度行的 markdown 行内渲染（marked.parseInline + DOMPurify）：
      代码底纹与继承色链接，不引入新的视觉重量。 */
@@ -62,7 +124,9 @@
   .tcard-title { flex:1; font-weight:600; font-size:13px; line-height:1.45;
                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tcard-toggle { border:0; background:none; cursor:pointer; color:var(--mut);
-                  font-size:11px; padding:2px 6px; transition:transform .15s; }
+                  font-size:11px; padding:2px 6px; transition:transform .15s, background-color .15s, color .15s; }
+  /* 幽灵展开钮只加浅底与变色，不做实心填充。 */
+  .tcard-toggle:hover { background:#eef2f6; color:var(--ac); }
   .tcard.expanded .tcard-toggle { transform:rotate(90deg); }
   .tcard-live { padding:0 10px 6px; font-size:12.5px; color:var(--mut); }
   .tcard-live.anim { animation:slidein .35s ease; }
@@ -74,7 +138,8 @@
   /* 运行指标条（轮次/方向/证据）：标题区独立位置，不混进结果流 */
   #run-metrics { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   #run-metrics .chip { font-size:12.5px; padding:2px 10px; border-radius:99px;
-                       background:#eef2ff; color:#3730a3; border:1px solid #e0e7ff; }
+                       background:#e9f2f1; color:#0f5150; border:1px solid #cfe3e1;
+                       font-variant-numeric:tabular-nums; }
   .clarify-options { display:grid; gap:8px; margin:12px 0; }
   .clarify-options label { display:flex; gap:9px; align-items:flex-start; padding:9px 11px;
                            border:1px solid var(--bd); border-radius:8px; cursor:pointer; }
@@ -112,18 +177,25 @@
                    background:#cbd5e1; box-shadow:none; }
   .runs-page-dot:hover { background:#94a3b8; }
   .runs-page-dot.active { width:11px; height:11px; background:var(--ac); }
-  .ask-card textarea:focus { outline:none; border-color:var(--ac); box-shadow:0 0 0 3px rgba(37,99,235,.12); }
+  .ask-card textarea:focus { outline:none; border-color:var(--ac); box-shadow:0 0 0 3px rgba(15,118,110,.12); }
   table { width:100%; border-collapse:collapse; font-size:14px; }
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--bd); }
   td.q { max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .report { background:#fff; }
-  .report-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-  .report-actions { display:flex; align-items:center; gap:8px; }
-  .report-actions button { padding:6px 12px; font-size:13px; }
+  /* 眉题行：徽标靠左、动作靠右；标题在其下独占整行。 */
+  .report-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+                    margin-bottom:10px; }
+  .report-head { margin-bottom:20px; }
+  /* 文档标题压住正文层级：19px > 兜底的 md h1 18px > h2 16.5px。 */
+  #report-card-title { display:block; font-size:19px; line-height:1.5; letter-spacing:-0.01em;
+                       text-wrap:balance; }
+  .report-actions { display:flex; align-items:center; gap:8px; flex:none; }
+  .report-actions button { padding:4px 12px; font-size:12.5px; white-space:nowrap; }
   .report .md { line-height:1.8; }
-  .report-meta { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 4px; }
+  .report-meta { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
   .report-meta span { font-size:12.5px; padding:3px 10px; border-radius:99px;
-                      background:#eef2ff; color:#3730a3; border:1px solid #e0e7ff; }
+                      background:#e9f2f1; color:#0f5150; border:1px solid #cfe3e1;
+                      font-variant-numeric:tabular-nums; }
   .report-meta.warn span:first-child { background:#fef3c7; color:#92400e; border-color:#fde68a; }
   /* 正文标题永远小于卡片标题(15px bold)才不层级倒挂；writer 违规写出的
      # 一级标题也钳在 18px 内。 */
@@ -131,11 +203,37 @@
   .report .md h2 { font-size:16.5px; margin:16px 0 6px; }
   .report .md h3 { font-size:15.5px; margin:14px 0 4px; }
   .src { font-size:13.5px; color:var(--mut); }
-  .src a { color:var(--ac); text-decoration:none; word-break:break-all; }
+  .src a { color:var(--ac); text-decoration:none; overflow-wrap:anywhere; word-break:normal; }
   .src-item { padding:6px 8px; margin:4px 0; border-left:3px solid var(--bd); scroll-margin-top:70px; }
-  .src-item:target, .src-item.flash { background:#fef9c3; border-left-color:#eab308; }
+  .src-item:target, .src-item.flash { background:#e9f2f1; border-left-color:var(--ac); }
   .src-item blockquote { margin:2px 0 0; padding-left:10px; color:var(--mut); font-style:italic; }
   #report a[href^="#src-"] { color:var(--ac); text-decoration:none; cursor:pointer; }
+  /* 报告代码块：高亮样式常驻，右上角逐块复制；高亮库缺失时明文等宽。 */
+  .report .md pre { position:relative; background:#f8fafc; border:1px solid var(--bd);
+                    border-radius:8px; padding:12px 14px; overflow-x:auto; margin:14px 0; }
+  .report .md pre code { background:none; padding:0; font-size:13px; line-height:1.7; }
+  .code-copy { position:absolute; top:8px; right:8px; z-index:1; background:#fff;
+               border:1px solid var(--bd); border-radius:6px; color:var(--mut);
+               font-size:11.5px; padding:2px 8px; }
+  .code-copy:hover { color:var(--ac); border-color:var(--ac); background:#fff; }
+  /* 进行中的空态提示 */
+  .progress-empty { padding:4px 0 8px; font-size:12.5px; color:var(--mut); }
+  /* 账户视图：原版卡语汇 */
+  #view-account { max-width:860px; margin-left:auto; margin-right:auto; }
+  .account-head { display:flex; align-items:baseline; gap:14px; margin-bottom:10px; }
+  .account-metrics { display:flex; gap:12px; flex-wrap:wrap; margin:4px 0 10px; }
+  .account-metrics .metric { border:1px solid var(--bd); border-radius:8px; padding:10px 18px; }
+  .account-metrics .metric-num { font-size:22px; font-weight:600; line-height:1.2; }
+  .account-metrics .metric-label { font-size:12px; color:var(--mut); margin-top:2px; }
+  .quota-table td:last-child, .quota-table th:last-child { text-align:right; }
+  .quota-table .off { color:var(--mut); }
+  /* 顶栏账户入口 */
+  header .account-link { color:var(--mut); text-decoration:none; font-size:13.5px;
+                         padding:5px 2px; }
+  header .account-link:hover { color:var(--fg); }
+  header .account-link.active { color:var(--ac); font-weight:600;
+                                box-shadow:inset 0 -2px 0 var(--ac); }
+  header .brand-link { color:var(--fg); text-decoration:none; }
   /* PDF 使用独立、固定纸张宽度的 DOM 副本，避免把页面纵向位置变成首页留白。 */
   .pdf-export-host { position:fixed; top:0; left:0; z-index:-10000; width:186mm;
                      background:#fff; pointer-events:none; }
@@ -157,16 +255,32 @@
   .pdf-export-report .pdf-paragraph-group .pdf-paragraph-fragment { margin:0; }
   .pdf-export-report .pdf-paragraph-fragment { orphans:3; widows:3; }
   .pdf-export-report pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .pdf-export-report .code-copy { display:none; }
   @media (max-width:720px) {
     main { margin-top:12px; padding:0 10px; }
     .card { padding:14px; }
+    /* 顶栏在窄屏是品牌与操作抢宽度：操作定不获（邮箱截断），
+       品牌可压缩；退出按钮始终完整可点。 */
+    header { padding:10px 12px; }
+    header b { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    header .row { gap:8px; flex:none; }
+    #whoami { max-width:96px; overflow:hidden; text-overflow:ellipsis;
+              white-space:nowrap; }
     .run-row { gap:8px; padding-left:4px; padding-right:4px; }
     .run-row .badge { width:66px; }
     .run-counts { display:none; }
     .run-time { width:58px; }
     .runs-pager { gap:8px; }
-    .report-head { align-items:flex-start; }
     .report-actions { gap:6px; }
     .report-actions button { padding:5px 9px; }
   }
   .hide { display:none !important; }
+  /* 呼吸点与滑入是装饰性动效：系统要求减少动态时全部停掉，状态色不受影响。 */
+  @media (prefers-reduced-motion: reduce) {
+    .stage-block.running .dot { animation:none; }
+    .tcard-live.anim { animation:none; }
+    .skip-link { transition:none; }
+    .stage-collapse { transition:none; }
+    .stage-block { transition:none; }
+    .stage-block.anim-in, .stage-body .ln.anim { animation:none; }
+  }

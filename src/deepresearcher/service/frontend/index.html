@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#f7f8fa" />
 <title>DeepResearcher · 深度研究</title>
 <!-- marked 渲染报告与进度内联样式；模型产出的 markdown 不可信，
      innerHTML 注入前必须过 DOMPurify。任一 CDN 缺失都回退纯文本渲染（安全优先）。 -->
@@ -10,26 +11,32 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" onerror="window.__purify_failed=1"></script>
 <!-- PDF 在浏览器端生成：不将报告正文和证据来源表再发给第三方服务。 -->
 <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js" onerror="window.__html2pdf_failed=1"></script>
-<link rel="stylesheet" href="/styles.css?v=20260928-cl1" />
+<!-- 报告代码块高亮：加载失败降级为明文等宽展示，不阻断渲染。 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/atom-one-light.min.css" onerror="window.__hljs_css_failed=1" />
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js" onerror="window.__hljs_failed=1"></script>
+<link rel="stylesheet" href="/styles.css?v=20261011-r18" />
 </head>
 <body>
+<a href="#main-content" class="skip-link">跳到主要内容</a>
 <header>
-  <b>DeepResearcher</b>
+  <b id="nav-home" style="cursor:pointer"><a href="#/" id="nav-home-link" class="brand-link">DeepResearcher</a></b>
   <span class="row">
+    <a href="#/" id="nav-research" class="account-link">研究</a>
+    <a href="#/account" id="nav-account" class="account-link hide">账户</a>
     <span id="whoami" class="muted"></span>
     <button id="logout" class="secondary hide">退出</button>
   </span>
 </header>
-<main>
+<main id="main-content">
   <!-- 登录 / 注册 -->
   <section id="view-auth" class="card hide">
     <div class="row" style="justify-content:center;gap:24px;margin-bottom:14px">
       <button id="tab-login" class="secondary">登录</button><button id="tab-register" class="secondary">注册</button>
     </div>
     <div style="max-width:360px;margin:0 auto">
-      <p>邮箱 <input id="auth-email" type="email" autocomplete="username" /></p>
-      <p>密码 <input id="auth-password" type="password" autocomplete="current-password" /></p>
-      <p class="muted">密码至少 8 位。</p>
+      <p><label>邮箱 <input id="auth-email" type="email" autocomplete="username" spellcheck="false" /></label></p>
+      <p><label>密码 <input id="auth-password" type="password" autocomplete="current-password" /></label></p>
+      <p class="muted hide" id="password-hint">密码至少 8 位。</p>
       <button id="auth-submit" style="width:100%">登录</button>
       <p id="auth-error" class="err"></p>
     </div>
@@ -38,7 +45,7 @@
   <!-- 首页：提问 + 我的运行 -->
   <section id="view-home" class="hide">
     <div class="card ask-card">
-      <textarea id="query" placeholder="提出一个值得深挖的研究问题，例如：性善论和性恶论哪一个更正确？"></textarea>
+      <textarea id="query" aria-label="研究问题" placeholder="提出一个值得深挖的研究问题，例如：性善论和性恶论哪一个更正确？"></textarea>
       <div class="row" style="margin-top:12px;justify-content:space-between">
         <span id="quota-hint" class="muted">Ctrl / ⌘ + Enter 快速开始</span>
         <button id="submit">开始研究</button>
@@ -50,7 +57,7 @@
         <b>我的研究</b><span id="runs-count" class="muted"></span>
       </div>
       <div id="runs-list"></div>
-      <p id="runs-empty" class="muted" style="padding:14px 0">还没有研究记录，从上面提出第一个问题开始。</p>
+      <p id="runs-empty" class="muted hide" style="padding:14px 0">还没有研究记录，从上面提出第一个问题开始。</p>
       <div id="runs-pager" class="runs-pager hide">
         <button id="runs-prev" class="runs-page-arrow" aria-label="上一页" title="上一页">‹</button>
         <span id="runs-page-dots" class="runs-page-dots"></span>
@@ -82,29 +89,45 @@
       <b>需要你确认</b>
       <p id="clarification-question"></p>
       <div id="clarification-options" class="clarify-options"></div>
-      <textarea id="clarification-other" placeholder="Other：请补充你的答案"></textarea>
+      <textarea id="clarification-other" aria-label="补充回答" placeholder="或者直接用一句话补充你的回答……"></textarea>
       <div class="row" style="justify-content:flex-end;margin-top:10px">
         <span id="clarification-error" class="err"></span>
         <button id="clarification-submit">提交回答</button>
       </div>
     </div>
     <div class="card report hide" id="report-card">
-      <div class="report-head">
-        <b id="report-card-title">研究报告</b>
+      <div class="report-toolbar" id="report-toolbar">
+        <div id="report-meta" class="report-meta hide"></div>
         <span id="report-actions" class="report-actions hide" data-html2canvas-ignore="true">
           <button id="report-copy" class="secondary" type="button">复制</button>
           <button id="report-download" class="secondary" type="button">下载 PDF</button>
         </span>
       </div>
-      <div id="report-meta" class="report-meta hide"></div>
+      <div class="report-head">
+        <b id="report-card-title">研究报告</b>
+      </div>
       <div id="report" class="md"></div>
       <hr />
       <b class="src" id="sources-title">证据来源</b>
       <div id="sources" class="src"></div>
     </div>
   </section>
+  <!-- 账户：身份、账本与配额 -->
+  <section id="view-account" class="hide">
+    <div class="card">
+      <div class="account-head">
+        <b id="account-email"></b>
+        <span class="muted" id="account-since"></span>
+      </div>
+      <div class="account-metrics" id="account-metrics"></div>
+      <table class="quota-table">
+        <thead><tr><th>配额</th><th>上限</th></tr></thead>
+        <tbody id="quota-rows"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
-<script type="module" src="/app.js?v=20260930-nm1"></script>
+<script type="module" src="/app.js?v=20261011-r18"></script>
 </body>
 </html>
