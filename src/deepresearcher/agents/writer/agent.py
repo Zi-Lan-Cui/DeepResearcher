@@ -27,7 +27,6 @@ from deepresearcher.agents.writer.state import (
 from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.events.sink import JsonlSink
@@ -62,8 +61,6 @@ class ReportWriter:
         artifact_max_text_chars: int = 1_000,
         context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     ):
-        if llm is None:
-            raise LLMConfigurationError("ReportWriter 需要已装配的模型。")
         self.llm = llm
         self.config = config
         self._render_incomplete = render_incomplete

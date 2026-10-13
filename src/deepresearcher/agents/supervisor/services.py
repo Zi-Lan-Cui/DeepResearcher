@@ -71,7 +71,7 @@ def dispatch_research(
 
     返回 (task, receipt, entry):预算越界时 task 为 None;entry 是待写进
     pending_directions 通道的登记项,由派发批的 Command 与回执同批提交。
-    方向本体由 tools 层拉起后台任务执行,到达后经 absorb_arrival 收口——
+    方向本体由 tools 层拉起后台任务执行,完成后经 absorb_arrival 吸收——
     派发批不等方向完成,回合屏障由此拆除。
     display_title 是方向卡的展示短题,topic 仍承载完整契约;缺省时前端回退截断 question。
     程序不做主题去重:防重复交给提示词纪律与在途清单,浪费由 max_subtasks 与轮次预算封顶。
@@ -128,7 +128,8 @@ def dispatch_research(
         "workbench_revision": loop_state.working_set_revision,
         "instruction": (
             "方向已入队后台执行，本回执只代表受理。请勿对在途主题重复派发；"
-            "可继续派发互补方向、修订综合稿，或调用 WaitDirection 收取到达的结果。"
+            "可继续派发互补方向、修订综合稿，完成的结果将在回合开头注入，"
+            "本场内主动等待用 WaitDirection。"
         ),
     }
     return task, receipt, entry
@@ -138,7 +139,7 @@ async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExe
     """后台任务体:等并发槽、执行单个方向研究,返回完整产物。
 
     除取消外不抛异常——worker 异常在此降级为 failed 结果,保证 await 方总能取值。
-    完成/失败事件不在这里发:到达语义以吸收进工作集的时刻为准,见 absorb_arrival。
+    完成/失败事件不在这里发:"完成"以吸收进工作集的时刻为准,见 absorb_arrival。
     """
     round_no = int(task.get("round", 1))
     async with deps.worker_limit:
@@ -183,11 +184,11 @@ def absorb_lost_registrations(
     loop_state: SupervisorLoopState,
     live_task_ids: set[str],
 ) -> list[tuple[dict[str, object], dict[str, object]]]:
-    """崩溃欠账清算:通道有登记、进程无活任务体的方向一律判 failed 并销账。
+    """崩溃恢复结算:通道有登记、进程无活任务体的方向一律判 failed 并移除登记。
 
-    WaitDirection(消费前先把幽灵结算成收据)与节点收口 drain(模型经 nudge 封顶后
-    仍直接结束时的最后兜底)都必须调用本函数——只在一处结算会漏掉后者,
-    在途方向就无声消失。返回逐项 (方向报告, 通道差量)。
+    WaitDirection 在消费前先调用本函数,把无主登记结算成收据;节点收尾 drain 在
+    模型 nudge 上限用尽仍直接结束时以此兜底。两处都必须调用,只在一处结算会漏掉
+    另一处,在途方向就无声消失。返回逐项的方向报告与通道差量。
     """
     results: list[tuple[dict[str, object], dict[str, object]]] = []
     for task_id in sorted(list(loop_state.pending_directions)):
@@ -241,36 +242,24 @@ def _merge_channel_delta(delta: dict[str, object], part: dict[str, object]) -> N
             delta[key] = value
 
 
-async def wait_for_directions(
+def receive_ready_directions(
     deps: SupervisorDeps,
     loop_state: SupervisorLoopState,
     registry: dict[str, asyncio.Task],
     *,
-    task_ids: list[str] | None = None,
+    merged_via: str,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """到达的唯一消费点:先欠账清算;已有到货立即吸收整波返回,无到货才阻塞等待。
+    """非阻塞接收:结算无主登记,并吸收登记表中全部已完成且未领取的方向。
 
-    仅由 WaitDirection 工具调用——方向结果由此只有一种注入形态(收据),
-    不再有中间件观察的第二入口。任务体是 total 函数,除取消外不抛;
-    指定 id 全部不在途(或已被清算)时不挂死,以现有结果即返。
-    返回 (方向报告列表, 通道差量),差量只含 merge 语义通道,由串行批的 Command 提交。
+    进程内登记表弹出即领取标记,回合开头接收中间件与 WaitDirection 两个入口以它
+    互斥:先执行的一方消费,后执行的一方只见剩余。报告与通道差量一并返回,差量
+    只含 merge 语义通道。吸收原语按 id 幂等,两个入口不会重复计入。
     """
     reports: list[dict[str, object]] = []
     delta: dict[str, object] = {}
     for report, lost_delta in absorb_lost_registrations(deps, loop_state, set(registry)):
         reports.append(report)
         _merge_channel_delta(delta, lost_delta)
-
-    if task_ids:
-        targets = [registry[tid] for tid in task_ids if tid in registry]
-    else:
-        targets = list(registry.values())
-    # 契约是"阻塞到至少一个到货":已有完成未收的立即返回(实场 run-3234:两个方向完成后
-    # 挂置 372-382s,只因另一路未回就把波次收口押在最后回货上,吞掉了边到边处置)。
-    arrived = any(task.done() for task in registry.values())
-    live = [item for item in targets if not item.done()]
-    if not arrived and live:
-        await asyncio.wait(live, return_when=asyncio.FIRST_COMPLETED)
 
     for task_id in sorted(list(registry)):
         task = registry[task_id]
@@ -281,25 +270,68 @@ async def wait_for_directions(
         subtask = cast(SubTask, dict(entry.get("subtask") or {"id": task_id, "question": ""}))
         registry.pop(task_id)
         report, task_delta = absorb_arrival(
-            deps, loop_state, subtask, execution, merged_via="wait_tool"
+            deps, loop_state, subtask, execution, merged_via=merged_via
         )
         reports.append(report)
         _merge_channel_delta(delta, task_delta)
     return reports, delta
 
 
+async def wait_for_directions(
+    deps: SupervisorDeps,
+    loop_state: SupervisorLoopState,
+    registry: dict[str, asyncio.Task],
+    *,
+    task_ids: list[str] | None = None,
+    timeout: float | None = None,
+) -> tuple[list[dict[str, object]], dict[str, object], bool]:
+    """等待并收取在途方向:先非阻塞接收,无结果才阻塞;返回报告、差量与是否到期。
+
+    已有完成未领取的立即返回,不再等待:实场 run-3234 中两个方向完成后仍挂置
+    372-382 秒,要等其他路全部返回才处理,边完成边处置的机会被落在最后一路之后。
+    timeout 限定阻塞秒数,到期无一完成则 timed_out 为真,不把等待到期
+    误报成无在途。任务体是 total 函数,除取消外不抛;指定 id 全部不在途时
+    不挂死,以现有结果即返。
+    """
+    reports, delta = receive_ready_directions(deps, loop_state, registry, merged_via="wait_tool")
+
+    targets = (
+        [registry[tid] for tid in task_ids if tid in registry]
+        if task_ids
+        else list(registry.values())
+    )
+    live = [item for item in targets if not item.done()]
+    timed_out = False
+    if not reports and live:
+        await asyncio.wait(live, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
+        timed_out = timeout is not None and not any(item.done() for item in live)
+
+    batch_reports, batch_delta = receive_ready_directions(
+        deps, loop_state, registry, merged_via="wait_tool"
+    )
+    reports.extend(batch_reports)
+    _merge_channel_delta(delta, batch_delta)
+    if batch_reports:
+        timed_out = False
+    return reports, delta, timed_out
+
+
 def compose_wait_receipt(
     reports: list[dict[str, object]],
     pending_task_ids: set[str],
     working_set_revision: int,
+    *,
+    timed_out: bool = False,
 ) -> dict[str, object]:
-    """WaitDirection 回执:三种终形各有明说,不把"钉不中"谎报成"无在途"。
+    """WaitDirection 回执:等待到期回 timed_out,不与无在途情形混同。
 
-    无报告但在途非空只可能是钉待的 id 全不在册——实场 run-88c4/185e 模型均被
-    "no_inflight + 在途列表非空"的自相矛盾回执烧掉一回合,此处显式给出纠偏指令。
+    无报告但在途非空时,只可能是指定 id 全不在册或等待到期,
+    两种情形分别给出纠偏指令,避免回执自相矛盾。
     """
     if reports:
         status = "completed"
+    elif pending_task_ids and timed_out:
+        status = "timed_out"
     elif pending_task_ids:
         status = "unknown_task_ids"
     else:
@@ -313,7 +345,11 @@ def compose_wait_receipt(
     if status == "unknown_task_ids":
         payload["instruction"] = (
             "指定的 task_ids 没有一个在途(以本回执 inflight 为准)。核对 id 后重试，"
-            "或留空 task_ids 等待任意一个方向到货。"
+            "或留空 task_ids 等待任意一个方向完成。"
+        )
+    elif status == "timed_out":
+        payload["instruction"] = (
+            "等待时间已用尽,期间没有方向完成。可加长 timeout 再等,或先处理现有工作台。"
         )
     elif status == "no_inflight":
         payload["instruction"] = (
@@ -341,12 +377,12 @@ def absorb_arrival(
     *,
     merged_via: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """方向到达的同步收口段:absorb、销账、发事件,返回方向报告与通道差量。
+    """方向完成后的同步吸收段:并入工作集、移除登记、发事件,返回方向报告与通道差量。
 
-    段内禁引入 await(同旧 absorb 纪律)。调用方是 WaitDirection 工具与节点收口
+    段内禁引入 await(同旧 absorb 纪律)。调用方是 WaitDirection 工具与节点收尾
     drain,都在循环线程上同步执行。差量只碰 merge 语义通道;事件在此发出使
     task_done 帧与"证据已入工作集"同一时刻,卡片绿色即模型可见。
-    merged_via 记录到达通道:model_turn|drain|lost。
+    merged_via 记录吸收入口:model_turn|wait_tool|drain|lost。
     """
     task_context = _task_context(deps, task)
     task_result = execution.task_result
@@ -711,10 +747,10 @@ def apply_workbench_changes(
 
     管线:_project_submission 判别并集解析+归并(形状校验由 pydantic 承担)→ 表态冲突检查 →
     候选终态(稿/活跃集)在副本上算出 → 终态过一次跨操作不变式(aspect 绑定 ⊆ 终态活跃集)
-    → 全绿才落 loop_state。草稿期不要求稿子齐备,验收全在 freeze_synthesis。
+    → 全部通过才落 loop_state。草稿期不要求稿子齐备,验收全在 freeze_synthesis。
     任一项失败整单拒绝并点名操作——增量协议下重发只有几条操作,回滚成本可忽略。
     framing/aspect 变更使 revision+1 并程序盖 based_on 时间戳;acknowledge 只重盖时间戳
-    (波到货但不改稿的合法表态);plan 与写作判定无关。
+    (有结果注入但不改稿时的合法表态);plan 与写作判定无关。
     """
     edits, rejections = _project_submission(loop_state, changes)
     if rejections:
@@ -772,7 +808,7 @@ def freeze_synthesis(
     """ResearchComplete 业务:冻结通过竣工验收的最新综合稿。
 
     版本对账由程序完成(单写者、时间戳自动盖),模型不再报版本号:稿子落后于
-    桌面(有未处置的到达/槽位变化)即拒,提示 UpdateWorkbench 修订或 acknowledge。
+    桌面(有未处理的方向结果/槽位变化)即拒,提示 UpdateWorkbench 修订或 acknowledge。
     草稿期不校验齐备,这里统一验收:answer_goal/thesis/decision_rationale 三件
     非空且至少一块 aspect——撤脚手架前大楼必须成形。
     无证据的稿仅在 provider_exhausted 认证后可冻结,终态记 PROVIDER_EXHAUSTED。
@@ -836,7 +872,8 @@ def _freeze_rejection_cause(
             for entry in loop_state.pending_directions.values()
         )
         return (
-            f"仍有在途方向未返回：{running}。调用 WaitDirection 收取到达后修订再冻结；"
+            f"仍有在途方向未返回：{running}。等待其完成并处理结果后修订再冻结"
+            "（结果将在回合开头注入，也可用 WaitDirection 主动等）；"
             "也可继续派发互补方向，但不要在途未清零时结束本轮。"
         )
     if synthesis is None:
@@ -850,7 +887,7 @@ def _freeze_rejection_cause(
         )
     if not loop_state.synthesis_is_fresh(synthesis):
         return (
-            "桌面在成稿后又有变化(到达或槽位调整)未反映:请修订 framing/aspect,"
+            "桌面在成稿后又有变化(方向结果或槽位调整)未反映:请修订 framing/aspect,"
             "或确认无需改动时用 acknowledge 表态后再冻结。"
         )
     return (

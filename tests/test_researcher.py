@@ -19,7 +19,6 @@ from deepresearcher.agents.researcher.state import (
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.schemas import (
     ResearchDirectionDecision,
     ResearchDirectionResult,
@@ -412,18 +411,6 @@ def test_research_agent_replans_duplicate_queries_instead_of_mislabeling_budget_
     assert result.task_result.stop_reason == "blocked_without_evidence"
     assert result.task_result.queries == ["稳定术语 定义"]
     assert "no_novel_queries" in result.task_result.failures[0]
-
-
-def test_research_agent_requires_all_dependencies_at_construction():
-    with pytest.raises(LLMConfigurationError):
-        ResearchAgent(
-            None,
-            AgentConfig(),
-            search_tool=SearchTool(FakeSearchService()),
-            reader_tool=FakeReader(),
-        )
-    with pytest.raises(ValueError, match="SearchTool"):
-        ResearchAgent(DirectionLLM([]), AgentConfig(), search_tool=None, reader_tool=FakeReader())
 
 
 def test_source_reader_requires_material_store_at_construction():

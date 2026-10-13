@@ -27,7 +27,6 @@ from deepresearcher.agents.researcher.state import (
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
-from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
@@ -78,10 +77,6 @@ class ResearchAgent:
         context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
         material_store: ResearchMaterialStore | None = None,
     ):
-        if llm is None:
-            raise LLMConfigurationError("ResearchAgent 需要已装配的模型。")
-        if search_tool is None or reader_tool is None:
-            raise ValueError("ResearchAgent 需要 SearchTool 和 SourceReaderTool。")
         self.llm = llm
         self.config = config
         self.search_tool = search_tool

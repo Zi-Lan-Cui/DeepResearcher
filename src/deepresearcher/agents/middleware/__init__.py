@@ -1,5 +1,8 @@
 """Agent 共享中间件与栈装配。"""
 
+from deepresearcher.agents.middleware.direction_results import (
+    DirectionResultReceiverMiddleware,
+)
 from deepresearcher.agents.middleware.factory import (
     AGENT_RECURSION_LIMIT,
     MiddlewareProfile,
@@ -18,6 +21,7 @@ from deepresearcher.agents.middleware.tool_loop_guard import ToolLoopGuardMiddle
 __all__ = [
     "AGENT_RECURSION_LIMIT",
     "AgentObservabilityMiddleware",
+    "DirectionResultReceiverMiddleware",
     "LIMIT_MESSAGE_MARKER",
     "LoopStateRebuildMiddleware",
     "MiddlewareProfile",

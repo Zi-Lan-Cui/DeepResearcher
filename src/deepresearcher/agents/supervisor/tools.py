@@ -62,7 +62,7 @@ def build_supervisor_tools() -> list[BaseTool]:
         """派发一个具体、可验证且与历史互补的研究方向；回执即受理，方向在途后台执行。
 
         任务体在 create_task 与 researcher.ainvoke 之间除并发槽外不得引入 await:
-        嵌套 checkpoint ns 的后缀按到达 ainvoke 的调度序分配,保序才跨重放稳定。
+        嵌套 checkpoint ns 的后缀按 ainvoke 的调度序分配,保序才跨重放稳定。
         """
         ctx = runtime.context
         task, receipt, entry = services.dispatch_research(
@@ -101,17 +101,24 @@ def build_supervisor_tools() -> list[BaseTool]:
     @tool("WaitDirection", args_schema=WaitDirection)
     async def wait_direction(
         task_ids: list[str],
+        timeout: float | None = None,
+        *,
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
-        """等待在途方向到达并收取其方向报告；钉不中回 unknown_task_ids，无在途回 no_inflight，都不挂死。"""
+        """等待在途方向完成并收取方向报告；到期无完成回 timed_out，指定 id 不在途回 unknown_task_ids，无在途回 no_inflight，都不挂死。"""
         ctx = runtime.context
-        reports, delta = await services.wait_for_directions(
-            ctx.deps, ctx.loop_state, ctx.direction_tasks, task_ids=list(task_ids or [])
+        reports, delta, timed_out = await services.wait_for_directions(
+            ctx.deps,
+            ctx.loop_state,
+            ctx.direction_tasks,
+            task_ids=list(task_ids or []),
+            timeout=timeout,
         )
         payload = services.compose_wait_receipt(
             reports,
             set(ctx.loop_state.pending_directions),
             ctx.loop_state.working_set_revision,
+            timed_out=timed_out,
         )
         return _channel_command(runtime, payload, tool_name="WaitDirection", channel_update=delta)
 

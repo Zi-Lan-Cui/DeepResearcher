@@ -216,17 +216,23 @@ class ResearchDelegate(BaseModel):
 
 
 class WaitDirection(BaseModel):
-    """等待在途方向到达并收取方向报告；无在途时返回提示，不挂死。"""
+    """等待在途方向完成并收取方向报告；无在途时返回提示，不挂死。"""
 
     task_ids: list[str] = Field(
         default_factory=list,
-        description="要等待的方向 task_id 列表；留空表示等待任意一个在途方向到货。",
+        description="要等待的方向 task_id 列表；留空表示等待任意一个在途方向完成。",
+    )
+    timeout: float | None = Field(
+        default=None,
+        ge=0.5,
+        le=600,
+        description="最长等待秒数；到期仍无方向完成返回 timed_out 回执。留空等到至少一个完成为止。",
     )
 
     @field_validator("task_ids", mode="before")
     @classmethod
-    def strip_injected_whitespace(cls, value: object) -> object:
-        """剔除模型在长 id 流中夹入的空白与控制字符(实场 run-88c4:task\\r-0001 钉不中在途)。"""
+    def strip_injected_whitespace_and_control_chars(cls, value: object) -> object:
+        """剔除模型在长 id 流中夹入的空白与控制字符,避免 id 匹配不上在途。"""
         if not isinstance(value, list):
             return value
         cleaned = [re.sub(r"[\s\x00-\x1f\x7f]", "", str(item)) for item in value]
@@ -341,7 +347,7 @@ WORKBENCH_INTENT_ADAPTER: TypeAdapter[WorkbenchIntent] = TypeAdapter(WorkbenchIn
 def _normalize_changes(value: object) -> object:
     """修复模型把 changes 数组或其中单个操作再次编码成 JSON 字符串的常见偏差。
 
-    实场 run-88c4 实证:嵌套越深模型越倾向把整个 changes 序列化成字符串;
+    嵌套越深模型越倾向把整个 changes 序列化成字符串;
     列表元素类型收紧后这种偏差会在工具调用框架层报错,到不了拒绝回执,
     所以在此处先行还原,让 services 的判别并集继续给出具名反馈。
     """

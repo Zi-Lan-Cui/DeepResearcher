@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
     LIMIT_MESSAGE_MARKER,
+    DirectionResultReceiverMiddleware,
     LoopStateRebuildMiddleware,
     MiddlewareProfile,
     SubmissionGuard,
@@ -33,7 +34,6 @@ from deepresearcher.agents.supervisor.tools import (
     build_supervisor_tools,
 )
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
-from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
 from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.execution import AgentExecutionScope
@@ -113,10 +113,6 @@ class ResearchSupervisor:
         event_sink: JsonlSink | None = None,
         context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     ):
-        if llm is None:
-            raise LLMConfigurationError("ResearchSupervisor 需要已装配的模型。")
-        if research_agent is None:
-            raise ValueError("ResearchSupervisor 需要 ResearchAgent。")
         self.llm = llm
         self.config = config
         self.research_agent = research_agent
@@ -142,19 +138,20 @@ class ResearchSupervisor:
                 Any,
                 [
                     LoopStateRebuildMiddleware(),
+                    DirectionResultReceiverMiddleware(),
                     *build_agent_middleware(
                         MiddlewareProfile(
                             agent_name="Supervisor",
                             event_slug="supervisor",
                             model=self.llm,
-                            # 到达波各自占用一个模型回合,余量按派发上限翻倍再留收尾空间。
+                            # 主动等待与补派发都占用模型回合,余量按派发上限翻倍再留收尾空间。
                             max_turns=2 * config.max_subtasks_per_round + 10,
                             context_window_tokens=context_window_tokens,
                             retry_tools=[["ResearchDelegate"]],
                             serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
                             tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
-                            # 有欠账或两手空空的文本结束不算合法收尾:派完就跑绕开模型对到达
-                            # 的处置,空桌退场浪费整场(实跑实证);封顶放行后仍由 drain 收口。
+                            # 在途未结算、或无草稿无派发时的纯文本结束都不算合法收尾;
+                            # nudge 上限用尽后仍由 drain 结算。
                             submission_guard=SubmissionGuard(
                                 nudge_message=(
                                     "现在还不是收尾时:在途方向未返回就调用 WaitDirection 或继续"

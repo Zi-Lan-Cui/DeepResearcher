@@ -2,8 +2,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import Annotated, get_args, get_origin, get_type_hints
 
-import pytest
-
 from deepresearcher.agents.channels import replace_channel, retain_if_absent
 from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
 from deepresearcher.agents.writer import ReportWriter, services
@@ -15,7 +13,6 @@ from deepresearcher.agents.writer.state import (
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import AgentConfig
-from deepresearcher.llm import LLMConfigurationError
 from deepresearcher.observability.events import JsonlSink
 from deepresearcher.schemas import (
     Citation,
@@ -30,15 +27,6 @@ from fakes import REPORT_BRIEF, _WriterNoToolLLM, write_with, writer_llm
 from fakes import make_binding as _binding
 from fakes import make_citation as _cite
 from fakes import make_evidence as _ev
-
-
-def test_writer_requires_llm_at_construction():
-    with pytest.raises(LLMConfigurationError):
-        ReportWriter(
-            None,
-            AgentConfig(),
-            render_incomplete=object(),
-        )
 
 
 def test_writer_directive_accepts_configured_ten_known_gaps() -> None:

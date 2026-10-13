@@ -468,15 +468,6 @@ def test_delegate_emits_completed_event(tmp_path):
     assert "delegate_completed" in types
 
 
-def test_supervisor_requires_research_agent_at_construction():
-    with pytest.raises(ValueError, match="ResearchAgent"):
-        ResearchSupervisor(
-            SupervisorLLM(delegate_topics=[], complete_args=None),
-            AgentConfig(),
-            research_agent=None,
-        )
-
-
 def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
     class EmptyAgent:
         async def run(self, task):
@@ -1675,7 +1666,7 @@ def test_wait_direction_blocks_then_returns_reports():
         assert not waiter.done()  # 门未开:唯一合法的挂起点就是 wait
 
         agent.gate.set()
-        reports, delta = await waiter
+        reports, delta, _timed_out = await waiter
         assert [item["task_id"] for item in reports] == ["task-0001"]
         assert reports[0]["evidence_count"] == 1
         assert delta["pending_directions"] == {"add": {}, "remove": ["task-0001"]}
@@ -1730,7 +1721,7 @@ def test_wait_direction_returns_immediately_when_arrivals_pending():
         await asyncio.sleep(0.05)  # slow 已进 gate 等待:在途而非欠账,不得被清算判 lost
 
         try:
-            reports, _delta = await asyncio.wait_for(
+            reports, _delta, _timed_out = await asyncio.wait_for(
                 services.wait_for_directions(deps, context.loop_state, context.direction_tasks),
                 timeout=1,
             )
@@ -1747,7 +1738,7 @@ def test_wait_direction_returns_immediately_when_arrivals_pending():
 def test_wait_direction_without_inflight_returns_hint():
     async def scenario():
         supervisor, context = _delegate_context_for(FixedResearchAgent())
-        reports, delta = await services.wait_for_directions(
+        reports, delta, _timed_out = await services.wait_for_directions(
             context.deps, context.loop_state, context.direction_tasks
         )
         assert reports == []
@@ -1787,7 +1778,7 @@ def test_wait_direction_settles_lost_entries_before_waiting():
         context.loop_state.pending_directions = {
             "task-0001": _pending_entry("task-0001", "丢失方向", "丢失")
         }
-        reports, delta = await asyncio.wait_for(
+        reports, delta, _timed_out = await asyncio.wait_for(
             services.wait_for_directions(deps, context.loop_state, context.direction_tasks),
             timeout=1,
         )
@@ -1804,7 +1795,13 @@ def test_wait_direction_settles_lost_entries_before_waiting():
 
 
 class _ExitAttemptThenWaitModel:
-    """派完先以纯文本逃逸;被 nudge 退回后改调 WaitDirection;收据到手再收尾。"""
+    """派发后先以纯文本结束;被 nudge 退回后改调 WaitDirection;收据到手再收尾。
+
+    gate 提供时,在改调 WaitDirection 前放行它——用于测试真在途场景里方向的完成时机。
+    """
+
+    def __init__(self, gate: asyncio.Event | None = None) -> None:
+        self.gate = gate
 
     def bind_tools(self, _tools, **_kwargs):
         return self
@@ -1833,6 +1830,8 @@ class _ExitAttemptThenWaitModel:
                 ],
             )
         if nudged:
+            if self.gate is not None:
+                self.gate.set()
             return AIMessage(
                 content="",
                 tool_calls=[{"name": "WaitDirection", "args": {}, "id": "w1"}],
@@ -1959,10 +1958,39 @@ def test_bare_exit_without_draft_or_dispatch_is_nudged(tmp_path):
 
 
 def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
-    """有欠账的文本结束被 submission_guard 拦回(不新建中间件,复用收尾提醒);
+    """方向仍未完成时,纯文本结束被 submission_guard 拦回;
     模型改用 WaitDirection 后正常收尾,结果经 wait_tool 吸收而非 drain 兜底。"""
     from deepresearcher.observability.events import JsonlSink
     from fakes import event_types
+
+    sink = JsonlSink(tmp_path / "events.jsonl")
+    agent = _GatedResearchAgent()
+    supervisor = ResearchSupervisor(
+        _ExitAttemptThenWaitModel(gate=agent.gate),
+        AgentConfig(max_research_rounds=1, max_subtasks_per_round=1),
+        research_agent=agent,
+        event_sink=sink,
+    )
+    result = asyncio.run(
+        supervisor.run({"query": "端到端延迟", "clarified_query": "端到端延迟", "evidences": []})
+    )
+
+    types = event_types(tmp_path / "events.jsonl")
+    assert "supervisor_tool_loop_nudged" in types
+    assert "direction_arrival_merged" in types
+    assert [item.task_id for item in result["task_results"]] == ["task-0001"]
+    assert result["task_results"][0].execution_status == "completed"
+    # 本场内主动等待的注入形态是收据:历史里有 WaitDirection 的 ToolMessage。
+    context = [str(m.content) for m in result["supervisor_messages"]]
+    assert any("端到端延迟" in message and "evidence" in message for message in context)
+
+
+def test_completed_direction_injected_at_turn_start_without_wait(tmp_path):
+    """方向在回合间隔完成时由接收中间件注入,模型无需 WaitDirection 即可合法文本收尾。"""
+    from langchain_core.messages import ToolMessage
+
+    from deepresearcher.observability.events import JsonlSink
+    from fakes import read_events
 
     sink = JsonlSink(tmp_path / "events.jsonl")
     supervisor = ResearchSupervisor(
@@ -1975,14 +2003,89 @@ def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
         supervisor.run({"query": "端到端延迟", "clarified_query": "端到端延迟", "evidences": []})
     )
 
-    types = event_types(tmp_path / "events.jsonl")
-    assert "supervisor_tool_loop_nudged" in types
-    assert "direction_arrival_merged" in types
-    assert [item.task_id for item in result["task_results"]] == ["task-0001"]
-    assert result["task_results"][0].execution_status == "completed"
-    # 收据是到达的唯一注入形态:历史里有 WaitDirection 的 ToolMessage。
-    context = [str(m.content) for m in result["supervisor_messages"]]
-    assert any("端到端延迟" in message and "evidence" in message for message in context)
+    records = read_events(tmp_path / "events.jsonl")
+    arrivals = [r for r in records if r["event_type"] == "direction_arrival_merged"]
+    assert [r["payload"]["merged_via"] for r in arrivals] == ["model_turn"]
+    # 已注入即无在途:文本结束合法,既不被 nudge,也没有 WaitDirection 调用。
+    assert "supervisor_tool_loop_nudged" not in [r["event_type"] for r in records]
+    assert not any(
+        isinstance(m, ToolMessage) and m.name == "WaitDirection"
+        for m in result["supervisor_messages"]
+    )
+
+
+def test_receiver_middleware_injects_once_and_never_repeats():
+    """中间件单测,脱离 agent 装配:注入已完成并移除登记;第二次调用不注入;wait 只见剩余在途。"""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import HumanMessage
+
+    from deepresearcher.agents.middleware import DirectionResultReceiverMiddleware
+
+    async def scenario():
+        supervisor, context = _delegate_context_for(FixedResearchAgent())
+        runtime = SimpleNamespace(context=context)
+        middleware = DirectionResultReceiverMiddleware()
+        assert await middleware.abefore_model({}, runtime) is None  # 无在途无登记时不注入
+
+        context.loop_state.pending_directions = {
+            "task-0001": _pending_entry("task-0001", "方向一", "完成")
+        }
+        execution = await services._execute_research_task(
+            context.deps, context.loop_state.pending_directions["task-0001"]["subtask"]
+        )
+        ready = asyncio.ensure_future(_instant_task(execution))
+        await ready
+        context.direction_tasks["task-0001"] = ready
+
+        update = await middleware.abefore_model({}, runtime)
+        assert update is not None
+        (message,) = update["messages"]
+        assert isinstance(message, HumanMessage)
+        assert "研究管理观察（方向结果）" in str(message.content)
+        assert update["pending_directions"]["remove"] == ["task-0001"]
+        assert "task-0001" not in context.loop_state.pending_directions
+        assert context.loop_state.task_results[-1].task_id == "task-0001"
+
+        # 已领取的不再注入。
+        assert await middleware.abefore_model({}, runtime) is None
+        reports, delta, timed_out = await services.wait_for_directions(
+            context.deps, context.loop_state, context.direction_tasks
+        )
+        assert reports == [] and delta == {} and timed_out is False
+
+    async def _instant_task(result):
+        return result
+
+    asyncio.run(scenario())
+
+
+def test_wait_direction_timeout_reports_timed_out():
+    """timeout 到期无一完成:回执返回 timed_out,不误报成 no_inflight 或 unknown_task_ids。"""
+
+    async def scenario():
+        supervisor, context = _delegate_context_for(FixedResearchAgent())
+        context.loop_state.pending_directions = {
+            "task-0001": _pending_entry("task-0001", "慢方向", "未完")
+        }
+        slow: asyncio.Future = asyncio.get_running_loop().create_future()
+        context.direction_tasks["task-0001"] = slow
+        try:
+            reports, delta, timed_out = await services.wait_for_directions(
+                context.deps, context.loop_state, context.direction_tasks, timeout=0.2
+            )
+            assert reports == [] and delta == {} and timed_out is True
+            receipt = services.compose_wait_receipt(reports, {"task-0001"}, 3, timed_out=timed_out)
+            assert receipt["status"] == "timed_out"
+            assert receipt["inflight"] == ["task-0001"]
+            # 不带到期标记的同类无报告回执仍按既有判定返回 unknown_task_ids,两种情形不混淆。
+            assert (
+                services.compose_wait_receipt([], {"task-0001"}, 3)["status"] == "unknown_task_ids"
+            )
+        finally:
+            slow.cancel()
+
+    asyncio.run(scenario())
 
 
 def _apply_fixture() -> SupervisorLoopState:
