@@ -1,5 +1,7 @@
 """个人研究偏好:纯函数校验/冻结/应用,settings 与 stats 端点,创建快照不回溯。"""
 
+import asyncio
+
 import httpx
 import pytest
 import pytest_asyncio
@@ -32,6 +34,17 @@ async def _register(client, email="cfg@test.dev") -> str:
     response = await client.post("/api/register", json={"email": email, "password": PASSWORD})
     assert response.status_code == 201
     return response.json()["token"]
+
+
+async def _settle(client, token: str, run_id: str) -> None:
+    """取消并等待进入终态：fixture 收尾时不留进行中的 run，避开 aiosqlite 写锁竞态。"""
+    await client.post(f"/api/runs/{run_id}/cancel", headers=_auth(token))
+    async with asyncio.timeout(5.0):
+        while True:
+            body = (await client.get(f"/api/runs/{run_id}", headers=_auth(token))).json()
+            if body["status"] in {"completed", "failed", "cancelled"}:
+                return
+            await asyncio.sleep(0.02)
 
 
 @pytest_asyncio.fixture
@@ -120,11 +133,15 @@ async def test_run_snapshot_frozen_and_not_retroactive(client):
     changed = {**FULL, "max_research_rounds": 1}
     await client.post("/api/preferences", json={"preferences": changed}, headers=_auth(token))
     second = await client.post("/api/runs", json={"query": "第二场"}, headers=_auth(token))
+    second_run_id = second.json()["run_id"]
     async with session_factory() as session:
         old = await session.get(Run, run_id)
-        new = await session.get(Run, second.json()["run_id"])
+        new = await session.get(Run, second_run_id)
         assert old is not None and old.preferences_snapshot == FULL
         assert new is not None and new.preferences_snapshot == changed
+
+    await _settle(client, token, run_id)
+    await _settle(client, token, second_run_id)
 
 
 @pytest.mark.asyncio
@@ -142,3 +159,4 @@ async def test_stats_daily_shape_after_run(client):
     # days 越界回落默认窗口,不报错
     fallback = await client.get("/api/stats/daily?days=999", headers=_auth(token))
     assert fallback.json()["days"] == 30
+    await _settle(client, token, created.json()["run_id"])
