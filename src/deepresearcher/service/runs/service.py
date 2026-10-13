@@ -39,7 +39,9 @@ class RunService:
         # create() 事务内再取全局 advisory lock，协调多 API 进程。
         self._admission_lock = asyncio.Lock()
 
-    async def create(self, user_id: int, query: str) -> str:
+    async def create(
+        self, user_id: int, query: str, preferences_snapshot: dict[str, int] | None = None
+    ) -> str:
         query = query.strip()
         async with self._admission_lock:
             async with self._session_factory() as session:
@@ -67,6 +69,15 @@ class RunService:
                         f"系统等待队列已满（{self._config.max_global_queued_runs}），请稍后重试。"
                     )
                 run_id = new_id("run")
-                session.add(Run(id=run_id, user_id=user_id, query=query, status="queued"))
+                frozen = dict(preferences_snapshot) if preferences_snapshot is not None else None
+                session.add(
+                    Run(
+                        id=run_id,
+                        user_id=user_id,
+                        query=query,
+                        status="queued",
+                        preferences_snapshot=frozen,
+                    )
+                )
                 await session.commit()
         return run_id

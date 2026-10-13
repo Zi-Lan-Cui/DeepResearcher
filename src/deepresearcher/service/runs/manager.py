@@ -79,13 +79,18 @@ class RunManager:
         payload = row.record.get("payload", {})
         return payload if isinstance(payload, dict) else None
 
-    async def start(self, user_id: int, query: str) -> str:
+    async def start(
+        self, user_id: int, query: str, preferences_snapshot: dict[str, int] | None = None
+    ) -> str:
         """受理新研究问题，创建 queued 行并通知 worker。
+
+        preferences_snapshot 为创建时刻冻结的个人偏好全量值，随行持久化；
+        缺省（旧调用方与测试）落 NULL，执行期回服务器默认。
 
         返回:
             新 run 的 id。
         """
-        run_id = await self._run_service.create(user_id, query.strip())
+        run_id = await self._run_service.create(user_id, query.strip(), preferences_snapshot)
         self._hub.open(run_id)
         await self._hub.publish_status(run_id, "queued")
         await self._hub.flush(run_id)

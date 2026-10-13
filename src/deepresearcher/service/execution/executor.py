@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
-from pathlib import Path
+from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
@@ -40,6 +39,7 @@ from deepresearcher.service.execution.usage import (
 from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.persistence.models import utcnow as _utcnow
 from deepresearcher.service.persistence.provider_health import PostgresProviderHealth
+from deepresearcher.service.preferences import apply_preferences
 from deepresearcher.service.preview.protocol import EphemeralEventBus
 from deepresearcher.service.runs.transitions import (
     apply_transition,
@@ -53,26 +53,6 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 logger = logging.getLogger("deepresearcher.service.execution.executor")
 
 _FLUSH_INTERVAL_SECONDS = 2.0
-
-
-def prune_event_jsonl(events_dir: Path, retention_days: int) -> int:
-    """按 mtime 删除超龄的 run 事件 JSONL,返回删除数。
-
-    清理是尽力而为：单个文件出错跳过，清理失败不阻塞进程启动。
-    retention_days<=0 表示关闭清理。
-    """
-    if retention_days <= 0 or not events_dir.is_dir():
-        return 0
-    cutoff = time.time() - retention_days * 86_400
-    removed = 0
-    for path in events_dir.glob("run-*.jsonl"):
-        try:
-            if path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        except OSError:
-            continue
-    return removed
 
 
 # LLM 账户级不可用时面向用户的安全文案，不含内部错误串。
@@ -324,8 +304,17 @@ class RunExecutor:
             if run_id not in self._cancellation_requests:
                 self.mark_lease_lost(run_id)
             return False
+        # 每 run 建图本就是常态（连接池等贵件仍共享），这里只把创建时刻冻结的
+        # 个人偏好快照合入 agent 配置；resume 重读同一行，快照一生不变。
+        async with self._session_factory() as session:
+            preferences_snapshot = await session.scalar(
+                select(Run.preferences_snapshot).where(Run.id == run_id)
+            )
+        run_settings = replace(
+            self._settings, agent=apply_preferences(self._settings.agent, preferences_snapshot)
+        )
         graph = self._graph_factory(
-            settings=self._settings,
+            settings=run_settings,
             event_sink=sink,
             http_client=self._http_client,
             checkpointer=self._checkpointer,

@@ -14,7 +14,7 @@
 <!-- 报告代码块高亮：加载失败降级为明文等宽展示，不阻断渲染。 -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/atom-one-light.min.css" onerror="window.__hljs_css_failed=1" />
 <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js" onerror="window.__hljs_failed=1"></script>
-<link rel="stylesheet" href="/styles.css?v=20261011-r18" />
+<link rel="stylesheet" href="/styles.css?v=20261012-r7" />
 </head>
 <body>
 <a href="#main-content" class="skip-link">跳到主要内容</a>
@@ -112,7 +112,7 @@
       <div id="sources" class="src"></div>
     </div>
   </section>
-  <!-- 账户：身份、账本与配额 -->
+  <!-- 账户：身份与账本、研究偏好、逐日用量（图表沉底） -->
   <section id="view-account" class="hide">
     <div class="card">
       <div class="account-head">
@@ -120,14 +120,35 @@
         <span class="muted" id="account-since"></span>
       </div>
       <div class="account-metrics" id="account-metrics"></div>
-      <table class="quota-table">
-        <thead><tr><th>配额</th><th>上限</th></tr></thead>
-        <tbody id="quota-rows"></tbody>
-      </table>
     </div>
+    <div class="card">
+      <div class="chart-head"><b>研究偏好</b></div>
+      <div id="preferences-form" class="preferences-form"></div>
+      <div class="row" style="justify-content:flex-end;align-items:center;margin-top:12px">
+        <span id="preferences-status" class="muted"></span>
+        <button id="preferences-save" type="button">保存</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="chart-head">
+        <b>Token 用量</b>
+        <div class="usage-legend">
+          <span class="legend-chip cached"></span>命中缓存的输入
+          <span class="legend-chip fresh"></span>新计算输入
+          <span class="legend-chip output"></span>输出
+        </div>
+        <select id="stats-window" class="window-select" aria-label="统计时间窗">
+          <option value="7">近 7 天</option>
+          <option value="30" selected>近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+      </div>
+      <div id="usage-chart" class="usage-chart" role="img" aria-label="按日 token 用量图"></div>
+    </div>
+    <div id="usage-tooltip" class="usage-tooltip" aria-hidden="true"></div>
   </section>
 </main>
 
-<script type="module" src="/app.js?v=20261011-r18"></script>
+<script type="module" src="/app.js?v=20261012-r7"></script>
 </body>
 </html>

@@ -13,7 +13,9 @@ from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.web.routes.auth import router as auth_router
 from deepresearcher.service.web.routes.events import router as events_router
+from deepresearcher.service.web.routes.preferences import router as preferences_router
 from deepresearcher.service.web.routes.runs import router as runs_router
+from deepresearcher.service.web.routes.stats import router as stats_router
 from deepresearcher.service.web.runtime import make_lifespan
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
@@ -37,5 +39,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(events_router)
     app.include_router(runs_router)
+    app.include_router(preferences_router)
+    app.include_router(stats_router)
     app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
     return app

@@ -54,6 +54,8 @@
     bottom:14px;
     -webkit-mask-image:linear-gradient(#000 calc(100% - 26px), transparent);
             mask-image:linear-gradient(#000 calc(100% - 26px), transparent); }
+  /* 块间距由 .stage-block 的上边距提供，首块拿不到它，由 #stages 补。 */
+  #stages { margin-top:12px; }
   .stage-block { border:1px solid var(--bd); border-radius:8px; margin:18px 0 0; background:#fff;
                  position:relative;
                  transition:border-color .3s ease, background-color .3s ease; }
@@ -225,8 +227,6 @@
   .account-metrics .metric { border:1px solid var(--bd); border-radius:8px; padding:10px 18px; }
   .account-metrics .metric-num { font-size:22px; font-weight:600; line-height:1.2; }
   .account-metrics .metric-label { font-size:12px; color:var(--mut); margin-top:2px; }
-  .quota-table td:last-child, .quota-table th:last-child { text-align:right; }
-  .quota-table .off { color:var(--mut); }
   /* 顶栏账户入口 */
   header .account-link { color:var(--mut); text-decoration:none; font-size:13.5px;
                          padding:5px 2px; }
@@ -276,6 +276,44 @@
   }
   .hide { display:none !important; }
   /* 呼吸点与滑入是装饰性动效：系统要求减少动态时全部停掉，状态色不受影响。 */
+  /* 账户页：逐日用量图与研究偏好表单。 */
+  .chart-head { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; flex-wrap:wrap; }
+  .chart-head > b { flex:none; }
+  .window-select { flex:none; width:auto; padding:4px 8px; border:1px solid var(--bd); border-radius:6px; font:inherit; background:#fff; color:var(--fg); }
+  .usage-chart { position:relative; overflow-x:auto; min-height:170px; }
+  .usage-chart svg { display:block; }
+  .usage-chart.chart-empty { display:flex; align-items:center; color:var(--mut); font-size:13px; min-height:120px; }
+  .usage-chart .grid-line { stroke:#eef1f4; stroke-width:1; }
+  .usage-chart .axis-line { stroke:var(--bd); stroke-width:1; }
+  .usage-chart .y-label, .usage-chart .x-label { fill:#9aa4ae; font-size:10px; }
+  .usage-chart .bar { transform-box:fill-box; transform-origin:bottom; animation:bar-grow .22s cubic-bezier(.22,.7,.3,1) backwards; transition:opacity .12s ease; }
+  @keyframes bar-grow { from { transform:scaleY(0); } }
+  .usage-chart .bar-hit { fill:transparent; pointer-events:all; cursor:default; }
+  .usage-chart .bar-band { fill:#0f766e; opacity:0; transition:opacity .12s ease; }
+  .usage-chart .bar-group.hover .bar-band { opacity:.07; }
+  .usage-chart .bar-group.hover .bar { opacity:.85; }
+  .usage-chart .bar-cached { fill:#b5d8d1; }
+  .usage-chart .bar-fresh  { fill:#0f766e; }
+  .usage-chart .bar-output { fill:#9aa7b8; }
+  .usage-legend { flex:1; display:flex; flex-wrap:wrap; gap:14px; color:var(--mut); font-size:12px; align-items:center; justify-content:center; }
+  .legend-chip { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; }
+  .legend-chip.cached { background:#b5d8d1; }
+  .legend-chip.fresh  { background:#0f766e; }
+  .legend-chip.output { background:#9aa7b8; }
+  /* fixed 定位：脱离 .usage-chart 的 overflow 裁剪。 */
+  .usage-tooltip { position:fixed; left:0; top:0; z-index:40; pointer-events:none; min-width:136px;
+    padding:8px 10px; background:#fff; border:1px solid var(--bd); border-radius:8px;
+    box-shadow:0 4px 16px rgba(20,30,40,.12); font-size:12px; color:var(--fg);
+    font-variant-numeric:tabular-nums; opacity:0; visibility:hidden; transition:opacity .12s ease, visibility .12s; }
+  .usage-tooltip.is-visible { opacity:1; visibility:visible; }
+  .usage-tooltip .tip-date { font-weight:600; margin-bottom:5px; }
+  .usage-tooltip .tip-row { display:flex; justify-content:space-between; gap:18px; line-height:1.6; }
+  .usage-tooltip .tip-key { color:var(--mut); }
+  .preferences-form { display:flex; flex-direction:column; gap:10px; }
+  .preference-row { display:grid; grid-template-columns:150px 96px 1fr; align-items:center; gap:12px; }
+  .preference-row select { padding:6px 8px; border:1px solid var(--bd); border-radius:6px; font:inherit; background:#fff; color:var(--fg); }
+  .preference-hint { font-size:12px; }
+  @media (max-width:560px) { .preference-row { grid-template-columns:1fr 96px; } .preference-hint { grid-column:1 / -1; } }
   @media (prefers-reduced-motion: reduce) {
     .stage-block.running .dot { animation:none; }
     .tcard-live.anim { animation:none; }
@@ -283,4 +321,7 @@
     .stage-collapse { transition:none; }
     .stage-block { transition:none; }
     .stage-block.anim-in, .stage-body .ln.anim { animation:none; }
+    .usage-chart .bar { animation:none; }
+    .usage-chart .bar-band { transition:none; }
+    .usage-tooltip { transition:none; }
   }

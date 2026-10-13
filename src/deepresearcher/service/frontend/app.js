@@ -1,5 +1,5 @@
 "use strict";
-/* ---------- 基础设施 ---------- */
+/* 基础设施 */
 const tokenKey = "deepresearcher.token";
 const $ = (id) => document.getElementById(id);
 let lastSeq = 0;        // SSE 去重水位：重连/回放都只会重发旧 seq，单调消费即可
@@ -32,7 +32,7 @@ function logout() {
 
 function show(el) { document.querySelectorAll("main > section").forEach(s => s.classList.add("hide")); el.classList.remove("hide"); }
 
-/* ---------- 视图路由（hash 极简版） ---------- */
+/* 视图路由：hash 极简版 */
 async function showView() {
   // 非路由 hash（锚点或外链分享）：归一化回 #/ 再正常路由，避免白屏或误切视图。
   if (location.hash && !location.hash.startsWith("#/")) {
@@ -91,26 +91,286 @@ async function loadAccount() {
     const l = document.createElement("div"); l.className = "metric-label"; l.textContent = tile.label;
     el.append(v, l); metrics.appendChild(el);
   }
-  const rows = $("quota-rows");
-  rows.innerHTML = "";
-  const quotaLines = [
-    ["同时进行的研究数", String(me.quotas.max_concurrent_runs_per_user), false],
-    ["每次研究 token 上限", me.quotas.max_tokens_per_run ? me.quotas.max_tokens_per_run.toLocaleString("en-US") : "未设限", !me.quotas.max_tokens_per_run],
-    ["每次研究花费上限", me.quotas.max_cost_usd_per_run ? "$" + fmtUsd(me.quotas.max_cost_usd_per_run) : "未设限", !me.quotas.max_cost_usd_per_run],
-    ["每日花费上限", me.quotas.max_cost_usd_per_user_daily ? "$" + fmtUsd(me.quotas.max_cost_usd_per_user_daily) : "未设限", !me.quotas.max_cost_usd_per_user_daily],
-  ];
-  for (const [name, value, off] of quotaLines) {
-    const tr = document.createElement("tr");
-    const tdName = document.createElement("td"); tdName.textContent = name;
-    const tdValue = document.createElement("td");
-    tdValue.textContent = value;
-    if (off) tdValue.classList.add("off");
-    tr.append(tdName, tdValue); rows.appendChild(tr);
-  }
+  loadUsageChart();
+  loadPreferencesForm();
 }
 window.addEventListener("hashchange", showView);
 
-/* ---------- 登录/注册 ---------- */
+/* 账户：逐日 token 用量图，缓存命中分色 */
+const COMPACT = new Intl.NumberFormat("en", { notation: "compact" });
+
+async function loadUsageChart() {
+  const days = $("stats-window").value;
+  let payload;
+  try { payload = await api("/api/stats/daily?days=" + encodeURIComponent(days)); } catch (e) { return; }
+  drawUsageChart(payload.series || []);
+}
+
+// 轴顶取 1/2/2.5/5×10^k 的整洁值，刻度数字不出现长尾。
+function niceCeil(value) {
+  const unit = Math.pow(10, Math.floor(Math.log10(value)));
+  for (const step of [1, 2, 2.5, 5, 10]) {
+    if (value <= step * unit) return step * unit;
+  }
+  return 10 * unit;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgText(x, y, cls, content, anchor) {
+  const text = document.createElementNS(SVG_NS, "text");
+  text.setAttribute("x", String(x));
+  text.setAttribute("y", String(y));
+  if (anchor) text.setAttribute("text-anchor", anchor);
+  text.setAttribute("class", cls);
+  text.textContent = content;
+  return text;
+}
+
+function usageTooltipRow(label, value) {
+  const line = document.createElement("div");
+  line.className = "tip-row";
+  const labelSpan = document.createElement("span");
+  labelSpan.className = "tip-key";
+  labelSpan.textContent = label;
+  const valueSpan = document.createElement("span");
+  valueSpan.className = "tip-value";
+  valueSpan.textContent = value;
+  line.append(labelSpan, valueSpan);
+  return line;
+}
+
+function showUsageTooltip(bucket, clientX, clientY) {
+  const tooltip = $("usage-tooltip");
+  const hit = bucket.input_tokens
+    ? Math.round((bucket.cached_input_tokens / bucket.input_tokens) * 100) + "%"
+    : "—";
+  const date = document.createElement("div");
+  date.className = "tip-date";
+  date.textContent = bucket.date;
+  tooltip.replaceChildren(
+    date,
+    usageTooltipRow("输入", COMPACT.format(bucket.input_tokens)),
+    usageTooltipRow("输出", COMPACT.format(bucket.output_tokens)),
+    usageTooltipRow("缓存命中", COMPACT.format(bucket.cached_input_tokens) + " · " + hit),
+    usageTooltipRow("研究次数", bucket.runs + " 场"),
+  );
+  tooltip.classList.add("is-visible");
+  moveUsageTooltip(clientX, clientY);
+}
+
+// fixed 定位贴合光标，靠边则左右/上下翻转，避免浮层越出视口。
+function moveUsageTooltip(clientX, clientY) {
+  const tooltip = $("usage-tooltip");
+  const gap = 14;
+  const box = tooltip.getBoundingClientRect();
+  let left = clientX + gap;
+  let top = clientY + gap;
+  if (left + box.width > window.innerWidth - 8) left = clientX - box.width - gap;
+  if (top + box.height > window.innerHeight - 8) top = clientY - box.height - gap;
+  tooltip.style.left = Math.max(8, left) + "px";
+  tooltip.style.top = Math.max(8, top) + "px";
+}
+
+function hideUsageTooltip() {
+  $("usage-tooltip").classList.remove("is-visible");
+}
+
+function drawUsageChart(series) {
+  const host = $("usage-chart");
+  host.innerHTML = "";
+  hideUsageTooltip();
+  if (!series.length) {
+    host.textContent = "所选时间窗内还没有用量。";
+    host.classList.add("chart-empty");
+    return;
+  }
+  host.classList.remove("chart-empty");
+  // 补齐无 run 的日期，横轴连续；按 UTC 与后端分组一致。
+  const byDate = new Map(series.map((item) => [item.date, item]));
+  const cursor = new Date(series[0].date + "T00:00:00Z");
+  const last = new Date(series[series.length - 1].date + "T00:00:00Z");
+  const buckets = [];
+  while (cursor <= last) {
+    const key = cursor.toISOString().slice(0, 10);
+    buckets.push(
+      byDate.get(key) ||
+        { date: key, runs: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 }
+    );
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  // 像素坐标系不用 viewBox 拉伸，文字保持锐利；宽度随容器，90 天窗也不挤。
+  const gutter = 46;
+  const chartWidth = Math.max(host.clientWidth || 0, 320);
+  const plotWidth = chartWidth - gutter - 8;
+  const baseline = 148;
+  const top = 10;
+  const slot = plotWidth / buckets.length;
+  const barWidth = Math.min(16, Math.max(3, slot * 0.55));
+  const peak = Math.max(...buckets.map((b) => b.input_tokens + b.output_tokens), 1);
+  const axisMax = niceCeil(peak);
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", String(chartWidth));
+  svg.setAttribute("height", "170");
+
+  for (let tick = 0; tick <= 4; tick++) {
+    const value = (axisMax * tick) / 4;
+    const y = baseline - ((baseline - top) * tick) / 4;
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", String(gutter));
+    line.setAttribute("x2", String(chartWidth - 8));
+    line.setAttribute("y1", String(y));
+    line.setAttribute("y2", String(y));
+    line.setAttribute("class", tick === 0 ? "axis-line" : "grid-line");
+    svg.appendChild(line);
+    if (tick > 0) svg.appendChild(svgText(gutter - 8, y + 3.5, "y-label", COMPACT.format(value), "end"));
+  }
+
+  const roundTopPath = (x, y, w, h, r) => {
+    const radius = Math.min(r, h, w / 2);
+    return (
+      `M${x},${y + h} L${x},${y + radius} Q${x},${y} ${x + radius},${y} ` +
+      `L${x + w - radius},${y} Q${x + w},${y} ${x + w},${y + radius} L${x + w},${y + h} Z`
+    );
+  };
+
+  buckets.forEach((bucket, index) => {
+    const total = bucket.input_tokens + bucket.output_tokens;
+    if (total <= 0) return;
+    const fresh = Math.max(bucket.input_tokens - bucket.cached_input_tokens, 0);
+    const segments = [
+      ["cached", bucket.cached_input_tokens],
+      ["fresh", fresh],
+      ["output", bucket.output_tokens],
+    ].filter(([, value]) => value > 0);
+    const slotLeft = gutter + index * slot;
+    const barLeft = slotLeft + (slot - barWidth) / 2;
+
+    const group = document.createElementNS(SVG_NS, "g");
+    group.setAttribute("class", "bar-group");
+    const band = document.createElementNS(SVG_NS, "rect");
+    band.setAttribute("class", "bar-band");
+    band.setAttribute("x", String(slotLeft));
+    band.setAttribute("y", String(top));
+    band.setAttribute("width", String(slot));
+    band.setAttribute("height", String(baseline - top));
+    group.appendChild(band);
+
+    let y = baseline;
+    segments.forEach(([kind, value], segmentIndex) => {
+      const height = Math.max(((baseline - top) * value) / axisMax, 1.5);
+      y -= height;
+      const isTopSegment = segmentIndex === segments.length - 1;
+      let node;
+      if (isTopSegment) {
+        // 最上一段用圆角路径收顶；其下各段保持直角，拼成一根柱。
+        node = document.createElementNS(SVG_NS, "path");
+        node.setAttribute("d", roundTopPath(barLeft, y, barWidth, height, 3));
+      } else {
+        node = document.createElementNS(SVG_NS, "rect");
+        node.setAttribute("x", String(barLeft));
+        node.setAttribute("y", String(y));
+        node.setAttribute("width", String(barWidth));
+        node.setAttribute("height", String(height));
+      }
+      node.setAttribute("class", "bar bar-" + kind);
+      node.style.animationDelay = Math.min(index * 12, 240) + "ms";
+      group.appendChild(node);
+    });
+    svg.appendChild(group);
+
+    // 整列透明命中区：不必精确压在细柱上也能召唤浮层。
+    const hitArea = document.createElementNS(SVG_NS, "rect");
+    hitArea.setAttribute("class", "bar-hit");
+    hitArea.setAttribute("fill", "transparent");
+    hitArea.setAttribute("x", String(slotLeft));
+    hitArea.setAttribute("y", String(top));
+    hitArea.setAttribute("width", String(slot));
+    hitArea.setAttribute("height", String(baseline - top));
+    hitArea.addEventListener("mouseenter", (event) => {
+      group.classList.add("hover");
+      showUsageTooltip(bucket, event.clientX, event.clientY);
+    });
+    hitArea.addEventListener("mousemove", (event) => {
+      moveUsageTooltip(event.clientX, event.clientY);
+    });
+    hitArea.addEventListener("mouseleave", () => {
+      group.classList.remove("hover");
+      hideUsageTooltip();
+    });
+    svg.appendChild(hitArea);
+  });
+
+  // 日期刻度至多 6 个，均匀取位，首尾必到。
+  const ticks = Math.min(6, buckets.length);
+  for (let t = 0; t < ticks; t++) {
+    const index = Math.round((t * (buckets.length - 1)) / Math.max(ticks - 1, 1));
+    svg.appendChild(
+      svgText(gutter + index * slot + slot / 2, baseline + 16, "x-label",
+        buckets[index].date.slice(5), "middle")
+    );
+  }
+  host.appendChild(svg);
+}
+
+/* 账户：研究偏好表单 */
+const PREFERENCE_LABELS = {
+  max_research_rounds: ["研究轮数", "轮次越多，耗时与费用越高"],
+  max_subtasks_per_round: ["每轮方向数", "单轮并行研究的方向上限"],
+  research_agent_max_turns: ["单方向深度", "单个方向允许的检索回合上限"],
+  supervisor_max_active_evidences: ["证据池规模", "写作可直接引用的证据上限"],
+};
+
+async function loadPreferencesForm() {
+  let payload;
+  try { payload = await api("/api/preferences"); } catch (e) { return; }
+  const form = $("preferences-form");
+  form.innerHTML = "";
+  for (const [field, [name, hint]] of Object.entries(PREFERENCE_LABELS)) {
+    const row = document.createElement("div"); row.className = "preference-row";
+    const label = document.createElement("label");
+    label.textContent = name;
+    label.setAttribute("for", "preference-" + field);
+    const select = document.createElement("select");
+    select.id = "preference-" + field;
+    for (const choice of payload.choices[field]) {
+      const option = document.createElement("option");
+      option.value = String(choice);
+      option.textContent = String(choice);
+      if (choice === payload.preferences[field]) option.selected = true;
+      select.appendChild(option);
+    }
+    const note = document.createElement("span");
+    note.className = "muted preference-hint";
+    note.textContent = hint;
+    row.append(label, select, note);
+    form.appendChild(row);
+  }
+}
+
+$("preferences-save").addEventListener("click", async () => {
+  const preferences = {};
+  for (const field of Object.keys(PREFERENCE_LABELS)) {
+    preferences[field] = Number($("preference-" + field).value);
+  }
+  const button = $("preferences-save");
+  const status = $("preferences-status");
+  button.disabled = true;
+  status.className = "muted";
+  status.textContent = "保存中…";
+  try {
+    await api("/api/preferences", { method: "POST", body: JSON.stringify({ preferences }) });
+    status.textContent = "已保存，新的研究即生效";
+  } catch (e) {
+    status.className = "err";
+    status.textContent = e.message || "保存失败。";
+  } finally {
+    button.disabled = false;
+  }
+});
+$("stats-window").addEventListener("change", loadUsageChart);
+
+/* 登录/注册 */
 let authMode = "login";
 function setAuthMode(mode) {
   authMode = mode;
@@ -152,7 +412,7 @@ $("nav-home").onclick = (event) => {
   }
 };
 
-/* ---------- 首页 ---------- */
+/* 首页 */
 $("submit").onclick = async () => {
   const query = $("query").value.trim();
   $("home-error").textContent = "";
@@ -282,7 +542,7 @@ setInterval(() => {
   refreshRuns();
 }, 5000);
 
-/* ---------- markdown 安全渲染 ---------- */
+/* markdown 安全渲染 */
 /* 正文与进度文本都是模型产出，不是可信内容：marked 透传原始 HTML，
    innerHTML 前必须过 DOMPurify。marked/DOMPurify 任一 CDN 缺失都返回 null，
    调用方回退 textContent——"库没加载上"绝不允许退化成"跳过消毒"。 */
@@ -294,7 +554,7 @@ function markdownHtml(text, { inline = false } = {}) {
   return DOMPurify.sanitize(raw);
 }
 
-/* ---------- 进度呈现：全局时间线（supervisor 整体视角）+ 方向卡片（searcher 细节） ---------- */
+/* 进度呈现：supervisor 全局时间线、searcher 方向卡片 */
 function progressLine(text, warn) {
   const div = document.createElement("div");
   div.className = "ln" + (warn ? " warn" : "");
@@ -1236,6 +1496,6 @@ $("report").addEventListener("click", (e) => {
   target.classList.add("flash");
 });
 
-/* ---------- 启动 ---------- */
+/* 启动 */
 if (!localStorage.getItem(tokenKey)) setAuthMode("login");
 showView();
