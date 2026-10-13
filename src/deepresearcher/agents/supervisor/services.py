@@ -124,7 +124,7 @@ async def delegate_research(
         "failures": execution.task_result.failures,
         "working_set_revision": loop_state.working_set_revision,
         "evidence": [
-            evidence_card(item)
+            evidence_card(item, execution.task_result.display_title)
             for item in execution.evidences
             if item.evidence_id in loop_state.active_evidence_ids
         ],

@@ -178,7 +178,7 @@ def build_researcher_tools() -> list[BaseTool]:
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> Command:
-        """批量提交 Evidence；只有能在已登记原文中复算的引用才会入池。"""
+        """批量提交 Evidence；按首尾片段锚在已登记原文中定位，程序逐字回填 quote 后入池。"""
         ctx = runtime.context
         loop_state = ctx.loop_state
         evidence_ids_before = {item.evidence_id for item in loop_state.evidences}

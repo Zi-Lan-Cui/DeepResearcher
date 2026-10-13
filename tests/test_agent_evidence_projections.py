@@ -58,16 +58,33 @@ def test_supervisor_evidence_projection_contract() -> None:
     assert set(card) == {
         "evidence_id",
         "claim",
+        "direction_title",
         "support",
         "confidence",
         "source_title",
         "source_domain",
-        "source_profile",
-        "research_direction",
+        "source_type",
+        "authority_tier",
+        "publication_status",
+        "primary_source",
         "published_at",
     }
     assert card["source_domain"] == "docs.example.com"
-    assert {"quote", "source_url", "retrieval_method", "locator", "audit_chunk"}.isdisjoint(card)
+    # 方向归属只带短题；无短题（老检查点）回退长契约截断。
+    assert card["direction_title"] == "研究方向"
+    assert (
+        supervisor_evidence_card(_evidence(), "服务特征梳理")["direction_title"] == "服务特征梳理"
+    )
+    assert {
+        "quote",
+        "source_url",
+        "retrieval_method",
+        "locator",
+        "audit_chunk",
+        "subtask_id",
+        "research_direction",
+        "source_profile",
+    }.isdisjoint(card)
 
 
 def test_writer_evidence_projection_contracts() -> None:

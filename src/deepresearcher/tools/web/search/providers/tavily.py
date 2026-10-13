@@ -17,7 +17,7 @@ class TavilySearchProvider:
             json={
                 "api_key": self.config.tavily_api_key,
                 "query": query,
-                "search_depth": "advanced",
+                "search_depth": "basic",
                 "max_results": limit,
                 "include_answer": False,
                 "include_raw_content": self.config.tavily_include_raw_content,

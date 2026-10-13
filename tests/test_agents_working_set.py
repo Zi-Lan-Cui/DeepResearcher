@@ -1,7 +1,15 @@
-"""共享 working-set 原语的契约测试:三键回执形状、幂等去重、快照后置于变更。"""
+"""共享 working-set 原语的契约测试。"""
 
 from deepresearcher.agents.working_set import release_working_set, restore_working_set
-from deepresearcher.evidence.models import Evidence
+from deepresearcher.evidence.models import Evidence, normalize_evidence_ids
+from deepresearcher.schemas.reporting import ResearchAspect
+from deepresearcher.schemas.tool_args import (
+    CompleteReport,
+    ReadEvidence,
+    ReleaseEvidence,
+    ResearchDirectionComplete,
+    RestoreEvidence,
+)
 
 
 def _evidence(evidence_id: str) -> Evidence:
@@ -59,3 +67,54 @@ def test_duplicate_and_unknown_ids_classified_consistently_on_both_ops():
     assert receipt["restored_evidence_ids"] == ["e1"]
     assert receipt["not_restored_evidence_ids"] == ["ghost"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]
+
+
+def test_unknown_ids_get_close_archived_candidates_in_receipt():
+    archived = "task-0003-ev-d7f88304c64cb41b"
+    state = FakeWorkingSet([archived], [])
+    receipt = restore_working_set(
+        state, ["task-0003-ev-d7f88304c64cb14b"], snapshot=lambda: {}
+    )  # 手误换序
+    assert receipt["unknown_evidence_ids"] == ["task-0003-ev-d7f88304c64cb14b"]
+    assert receipt["did_you_mean"] == {
+        "task-0003-ev-d7f88304c64cb14b": [archived],
+    }
+
+
+def test_clean_receipt_has_no_did_you_mean_key():
+    state = FakeWorkingSet(["e1"], [])
+    receipt = restore_working_set(state, ["e1"], snapshot=lambda: {})
+    assert "did_you_mean" not in receipt
+
+
+def test_inbound_evidence_id_fields_strip_control_noise_and_dedupe():
+    # 模型在超大快照里转写长 ID 会混入 \r 等噪声;字段边界归一化后按原顺序去重。
+    noisy = ["task\r-0005-ev-7382e2a63f32a52a", "task-0005-ev-7382e2a63f32a52a"]
+    assert ReleaseEvidence(evidence_ids=noisy, reason="r").evidence_ids == [
+        "task-0005-ev-7382e2a63f32a52a"
+    ]
+    assert RestoreEvidence(evidence_ids=noisy, reason="r").evidence_ids == [
+        "task-0005-ev-7382e2a63f32a52a"
+    ]
+    assert ReadEvidence(evidence_ids=noisy, reason="r").evidence_ids == [
+        "task-0005-ev-7382e2a63f32a52a"
+    ]
+    assert ResearchDirectionComplete(
+        reason="r", selected_evidence_ids=noisy
+    ).selected_evidence_ids == ["task-0005-ev-7382e2a63f32a52a"]
+    assert CompleteReport(
+        title="测试标题", selected_evidence_ids=noisy, markdown="正文"
+    ).selected_evidence_ids == ["task-0005-ev-7382e2a63f32a52a"]
+    aspect = ResearchAspect(
+        aspect_id="a1",
+        topic="主题",
+        role="支撑",
+        status="covered",
+        evidence_ids=noisy,
+    )
+    assert aspect.evidence_ids == ["task-0005-ev-7382e2a63f32a52a"]
+
+
+def test_normalize_keeps_non_string_items_for_field_errors():
+    assert normalize_evidence_ids(["a b", 5]) == ["ab", 5]
+    assert normalize_evidence_ids("not-a-list") == "not-a-list"

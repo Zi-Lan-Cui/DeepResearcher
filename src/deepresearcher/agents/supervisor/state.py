@@ -84,17 +84,39 @@ class SupervisorAgentState(AgentState):
     task_index_counter: Annotated[int, merge_monotonic]
 
 
-def evidence_card(evidence: Evidence) -> dict[str, object]:
-    """Supervisor 的唯一 Evidence 观察视图；不暴露 quote 与审计正文。"""
+# 老检查点的方向结果没有短题时,卡片回退用长契约截断到此长度。
+_DIRECTION_FALLBACK_CHARS = 30
+
+
+def _direction_label(evidence: Evidence, direction_title: str) -> str:
+    """方向归属展示名：派发短题优先，无短题回退长契约截断。"""
+    if direction_title:
+        return direction_title
+    topic = evidence.research_direction
+    if len(topic) > _DIRECTION_FALLBACK_CHARS:
+        return topic[: _DIRECTION_FALLBACK_CHARS - 1] + "…"
+    return topic
+
+
+def evidence_card(evidence: Evidence, direction_title: str = "") -> dict[str, object]:
+    """Supervisor 的唯一 Evidence 观察视图；不暴露 quote 与审计正文。
+
+    来源画像展平为顶层键（与 writer/reviewer 卡同形）；方向归属只带短题，
+    完整契约在派发记录与方向报告里本来就有，不在每张卡上重复。
+    """
+    profile = evidence.source_profile
     return {
         "evidence_id": evidence.evidence_id,
         "claim": evidence.claim,
+        "direction_title": _direction_label(evidence, direction_title),
         "support": evidence.support,
         "confidence": evidence.confidence,
         "source_title": evidence.source_title,
         "source_domain": source_domain(evidence.source_url),
-        "source_profile": evidence.source_profile.model_dump(mode="json"),
-        "research_direction": evidence.research_direction,
+        "source_type": profile.source_type,
+        "authority_tier": profile.authority_tier,
+        "publication_status": profile.publication_status,
+        "primary_source": profile.primary_source,
         **({"published_at": evidence.published_at} if evidence.published_at else {}),
     }
 
@@ -190,6 +212,7 @@ class TaskExecution:
             task_index=int(task.get("sequence", 0)),
             question=task["question"],
             research_direction=task["question"],
+            display_title=str(task.get("display_title") or ""),
             execution_status="failed",
             coverage_status="insufficient",
             evidence_count=0,
@@ -476,16 +499,36 @@ def working_set_snapshot(
     轮次观察只取 active 以省 token。两处共用同一卡片形状与 revision 字段,
     不要各自演化出不同的子集。
     """
+    titles = _direction_titles(loop_state)
     active = loop_state.active_evidences()
     snapshot: dict[str, object] = {
         "working_set_revision": loop_state.working_set_revision,
-        "active_evidence": [evidence_card(item) for item in active],
+        "active_evidence": [
+            evidence_card(item, titles.get(item.subtask_id, "")) for item in active
+        ],
         "active_evidence_count": len(active),
         "active_evidence_limit": loop_state.active_evidence_limit,
     }
     if include_reserve:
         active_ids = {item.evidence_id for item in active}
         reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
-        snapshot["reserve_evidence"] = [evidence_card(item) for item in reserve]
+        snapshot["reserve_evidence"] = [
+            evidence_card(item, titles.get(item.subtask_id, "")) for item in reserve
+        ]
         snapshot["reserve_evidence_count"] = len(reserve)
     return snapshot
+
+
+def _direction_titles(loop_state: "SupervisorLoopState") -> dict[str, str]:
+    """task_id → 方向短题；通道恢复态的 task_results 可能是 dict 形态，双形态取值。"""
+    titles: dict[str, str] = {}
+    for result in loop_state.task_results:
+        if isinstance(result, dict):
+            task_id = str(result.get("task_id", ""))
+            title = str(result.get("display_title", ""))
+        else:
+            task_id = str(getattr(result, "task_id", ""))
+            title = str(getattr(result, "display_title", ""))
+        if task_id and title:
+            titles[task_id] = title
+    return titles

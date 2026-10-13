@@ -2,13 +2,18 @@
 
 两侧工作集操作同源,分三层:archive 是全量档案、active 是工作集、reserve 是档案减去
 工作集。请求 id 先按顺序去重再进回执;release 与 restore 的回执同为三键形状,取行为较严
-的一侧。快照因两侧卡片形状不同而由调用方以回调传入,并在状态变更后求值。
+的一侧;unknown 非空时追加 did_you_mean 候选,给模型自查转写噪声的抓手。快照因两侧卡片
+形状不同而由调用方以回调传入,并在状态变更后求值。
 """
 
 from collections.abc import Callable, Mapping, Sequence
+from difflib import get_close_matches
 from typing import Protocol
 
 from deepresearcher.evidence.models import Evidence
+
+_DID_YOU_MEAN_CANDIDATES = 3
+_DID_YOU_MEAN_CUTOFF = 0.6
 
 
 class WorkingSetState(Protocol):
@@ -22,6 +27,16 @@ class WorkingSetState(Protocol):
     def restore_evidence(self, evidence_ids: list[str]) -> list[str]: ...
 
 
+def _did_you_mean(unknown_ids: Sequence[str], archive_ids: set[str]) -> dict[str, list[str]]:
+    if not unknown_ids:
+        return {}
+    pool = sorted(archive_ids)
+    return {
+        item: get_close_matches(item, pool, n=_DID_YOU_MEAN_CANDIDATES, cutoff=_DID_YOU_MEAN_CUTOFF)
+        for item in unknown_ids
+    }
+
+
 def release_working_set(
     loop_state: WorkingSetState,
     evidence_ids: Sequence[str],
@@ -32,16 +47,19 @@ def release_working_set(
     requested = list(dict.fromkeys(evidence_ids))
     released = loop_state.release_evidence(requested)
     archive_ids = {item.evidence_id for item in loop_state.evidences}
-    return {
+    unknown = [item for item in requested if item not in archive_ids]
+    receipt: dict[str, object] = {
         "released_evidence_ids": released,
         # 档案中有、工作集中没有的 id(含重复释放)归 not_in_working_set_ids,不归 unknown;
         # unknown_evidence_ids 只收不在档案的 id,与 restore 的键形状对齐。
         "not_in_working_set_ids": [
             item for item in requested if item in archive_ids and item not in released
         ],
-        "unknown_evidence_ids": [item for item in requested if item not in archive_ids],
-        **snapshot(),
+        "unknown_evidence_ids": unknown,
     }
+    if unknown:
+        receipt["did_you_mean"] = _did_you_mean(unknown, archive_ids)
+    return {**receipt, **snapshot()}
 
 
 def restore_working_set(
@@ -54,9 +72,12 @@ def restore_working_set(
     requested = list(dict.fromkeys(evidence_ids))
     restored = loop_state.restore_evidence(requested)
     archive_ids = {item.evidence_id for item in loop_state.evidences}
-    return {
+    unknown = [item for item in requested if item not in archive_ids]
+    receipt: dict[str, object] = {
         "restored_evidence_ids": restored,
         "not_restored_evidence_ids": [item for item in requested if item not in restored],
-        "unknown_evidence_ids": [item for item in requested if item not in archive_ids],
-        **snapshot(),
+        "unknown_evidence_ids": unknown,
     }
+    if unknown:
+        receipt["did_you_mean"] = _did_you_mean(unknown, archive_ids)
+    return {**receipt, **snapshot()}

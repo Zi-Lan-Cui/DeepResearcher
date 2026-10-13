@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from deepresearcher.evidence.models import normalize_evidence_ids
 from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
     REPORT_CAVEATS_HARD_LIMIT,
@@ -58,6 +59,11 @@ class ResearchAspect(BaseModel):
     summary: str = Field(default="", max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
     evidence_ids: list[str] = Field(default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT)
     remaining_gap: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+
+    @field_validator("evidence_ids", mode="before")
+    @classmethod
+    def normalize_evidence_id_lists(cls, value: object) -> object:
+        return normalize_evidence_ids(value)
 
     @model_validator(mode="after")
     def validate_grounding(self) -> "ResearchAspect":

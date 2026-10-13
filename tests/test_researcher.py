@@ -27,7 +27,7 @@ from deepresearcher.schemas import (
 from deepresearcher.schemas.limits import SEARCH_RESULTS_PREVIEW_COUNT
 from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.tools import SearchTool, SourceReaderTool
-from deepresearcher.tools.errors import SourceUnavailableError
+from deepresearcher.tools.errors import SourceUnavailableError, UnsafeUrlError
 from deepresearcher.tools.web.documents import DocumentRef, DocumentView
 from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 from deepresearcher.tools.web.search.models import SearchCandidate
@@ -520,14 +520,15 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
                 {
                     "document_id": document.document_id,
                     "claim": "实验端到端延迟为 20ms。",
-                    "quote": "实验表明端到端延迟为 20ms。",
+                    "quote_start": "实验表明端到端延迟",
+                    "quote_end": "20ms",
                     "support": "direct",
                     "confidence": 0.9,
                 },
                 {
                     "document_id": document.document_id,
                     "claim": "不存在的事实",
-                    "quote": "正文里没有这句话",
+                    "quote_start": "正文里没有这句话",
                     "support": "direct",
                     "confidence": 0.9,
                 },
@@ -572,19 +573,19 @@ def test_add_evidence_validates_before_ranking_by_confidence():
                 {
                     "document_id": document.document_id,
                     "claim": "无效但最高分",
-                    "quote": "并不存在",
+                    "quote_start": "并不存在",
                     "confidence": 1.0,
                 },
                 {
                     "document_id": document.document_id,
                     "claim": "较低优先级",
-                    "quote": "低优先级事实",
+                    "quote_start": "低优先级事实",
                     "confidence": 0.2,
                 },
                 {
                     "document_id": document.document_id,
                     "claim": "较高优先级",
-                    "quote": "高优先级事实",
+                    "quote_start": "高优先级事实",
                     "confidence": 0.9,
                 },
             ],
@@ -596,12 +597,12 @@ def test_add_evidence_validates_before_ranking_by_confidence():
     assert loop_state.evidences[0].claim == "较高优先级"
     assert result["truncated_submission_count"] == 1
     assert any(
-        item["reason"] == "quote_paraphrase" for item in result["rejected"]
-    )  # 宽松归一仍不过 → 判定为模型改述
+        item["reason"] == "anchor_not_found" for item in result["rejected"]
+    )  # 锚未命中的高置信提交在排序前就被剔除
 
 
-def test_add_evidence_repairs_punctuation_only_quote_against_source():
-    # 实测中过半拒绝只差标点样式:回退定位到原文子串直接入池,不再消耗模型回合重抄。
+def test_add_evidence_anchor_resolves_across_punctuation_style():
+    # 模型只交词锚,弯引号/逗号样式由程序回填的原文子串承担,模型不需要抄对这些符号。
     store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
@@ -637,27 +638,28 @@ def test_add_evidence_repairs_punctuation_only_quote_against_source():
                 {
                     "document_id": document.document_id,
                     "claim": "系统被认定稳健。",
-                    # 词序列与原文一致，仅引号/逗号样式不同。
-                    "quote": "报告称'非常稳健',通过验收",
+                    # 首尾锚只取两端词,中间整段(含弯引号)由程序逐字回填。
+                    "quote_start": "报告称",
+                    "quote_end": "通过验收",
                     "confidence": 0.9,
                 }
             ],
-            "标点变体提交",
+            "锚点提交",
         )
     )
 
     assert len(result["accepted"]) == 1
     assert loop_state.evidences[0].quote == "报告称“非常稳健”，通过验收"
-    assert events[0]["accepted_via_punctuation"] == 1
+    assert events[0]["accepted_count"] == 1
     assert events[0]["rejected_count"] == 0
 
 
-def test_add_evidence_paraphrase_receipt_carries_nearest_source_sentence():
+def test_add_evidence_anchor_miss_receipt_carries_nearest_source_sentence():
     store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
             text="The system remained stable for 50 hours. Another matter entirely here.",
-            title="改述提示",
+            title="锚未命中提示",
             source_url="https://example.com/hint",
         )
     )
@@ -681,15 +683,15 @@ def test_add_evidence_paraphrase_receipt_carries_nearest_source_sentence():
                 {
                     "document_id": document.document_id,
                     "claim": "系统稳定运行两天。",
-                    "quote": "The system stayed up for two days.",
+                    "quote_start": "The system stayed up for two days",
                     "confidence": 0.9,
                 }
             ],
-            "改述提交",
+            "锚未命中提交",
         )
     )
 
-    assert result["rejected"][0]["reason"] == "quote_paraphrase"
+    assert result["rejected"][0]["reason"] == "anchor_not_found"
     assert result["rejected"][0]["nearby_original_text"] == (
         "The system remained stable for 50 hours"
     )
@@ -714,7 +716,7 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
     loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
     loop_state.documents[document.document_id] = document
 
-    async def submit(claim: str, quote: str):
+    async def submit(claim: str, quote_start: str):
         return await services.add_evidence(
             agent._deps,
             TASK,
@@ -724,7 +726,7 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
                 {
                     "document_id": document.document_id,
                     "claim": claim,
-                    "quote": quote,
+                    "quote_start": quote_start,
                     "confidence": 0.9,
                 }
             ],
@@ -1060,3 +1062,117 @@ def test_researcher_candidate_channel_survives_msgpack():
     assert isinstance(restored["candidates"]["c-1"], SearchCandidate)
     assert isinstance(restored["documents"]["d-1"], DocumentRef)
     assert restored["candidates"]["c-1"] == payload["candidates"]["c-1"]
+
+
+def test_unknown_id_receipts_carry_available_lists():
+    """三类 unknown document_id 驳回都附有效清单：模型改引用，不再拿幻觉 id 复投。"""
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(text="原文一句。", title="文档", source_url="https://example.com/list")
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
+    loop_state.documents[document.document_id] = document
+
+    added = asyncio.run(
+        services.add_evidence(
+            agent._deps,  # noqa: SLF001
+            TASK,
+            loop_state,
+            {},
+            [
+                {
+                    "document_id": "doc-hallucinated",
+                    "claim": "c",
+                    "quote_start": "q",
+                    "confidence": 0.5,
+                }
+            ],
+            "幻觉提交",
+        )
+    )
+    assert added["rejected"][0]["reason"] == "unknown_document_id"
+    assert added["available_document_ids"] == [document.document_id]
+
+    grep = asyncio.run(
+        services.grep_document(agent._deps, loop_state, "doc-hallucinated", "原文", 2, 0, "r")  # noqa: SLF001
+    )
+    assert grep["available_document_ids"] == [document.document_id]
+    read = asyncio.run(
+        services.read_document(agent._deps, loop_state, "doc-hallucinated", [(1, 2)], "r")  # noqa: SLF001
+    )
+    assert read["available_document_ids"] == [document.document_id]
+
+
+def test_read_sources_unknown_candidates_list_available_ids():
+    """读取候选全不存在时，回执附可用候选 id；无候选时给空列表也如实可见。"""
+    store = MemoryResearchMaterialStore()
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    loop_state = ResearcherLoopState()
+    loop_state.candidates["c-real"] = SearchCandidate(
+        candidate_id="c-real", url="https://example.com/real", title="真实候选"
+    )
+
+    receipt = asyncio.run(
+        services.read_sources(
+            agent._deps,
+            TASK,
+            loop_state,
+            {},
+            ["c-hallucinated"],
+            "幻觉候选",  # noqa: SLF001
+        )
+    )
+    assert receipt["unknown_candidate_ids"] == ["c-hallucinated"]
+    assert receipt["available_candidate_ids"] == ["c-real"]
+
+
+def test_fetch_guarded_fallback_emits_url_bearing_audit_event():
+    """SSRF 守卫拦截后由搜索内容兜底登记时，落一条带 requested_url 与归因的审计事件。"""
+
+    class Sink:
+        def __init__(self) -> None:
+            self.records = []
+
+        def write(self, record) -> None:
+            self.records.append(record)
+
+    class GuardedFetcher:
+        async def afetch(self, _url, **_kwargs):
+            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
+
+    store = MemoryResearchMaterialStore()
+    sink = Sink()
+    tool = SourceReaderTool(GuardedFetcher(), material_store=store, event_sink=sink)
+    result = asyncio.run(
+        tool.arun(
+            TASK,
+            {
+                "title": "来源",
+                "url": "http://127.0.0.1/private",
+                "raw_content": "提供方已带回的正文。",
+                "snippet": "",
+                "content_provider": "tavily",
+            },
+        )
+    )
+
+    assert result.status == "completed"  # 兜底照常登记，模型侧不报错
+    fallbacks = [r for r in sink.records if r.event_type == "source_read_fallback"]
+    assert len(fallbacks) == 1
+    payload = fallbacks[0].payload
+    assert payload["reason_code"] == "ssrf_block"
+    assert payload["requested_url"] == "http://127.0.0.1/private"
+    assert payload["fallback_retrieval_method"] == "tavily_raw_content"

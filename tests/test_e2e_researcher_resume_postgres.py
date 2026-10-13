@@ -106,12 +106,12 @@ class _ScriptedResearcherModel:
             call = {
                 "name": "AddEvidence",
                 "args": {
-                    "reason": "逐字引用提交",
+                    "reason": "锚点提交",
                     "evidences": [
                         {
                             "document_id": document_id,
                             "claim": "端到端延迟为 20ms。",
-                            "quote": _QUOTE,
+                            "quote_start": _QUOTE,
                             "support": "direct",
                             "confidence": 0.9,
                         }

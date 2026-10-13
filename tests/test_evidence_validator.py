@@ -1,37 +1,76 @@
 from deepresearcher.evidence.validator import (
+    anchor_resolve,
     collapse_whitespace,
     nearest_source_passage,
-    quote_in_source,
-    quote_verbatim_span,
-    quote_verbatim_strict,
 )
 
 
-def test_punctuation_only_diff_repairs_to_source_span():
-    # 源用弯引号与破折号,模型写成直引号与连字符;词序列一致,修复后定位回原文子串。
+def test_anchor_pair_resolves_verbatim_source_substring():
+    # 首尾锚之间整段由程序逐字回填，弯引号与破折号原样保留。
     source = "引言。The report — “very robust” — passed. 结尾"
-    quote = 'The report - "very robust" - passed.'
-    # 引号与连字符的样式差异不在归一范围,宽松判定也不通过。
-    assert not quote_in_source(source, quote)
-    assert quote_verbatim_span(source, quote) == "The report — “very robust” — passed"
+    result = anchor_resolve(source, "The report", "passed")
+    assert result.reason == ""
+    assert result.quote == "The report — “very robust” — passed"
+    assert result.quote in source  # 产物必须是原文严格子串
 
 
-def test_verbatim_span_returns_strict_source_substring():
-    # 修复产物必须过最严逐字口径，下游校验视同直接引用。
+def test_anchor_ignores_punctuation_style_without_repair_tier():
+    # 锚归一只比词序列：模型用直引号抄写也能命中弯引号原文，回填的是原文子串。
     source = "报告称“非常稳健”，通过验收。其余正文。"
-    repaired = quote_verbatim_span(source, "报告称'非常稳健',通过验收")
-    assert repaired == "报告称“非常稳健”，通过验收"
-    assert quote_verbatim_strict(source, repaired)
+    result = anchor_resolve(source, "报告称'非常稳健',通过验收")
+    assert result.reason == ""
+    assert result.quote == "报告称“非常稳健”，通过验收"
 
 
-def test_verbatim_span_rejects_paraphrase():
-    source = "The system remained stable for 50 hours."
-    assert quote_verbatim_span(source, "The device stayed up two days") is None
+def test_start_anchor_alone_yields_its_own_fragment():
+    source = "正文。The system remained stable for 50 hours. 其余"
+    result = anchor_resolve(source, "The system remained stable for 50 hours")
+    assert result.reason == ""
+    assert result.quote == "The system remained stable for 50 hours"
 
 
-def test_verbatim_span_rejects_empty_or_punctuation_only_quote():
-    assert quote_verbatim_span("已有正文", "") is None
-    assert quote_verbatim_span("已有正文", "—…—") is None  # 归一后为空串不算命中
+def test_anchor_rescues_encoding_variants():
+    # PDF 软连字符 / 断词换行 / ligature：归一为词序列后天然命中。
+    expected = {
+        "exam­ple system": "exam­ple",
+        "exam-\nple system": "exam-\nple",
+        "The ﬁnding is robust": "The ﬁnding",
+    }
+    for source, quote in expected.items():
+        result = anchor_resolve(source, "example" if "exam" in source else "the finding")
+        assert result.reason == "", (source, result.reason)
+        assert result.quote == quote, (source, result.quote)
+
+
+def test_ambiguous_start_anchor_is_rejected():
+    # 重复句里短锚命中多处：错误必须暴露为歧义，而不是任选一处静默入池。
+    source = "同一句结论。\f同一句结论。\r\n正文其他内容。"
+    result = anchor_resolve(source, "同一句结论")
+    assert result.reason == "ambiguous_start"
+
+
+def test_end_anchor_must_follow_start_anchor():
+    source = "第一段是结论。\n第二段提到方法与数据来源。"
+    result = anchor_resolve(source, "第二段", "第一段")
+    assert result.reason == "end_not_found"
+
+
+def test_punctuation_only_anchor_is_empty_anchor():
+    result = anchor_resolve("已有正文", "—…—")
+    assert result.reason == "empty_anchor"
+
+
+def test_not_found_anchor_carries_nearest_sentence_hint():
+    source = "The system remained stable for 50 hours. Another matter entirely here."
+    result = anchor_resolve(source, "The device stayed up for two days")
+    assert result.reason == "anchor_not_found"
+    assert result.hint == "The system remained stable for 50 hours"
+
+
+def test_span_over_limit_is_rejected():
+    source = "开头词 " + "中" * 700 + " 结尾词"
+    result = anchor_resolve(source, "开头词", "结尾词")
+    assert result.reason == "span_too_long"
 
 
 def test_nearest_passage_points_at_the_overlapping_sentence():
@@ -45,43 +84,5 @@ def test_nearest_passage_returns_none_when_nothing_is_similar():
     assert nearest_source_passage(source, "quantum tunneling in semiconductors") is None
 
 
-def test_reworded_quote_is_paraphrase_across_all_tiers():
-    source = "The system remained stable for 50 hours."
-    assert quote_verbatim_span(source, "The device stayed up two days") is None
-    assert not quote_in_source(source, "The device stayed up two days")
-
-
-def test_encoding_variants_rescued_by_loose_but_rejected_by_strict():
-    # PDF 软连字符 / 断词连字符 / ligature：忠实引用被 strict 错误拒绝、被 loose 接受。
-    for source, quote in (
-        ("exam­ple system", "example system"),  # 软连字符
-        ("exam-\nple system", "example system"),  # 断词换行
-        ("The ﬁnding is robust", "The finding is robust"),  # ligature ﬁ→fi
-    ):
-        assert quote_in_source(source, quote), (source, quote)
-        assert not quote_verbatim_strict(source, quote), (source, quote)
-
-
-def test_paraphrase_fails_both_strict_and_loose():
-    source = "The system remained stable for 50 hours."
-    # 仅去掉句号与空白、仍逐字一致时可以通过。
-    assert quote_in_source(source, "The system remained stable for 50 hours")
-    assert not quote_in_source(source, "The system was stable for about two days")
-
-
-def test_quote_in_source_accepts_verbatim_ignoring_whitespace():
-    source = "跨行引用上半句\n   下半句结束，其余正文。"
-    assert quote_in_source(source, "跨行引用上半句 下半句结束")
-    assert quote_in_source(source, "跨行引用上半句下半句结束")
-
-
-def test_quote_in_source_rejects_unseen_or_empty_quote():
-    assert not quote_in_source("已有正文", "虚构引用")
-    assert not quote_in_source("已有正文", "")
-
-
-def test_quote_in_source_is_immune_to_duplicate_and_paginated_lines():
-    # 行号定位会被 \f 换页、\r\n 与重复句错位干扰,因此用纯子串判定。
-    source = "同一句结论。\f同一句结论。\r\n正文其他内容。"
-    assert quote_in_source(source, "同一句结论。")
+def test_collapse_whitespace_normalizes_run():
     assert collapse_whitespace("A  \n B") == "a b"

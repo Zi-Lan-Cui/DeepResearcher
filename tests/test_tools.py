@@ -190,7 +190,7 @@ def test_search_parses_tavily_response_without_network():
 
 
 def test_tavily_null_raw_content_still_validates_as_result():
-    """回归守卫:Tavily advanced depth 对无法抽取正文的页返回 JSON null,键本身存在。
+    """回归守卫:Tavily 对无法抽取正文的页返回 JSON null,键本身存在。
 
     .get(k,"") 只在缺键时兜底,null 会漏成 None,令 SearchToolResult 的 Pydantic
     校验整批失败、researcher 反复重试空转。null 须归一为 "" 并能过 model_validate。"""

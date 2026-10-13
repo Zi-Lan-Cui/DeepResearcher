@@ -15,6 +15,7 @@ from deepresearcher.tools.errors import (
     SourceUnavailableError,
     ToolConfigurationError,
     ToolParseError,
+    UnsafeUrlError,
 )
 from deepresearcher.tools.web.documents import (
     DocumentOutlineItem,
@@ -144,6 +145,30 @@ class SourceReaderTool:
             # 抓取失败时可登记搜索提供方已经返回的原文或摘要，
             # 但仍由 Researcher 阅读后决定是否提交 Evidence。
             document = self._search_content_document(result)
+            if document is not None and self.event_sink is not None:
+                # 兜底成功也要留痕：被拦/失败的 requested_url 与原因只存在于这里，
+                # 登记事件本身分不清"正常抓取"与"搜索内容顶替"。
+                self.event_sink.write(
+                    make_tool_event(
+                        "fetch",
+                        "failed",  # 抓取本身确实失败；兜底信息由 event_name 与 payload 承载
+                        component="source_reader",
+                        link=link,
+                        error=str(exc),
+                        duration_ms=(time.perf_counter() - started) * 1_000,
+                        payload={
+                            **task_context,
+                            "requested_url": requested_url,
+                            "reason_code": (
+                                "ssrf_block" if isinstance(exc, UnsafeUrlError) else "fetch_failed"
+                            ),
+                            "fallback_retrieval_method": str(
+                                cast(dict[str, object], document).get("retrieval_method", "")
+                            ),
+                        },
+                        event_name=EventName.SOURCE_READ_FALLBACK,
+                    )
+                )
             if document is None:
                 reason_code = (
                     exc.reason_code if isinstance(exc, SourceUnavailableError) else "fetch_failed"

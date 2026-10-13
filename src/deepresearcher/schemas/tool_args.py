@@ -7,9 +7,9 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
+from deepresearcher.evidence.models import normalize_evidence_ids
 from deepresearcher.schemas.limits import (
     CLARIFICATION_ASSUMPTION_LIMIT,
-    CLARIFICATION_FOCUS_LIMIT,
     CLARIFICATION_INTENT_MAX_CHARS,
     CLARIFICATION_OPTION_COUNT,
     CLARIFICATION_QUESTION_MAX_CHARS,
@@ -77,7 +77,10 @@ class GrepDocument(BaseModel):
     跨词配额簿记。返回带 total_matches/has_more/next_offset,用 offset 翻页取后续。
     """
 
-    document_id: str = Field(min_length=1)
+    document_id: str = Field(
+        min_length=1,
+        description="目标文档的 document_id，来自 ReadSources 登记返回；未知时先调 ReadWorkingSet 核对。",
+    )
     query: str = Field(min_length=1, max_length=200)
     context_lines: int = Field(default=2, ge=0, le=10)
     offset: int = Field(default=0, ge=0, description="跳过该词前 N 个命中窗口以翻页。")
@@ -92,17 +95,32 @@ class DocumentLineRange(BaseModel):
 class ReadDocument(BaseModel):
     """按行号批量读取已登记文档的有限窗口。"""
 
-    document_id: str = Field(min_length=1)
+    document_id: str = Field(
+        min_length=1,
+        description="目标文档的 document_id，来自 ReadSources 登记返回。",
+    )
     ranges: list[DocumentLineRange] = Field(min_length=1, max_length=32)
     reason: str = Field(description="为什么需要读取这些行段。")
 
 
 class EvidenceSubmission(BaseModel):
-    """Researcher 从已经看到的文档原文中提出一条原子 Evidence。"""
+    """Researcher 从已经看到的文档原文中提出一条原子 Evidence：只交首尾片段锚，quote 由程序逐字回填。"""
 
-    document_id: str = Field(min_length=1)
+    document_id: str = Field(
+        min_length=1,
+        description="必须是 ReadSources 登记返回的 document_id；不在其中时先重新读取来源。",
+    )
     claim: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
-    quote: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    quote_start: str = Field(
+        min_length=1,
+        max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+        description="引用开头的几个词。必须能在该文档原文中唯一命中；命中多处时加长片段直到无歧义。",
+    )
+    quote_end: str = Field(
+        default="",
+        max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+        description="引用结尾的几个词，须出现在 quote_start 之后；省略时引用就是 quote_start 命中的片段本身。",
+    )
     support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -126,12 +144,22 @@ class ReleaseEvidence(BaseModel):
     evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(description="说明这些 Evidence 为什么应从当前工作集中释放。")
 
+    @field_validator("evidence_ids", mode="before")
+    @classmethod
+    def normalize_evidence_id_lists(cls, value: object) -> object:
+        return normalize_evidence_ids(value)
+
 
 class RestoreEvidence(BaseModel):
     """将 Evidence 档案中的候选重新放回当前活跃工作集。"""
 
     evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(description="说明为什么需要重新启用这些 Evidence。")
+
+    @field_validator("evidence_ids", mode="before")
+    @classmethod
+    def normalize_evidence_id_lists(cls, value: object) -> object:
+        return normalize_evidence_ids(value)
 
 
 class ResearchDirectionComplete(BaseModel):
@@ -143,6 +171,12 @@ class ResearchDirectionComplete(BaseModel):
         max_length=EVIDENCE_REFERENCES_HARD_LIMIT,
         description="最终推荐给 Supervisor 的当前活跃 Evidence ID。",
     )
+
+    @field_validator("selected_evidence_ids", mode="before")
+    @classmethod
+    def normalize_evidence_id_lists(cls, value: object) -> object:
+        return normalize_evidence_ids(value)
+
     conclusion: str = Field(
         default="",
         description="基于最终选中 Evidence 的方向级简短综合；不得引入未取证事实。",
@@ -268,6 +302,11 @@ class ReadEvidence(BaseModel):
     )
     reason: str = Field(min_length=1)
 
+    @field_validator("evidence_ids", mode="before")
+    @classmethod
+    def normalize_evidence_id_lists(cls, value: object) -> object:
+        return normalize_evidence_ids(value)
+
 
 class CompleteReport(BaseModel):
     """提交一篇带 Evidence 引用标记的 Markdown 草稿。"""
@@ -282,6 +321,11 @@ class CompleteReport(BaseModel):
     )
     selected_evidence_ids: list[str] = Field(min_length=1)
     markdown: str = Field(min_length=1)
+
+    @field_validator("selected_evidence_ids", mode="before")
+    @classmethod
+    def normalize_evidence_id_lists(cls, value: object) -> object:
+        return normalize_evidence_ids(value)
 
 
 class AskClarificationArgs(BaseModel):
@@ -320,12 +364,10 @@ class ClarificationCompleteArgs(BaseModel):
     intent_summary: str = Field(
         min_length=1,
         max_length=CLARIFICATION_INTENT_MAX_CHARS,
-        description="对已确认用户意图和研究边界的准确摘要；不得改变或缩窄用户已经明确的要求。",
-    )
-    research_focus: list[str] = Field(
-        default_factory=list,
-        max_length=CLARIFICATION_FOCUS_LIMIT,
-        description="交给 Supervisor 的核心研究重点，最多四项；只写用户已明确或回答确认的重点。",
+        description=(
+            "对已确认用户意图和研究边界的准确摘要；不得改变或缩窄用户已经明确的要求。"
+            "只写用户要什么、边界在哪，不规划研究重点——方向归 Supervisor。"
+        ),
     )
     assumptions: list[str] = Field(
         default_factory=list,
@@ -333,7 +375,7 @@ class ClarificationCompleteArgs(BaseModel):
         description="仍需由系统采用的显式假设，最多三项；没有假设时传空列表。",
     )
 
-    @field_validator("research_focus", "assumptions", mode="before")
+    @field_validator("assumptions", mode="before")
     @classmethod
     def normalize_string_lists(cls, value: object) -> object:
         return _normalize_string_list(value)

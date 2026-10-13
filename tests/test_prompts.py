@@ -42,8 +42,9 @@ def test_researcher_prompt_teaches_early_evidence_submission_with_examples():
     assert "never guesses and never strips markers on your behalf" in prompt
     assert "nearby_original_text" in prompt
     assert prompt.count("### Example") == 3
-    assert '"quote":"The system remained stable for 50 hours."' in prompt
-    assert '"quote":"L18:' not in prompt
+    assert '"quote_start":"The system remained","quote_end":"50 hours"' in prompt
+    assert '"quote_start":"L18:' not in prompt
+    assert "ambiguous_start" in prompt and "end_not_found" in prompt
 
 
 def test_supervisor_prompt_carries_dispatch_fewshots():

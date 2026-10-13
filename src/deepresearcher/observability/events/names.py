@@ -24,6 +24,9 @@ class EventName(StrEnum):
     SOURCE_DOCUMENT_REGISTERED = "source_document_registered"
     SOURCE_READ_FAILED = "source_read_failed"
     SOURCE_READ_SKIPPED = "source_read_skipped"
+    # 抓取失败但用搜索提供方已带回的原文/摘要完成登记时的审计事件；
+    # projector 不在白名单，对用户界面静默，仅落账本供归因。
+    SOURCE_READ_FALLBACK = "source_read_fallback"
     DIRECTION_SEARCH_COMPLETED = "direction_search_completed"
     DIRECTION_EVIDENCE_ADDED = "direction_evidence_added"
     RESEARCH_TASK_STARTED = "research_task_started"

@@ -1,53 +1,22 @@
-"""Evidence 的确定性来源校验：只保证 quote 的非空白字符序列逐字出现在原文里。
+"""Evidence 的确定性来源校验：按提交的首尾片段锚在原文中定位，程序逐字回填 quote。
 
-不做行号定位：行号引入 splitlines 计数口径不一致、重复句定位错误等脆弱性，
-而 Writer 与前端不消费行号，引用通过 [证据N]→URL 完成。
-
-两级判定加一档修复：
-- quote_verbatim_strict：仅忽略空白差异，比入池判定更严格，供调用方区分拒绝原因。
-- quote_in_source（入池判定）：在忽略空白之上再做 NFKC 归一并去除软连字符与断词
-  连字符，使 PDF、网页里 exam‑ple、exam-\nple、ﬁ 这类编码变体的忠实引用仍被接受。
-  两侧对称归一，改述会改变字母序列，因此无法匹配。
-- quote_verbatim_span（修复档）：入池判定不通过时，若忽略标点后词序列一致，
-  回退定位到原文对应子串。拒绝记录中一半以上只差引号或破折号样式，
-  回退让这部分直接入池，模型不必整轮重新抄写。
-调用方据此区分编码导致的误拒：strict 不通过但入池判定通过，以及模型改述：
-入池判定也不通过。
+anchor_resolve 把锚点与原文归一为词序列（忽略空白与标点样式）后匹配，返回的
+quote 是原文严格子串；PDF、网页里 exam‑ple、ﬁ 这类编码变体因此天然命中，
+模型无需手抄整段。失败以理由码回执：empty_anchor / anchor_not_found（附
+最近似原文句作纠错指引）/ ambiguous_start（提示加长片段取得唯一性）/
+end_not_found / span_too_long。
+不做行号定位：行号数错是静默错误（行号永远"合法"，程序无从察觉），
+锚点匹配则把错误暴露为未命中/不唯一。
 """
 
 import difflib
 import re
 import unicodedata
-
-_SOFT_HYPHENS = "­‐‑"  # 软连字符、连字符、不换行连字符
+from dataclasses import dataclass
 
 
 def collapse_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
-
-
-def _norm_whitespace(text: str) -> str:
-    """去除全部空白并转小写，对应严格判定使用的口径。"""
-    return re.sub(r"\s+", "", str(text)).lower()
-
-
-def _norm_loose(text: str) -> str:
-    """NFKC 归一 + 去软连字符 + 去所有连字符与空白 + 小写。"""
-    normalized = unicodedata.normalize("NFKC", str(text))
-    for ch in _SOFT_HYPHENS:
-        normalized = normalized.replace(ch, "")
-    return re.sub(r"[-\s]+", "", normalized).lower()
-
-
-def quote_verbatim_strict(source_text: str, quote: str) -> bool:
-    key = _norm_whitespace(quote)
-    return bool(key) and key in _norm_whitespace(source_text)
-
-
-def quote_in_source(source_text: str, quote: str) -> bool:
-    """入池判定：忽略空白与连字符/ligature 后的忠实逐字。"""
-    key = _norm_loose(quote)
-    return bool(key) and key in _norm_loose(source_text)
 
 
 def _is_word_char(char: str) -> bool:
@@ -71,33 +40,6 @@ def _wordonly_scan(text: str) -> tuple[str, list[tuple[int, int, int, int]]]:
     return "".join(pieces), spans
 
 
-def quote_verbatim_span(source_text: str, quote: str) -> str | None:
-    """词序列一致、仅标点、引号、破折号或空白不同时，返回原文中对应的逐字子串。
-
-    命中说明该引用是格式变体：模型抄写的词全部正确，只是标点样式不同。
-    返回值是原文的严格子串，下游逐字校验将其视为直接引用；
-    词序列不一致即改述时返回 None。
-    """
-    source_key, spans = _wordonly_scan(source_text)
-    quote_key, _ = _wordonly_scan(quote)
-    if not quote_key:
-        return None
-    position = source_key.find(quote_key)
-    if position < 0:
-        return None
-    end_key = position + len(quote_key)
-    start = end = -1
-    for key_start, key_end, source_start, source_end in spans:
-        if start < 0 and key_end > position:
-            start = source_start
-        if key_start >= end_key:
-            break
-        end = source_end
-    if start < 0:
-        return None
-    return source_text[start:end]
-
-
 def nearest_source_passage(source_text: str, quote: str, max_chars: int = 200) -> str | None:
     """返回与改述引用词面重叠最高的原文句子，供模型逐字替换为正确的原文。
 
@@ -117,3 +59,76 @@ def nearest_source_passage(source_text: str, quote: str, max_chars: int = 200) -
         if ratio >= 0.4 and (best is None or ratio > best[0]):
             best = (ratio, candidate[:max_chars])
     return best[1] if best else None
+
+
+@dataclass(frozen=True)
+class AnchorResolution:
+    """锚定解析结果：成功携带原文逐字子串，失败携带稳定理由码与纠错提示。"""
+
+    quote: str = ""
+    reason: str = ""
+    hint: str = ""
+
+
+_ANCHOR_MAX_SPAN_CHARS = 600
+
+
+def _key_span_to_source(
+    spans: list[tuple[int, int, int, int]], key_start: int, key_end: int
+) -> tuple[int, int]:
+    """把归一键区间映射回原文区间 [start, end)。"""
+    start = end = -1
+    for k_lo, k_hi, s_lo, s_hi in spans:
+        if start < 0 and k_hi > key_start:
+            start = s_lo
+        if k_lo >= key_end:
+            break
+        end = s_hi
+    return start, end
+
+
+def anchor_resolve(
+    source_text: str,
+    quote_start: str,
+    quote_end: str = "",
+    max_span_chars: int = _ANCHOR_MAX_SPAN_CHARS,
+) -> AnchorResolution:
+    """按段落首尾片段在原文中定位，返回原文逐字子串；模型不手抄整段。
+
+    匹配口径与入池判定一致（词序列归一，忽略空白/标点样式）。
+    失败理由码：empty_anchor / anchor_not_found / ambiguous_start /
+    end_not_found / span_too_long；not_found 附最近似原文句作提示。
+    """
+    source_key, spans = _wordonly_scan(source_text)
+    start_key, _ = _wordonly_scan(quote_start)
+    if not start_key:
+        return AnchorResolution(reason="empty_anchor")
+    occurrences: list[int] = []
+    position = source_key.find(start_key)
+    while position >= 0:
+        occurrences.append(position)
+        position = source_key.find(start_key, position + 1)
+    if not occurrences:
+        hint = nearest_source_passage(source_text, quote_start) or ""
+        return AnchorResolution(reason="anchor_not_found", hint=hint)
+    if len(occurrences) > 1:
+        return AnchorResolution(reason="ambiguous_start")
+    key_start = occurrences[0]
+    key_end = key_start + len(start_key)
+    if quote_end:
+        end_key, _ = _wordonly_scan(quote_end)
+        if not end_key:
+            return AnchorResolution(reason="empty_anchor")
+        end_position = source_key.find(end_key, key_end)
+        if end_position < 0:
+            return AnchorResolution(reason="end_not_found")
+        key_end = max(key_end, end_position + len(end_key))
+    source_start, source_stop = _key_span_to_source(spans, key_start, key_end)
+    if source_start < 0 or source_stop <= source_start:
+        return AnchorResolution(reason="anchor_not_found")
+    quote = source_text[source_start:source_stop].strip()
+    if not quote:
+        return AnchorResolution(reason="anchor_not_found")
+    if len(quote) > max_span_chars:
+        return AnchorResolution(reason="span_too_long")
+    return AnchorResolution(quote=quote)

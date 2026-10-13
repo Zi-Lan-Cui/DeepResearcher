@@ -17,13 +17,7 @@ from deepresearcher.agents.researcher.state import (
 )
 from deepresearcher.errors import clip_text
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.evidence.validator import (
-    collapse_whitespace,
-    nearest_source_passage,
-    quote_in_source,
-    quote_verbatim_span,
-    quote_verbatim_strict,
-)
+from deepresearcher.evidence.validator import anchor_resolve, collapse_whitespace
 from deepresearcher.observability.events.names import EventName
 from deepresearcher.schemas import DirectionStopReason
 from deepresearcher.schemas.limits import (
@@ -276,7 +270,7 @@ async def read_sources(
                     "error": error,
                 },
             )
-    return {
+    receipt: dict[str, object] = {
         "candidate_ids": selected_ids,
         "read_candidate_count": len(candidates),
         "unknown_candidate_ids": unknown_ids,
@@ -287,6 +281,23 @@ async def read_sources(
         "archive_evidence_limit": loop_state.evidence_archive_limit,
         "skip_reasons": sorted(set(loop_state.skipped)),
         "recent_failures": loop_state.failures[-4:],
+    }
+    if unknown_ids:
+        # 与 unknown 回执配对：给出可用的候选 id，模型无需回头重查搜索目录。
+        receipt["available_candidate_ids"] = list(loop_state.candidates)[-_AVAILABLE_IDS_WINDOW:]
+    return receipt
+
+
+# 有效 id 清单的条数上限：够模型改引用，又不至于在上下文里堆长。
+_AVAILABLE_IDS_WINDOW = 12
+
+
+def _unknown_document_receipt(loop_state: "ResearcherLoopState") -> dict[str, object]:
+    """未知 document_id 的驳回回执：附当前有效清单，让模型改引用而不是猜。"""
+    return {
+        "status": "rejected",
+        "reason": "unknown_document_id",
+        "available_document_ids": list(loop_state.documents)[-_AVAILABLE_IDS_WINDOW:],
     }
 
 
@@ -301,7 +312,7 @@ async def grep_document(
 ) -> dict[str, object]:
     del reason
     if document_id not in loop_state.documents:
-        return {"status": "rejected", "reason": "unknown_document_id"}
+        return _unknown_document_receipt(loop_state)
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     result = await deps.material_store.grep(
@@ -333,7 +344,7 @@ async def read_document(
 ) -> dict[str, object]:
     del reason
     if document_id not in loop_state.documents:
-        return {"status": "rejected", "reason": "unknown_document_id"}
+        return _unknown_document_receipt(loop_state)
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     requested = ranges[: deps.config.document_read_max_ranges]
@@ -359,19 +370,16 @@ async def _validate_submissions(
     task: SubTask,
     loop_state: ResearcherLoopState,
     submissions: list[dict[str, object]],
-) -> tuple[list[tuple[int, str, Evidence]], list[dict[str, object]], list[str], int, int]:
-    """锁外逐条校验提交：原文读取、引用逐字验证、批内去重、置信度解析。
+) -> tuple[list[tuple[int, str, Evidence]], list[dict[str, object]], list[str]]:
+    """锁外逐条校验提交：原文读取、锚定回填 quote、批内去重、置信度解析。
 
-    返回 (candidates, rejected, duplicates, accepted_via_normalization,
-    accepted_via_punctuation)。产物只是候选 Evidence 与拒因清单，不触碰
+    返回 (candidates, rejected, duplicates)。产物只是候选 Evidence 与拒因清单，不触碰
     loop_state——入池的并发/容量判断全部留给 add_evidence 的同步临界区。
     """
     rejected: list[dict[str, object]] = []
     duplicates: list[str] = []
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
-    accepted_via_normalization = 0  # 逐字比对因连字符/ligature 编码差异失败、归一化后才接受的条数
-    accepted_via_punctuation = 0  # 仅标点样式不同、由回退定位替换为原文严格子串后接受的条数
     # 批内缓存:同一文档的多条引用只取一次原文,Redis 后端下省去重复的全量 GET。
     source_texts: dict[str, str] = {}
     assert deps.material_store is not None  # 调用方已守卫
@@ -382,7 +390,8 @@ async def _validate_submissions(
             rejected.append({"index": index, "reason": "unknown_document_id"})
             continue
         claim = str(raw.get("claim", "")).strip()
-        quote = str(raw.get("quote", "")).strip()
+        quote_start = str(raw.get("quote_start", "")).strip()
+        quote_end = str(raw.get("quote_end", "")).strip()
         source_text = source_texts.get(document_id)
         if source_text is None:
             try:
@@ -391,22 +400,16 @@ async def _validate_submissions(
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
             source_texts[document_id] = source_text
-        # 入池不变式:quote 逐字出现在该来源正文里,忽略空白与连字符/ligature 编码差异。
-        # 逐字比对不过时先试标点回退定位:词序列一致、仅标点/引号/破折号样式不同,
-        # 替换为原文严格子串后直接入池;词对不上才是模型改述,回执附最接近的原文句。
-        if not quote_in_source(source_text, quote):
-            canonical_quote = quote_verbatim_span(source_text, quote)
-            if canonical_quote is None:
-                rejection: dict[str, object] = {"index": index, "reason": "quote_paraphrase"}
-                hint = nearest_source_passage(source_text, quote)
-                if hint is not None:
-                    rejection["nearby_original_text"] = hint
-                rejected.append(rejection)
-                continue
-            quote = canonical_quote
-            accepted_via_punctuation += 1
-        if not quote_verbatim_strict(source_text, quote):
-            accepted_via_normalization += 1
+        # 入池不变式:quote 是原文严格子串——由锚定解析从原文逐字回填,模型不手抄整段。
+        # 锚未命中、有歧义或跨度超限都是提交错误,回执理由码,anchor_not_found 附最接近的原文句。
+        resolution = anchor_resolve(source_text, quote_start, quote_end)
+        if resolution.reason:
+            rejection: dict[str, object] = {"index": index, "reason": resolution.reason}
+            if resolution.hint:
+                rejection["nearby_original_text"] = resolution.hint
+            rejected.append(rejection)
+            continue
+        quote = resolution.quote
         digest = hashlib.sha1(
             f"{document_id}\0{collapse_whitespace(quote)}".encode("utf-8")
         ).hexdigest()[:16]
@@ -444,7 +447,7 @@ async def _validate_submissions(
         )
         candidates.append((index, document_id, evidence))
         pending_ids.add(evidence_id)
-    return candidates, rejected, duplicates, accepted_via_normalization, accepted_via_punctuation
+    return candidates, rejected, duplicates
 
 
 async def add_evidence(
@@ -464,13 +467,9 @@ async def add_evidence(
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     accepted: list[Evidence] = []
-    (
-        candidates,
-        rejected,
-        duplicates,
-        accepted_via_normalization,
-        accepted_via_punctuation,
-    ) = await _validate_submissions(deps, task, loop_state, submissions)
+    candidates, rejected, duplicates = await _validate_submissions(
+        deps, task, loop_state, submissions
+    )
     ranked = sorted(candidates, key=lambda item: item[2].confidence, reverse=True)
     selected = ranked[: deps.config.evidence_add_batch_size]
     existing_ids = {item.evidence_id for item in loop_state.evidences}
@@ -505,17 +504,14 @@ async def add_evidence(
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "duplicate_count": len(duplicates),
-            # 直方图记录证据被拒原因的分布;quote_paraphrase 指标点回退也定位不到的改述;
-            # accepted_via_normalization 指编码归一后才接受的条数,accepted_via_punctuation
-            # 指仅标点样式不同、替换为原文子串后接受的条数。
+            # 直方图记录证据被拒原因的分布;锚定类理由码为 empty_anchor/anchor_not_found/
+            # ambiguous_start/end_not_found/span_too_long,unknown_document_id 单列。
             "rejected_reasons": rejected_reasons,
-            "accepted_via_normalization": accepted_via_normalization,
-            "accepted_via_punctuation": accepted_via_punctuation,
             # 模型提交证据时给出的理由,留作审计与归因的可解释信号。
             "reason": reason.strip()[:400],
         },
     )
-    return {
+    receipt: dict[str, object] = {
         "status": "completed" if accepted else "rejected",
         "accepted": [
             evidence_observation_card(
@@ -529,6 +525,10 @@ async def add_evidence(
         "archive_evidence_count": len(loop_state.evidences),
         "active_evidence_count": len(loop_state.active_evidence_ids),
     }
+    if any(item.get("reason") == "unknown_document_id" for item in rejected):
+        # 引用错 id 的批次统一给有效清单，避免模型拿同一批幻觉 id 反复重试。
+        receipt["available_document_ids"] = list(loop_state.documents)[-_AVAILABLE_IDS_WINDOW:]
+    return receipt
 
 
 async def _read_candidates(

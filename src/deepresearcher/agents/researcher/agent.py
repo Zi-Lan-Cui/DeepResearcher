@@ -315,6 +315,7 @@ class ResearchAgent:
             task_index=int(task.get("sequence", 0)),
             question=task["question"],
             research_direction=task["question"],
+            display_title=str(task.get("display_title") or ""),
             execution_status=status,
             coverage_status=(
                 "sufficient"
