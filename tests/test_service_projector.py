@@ -144,6 +144,43 @@ def test_task_frames_require_task_id():
     assert project(_record("direction_search_completed", {"candidate_count": 5})) is None
 
 
+def test_direction_arrival_merged_maps_to_plan_line():
+    frame = project(
+        _record(
+            "direction_arrival_merged",
+            {
+                "task_id": "task-0002",
+                "display_title": "复利数学原理",
+                "execution_status": "completed",
+                "evidence_count": 5,
+                "running_task_ids": ["task-0003", "task-0004"],
+                "merged_via": "model_turn",
+            },
+        )
+    )
+    assert frame is not None and frame.event == "plan"
+    assert frame.data["stage"] == "supervisor"
+    assert frame.data["text"] == ("方向「复利数学原理」已回到工作台（证据 5），还有 2 个方向在途")
+
+
+def test_direction_arrival_lost_variant_maps_to_plan_line():
+    frame = project(
+        _record(
+            "direction_arrival_merged",
+            {
+                "task_id": "task-0002",
+                "display_title": "复利数学原理",
+                "execution_status": "failed",
+                "evidence_count": 0,
+                "running_task_ids": [],
+                "merged_via": "lost",
+            },
+        )
+    )
+    assert frame is not None and frame.event == "plan"
+    assert "进程重启丢失" in frame.data["text"]
+
+
 def test_research_round_completed_maps_to_stats_frame():
     """轮次统计投影为指标条帧,不进结果流叙事。"""
     frame = project(
@@ -501,6 +538,7 @@ def test_direction_search_completed_distinguishes_empty_from_failed(payload, exp
         "search_query_started",
         "search_query_completed",
         "search_query_failed",
+        "direction_arrival_merged",
     ],
 )
 def test_never_leaks_denied_fields(event_type):

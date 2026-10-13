@@ -1,7 +1,7 @@
 """Supervisor 的运行态辅助对象与内层 agent 的状态通道。"""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from langchain.agents import AgentState
@@ -10,6 +10,7 @@ from deepresearcher.agents.channels import (
     merge_active_set,
     merge_monotonic,
     merge_or,
+    merge_registry_by_key,
     replace_channel,
     retain_if_absent,
 )
@@ -82,6 +83,9 @@ class SupervisorAgentState(AgentState):
     provider_exhausted: Annotated[bool, merge_or]
     stop_reason: Annotated[StopReason | None, _merge_stop_reason_by_rank]
     task_index_counter: Annotated[int, merge_monotonic]
+    # 在途方向登记表 {task_id: PendingDirection.model_dump()}:派发批并发 add,
+    # 到达吸收与丢失判定在独占批 remove。崩溃重放时通道值是"哪些方向欠账"的唯一事实源。
+    pending_directions: Annotated[dict[str, dict], merge_registry_by_key]
 
 
 # 老检查点的方向结果没有短题时,卡片回退用长契约截断到此长度。
@@ -174,6 +178,11 @@ class SupervisorLoopContext:
     loop_state: "SupervisorLoopState"
     research_query: str = ""
     current_round: int = 0
+    # 派发出去的在途方向后台任务 {task_id: Task[TaskExecution]};进程级,不进通道不进 checkpoint。
+    # "哪些方向欠账"的事实源是 loop_state.pending_directions(通道),这里只是执行载体。
+    direction_tasks: dict[str, "asyncio.Task[TaskExecution]"] = field(default_factory=dict)
+    # ResearchComplete 因在途方向被拒后置真:下一个模型回合前等待一个到达而非空转。
+    arrival_wait_requested: bool = False
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
         """每次模型回合前从通道现值重建状态对象,替代上一批的内存对象。
@@ -194,7 +203,7 @@ class SupervisorLoopContext:
 class TaskExecution:
     """一次方向研究执行的完整产物：结果模型与 absorb 所需的 Evidence/来源清单。
 
-    模型看到的方向报告由 delegate_research 返回值经 tools.py 协议层打包,
+    模型看到的方向报告由 services.absorb_arrival 在本对象产物上渲染,
     本对象只承载数据、不承载消息。
     """
 
@@ -272,6 +281,8 @@ class SupervisorLoopState:
         # 不可用而非单个方向偶发,一个方向足以为全局认证。ResearchComplete 据此放行
         # 无证据收束,执行故障轮不再被迫记成预算耗尽。
         self.provider_exhausted = False
+        # 在途方向登记 {task_id: PendingDirection dict};通道为事实源,批内共享对象。
+        self.pending_directions: dict[str, dict] = dict(state.get("pending_directions") or {})
 
         self._task_counter: int = 0
 
@@ -338,6 +349,8 @@ class SupervisorLoopState:
             view.stop_reason = StopReason(values["stop_reason"])
         if "task_index_counter" in values:
             view._task_counter = max(int(values["task_index_counter"] or 0), view._task_counter)
+        if "pending_directions" in values:
+            view.pending_directions = dict(values["pending_directions"] or {})
         return view
 
     def initial_channel_state(self) -> dict[str, Any]:
@@ -358,39 +371,10 @@ class SupervisorLoopState:
             "task_index_counter": self._task_counter,
         }
 
-    def marker_for_increment(self) -> dict[str, Any]:
-        """并发工具(ResearchDelegate)执行前的计数标记,出口据此写差量。"""
-        return {
-            "evidences": len(self.evidences),
-            "source_refs": len(self.source_refs),
-            "task_results": len(self.task_results),
-            "coverage_gaps": len(self.coverage_gaps),
-            "failure_details": len(self.failure_details),
-            "active_evidence_ids": set(self.active_evidence_ids),
-        }
-
-    def delegate_increment(self, marker: dict[str, Any]) -> dict[str, Any]:
-        """并发安全的通道增量:全部是 merge 语义字段,不含任何 replace 快照。
-
-        与同批其他工具交错时,列表尾差量可能多包含对方刚追加的条目;
-        merge_evidences 与 merge_unique 按 id 折重,超集无害。漏集不可能:
-        差量以本对象当前长度为界,本方追加不会落在界外。
-        """
-        return {
-            "evidences": self.evidences[marker["evidences"] :],
-            "source_refs": self.source_refs[marker["source_refs"] :],
-            "task_results": self.task_results[marker["task_results"] :],
-            "coverage_gaps": self.coverage_gaps[marker["coverage_gaps"] :],
-            "failure_details": self.failure_details[marker["failure_details"] :],
-            "active_evidence_ids": {
-                "add": sorted(self.active_evidence_ids - marker["active_evidence_ids"]),
-                "remove": sorted(marker["active_evidence_ids"] - self.active_evidence_ids),
-            },
-            "working_set_revision": self.working_set_revision,
-            "task_index_counter": self._task_counter,
-            "provider_exhausted": self.provider_exhausted,
-            "stop_reason": self.stop_reason,
-        }
+    @property
+    def task_index_counter(self) -> int:
+        """派发批出口随 Command 提交的编号水位(merge_monotonic,重复提交无害)。"""
+        return self._task_counter
 
     def set_stop_reason(self, reason: StopReason) -> None:
         """按 `StopReason.rank` 采纳终止原因；低权威度不覆盖已采纳的高权威度。
@@ -508,6 +492,15 @@ def working_set_snapshot(
         ],
         "active_evidence_count": len(active),
         "active_evidence_limit": loop_state.active_evidence_limit,
+        # 在途方向清单恒有键:派发去重与收口判断都要求模型每回合看得到"还在跑什么"。
+        "inflight": [
+            {
+                "task_id": str(entry.get("task_id") or key),
+                "display_title": str(entry.get("display_title") or ""),
+                "round": int(entry.get("round", 0) or 0),
+            }
+            for key, entry in sorted(loop_state.pending_directions.items())
+        ],
     }
     if include_reserve:
         active_ids = {item.evidence_id for item in active}

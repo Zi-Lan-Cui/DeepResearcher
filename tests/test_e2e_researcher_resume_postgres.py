@@ -1,10 +1,10 @@
 """端到端 kill-重放:生产 channelized ResearchAgent/ResearchSupervisor 跑在真 AsyncPostgresSaver 上。
 
 区别于 `test_checkpoint_postgres_resume.py` 用最简 create_agent 验证框架契约,本文件驱动
-真实生产类,验证"崩溃前已提交的取证在恢复后不重跑":进程在 add_evidence 随 superstep
-提交后中止,抛出的是非 Exception 的 BaseException,不被业务层 except 捕获,外层流式中止;
-再以执行器恢复用的同一机制 `graph.astream(None)` 在同 thread 上续跑。恢复后搜索/抓取
-各只执行 1 次,即证明内层从自己的 superstep 续跑,未整体重放。
+真实生产类,验证派发制的恢复合同:派发批已提交、方向后台任务在 add_evidence superstep
+提交后抛非 Exception 的 BaseException 杀死节点,外层流式中止;再以执行器恢复用的同一
+机制 `graph.astream(None)` 在同 thread 上续跑。恢复后搜索/抓取各只执行 1 次——欠账由
+丢失判定结算,不重跑也不续跑任何方向体,这是 v1 明示取舍的回归锚。
 DB 不可达时整文件 skip,不回显连接串。
 """
 
@@ -369,9 +369,10 @@ def test_e2e_supervisor_nested_researcher_resumes_on_postgres():
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
     # reconcile 据 aget_tuple 判定可续:崩溃后确有 thread 检查点。
     assert facts["has_checkpoint_after_crash"] is True
-    # 整链恢复:已提交的搜索/抓取各只一次,supervisor 内层与 researcher 内层都从断点续跑。
-    assert facts["search_calls"] == 1, f"搜索应只 1 次,实测 {facts['search_calls']}(疑似整体重跑)"
-    assert facts["fetch_calls"] == 1, f"抓取应只 1 次,实测 {facts['fetch_calls']}(疑似整体重跑)"
+    # 派发制 v1 合同:已提交派发批之后的在途方向不续跑、不重跑,恢复时判丢失结算。
+    # 搜索/抓取各只一次证明恢复链路没有重新驱动任何方向体。
+    assert facts["search_calls"] == 1, f"搜索应只 1 次,实测 {facts['search_calls']}(疑似重跑方向)"
+    assert facts["fetch_calls"] == 1, f"抓取应只 1 次,实测 {facts['fetch_calls']}(疑似重跑方向)"
     assert facts["task_count"] == 1, facts
-    assert facts["task_status"] == "completed", facts["task_status"]
-    assert facts["absorbed_evidence"] == 1, facts["absorbed_evidence"]
+    assert facts["task_status"] == "failed", facts["task_status"]
+    assert facts["absorbed_evidence"] == 0, facts["absorbed_evidence"]

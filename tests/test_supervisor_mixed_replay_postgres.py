@@ -1,11 +1,11 @@
-"""supervisor 工具批混合重放:真 AsyncPostgresSaver 上验证合并一致性,可被子进程形态复用。
+"""supervisor 混合重放合并一致性:真 AsyncPostgresSaver 上验证,可被子进程形态复用。
 
 形态:max_parallel_workers=2、supervisor_max_active_evidences=2,首轮一条 AIMessage 并发派
-两个 ResearchDelegate;方向 A 完整跑完后,方向 B 抛 BaseException 模拟进程被杀,再同 thread 恢复。
-实测该形态下 delegate 层已完成的其他调用(A)的增量虽已写 journal、但恢复时整步重执行(A 也重跑);
-journal 跳过的既往证明都落在最内层子图自己的已提交 superstep 上。因此本测试锁定的是恢复的
-设计不变式而非执行次数:重跑合并后编号仍按调用位置稳定、两方向结果互不吞、
-工作集上限不穿、证据总量不重复。
+两个 ResearchDelegate(派发批只登记 pending,不等待方向完成);A 的后台任务先完成、经
+DirectionArrivalsMiddleware 吸收为已提交 superstep,随后 B 抛 BaseException 杀死节点,再同
+thread 恢复。恢复混合了两类写入:已提交通道的 A 吸收(journal 命中,方向体不重跑)与
+收口清算的 B 丢失判定(重执行段)。本测试锁定其合并不变式:编号按调用位置稳定、
+两方向结果互不吞、工作集上限不穿、A 的证据不因 B 的死亡被重复计入或丢失。
 
 模块同时导出 _build_app/_MixedResearchAgent/_TwoDirectionSupervisorModel,供 SIGKILL 形态
 探针以子进程模式挂起 B(不写 __error__,观察纯外部进程死亡后的 journal 消费语义)。
@@ -195,13 +195,21 @@ async def _drive(saver):
         "a_task_id": next(
             (item.task_id for item in task_results if item.question.startswith("方向A")), ""
         ),
+        "a_status": next(
+            (item.execution_status for item in task_results if item.question.startswith("方向A")),
+            "",
+        ),
+        "b_status": next(
+            (item.execution_status for item in task_results if item.question.startswith("方向B")),
+            "",
+        ),
         "evidences": len(update.get("evidences") or []),
         "active_count": len(update.get("active_evidence_ids") or []),
     }
 
 
 def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
-    """崩溃恢复后两方向结果俱在、active 不超上限、证据 4 条齐;编号按调用位置稳定。"""
+    """恢复后 A(已吸收)与 B(丢失清算)并存、active 不超上限、A 证据不重不丢;编号按调用位置稳定。"""
     saver_context = _make_saver()
     if saver_context is None:
         pytest.skip("checkpointer 未配置(非 postgresql 部署形态)")
@@ -219,13 +227,12 @@ def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 实测:BaseException 于批中打断时,已完成的同批其他调用在 delegate 层未获 journal
-    # 跳过,A 也会重跑。本测试因此锁定恢复的设计不变式而非执行次数:
-    # 编号稳定(按 AIMessage 位置)、两方向结果互不吞、工作集上限不穿。
-    assert facts["calls"]["B"] == 2, facts["calls"]
-    assert facts["calls"]["A"] >= 1, facts["calls"]
+    # 派发制下方向体是后台任务:恢复只做"已吸收保留 + 欠账清算",不重跑任何方向。
+    assert facts["calls"] == {"A": 1, "B": 1}, facts["calls"]
     assert facts["task_count"] == 2, facts
     assert facts["task_ids"] == ["task-0001", "task-0002"], facts["task_ids"]
     assert facts["a_task_id"] == "task-0001", facts["a_task_id"]
+    assert facts["a_status"] == "completed", facts
+    assert facts["b_status"] == "failed", facts
     assert facts["active_count"] <= 2, facts
-    assert facts["evidences"] == 4, facts
+    assert facts["evidences"] == 2, facts  # A 的两条在,不因 B 死亡丢失或翻倍

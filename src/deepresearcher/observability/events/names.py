@@ -35,6 +35,8 @@ class EventName(StrEnum):
     RESEARCH_ROUND_COMPLETED = "research_round_completed"
     DELEGATE_STARTED = "delegate_started"
     DELEGATE_COMPLETED = "delegate_completed"
+    # 方向结果吸收进工作集的时刻;lost 变体兼作进程重启欠账的清算记录。
+    DIRECTION_ARRIVAL_MERGED = "direction_arrival_merged"
     SUPERVISOR_MODEL_TURN = "supervisor_model_turn"
     CONTEXT_COMPACTED = "context_compacted"
     WRITER_EXHAUSTED = "writer_exhausted"

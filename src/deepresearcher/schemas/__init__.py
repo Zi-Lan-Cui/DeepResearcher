@@ -26,6 +26,7 @@ from deepresearcher.schemas.reporting import (
 )
 from deepresearcher.schemas.sections import (
     DirectionStopReason,
+    PendingDirection,
     RenderOutcome,
     ResearchAgentResult,
     ResearchDirectionResult,
@@ -89,6 +90,7 @@ __all__ = [
     "ReviewDecision",
     "RenderOutcome",
     "ReportBrief",
+    "PendingDirection",
     "ResearchAspect",
     "ResearchAgentResult",
     "ResearchComplete",

@@ -149,6 +149,17 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         if status == "blocked":
             return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，开始收束")
         return None
+    if event_type == EventName.DIRECTION_ARRIVAL_MERGED:
+        title = _text(payload.get("display_title"), 40) or _text(payload.get("task_id"), 40)
+        if payload.get("merged_via") == "lost":
+            return _plan(seq, NodeName.SUPERVISOR, f"方向「{title}」因进程重启丢失，可按需重派")
+        text = "方向「{}」已回到工作台（证据 {}）".format(
+            title, _int(payload.get("evidence_count"))
+        )
+        running = payload.get("running_task_ids") or []
+        if running:
+            text += f"，还有 {len(running)} 个方向在途"
+        return _plan(seq, NodeName.SUPERVISOR, text)
     if event_type == EventName.SUPERVISOR_MODEL_TURN:
         thought = _text(payload.get("content_preview"), EVENT_CONTENT_PREVIEW_CHARS)
         # 网关偶发把工具调用体当正文吐出（见 _TOOL_MARKUP_RE）：那不是旁白，整条丢弃；

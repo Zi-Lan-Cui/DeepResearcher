@@ -5,6 +5,7 @@
 的整字段快照。
 """
 
+import asyncio
 from typing import Any
 
 from langchain.tools import ToolRuntime
@@ -61,10 +62,13 @@ def build_supervisor_tools() -> list[BaseTool]:
         research_topic: str,
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
-        """派发一个具体、可验证且与历史互补的研究方向。"""
+        """派发一个具体、可验证且与历史互补的研究方向；回执即受理，方向在途后台执行。
+
+        任务体在 create_task 与 researcher.ainvoke 之间除并发槽外不得引入 await:
+        嵌套 checkpoint ns 的后缀按到达 ainvoke 的调度序分配,保序才跨重放稳定。
+        """
         ctx = runtime.context
-        marker = ctx.loop_state.marker_for_increment()
-        result = await services.delegate_research(
+        task, receipt, entry = services.dispatch_research(
             ctx.deps,
             ctx.loop_state,
             ctx.scope,
@@ -73,11 +77,28 @@ def build_supervisor_tools() -> list[BaseTool]:
             tool_call_id=runtime.tool_call_id or "",
             origin_state=dict(runtime.state or {}),
         )
+        if task is None:
+            return _channel_command(
+                runtime, receipt, tool_name="ResearchDelegate", channel_update={}
+            )
+        task_id = str(task["id"])
+        if task_id in ctx.direction_tasks:
+            # 工具重试再入同一调用:登记与任务已存在,只回受理回执,不产生第二个任务体。
+            return _channel_command(
+                runtime, receipt, tool_name="ResearchDelegate", channel_update={}
+            )
+        ctx.direction_tasks[task_id] = asyncio.create_task(
+            services._execute_research_task(ctx.deps, task)
+        )
         return _channel_command(
             runtime,
-            result,
+            receipt,
             tool_name="ResearchDelegate",
-            channel_update=ctx.loop_state.delegate_increment(marker),
+            channel_update={
+                "pending_directions": {"add": {task_id: entry}, "remove": []},
+                # 编号水位随派发批提交:下一批从通道重建后继续前进,不再重派同号。
+                "task_index_counter": ctx.loop_state.task_index_counter,
+            },
         )
 
     # 不设 return_direct、不用 Command 做循环控制:实测 Command(goto) 会跳过中间件
@@ -93,6 +114,9 @@ def build_supervisor_tools() -> list[BaseTool]:
         """冻结最新且未过期的研究综合稿；被拒则按回执 rejection_cause 处理。"""
         ctx = runtime.context
         result = services.freeze_synthesis(ctx.loop_state, synthesis_revision, reason)
+        if result.get("directions_running"):
+            # 被在途方向拒绝:下一个模型回合前先等一个到达,不空转重试。
+            ctx.arrival_wait_requested = True
         return _channel_command(
             runtime,
             result,

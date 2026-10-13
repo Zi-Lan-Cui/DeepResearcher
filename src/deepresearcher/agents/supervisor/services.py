@@ -25,6 +25,7 @@ from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     CoveredTopic,
+    PendingDirection,
     ReportBrief,
     ResearchAgentResult,
     ResearchAspect,
@@ -48,7 +49,7 @@ from deepresearcher.state import ResearchState, SubTask, section
 _FALLBACK_SUMMARY_CLAIM_LIMIT = 6
 
 
-async def delegate_research(
+def dispatch_research(
     deps: SupervisorDeps,
     loop_state: SupervisorLoopState,
     scope: AgentExecutionScope,
@@ -57,42 +58,38 @@ async def delegate_research(
     *,
     tool_call_id: str = "",
     origin_state: dict[str, object] | None = None,
-) -> dict[str, object]:
-    """执行一次 ResearchDelegate 工具请求:预算硬校验、任务编号、
-    派发 ResearchAgent、吸收结果、返回完整方向报告。
+) -> tuple[SubTask | None, dict[str, object], dict[str, object]]:
+    """受理一次 ResearchDelegate 派发请求:预算硬校验、任务编号、构造 SubTask。
 
+    返回 (task, receipt, entry):预算越界时 task 为 None;entry 是待写进
+    pending_directions 通道的登记项,由派发批的 Command 与回执同批提交。
+    方向本体由 tools 层拉起后台任务执行,到达后经 absorb_arrival 收口——
+    派发批不等方向完成,回合屏障由此拆除。
     display_title 是方向卡的展示短题,topic 仍承载完整契约;缺省时前端回退截断 question。
-    程序不做主题去重:防重复交给提示词纪律,重复调用的浪费由 max_subtasks 与轮次预算封顶。
+    程序不做主题去重:防重复交给提示词纪律与在途清单,浪费由 max_subtasks 与轮次预算封顶。
     tool_call_id 与 origin_state 提供时编号按调用位置派生(跨重放稳定),否则退回活视图分配。
-    编号分配与 absorb 为同步临界段,原子性依赖单线程调度,段内不得引入 await。
     """
     round_no = loop_state.current_round
-
-    def reported(result: dict[str, object]) -> dict[str, object]:
-        # 被预算拒绝的工具调用不产生工具事件,事件流里只剩连续两个 model_turn;
-        # 补发 delegate_started/completed,让这类无产出轮次可解释。
-        deps.emit(
-            EventName.DELEGATE_COMPLETED,
-            {
-                "status": str(result.get("status", "")),
-                "reason": str(result.get("reason", "")),
-                "topic_chars": len(topic),
-                "evidence_count": result.get("evidence_count"),
-                "source_count": result.get("source_count"),
-            },
-        )
-        return result
-
     deps.emit(EventName.DELEGATE_STARTED, {"topic_chars": len(topic)})
     if round_no > deps.config.max_research_rounds:
         loop_state.set_stop_reason(StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED)
-        return reported(
+        blocked: dict[str, object] = {
+            "status": "blocked",
+            "reason": "round_budget_exhausted",
+            "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
+        }
+        # 被预算拒绝的调用不产生方向,即时补全 delegate 事件对,让无产出轮次在事件流可解释。
+        deps.emit(
+            EventName.DELEGATE_COMPLETED,
             {
                 "status": "blocked",
                 "reason": "round_budget_exhausted",
-                "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
-            }
+                "topic_chars": len(topic),
+                "evidence_count": None,
+                "source_count": None,
+            },
         )
+        return None, blocked, {}
     if tool_call_id and origin_state is not None:
         task_index = loop_state.allocate_task_index_for_call(origin_state, tool_call_id)
     else:
@@ -109,53 +106,39 @@ async def delegate_research(
         "parent_task_id": "",
         "operation_id": f"research-task-{task_index:04d}",
     }
-    execution = await _execute_research_task(deps, task)
-    # absorb 是同步临界段:入档、槽位分配、推进版本一次完成;段内禁引入 await,
-    # 否则同批其他 delegate 会看到半更新的工作集并在回执里引用它。
-    loop_state.absorb(execution)
-    direction_report: dict[str, object] = {
-        "status": execution.task_result.execution_status,
-        "research_direction": execution.task_result.research_direction,
-        "coverage_status": execution.task_result.coverage_status,
-        "evidence_count": execution.task_result.evidence_count,
-        "source_count": execution.task_result.source_count,
-        "remaining_gaps": execution.task_result.remaining_gaps,
-        "conclusion": execution.task_result.conclusion,
-        "failures": execution.task_result.failures,
+    entry = PendingDirection(
+        task_id=task["id"],
+        subtask=dict(task),
+        display_title=task["display_title"],
+        round=round_no,
+    ).model_dump()
+    receipt: dict[str, object] = {
+        "status": "dispatched",
+        "task_id": task["id"],
+        "display_title": task["display_title"],
+        "research_direction": topic,
         "working_set_revision": loop_state.working_set_revision,
-        "evidence": [
-            evidence_card(item, execution.task_result.display_title)
-            for item in execution.evidences
-            if item.evidence_id in loop_state.active_evidence_ids
-        ],
+        "instruction": (
+            "方向已入队后台执行，本回执只代表受理。完成或失败时结果会吸收进工作集，"
+            "并以研究管理观察送达你的下一个回合。请勿对在途主题重复派发；"
+            "可继续派发互补方向、修订综合稿，或结束派发等待到达。"
+        ),
     }
-    if execution.task_result.provider_exhausted:
-        # 只给数据、不加控制流分支:Supervisor 模型读到系统性不可用后自然停止派发、收尾。
-        direction_report["provider_exhausted"] = True
-        direction_report["instruction"] = (
-            "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
-            "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后调用 ResearchComplete；"
-            "若不足以成文则直接结束本轮，系统按 partial 交付。"
-        )
-    return reported(direction_report)
+    return task, receipt, entry
 
 
 async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExecution:
-    """执行单个方向研究；worker 异常降级为 failed 结果，不中断整轮。"""
+    """后台任务体:等并发槽、执行单个方向研究,返回完整产物。
+
+    除取消外不抛异常——worker 异常在此降级为 failed 结果,保证 await 方总能取值。
+    完成/失败事件不在这里发:到达语义以吸收进工作集的时刻为准,见 absorb_arrival。
+    """
     round_no = int(task.get("round", 1))
-    task_context = {
-        "task_id": task["id"],
-        "worker_id": task.get("worker_id", task["id"]),
-        "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
-        "parent_task_id": task.get("parent_task_id", ""),
-        "operation_id": task.get("operation_id", task["id"]),
-        "concurrency_limit": deps.config.max_parallel_workers,
-    }
     async with deps.worker_limit:
         deps.emit(
             EventName.RESEARCH_TASK_STARTED,
             {
-                **task_context,
+                **_task_context(deps, task),
                 "task_index": int(task.get("sequence", 0)),
                 "component": "research_agent",
                 "title": str(task.get("display_title") or ""),
@@ -172,33 +155,158 @@ async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExe
                 else ResearchAgentResult.model_validate(result)
             )
             task_result = agent_result.task_result
-            evidences = list(agent_result.evidences)
-            selected_ids = list(agent_result.selected_evidence_ids)
+            return TaskExecution(
+                task_result=task_result,
+                evidences=list(agent_result.evidences),
+                selected_evidence_ids=list(agent_result.selected_evidence_ids),
+                source_refs=list(agent_result.source_refs),
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            execution = TaskExecution.failed_for(
+            return TaskExecution.failed_for(
                 task,
                 round_no,
                 str(exc)[: deps.config.supervisor_preview_chars],
             )
-            deps.emit(
-                EventName.RESEARCH_TASK_FAILED,
-                {**task_context, **execution.task_result.model_dump()},
-                component="research_agent",
-            )
-            return execution
+
+
+def absorb_lost_registrations(
+    deps: SupervisorDeps,
+    loop_state: SupervisorLoopState,
+    live_task_ids: set[str],
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """崩溃欠账清算:通道有登记、进程无活任务体的方向一律判 failed 并销账。
+
+    中间件(还有模型回合要来,需差量回写通道)与节点收口 drain(回合可能已直接
+    走向 END,不会再触发中间件)都必须调用本函数——只在一处结算会漏掉后者,
+    在途方向就无声消失。返回逐项 (方向报告, 通道差量)。
+    """
+    results: list[tuple[dict[str, object], dict[str, object]]] = []
+    for task_id in sorted(list(loop_state.pending_directions)):
+        if task_id in live_task_ids:
+            continue
+        entry = loop_state.pending_directions.get(task_id) or {}
+        subtask = dict(entry.get("subtask") or {})
+        subtask.setdefault("id", task_id)
+        subtask.setdefault("question", str(subtask.get("display_title") or ""))
+        typed_subtask = cast(SubTask, subtask)
+        execution = TaskExecution.failed_for(
+            typed_subtask,
+            int(entry.get("round") or loop_state.current_round),
+            "进程重启，在途方向丢失；主题仍缺口时按需重新派发。",
+        )
+        results.append(
+            absorb_arrival(deps, loop_state, typed_subtask, execution, merged_via="lost")
+        )
+    return results
+
+
+def _task_context(deps: SupervisorDeps, task: SubTask) -> dict[str, object]:
+    return {
+        "task_id": task["id"],
+        "worker_id": task.get("worker_id", task["id"]),
+        "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
+        "parent_task_id": task.get("parent_task_id", ""),
+        "operation_id": task.get("operation_id", task["id"]),
+        "concurrency_limit": deps.config.max_parallel_workers,
+    }
+
+
+def absorb_arrival(
+    deps: SupervisorDeps,
+    loop_state: SupervisorLoopState,
+    task: SubTask,
+    execution: TaskExecution,
+    *,
+    merged_via: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """方向到达的同步收口段:absorb、销账、发事件,返回方向报告与通道差量。
+
+    段内禁引入 await(同旧 absorb 纪律)。调用方是到达中间件与节点收口 drain,
+    都在循环线程上同步执行。差量只碰 merge 语义通道;事件在此发出使
+    task_done 帧与"证据已入工作集"同一时刻,卡片绿色即模型可见。
+    merged_via 记录到达通道:model_turn|drain|lost。
+    """
+    task_context = _task_context(deps, task)
+    task_result = execution.task_result
+    active_before = set(loop_state.active_evidence_ids)
+    loop_state.absorb(execution)
+    loop_state.pending_directions.pop(task["id"], None)
+    if task_result.execution_status == "failed":
+        deps.emit(
+            EventName.RESEARCH_TASK_FAILED,
+            {**task_context, **task_result.model_dump()},
+            component="research_agent",
+        )
+    else:
         deps.emit(
             EventName.RESEARCH_TASK_COMPLETED,
             {**task_context, **task_result.model_dump()},
             component="research_agent",
         )
-        return TaskExecution(
-            task_result=task_result,
-            evidences=evidences,
-            selected_evidence_ids=selected_ids,
-            source_refs=list(agent_result.source_refs),
+    deps.emit(
+        EventName.DIRECTION_ARRIVAL_MERGED,
+        {
+            **task_context,
+            "display_title": task_result.display_title,
+            "execution_status": task_result.execution_status,
+            "evidence_count": task_result.evidence_count,
+            "running_task_ids": sorted(loop_state.pending_directions),
+            "merged_via": merged_via,
+        },
+    )
+    deps.emit(
+        EventName.DELEGATE_COMPLETED,
+        {
+            "status": task_result.execution_status,
+            "reason": task_result.stop_reason.value,
+            "topic_chars": len(task["question"]),
+            "evidence_count": task_result.evidence_count,
+            "source_count": task_result.source_count,
+        },
+    )
+    direction_report: dict[str, object] = {
+        "task_id": task_result.task_id,
+        "status": task_result.execution_status,
+        "research_direction": task_result.research_direction,
+        "coverage_status": task_result.coverage_status,
+        "evidence_count": task_result.evidence_count,
+        "source_count": task_result.source_count,
+        "remaining_gaps": task_result.remaining_gaps,
+        "conclusion": task_result.conclusion,
+        "failures": task_result.failures,
+        "working_set_revision": loop_state.working_set_revision,
+        "evidence": [
+            evidence_card(item, task_result.display_title)
+            for item in execution.evidences
+            if item.evidence_id in loop_state.active_evidence_ids
+        ],
+    }
+    if task_result.provider_exhausted:
+        # 只给数据、不加控制流分支:Supervisor 模型读到系统性不可用后自然停止派发、收尾。
+        direction_report["provider_exhausted"] = True
+        direction_report["instruction"] = (
+            "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
+            "停止派发 ResearchDelegate；把已有 Evidence 修订进综合稿，随后调用 ResearchComplete；"
+            "若不足以成文则直接结束本轮，系统按 partial 交付。"
         )
+    delta: dict[str, object] = {
+        "evidences": list(loop_state.evidences),
+        "active_evidence_ids": {
+            "add": sorted(loop_state.active_evidence_ids - active_before),
+            "remove": [],
+        },
+        "source_refs": list(loop_state.source_refs),
+        "task_results": list(loop_state.task_results),
+        "coverage_gaps": list(loop_state.coverage_gaps),
+        "failure_details": list(loop_state.failure_details),
+        "working_set_revision": loop_state.working_set_revision,
+        "provider_exhausted": loop_state.provider_exhausted,
+        "stop_reason": loop_state.stop_reason,
+        "pending_directions": {"add": {}, "remove": [task["id"]]},
+    }
+    return direction_report, delta
 
 
 def freeze_synthesis(
@@ -217,7 +325,8 @@ def freeze_synthesis(
     """
     synthesis = loop_state.research_synthesis
     accepted = bool(
-        synthesis is not None
+        not loop_state.pending_directions
+        and synthesis is not None
         and synthesis.revision == synthesis_revision
         and loop_state.synthesis_is_fresh(synthesis)
         and (synthesis.selected_evidence_ids or loop_state.provider_exhausted)
@@ -247,6 +356,8 @@ def freeze_synthesis(
         receipt["rejection_cause"] = _freeze_rejection_cause(
             loop_state, synthesis, synthesis_revision
         )
+        if loop_state.pending_directions:
+            receipt["directions_running"] = sorted(loop_state.pending_directions)
     return receipt
 
 
@@ -260,6 +371,15 @@ def _freeze_rejection_cause(
     缺原因时模型只能从 revision 数字猜拒绝理由,倾向再派新方向重试,
     反而推翻熔断回执中的停止派发指令。
     """
+    if loop_state.pending_directions:
+        running = "、".join(
+            str(entry.get("display_title") or entry.get("task_id") or "")
+            for entry in loop_state.pending_directions.values()
+        )
+        return (
+            f"仍有在途方向未返回：{running}。继续派发互补方向或修订综合稿；"
+            "到达会自动送进你的下一回合，无需等待——也可直接结束本轮，系统在收口时等齐全部方向。"
+        )
     if synthesis is None:
         return "尚无研究综合稿；先调用 ReviseResearchSynthesis 产出综合稿，再冻结。"
     if synthesis.revision != synthesis_revision:

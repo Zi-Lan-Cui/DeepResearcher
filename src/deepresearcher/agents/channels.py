@@ -43,3 +43,16 @@ def merge_dict_by_key(current: Any, incoming: dict) -> dict:
     merged = dict(current or {})
     merged.update(incoming or {})
     return merged
+
+
+def merge_registry_by_key(current: Any, incoming: dict[str, Any]) -> dict:
+    """注册表通道的合并:通道值是登记表本身,incoming 是 {add, remove} 差量。
+
+    同批并发派发各自 add 不同的键互不覆盖;remove 只出现在独占批(吸收或丢失判定),
+    与并发 add 不交叠。读取方直接用通道现值。
+    """
+    merged = dict(current or {})
+    merged.update((incoming or {}).get("add") or {})
+    for key in (incoming or {}).get("remove") or []:
+        merged.pop(key, None)
+    return merged

@@ -292,6 +292,18 @@ class ResearchDirectionResult(BaseModel):
     provider_exhausted: bool = False
 
 
+class PendingDirection(BaseModel):
+    """在途方向的登记项：派发批随回执提交进通道，到达吸收时移除。
+
+    subtask 存 SubTask 全量载荷，崩溃恢复后凭它把该方向判为丢失并如实报告。
+    """
+
+    task_id: str
+    subtask: dict[str, object]
+    display_title: str = ""
+    round: int = Field(ge=1)
+
+
 class ResearchAgentResult(BaseModel):
     """ResearchAgent 完成一个方向后的完整返回契约。"""
 

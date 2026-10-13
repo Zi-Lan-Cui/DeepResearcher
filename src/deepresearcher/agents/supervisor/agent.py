@@ -19,6 +19,7 @@ from deepresearcher.agents.middleware import (
     MiddlewareProfile,
     build_agent_middleware,
 )
+from deepresearcher.agents.middleware.direction_arrivals import DirectionArrivalsMiddleware
 from deepresearcher.agents.researcher import ResearchAgent
 from deepresearcher.agents.supervisor import services
 from deepresearcher.agents.supervisor.state import (
@@ -53,7 +54,7 @@ from deepresearcher.schemas import (
     SupervisorStateUpdate,
     WriterProgress,
 )
-from deepresearcher.state import ResearchState, section
+from deepresearcher.state import ResearchState, SubTask, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 
@@ -125,12 +126,14 @@ class ResearchSupervisor:
                 Any,
                 [
                     LoopStateRebuildMiddleware(),
+                    DirectionArrivalsMiddleware(),
                     *build_agent_middleware(
                         MiddlewareProfile(
                             agent_name="Supervisor",
                             event_slug="supervisor",
                             model=self.llm,
-                            max_turns=config.max_subtasks_per_round + 10,
+                            # 到达波各自占用一个模型回合,余量按派发上限翻倍再留收尾空间。
+                            max_turns=2 * config.max_subtasks_per_round + 10,
                             context_window_tokens=context_window_tokens,
                             retry_tools=[["ResearchDelegate"]],
                             serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
@@ -222,7 +225,7 @@ class ResearchSupervisor:
         )
         # research_query 派生一次即定;批重建循环只需它作标量,上下文不持有整份外层 State。
         research_query = loop_state.research_query
-        # 轮次预算不注入观察:由 services.delegate_research 的执行越界硬校验以回执告知。
+        # 轮次预算不注入观察:由 services.dispatch_research 的执行越界硬校验以回执告知。
         self._append_research_observation(
             history,
             {
@@ -272,6 +275,9 @@ class ResearchSupervisor:
                 # 真实终止原因是模型调用上限;set_stop_reason 的声明式 rank 保证它强于
                 # 更弱的预算类信号,又不会盖过模型的显式收尾决定。
                 loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
+            await self._drain_direction_tasks(loop_context, loop_state)
+        finally:
+            await self._stop_residual_tasks(loop_context)
         self._emit_round_completed(
             round_no,
             len([item for item in loop_state.task_results if item.round == round_no]),
@@ -279,6 +285,51 @@ class ResearchSupervisor:
             outcome=loop_state.stop_reason or "agent_loop_completed",
         )
         return services.compose_final_update(state, loop_state, self.config)
+
+    async def _drain_direction_tasks(
+        self,
+        loop_context: SupervisorLoopContext,
+        loop_state: SupervisorLoopState,
+    ) -> None:
+        """节点正常退出前等齐在途方向并全部吸收。
+
+        有未收口后代即不许结算:迟到结果只落 loop_state——compose_final_update 消费
+        该对象转成外层 State 增量,晚到的证据随节点产物进档案、可被 writer 引用;
+        已冻结的 completed_synthesis 不回退。取消打断等待时异常沿调用链上抛,
+        残余任务交 finally 终止。
+        """
+        registry = loop_context.direction_tasks
+        # 崩溃恢复后若模型不再被调用,中间件没机会跑——欠账在收口处同样结算。
+        for _report, _delta in services.absorb_lost_registrations(
+            loop_context.deps, loop_state, set(registry)
+        ):
+            pass
+        for task_id in sorted(list(registry)):
+            task = registry.pop(task_id)
+            try:
+                execution = await task
+            except asyncio.CancelledError:
+                registry[task_id] = task
+                raise
+            entry = loop_state.pending_directions.get(task_id) or {}
+            subtask = cast(SubTask, dict(entry.get("subtask") or {"id": task_id, "question": ""}))
+            services.absorb_arrival(
+                loop_context.deps, loop_state, subtask, execution, merged_via="drain"
+            )
+
+    async def _stop_residual_tasks(self, loop_context: SupervisorLoopContext) -> None:
+        """异常/取消退出路径的孤儿任务终止:取消并等待收梢,任务不得逃逸节点生命周期。"""
+        leftovers = [item for item in loop_context.direction_tasks.values() if not item.done()]
+        for item in leftovers:
+            item.cancel()
+        if not leftovers:
+            return
+        try:
+            await asyncio.wait(leftovers)
+        except asyncio.CancelledError:
+            # 收梢期间的再次取消:任务已收到取消请求,让它们自行结束,不再上抛打断解栈。
+            pass
+        loop_context.direction_tasks.clear()
 
     def _append_review_rejection(self, state: ResearchState, history: list[BaseMessage]) -> None:
         """把审阅拒绝作为消息注入历史；如何响应留给工具循环里的模型。"""
