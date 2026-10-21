@@ -133,6 +133,31 @@ async def test_pydantic_model_records_are_dumped(hub):
     assert "seq" not in pending[0]
 
 
+async def test_signal_bus_serializes_concurrent_notify():
+    """同一连接上的并发 notify 串行发送;断言连接在途峰值始终为 1。"""
+    from deepresearcher.service.signals import PostgresSignalBus
+
+    class _ConnectionProbe:
+        def __init__(self):
+            self.in_flight = 0
+            self.peak = 0
+            self.sent = 0
+
+        async def execute(self, _sql, _message):
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+            await asyncio.sleep(0)
+            self.in_flight -= 1
+            self.sent += 1
+
+    bus = PostgresSignalBus()
+    probe = _ConnectionProbe()
+    bus._send_connection = probe
+    await asyncio.gather(*(bus.notify_event(f"run-{index}") for index in range(8)))
+    assert probe.sent == 8
+    assert probe.peak == 1, "同连接 notify 必须串行"
+
+
 async def test_open_bounded_evicts_oldest(store, signal):
     """open 登记超额按插入序回收;被逐 run 的迟到 write/flush 静默 no-op。"""
     hub = RunEventHub(

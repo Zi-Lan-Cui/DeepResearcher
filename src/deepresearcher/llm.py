@@ -82,6 +82,7 @@ def build_llm(settings: Settings | None = None) -> ChatOpenAI:
         base_url=config.base_url,
         temperature=config.temperature,
         timeout=config.timeout,
+        max_completion_tokens=config.max_completion_tokens,
     )
 
 

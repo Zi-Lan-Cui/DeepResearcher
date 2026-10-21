@@ -56,13 +56,20 @@ def _labels(span: ReadableSpan) -> tuple:
 
 
 def _terminal_fields(span: ReadableSpan) -> tuple[str, str | None]:
-    """(status, error):cancelled 不标 ERROR,failed 取 status.description。"""
+    """(status, error):cancelled 与 GraphInterrupt 单独归类,failed 取 status.description。
+
+    LangGraph 的澄清挂起以 Interrupt 异常文本进入 span status,它是设计内
+    中断;记成 failed 会把正常挂起混进真错误统计。
+    """
     attributes = span.attributes or {}
     if attributes.get("deepresearcher.status") == "cancelled":
         cancelled_error = attributes.get("deepresearcher.error")
         return "cancelled", str(cancelled_error) if cancelled_error else None
     if span.status.status_code == StatusCode.ERROR:
-        return "failed", span.status.description or "error"
+        description = span.status.description or "error"
+        if description.startswith(("Interrupt(", "(Interrupt(")):
+            return "interrupted", description
+        return "failed", description
     return "completed", None
 
 

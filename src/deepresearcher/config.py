@@ -69,6 +69,8 @@ class LLMConfig:
     provider_requests_per_minute: int = 0
     provider_tokens_per_minute: int = 0
     provider_output_token_reserve: int = 1_024
+    # 单次请求输出上限;不设时供应商默认上限高至 131k,一次异常生成就能占满整次调用的输出。
+    max_completion_tokens: int = 32_768
     max_tokens_per_run: int = 0
     max_cost_cny_per_run: float = 0.0
     max_cost_cny_per_user_daily: float = 0.0
@@ -277,6 +279,7 @@ def _llm_config() -> LLMConfig:
         provider_requests_per_minute=max(0, _int_env("LLM_PROVIDER_RPM", 0)),
         provider_tokens_per_minute=max(0, _int_env("LLM_PROVIDER_TPM", 0)),
         provider_output_token_reserve=max(0, _int_env("LLM_PROVIDER_OUTPUT_TOKEN_RESERVE", 1_024)),
+        max_completion_tokens=max(1024, _int_env("LLM_MAX_COMPLETION_TOKENS", 32_768)),
         max_tokens_per_run=max(0, _int_env("LLM_MAX_TOKENS_PER_RUN", 0)),
         max_cost_cny_per_run=max(0.0, _float_env("LLM_MAX_COST_CNY_PER_RUN", 0.0)),
         max_cost_cny_per_user_daily=max(0.0, _float_env("LLM_MAX_COST_CNY_PER_USER_DAILY", 0.0)),

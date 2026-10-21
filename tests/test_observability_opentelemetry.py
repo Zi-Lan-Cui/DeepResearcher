@@ -173,3 +173,28 @@ async def test_unregistered_run_produces_no_ledger_records():
     # 是否写账本由账本注册表决定:未注册 run 的 span 不产生记录。
     with spans.span("ephemeral"):
         pass
+
+
+def test_terminal_fields_treats_graph_interrupt_as_interrupted():
+    from types import SimpleNamespace
+
+    from deepresearcher.observability.tracing.ledger import _terminal_fields
+
+    interrupt_span = SimpleNamespace(
+        attributes={},
+        status=SimpleNamespace(
+            status_code=opentelemetry_trace.StatusCode.ERROR,
+            description="Interrupt(value={'kind': 'clarification', 'question': '哪套划分'})",
+        ),
+    )
+    status, error = _terminal_fields(interrupt_span)
+    assert status == "interrupted", "澄清挂起是设计内中断,不得混入 failed 统计"
+    assert error is not None and "Interrupt(" in error
+
+    boom_span = SimpleNamespace(
+        attributes={},
+        status=SimpleNamespace(
+            status_code=opentelemetry_trace.StatusCode.ERROR, description="boom"
+        ),
+    )
+    assert _terminal_fields(boom_span)[0] == "failed"

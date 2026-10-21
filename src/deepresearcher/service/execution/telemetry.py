@@ -8,6 +8,7 @@ langfuse SDK 检测到已存在的全局 SDK provider 会直接接管并挂上�
 
 from __future__ import annotations
 
+import logging
 import sys
 
 from opentelemetry import trace as opentelemetry_trace
@@ -23,6 +24,27 @@ from deepresearcher.service.settings import ServiceConfig
 
 logger = get_logger("deepresearcher.service.execution.telemetry")
 
+_OTLP_EXPORTER_LOGGER = "opentelemetry.exporter.otlp.proto.http.trace_exporter"
+
+
+class _FirstRecordOnlyFilter(logging.Filter):
+    """同一 (logger, 函数) 的重复记录只放行第一条。
+
+    观测栈未启动是常态运行形态,导出器的连接失败会按批反复抛出;
+    告知一次即可,重复出现交给观测栈自身的健康度去看。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: set[tuple[str, str]] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key = (record.name, record.funcName)
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
 
 def configure_tracer_provider(config: ServiceConfig) -> None:
     """按 ``otel_exporter`` 装配全局 TracerProvider;非法值告警后按 none 处理。"""
@@ -36,6 +58,11 @@ def configure_tracer_provider(config: ServiceConfig) -> None:
             provider = current if isinstance(current, TracerProvider) else created
         # 账本处理器常驻：span 是唯一的执行记录，run 是否落账由注册表决定。
         ledger.attach_to_provider(provider)
+        # langfuse SDK 的导出 processor 随 Langfuse() 构造注册在同一个 OTel provider 下;
+        # 这里对它的连接失败日志去重,logger 名在首次导入前即可挂载。
+        exporter_logger = logging.getLogger(_OTLP_EXPORTER_LOGGER)
+        if not any(isinstance(item, _FirstRecordOnlyFilter) for item in exporter_logger.filters):
+            exporter_logger.addFilter(_FirstRecordOnlyFilter())
         if config.otel_exporter == "console":
             # 显式传 out：SDK 默认参数在模块导入时就绑定了 sys.stdout，
             # 测试内的流重定向与装配时刻都要拿到当下的 stdout。

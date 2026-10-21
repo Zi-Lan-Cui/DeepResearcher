@@ -22,6 +22,15 @@ def test_configure_creates_or_reuses_single_sdk_provider(tmp_path, caplog):
     assert isinstance(provider_after_first, TracerProvider)
 
 
+def test_otlp_exporter_failure_logs_only_once(tmp_path, caplog):
+    configure_tracer_provider(service_config(tmp_path, otel_exporter="none"))
+    exporter_logger = logging.getLogger("opentelemetry.exporter.otlp.proto.http.trace_exporter")
+    with caplog.at_level(logging.ERROR, logger=exporter_logger.name):
+        for _ in range(3):
+            exporter_logger.error("Failed to export batch code: None, reason: refused")
+    assert sum("Failed to export" in record.getMessage() for record in caplog.records) == 1
+
+
 def test_unknown_exporter_value_warns_and_behaves_as_none(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="deepresearcher.service.execution.telemetry"):
         configure_tracer_provider(service_config(tmp_path, otel_exporter="jaeger-ish"))

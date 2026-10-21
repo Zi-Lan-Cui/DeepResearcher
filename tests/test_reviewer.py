@@ -55,7 +55,7 @@ def test_reviewer_rejects_with_structured_evidence_feedback(monkeypatch):
 
     assert result["review"].status == "rejected"
     assert result["review"].gaps == ["缺少具体作品的文学性评价依据"]
-    assert "Supervisor 报告任务书" in captured["context"]
+    assert "Supervisor 报告任务书" not in captured["context"]  # 独立评审,不带上游环节
     assert '"support": "direct"' in captured["context"]
     assert '"source_domain": ""' in captured["context"]
 
@@ -183,3 +183,33 @@ def test_reviewer_exhausts_retries_and_reraises(monkeypatch):
 
 async def _no_sleep(_seconds):
     return None
+
+
+def test_reviewer_abstains_when_output_length_runaways(monkeypatch):
+    """全部尝试都触发输出长度上限:审阅弃权放行,不阻断报告。"""
+    from types import SimpleNamespace
+
+    from openai import LengthFinishReasonError
+
+    calls = []
+
+    async def runaway(llm, schema, messages):
+        calls.append(1)
+        raise LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+
+    monkeypatch.setattr("deepresearcher.nodes.ainvoke_structured", runaway)
+    result = asyncio.run(
+        reviewer(
+            {
+                "clarified_query": "q",
+                "paragraph_bindings": [_binding("A 段", ["e1"], kind="evidence")],
+                "citations": [_cite("e1", claim="事实", quote="原文。")],
+            },
+            object(),
+            agent_config=AgentConfig(reviewer_retry_attempts=2),
+        )
+    )
+
+    assert len(calls) == 3  # 初次 + 2 次重试都跑飞
+    assert result["review"].status == "approved"
+    assert result["review"].issues == []

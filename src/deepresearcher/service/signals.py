@@ -38,6 +38,7 @@ class PostgresSignalBus:
         }
         self._listen_connection: Any = None
         self._send_connection: Any = None
+        self._send_lock = asyncio.Lock()
         self._callback_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, database_url: str) -> None:
@@ -96,10 +97,13 @@ class PostgresSignalBus:
         if self._send_connection is None:
             return
         message = json.dumps({"kind": kind, "payload": payload}, separators=(",", ":"))
-        try:
-            await self._send_connection.execute(f"SELECT pg_notify('{_CHANNEL}', $1)", message)
-        except Exception:  # noqa: BLE001 - durable polling/replay preserves correctness
-            logger.warning("service_signal_send_failed kind=%s", kind, exc_info=True)
+        # asyncpg 连接同一时刻只允许一个操作;并发 notify 在该锁上排队发送,
+        # 否则发送失败丢掉唤醒。
+        async with self._send_lock:
+            try:
+                await self._send_connection.execute(f"SELECT pg_notify('{_CHANNEL}', $1)", message)
+            except Exception:  # noqa: BLE001 - durable polling/replay preserves correctness
+                logger.warning("service_signal_send_failed kind=%s", kind, exc_info=True)
 
     def _on_notification(self, _connection: Any, _pid: int, _channel: str, raw: str) -> None:
         try:
