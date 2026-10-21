@@ -1,99 +1,70 @@
-"""聚合与报表：criterion 级结果 → 分维得分、case 判定、pass@k/pass^3、一致率。
+"""聚合与报表：criterion 级结果 → RACE 双序得分、case 判定、pass@k/pass^k、效率汇总。
 
-分数呈现纪律：五个分块各自呈现,不合并为单一总分。
-  DeepResearchBench Quality   xx.x     ← external 轨四维加权,用官方权重与官方 criterion
-  Evidence Groundedness       xx.x     ← 确定性门通过率,即引用完整性等
-  Behavior Pass Rate          xx.x     ← behavior 轨行为断言
-  Engineering pass@3 / pass^3          ← behavior 轨整体稳定性表述
-  Unknown Rate / 人机一致率 / Cohen κ  ← judge 可信度证明
+分数呈现纪律：分块各自呈现,不合并为单一总分。
+  RACE Quality      正序与换序 target/(target+reference) 的均值,0.5=与专家参考打平
+  Gates             确定性三门(引用完整性/run_done/seq),不产质量分
+  Engineering pass@k / pass^k          ← 通过=三门均通过且双序均值>0.5
+  Efficiency        token/耗时/缓存,只记录,不参与判定
 """
 
 from __future__ import annotations
 
-import csv
-import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from evals.schemas import CriterionResult, EvalCase, RaceCriterionScore
 
-VERDICT_VALUE = {"yes": 1.0, "no": 0.0, "unknown": 0.0}
-
-
-def criterion_weight(case: EvalCase, criterion_id: str) -> float:
-    for c in case.criteria:
-        if c.id == criterion_id:
-            return c.weight * (case.dimension_weights.get(c.dimension, 1.0))
-    return 0.0  # gate:* 门控项不参与题分加权
+# 与专家参考打平记不过:通过要求双序均值严格高于 0.5。
+RACE_PASS_RATIO = 0.5
 
 
 @dataclass
 class CaseScore:
     case_id: str
     attempt: int
-    track: str
     gates_green: bool
     gate_failures: list[str] = field(default_factory=list)
-    behavior_pass: bool = True
-    behavior_failures: list[str] = field(default_factory=list)
-    quality_score: float | None = None  # external 轨 judge 维度的加权分
-    judge_failures: list[str] = field(default_factory=list)  # behavior 轨 judge 断言的非 yes 项
-    unknown_count: int = 0
-    judge_count: int = 0
+    race_forward: RaceCaseScore | None = None
+    race_swapped: RaceCaseScore | None = None
+    race_mean: float | None = None
     passed: bool = False
 
 
-def score_case(case: EvalCase, attempt: int, results: Iterable[CriterionResult]) -> CaseScore:
-    rows = [r for r in results if r.case_id == case.case_id and r.attempt == attempt]
-    gates = [r for r in rows if r.criterion_id.startswith("gate:")]
-    deterministic = [
-        r for r in rows if r.source == "deterministic" and not r.criterion_id.startswith("gate:")
-    ]
-    judged = [r for r in rows if r.source == "judge"]
+def score_case(
+    case: EvalCase,
+    attempt: int,
+    deterministic_rows: Iterable[CriterionResult],
+    race_forward_rows: Iterable[RaceCriterionScore],
+    race_swapped_rows: Iterable[RaceCriterionScore],
+) -> CaseScore:
+    """门 + RACE 双序合成单轮判定：通过 = 三门均通过 ∧ (正序+换序) overall 均值 > 0.5。
 
-    score = CaseScore(
+    任一序未判或无有效分则 race_mean 为 None,该轮不判过;两个方向的缺分
+    criterion 数由 race 聚合对象各自记录。
+    """
+    rows = [r for r in deterministic_rows if r.case_id == case.case_id and r.attempt == attempt]
+    gates = [r for r in rows if r.criterion_id.startswith("gate:")]
+    gates_green = all(r.verdict == "yes" for r in gates)
+    forward = score_case_race(case, attempt, race_forward_rows)
+    swapped = score_case_race(case, attempt, race_swapped_rows)
+    forward_overall = forward.overall
+    swapped_overall = swapped.overall
+    race_mean = (
+        round((forward_overall + swapped_overall) / 2, 4)
+        if forward_overall is not None and swapped_overall is not None
+        else None
+    )
+    return CaseScore(
         case_id=case.case_id,
         attempt=attempt,
-        track=case.track,
-        gates_green=all(r.verdict == "yes" for r in gates),
+        gates_green=gates_green,
         gate_failures=[r.criterion_id for r in gates if r.verdict != "yes"],
+        race_forward=forward,
+        race_swapped=swapped,
+        race_mean=race_mean,
+        passed=gates_green and race_mean is not None and race_mean > RACE_PASS_RATIO,
     )
-    score.behavior_pass = all(r.verdict == "yes" for r in deterministic)
-    score.behavior_failures = [r.criterion_id for r in deterministic if r.verdict != "yes"]
-    # unknown 表示 judge 未给出有效判定,不能算产品通过;同时计入
-    # unknown_rate,用于区分系统未达标与 judge/rubric 需要校准两种情况。
-    score.judge_failures = [r.criterion_id for r in judged if r.verdict != "yes"]
-    score.unknown_count = sum(1 for r in judged if r.verdict == "unknown")
-    score.judge_count = len(judged)
-
-    if judged:
-        dim_totals: defaultdict[str, float] = defaultdict(float)
-        dim_hits: defaultdict[str, float] = defaultdict(float)
-        for r in judged:
-            weight = criterion_weight(case, r.criterion_id)
-            if weight <= 0:
-                continue
-            dim_totals[r.dimension] += weight
-            dim_hits[r.dimension] += weight * VERDICT_VALUE[r.verdict]
-        if dim_totals:
-            per_dim = {d: dim_hits[d] / dim_totals[d] for d in dim_totals}
-            total_weight = sum(case.dimension_weights.get(d, 1.0) for d in per_dim) or 1.0
-            score.quality_score = (
-                sum(per_dim[d] * case.dimension_weights.get(d, 1.0) for d in per_dim) / total_weight
-            ) * 100
-    if case.track == "external":
-        score.passed = (
-            score.gates_green
-            and score.quality_score is not None
-            and score.quality_score >= EXTERNAL_PASS_THRESHOLD
-        )
-    else:  # behavior 轨：门控、deterministic 断言、judge 断言任一不过即失败
-        score.passed = score.gates_green and score.behavior_pass and not score.judge_failures
-    return score
-
-
-EXTERNAL_PASS_THRESHOLD = 75.0
 
 
 @dataclass
@@ -189,7 +160,7 @@ def score_case_race(
 
 
 def k_metrics(scores: list[CaseScore]) -> dict[str, dict[str, Any]]:
-    """按题聚合 pass@k（至少一次）与 pass^k（次次成功）。"""
+    """按题聚合 pass@k（至少一次）与 pass^k（次次成功），附 RACE 双序均值。"""
     by_case: defaultdict[str, list[CaseScore]] = defaultdict(list)
     for score in scores:
         by_case[score.case_id].append(score)
@@ -197,152 +168,19 @@ def k_metrics(scores: list[CaseScore]) -> dict[str, dict[str, Any]]:
     for case_id, runs in by_case.items():
         runs.sort(key=lambda s: s.attempt)
         passed = [s.passed for s in runs]
+        means = [s.race_mean for s in runs if s.race_mean is not None]
         out[case_id] = {
             "attempts": len(runs),
             "pass_any": any(passed),
             "pass_all": all(passed),
-            "mean_quality": (
-                round(
-                    sum(s.quality_score for s in runs if s.quality_score is not None)
-                    / max(1, sum(1 for s in runs if s.quality_score is not None)),
-                    1,
-                )
-                if runs[0].track == "external" and any(s.quality_score is not None for s in runs)
-                else None
-            ),
-            "unknown_rate": round(
-                sum(s.unknown_count for s in runs) / max(1, sum(s.judge_count for s in runs)), 3
+            "mean_race": round(sum(means) / len(means), 4) if means else None,
+            "missing_criterion_count": sum(
+                (s.race_forward.missing_count if s.race_forward else 0)
+                + (s.race_swapped.missing_count if s.race_swapped else 0)
+                for s in runs
             ),
         }
     return out
-
-
-def track_summary(
-    scores: list[CaseScore], metrics: dict[str, dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    """分轨汇总：外轨只算报告质量，内轨只算系统可靠性。"""
-    external = [score for score in scores if score.track == "external"]
-    behavior = [score for score in scores if score.track == "behavior"]
-    external_ids = {score.case_id for score in external}
-    behavior_ids = {score.case_id for score in behavior}
-    quality = [score.quality_score for score in external if score.quality_score is not None]
-    return {
-        "report_quality": {
-            "cases": len(external_ids),
-            "rounds": len(external),
-            "mean": round(sum(quality) / len(quality), 2) if quality else None,
-        },
-        "system_reliability": {
-            "cases": len(behavior_ids),
-            "rounds": len(behavior),
-            "pass_any": sum(1 for case_id in behavior_ids if metrics[case_id]["pass_any"]),
-            "pass_all": sum(1 for case_id in behavior_ids if metrics[case_id]["pass_all"]),
-        },
-    }
-
-
-ANNOTATION_COLUMNS = [
-    "case_id",
-    "attempt",
-    "criterion_id",
-    "dimension",
-    "criterion_text",
-    "judge_verdict",
-    "judge_reason",
-    "human_verdict",  # 人工填 yes/no/unknown,留空视为未标注
-    "agree",  # 重新导入时在 import_annotation_csv 里回算
-]
-
-
-def export_annotation_csv(results: Iterable[CriterionResult], cases: dict[str, EvalCase]) -> str:
-    """judge 结果 → 待人工标注 CSV。人工只需填 human_verdict 一列。"""
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=ANNOTATION_COLUMNS)
-    writer.writeheader()
-    for r in sorted(results, key=lambda x: (x.case_id, x.attempt, x.criterion_id)):
-        if r.source != "judge":
-            continue
-        text = ""
-        case = cases.get(r.case_id)
-        if case is not None:
-            text = next((c.text for c in case.criteria if c.id == r.criterion_id), "")
-        writer.writerow(
-            {
-                "case_id": r.case_id,
-                "attempt": r.attempt,
-                "criterion_id": r.criterion_id,
-                "dimension": r.dimension,
-                "criterion_text": text,
-                "judge_verdict": r.verdict,
-                "judge_reason": r.reason,
-                "human_verdict": "",
-                "agree": "",
-            }
-        )
-    return buffer.getvalue()
-
-
-def import_annotation_csv(content: str) -> list[dict[str, str]]:
-    """读入人工列并回算 agree:双方判定相同算一致,含都判 unknown;单方
-    unknown 的行不计一致也不计分歧,rubric 歧义信号由 agreement_report 另算。"""
-    rows = list(csv.DictReader(io.StringIO(content)))
-    for row in rows:
-        human = (row.get("human_verdict") or "").strip().lower()
-        judge = (row.get("judge_verdict") or "").strip().lower()
-        if human not in {"yes", "no", "unknown"}:
-            row["agree"] = ""  # 未标注
-        elif human == judge:
-            row["agree"] = "1"  # 双方一致判 unknown 也算一致
-        elif "unknown" in (human, judge):
-            row["agree"] = ""  # 单方 unknown,不参与一致与否的判定
-        else:
-            row["agree"] = "0"
-    return rows
-
-
-def agreement_report(rows: list[dict[str, str]]) -> dict[str, Any]:
-    """人机一致率 + Cohen's kappa。kappa 只在 yes/no 二值域上计算,
-    unknown 不计入,单独以双方歧义率呈现。"""
-    judge: list[str] = []
-    human: list[str] = []
-    for row in rows:
-        h = (row.get("human_verdict") or "").strip().lower()
-        j = (row.get("judge_verdict") or "").strip().lower()
-        if h not in {"yes", "no", "unknown"} or j not in {"yes", "no", "unknown"}:
-            continue
-        judge.append(j)
-        human.append(h)
-    if not judge:
-        return {"labeled": 0}
-    both_binary = [(j, h) for j, h in zip(judge, human) if j != "unknown" and h != "unknown"]
-    kappa = _cohen_kappa([j for j, _ in both_binary], [h for _, h in both_binary])
-    return {
-        "labeled": len(judge),
-        "both_binary": len(both_binary),
-        "raw_agreement": (
-            round(sum(1 for j, h in both_binary if j == h) / len(both_binary), 4)
-            if both_binary
-            else None
-        ),
-        "cohens_kappa": None if kappa is None else round(kappa, 4),
-        "judge_unknown_rate": round(judge.count("unknown") / len(judge), 4),
-        "human_unknown_rate": round(human.count("unknown") / len(human), 4),
-    }
-
-
-def _cohen_kappa(a: list[str], b: list[str]) -> float | None:
-    if not a or len(a) != len(b):
-        return None
-    labels = sorted(set(a) | set(b))
-    n = len(a)
-    po = sum(1 for x, y in zip(a, b) if x == y) / n
-    pe = sum(
-        (a.count(label) / n) * (b.count(label) / n)  # pyright: ignore[reportUnknownVariableType]
-        for label in labels
-    )
-    if pe >= 1.0:
-        return None  # 单类别退化，kappa 无定义
-    return (po - pe) / (1 - pe)
 
 
 def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:

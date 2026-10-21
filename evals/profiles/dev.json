@@ -1,13 +1,9 @@
 {
-  "description": "开发迭代集：DRB 中文 50 题中未进实测集的 20 题 + 10 道内部关键行为题；调提示词与链路迭代用，成绩不作对外口径，与 test30 无交集",
+  "description": "开发迭代集：DRB 中文 50 题中未进实测集的 20 题；调提示词与链路迭代用，成绩不作对外口径，与 test30 无交集",
   "external_ids": [
     "drb-zh-003", "drb-zh-005", "drb-zh-007", "drb-zh-008", "drb-zh-009",
     "drb-zh-010", "drb-zh-011", "drb-zh-013", "drb-zh-017", "drb-zh-018",
     "drb-zh-022", "drb-zh-023", "drb-zh-027", "drb-zh-028", "drb-zh-030",
     "drb-zh-036", "drb-zh-038", "drb-zh-046", "drb-zh-047", "drb-zh-049"
-  ],
-  "behavior_ids": [
-    "beh-b1", "beh-b2", "beh-b4", "beh-c1", "beh-c2",
-    "beh-d1", "beh-d3", "beh-d4", "beh-f3", "beh-f4"
   ]
 }

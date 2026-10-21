@@ -104,7 +104,6 @@ def build_cases(
         cases.append(
             EvalCase(
                 case_id=case_id,
-                track="external",
                 prompt=str(row["prompt"]),
                 language=language,
                 topic=str(row.get("topic", "")),

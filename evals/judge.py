@@ -1,14 +1,10 @@
-"""rubric LLM judge 两种口径：二元 yes/no 与 RACE 对齐的 0-10 双文对比分。
+"""rubric LLM judge：RACE 对齐 DeepResearchBench 官方的 0-10 双文对比分。
 
-- 二元判定单位是逐条 criterion 的 yes/no,不给整篇报告 0-10 印象分:整体打分
-  的人机一致率过低,逐条二元判并在同一张表上人工标注才可计算一致率;
-- 两种口径都逐条 criterion 独立调用:一次长上下文里连判多条会互相干扰;
-- RACE 口径对齐 DeepResearchBench 官方:同一调用内被测与专家参考文章各打
-  0-10 分,聚合走官方加权与 target/(target+reference) 归一(见 aggregate);
-- unknown 只表示 criterion 本身歧义、材料损坏或 judge 无法工作;
-  报告未覆盖 criterion 是明确的 no,不得用 unknown 代替失分;
-- external 轨带专家参考文章做对照,behavior 轨不经 judge,全部走
-  deterministic scorer。
+- 判定单位是逐条 criterion,每条独立调用:一次长上下文里连判多条会互相干扰;
+- 同一调用内被测与专家参考文章各打 0-10 分,聚合走官方加权与
+  target/(target+reference) 归一(见 aggregate);
+- 两篇只称文章一/文章二,judge 不知道身份,正序与换序各判一次取均值消位次偏置;
+- 单条调用或解析失败记双 None,聚合端按官方口径把无分 criterion 排除出加权分母。
 """
 
 from __future__ import annotations
@@ -19,16 +15,7 @@ import os
 import re
 from typing import Protocol
 
-from evals.schemas import Criterion, CriterionResult, EvalCase, RaceCriterionScore
-
-SYSTEM_PROMPT = """你是严格、保守的研究报告评审员。你将看到两篇文章与一条二元评审标准。你只按该标准评判文章一；\
-文章二是同题对照，本身不被评判，也不是唯一正确答案来源。
-
-只输出一个词：yes / no / unknown
-- yes：文章一确凿满足该标准；
-- no：文章一确凿不满足，包括缺失 criterion 要求的内容、内容错误或违背要求；
-- unknown：只在 criterion 本身有歧义、输入材料损坏，或该 criterion 明确要求两篇文章之外的事实才能裁决时使用。
-“文章一没写到”一律判 no，不是 unknown。不要输出任何其他文字。"""
+from evals.schemas import Criterion, EvalCase, RaceCriterionScore
 
 MAX_REPORT_CHARS = 60_000
 MAX_REFERENCE_CHARS = 30_000
@@ -50,27 +37,7 @@ RACE_MAX_OUTPUT_TOKENS_DEFAULT = 2_048
 
 
 class JudgeInvoker(Protocol):
-    async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str: ...
-
-
-def build_user_prompt(criterion: Criterion, report: str, reference: str | None) -> str:
-    parts = [
-        f"【评审标准】{criterion.text}",
-    ]
-    if criterion.explanation:
-        parts.append(f"【标准说明】{criterion.explanation}")
-    parts.append(f"【文章一】\n{report[:MAX_REPORT_CHARS]}")
-    if reference:
-        parts.append(f"【文章二】\n{reference[:MAX_REFERENCE_CHARS]}")
-    return "\n\n".join(parts)
-
-
-def parse_verdict(raw: str) -> str:
-    text = raw.strip().lower()
-    for verdict in ("yes", "no", "unknown"):  # 逐项 startswith 匹配，此顺序勿调换
-        if text.startswith(verdict):
-            return verdict
-    return "unknown"
+    async def complete(self, system: str, user: str, max_tokens: int) -> str: ...
 
 
 def build_race_user_prompt(
@@ -130,42 +97,6 @@ def _clamp_score(value: float) -> float:
     return max(0.0, min(10.0, value))
 
 
-async def judge_case(
-    case: EvalCase,
-    *,
-    report: str,
-    attempt: int,
-    invoker: JudgeInvoker,
-    reference: str | None = None,
-) -> list[CriterionResult]:
-    """逐条独立判定；调用方负责把结果与 human/deterministic 记录合并。"""
-    concurrency = max(1, int(os.environ.get("EVAL_JUDGE_CONCURRENCY", "5")))
-    total_timeout = float(os.environ.get("EVAL_JUDGE_TOTAL_TIMEOUT_SECONDS", "120"))
-    gate = asyncio.Semaphore(concurrency)
-
-    async def judge_criterion(criterion: Criterion) -> CriterionResult:
-        user = build_user_prompt(criterion, report, reference)
-        try:
-            async with gate:
-                raw = await asyncio.wait_for(
-                    invoker.complete(SYSTEM_PROMPT, user), timeout=total_timeout
-                )
-            verdict, reason = parse_verdict(raw), ""
-        except Exception as exc:  # noqa: BLE001 - 单条 criterion 判定失败降级为 unknown,不影响其余条目
-            verdict, reason = "unknown", f"judge 调用失败: {type(exc).__name__}: {str(exc)[:120]}"
-        return CriterionResult(
-            case_id=case.case_id,
-            attempt=attempt,
-            criterion_id=criterion.id,
-            dimension=criterion.dimension,
-            verdict=verdict,  # type: ignore[arg-type]
-            source="judge",
-            reason=reason,
-        )
-
-    return list(await asyncio.gather(*(judge_criterion(item) for item in case.judge_criteria())))
-
-
 async def judge_case_race(
     case: EvalCase,
     *,
@@ -178,8 +109,9 @@ async def judge_case_race(
     """RACE 口径：每条 criterion 一次调用，被测与参考文章同台各打 0-10 分。
 
     参数 reference 必须来自 DRB 的专家参考文章；swap_positions 为 True 时参考文章
-    放文章一位（位次校准），分数映射回 target/reference。单条调用失败或解析失败
-    记双 None，聚合端按官方口径把无分 criterion 排除出加权分母。
+    放文章一位（位次校准），分数映射回 target/reference。标准流程正序、换序各调
+    一次本函数。单条失败或解析失败记双 None，聚合端按官方口径把无分 criterion
+    排除出加权分母。
     """
     concurrency = max(1, int(os.environ.get("EVAL_JUDGE_CONCURRENCY", "5")))
     total_timeout = float(os.environ.get("EVAL_JUDGE_TOTAL_TIMEOUT_SECONDS", "180"))
@@ -218,7 +150,7 @@ async def judge_case_race(
             analysis=analysis,
         )
 
-    return list(await asyncio.gather(*(score_criterion(item) for item in case.judge_criteria())))
+    return list(await asyncio.gather(*(score_criterion(item) for item in case.criteria)))
 
 
 class OpenAICompatJudge:
@@ -255,14 +187,13 @@ class OpenAICompatJudge:
             timeout=timeout_seconds,
             max_retries=1,
         )
-        self._max_tokens = int(os.environ.get("EVAL_JUDGE_MAX_TOKENS", "16"))
 
     @property
     def identity(self) -> dict[str, object]:
         """写入 judge_meta.json 的评审身份,供报表标注是否自评。"""
         return {"model": self._model, "self_judging": self.self_judging}
 
-    async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str:
+    async def complete(self, system: str, user: str, max_tokens: int) -> str:
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -270,7 +201,7 @@ class OpenAICompatJudge:
                 {"role": "user", "content": user},
             ],
             temperature=0,
-            max_tokens=max_tokens or self._max_tokens,
+            max_tokens=max_tokens,
             # 网关模型是思考型:不禁用思考,max_tokens 预算会全花在隐藏思考上,
             # content 返回空串、被解析成 unknown,整批评测判定失效。
             extra_body={"thinking": {"type": "disabled"}},

@@ -1,11 +1,9 @@
-"""evals harness 的核心回归：契约校验、题集文件、确定性 scorer、judge、聚合。
+"""evals harness 的核心回归：契约校验、题集名单、确定性门、RACE judge、聚合。
 
 evals/ 不在 ruff/pyright 门检范围内，它的正确性由本文件的断言覆盖。
 """
 
-import csv
 import dataclasses
-import io
 import json
 import sys
 from pathlib import Path
@@ -17,19 +15,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # evals 非安装�
 from evals import aggregate, drb  # noqa: E402
 from evals.deterministic import Artifact, score_artifact  # noqa: E402
 from evals.judge import (  # noqa: E402
-    SYSTEM_PROMPT,
-    judge_case,
     judge_case_race,
     parse_race_scores,
-    parse_verdict,
 )
 from evals.schemas import (  # noqa: E402
     Criterion,
     CriterionResult,
     EvalCase,
     RaceCriterionScore,
-    cases_to_jsonl,
-    load_cases,
+    load_race_results,
     load_results,
     merge_results,
     validate_case,
@@ -37,43 +31,40 @@ from evals.schemas import (  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+GATE_IDS = (
+    "gate:citation_integrity",
+    "gate:done_exactly_once",
+    "gate:seq_continuous",
+)
+
 
 def _case(**overrides):
     base = dict(
         case_id="x-1",
-        track="behavior",
         prompt="p",
-        criteria=(
-            Criterion(
-                id="gate-ref",
-                dimension="grounding",
-                text="t",
-                scorer="deterministic:citation_integrity",
-            ),
-        ),
+        criteria=(Criterion(id="a", dimension="insight", text="甲", weight=1.0),),
+        dimension_weights={"insight": 1.0},
     )
     base.update(overrides)
     return EvalCase(**base)
 
 
-def test_behavior_seed_set_loads_and_validates():
-    cases = load_cases(REPO_ROOT / "evals" / "cases" / "behavior.jsonl")
-    assert len(cases) == 15
-    for case in cases:
-        assert validate_case(case) == [], case.case_id
-    groups = {case.group for case in cases}
-    assert groups == {"B", "C", "D", "F"}
+def _gates(attempt: int = 1, verdicts: dict[str, str] | None = None) -> list[CriterionResult]:
+    failures = verdicts or {}
+    return [
+        CriterionResult(
+            "x-1", attempt, gate_id, "grounding", failures.get(gate_id, "yes"), "deterministic"
+        )
+        for gate_id in GATE_IDS
+    ]
 
 
-def test_dev_profile_is_small_fixed_and_representative() -> None:
+def test_dev_profile_is_external_only() -> None:
     profile = json.loads((REPO_ROOT / "evals" / "profiles" / "dev.json").read_text("utf-8"))
+    assert "behavior_ids" not in profile
     external = profile["external_ids"]
-    behavior = profile["behavior_ids"]
-
     assert len(external) == 20
-    assert len(behavior) == 10
-    assert len(set(external + behavior)) == 30
-    assert {case_id.split("-")[1][0] for case_id in behavior} == {"b", "c", "d", "f"}
+    assert all(case_id.startswith("drb-zh-") for case_id in external)
 
 
 def test_dev_test30_partition_zh50() -> None:
@@ -87,21 +78,14 @@ def test_dev_test30_partition_zh50() -> None:
     assert set(dev) | set(test30) == zh50
 
 
-def test_cases_jsonl_roundtrip(tmp_path):
-    case = _case(require_clarify=True, clarify_answer="a")
-    path = tmp_path / "cases.jsonl"
-    path.write_text(cases_to_jsonl([case]), "utf-8")
-    assert load_cases(path) == [case]
-
-
 def test_partial_result_merge_replaces_only_evaluated_rounds(tmp_path):
-    path = tmp_path / "judge.jsonl"
+    path = tmp_path / "deterministic.jsonl"
     original = [
-        CriterionResult("a", 1, "old-a", "insight", "yes", "judge"),
-        CriterionResult("b", 1, "keep-b", "insight", "yes", "judge"),
+        CriterionResult("a", 1, "old-a", "grounding", "yes", "deterministic"),
+        CriterionResult("b", 1, "keep-b", "grounding", "yes", "deterministic"),
     ]
     path.write_text("".join(json.dumps(dataclasses.asdict(r)) + "\n" for r in original), "utf-8")
-    replacement = CriterionResult("a", 1, "new-a", "insight", "no", "judge")
+    replacement = CriterionResult("a", 1, "new-a", "grounding", "no", "deterministic")
 
     merge_results(path, [replacement], {("a", 1)})
 
@@ -115,9 +99,11 @@ def test_partial_result_merge_replaces_only_evaluated_rounds(tmp_path):
 def test_validate_catches_broken_cases():
     assert validate_case(_case(prompt="  "))
     assert validate_case(_case(criteria=()))
-    assert validate_case(_case(require_clarify=True, clarify_answer=""))
     bad_dim = _case(criteria=(Criterion(id="c", dimension="magic", text="t"),))
     assert validate_case(bad_dim)
+    assert validate_case(
+        _case(criteria=(Criterion(id="c", dimension="insight", text="t", weight=0),))
+    )
 
 
 @pytest.fixture
@@ -168,10 +154,9 @@ def test_drb_adapter_builds_official_criteria_without_copying(fake_drb):
     cases = drb.build_cases(fake_drb)
     assert len(cases) == 1  # 只收中文
     case = cases[0]
-    assert case.track == "external"
     assert case.case_id == "drb-zh-001"
     assert case.dimension_weights == {"comprehensiveness": 0.5, "insight": 0.5}
-    assert [c.scorer for c in case.criteria] == ["judge", "judge"]
+    assert [c.id for c in case.criteria] == ["comprehensiveness-1", "insight-1"]
     assert drb.load_references(fake_drb) == {1: "专家文章"}
 
 
@@ -216,17 +201,12 @@ def _artifact(**overrides) -> Artifact:
         {"event_type": "run_status", "payload": {"status": "running"}, "seq": 2},
         {"event_type": "run_done", "payload": {"status": "completed"}, "seq": 3},
     ]
-    evidences = [
-        {"evidence_id": "e1", "quote": "q1", "audit_chunk": "before q1 after"},
-        {"evidence_id": "e2", "quote": "q2", "audit_chunk": "before q2 after"},
-    ]
     base = dict(
         case_id="x-1",
         attempt=1,
         run_id="r",
         detail=detail,
         events=events,
-        evidences=evidences,
     )
     base.update(overrides)
     return Artifact(**base)
@@ -298,7 +278,7 @@ def test_process_metrics_carries_cache_and_token_fields():
 
 
 def test_citation_gate_pass_and_dangling():
-    results = score_artifact(_artifact(), _case(criteria=()))
+    results = score_artifact(_artifact())
     assert _gate(results, "citation_integrity").verdict == "yes"
     bad = _artifact(
         detail={
@@ -307,129 +287,76 @@ def test_citation_gate_pass_and_dangling():
             "citations": [{"id": "e1", "url": "u", "quote": "q"}],
         }
     )
-    verdict = _gate(score_artifact(bad, _case(criteria=())), "citation_integrity")
+    verdict = _gate(score_artifact(bad), "citation_integrity")
     assert verdict.verdict == "no"
     pending = _artifact(detail={"status": "running", "report_markdown": "", "citations": []})
-    assert (
-        _gate(score_artifact(pending, _case(criteria=())), "citation_integrity").verdict
-        == "unknown"
-    )
+    assert _gate(score_artifact(pending), "citation_integrity").verdict == "unknown"
 
 
 def test_seq_and_done_gates():
-    results = score_artifact(_artifact(), _case(criteria=()))
+    results = score_artifact(_artifact())
     assert _gate(results, "done_exactly_once").verdict == "yes"
     assert _gate(results, "seq_continuous").verdict == "yes"
     holed = _artifact(
         events=_artifact().events[:2] + [{"event_type": "run_done", "payload": {}, "seq": 9}]
     )
-    assert _gate(score_artifact(holed, _case(criteria=())), "seq_continuous").verdict == "no"
+    assert _gate(score_artifact(holed), "seq_continuous").verdict == "no"
 
 
-def _clarify_events(extra_router_reruns: int = 0):
-    events = [
-        {"event_type": "run_status", "payload": {"status": "queued"}, "seq": 1},
-        {"event_type": "run_status", "payload": {"status": "running"}, "seq": 2},
-        {"event_type": "node_started", "node": "router", "seq": 3},
-        {
-            "event_type": "clarification_requested",
-            "payload": {"question": "q", "options": ["a", "b", "c"]},
-            "seq": 4,
-        },
-        {"event_type": "run_status", "payload": {"status": "awaiting_input"}, "seq": 5},
-        {"event_type": "run_status", "payload": {"status": "queued"}, "seq": 6},
-        {"event_type": "run_status", "payload": {"status": "running"}, "seq": 7},
-        {"event_type": "run_done", "payload": {"status": "completed"}, "seq": 8},
-    ]
-    events += [
-        {"event_type": "node_started", "node": "router", "seq": 9 + i}
-        for i in range(extra_router_reruns)
-    ]
-    return events
-
-
-def test_clarify_flow_checks_resume_path():
-    case = _case(
-        criteria=(
-            Criterion(id="cf", dimension="behavior", text="t", scorer="deterministic:clarify_flow"),
-        )
-    )
-    results = score_artifact(_artifact(events=_clarify_events()), case)
-    cf = next(r for r in results if r.criterion_id == "cf")
-    assert cf.verdict == "yes"
-    assert _gate(results, "seq_continuous").verdict == "yes"
-    rerun = score_artifact(_artifact(events=_clarify_events(1)), case)
-    cf = next(r for r in rerun if r.criterion_id == "cf")
-    # 恢复时重跑 Router 属于行为违规。
-    assert cf.verdict == "no" and "Router" in cf.reason
-
-
-def test_lease_takeover_and_cache_reuse():
-    case = _case(
-        criteria=(
-            Criterion(
-                id="tk", dimension="behavior", text="t", scorer="deterministic:lease_takeover"
-            ),
-            Criterion(id="cr", dimension="behavior", text="t", scorer="deterministic:cache_reuse"),
-        )
-    )
-    takeover = _artifact(
-        run_row={"fence_token": 2},
-        detail={**_artifact().detail, "cache_hit_count": 3, "saved_external_request_count": 5},
-    )
-    results = score_artifact(takeover, case)
-    assert next(r for r in results if r.criterion_id == "tk").verdict == "yes"
-    assert next(r for r in results if r.criterion_id == "cr").verdict == "yes"
-    cold = _artifact(run_row={"fence_token": 1})
-    results = score_artifact(cold, case)
-    assert next(r for r in results if r.criterion_id == "tk").verdict == "unknown"
-    assert next(r for r in results if r.criterion_id == "cr").verdict == "no"
-
-
-class ScriptedInvoker:
-    def __init__(self, answers):
-        self.answers = list(answers)
-        self.calls = []
-
-    async def complete(self, system: str, user: str) -> str:
-        self.calls.append(user)
-        return self.answers.pop(0)
+def test_score_artifact_emits_exactly_three_gates():
+    results = score_artifact(_artifact())
+    assert {r.criterion_id for r in results} == set(GATE_IDS)
 
 
 @pytest.mark.asyncio
-async def test_judge_one_call_per_criterion_with_unknown_exit():
+async def test_judge_case_race_scores_both_articles_and_degrades_on_garbage():
+    class RaceInvoker:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, system: str, user: str, max_tokens: int) -> str:
+            self.calls.append(user)
+            if len(self.calls) == 1:
+                return '{"analysis": "甲覆盖更广", "article_1_score": 7, "article_2_score": 9}'
+            return "输出坏了"
+
     case = _case(
-        track="external",
         criteria=(
             Criterion(id="a", dimension="insight", text="甲", weight=0.5),
             Criterion(id="b", dimension="insight", text="乙", weight=0.5),
         ),
-        dimension_weights={"insight": 1.0},
     )
-    invoker = ScriptedInvoker(["yes", "抱歉，无法判断"])
-    results = await judge_case(case, report="R", attempt=1, invoker=invoker, reference="REF")
-    assert [r.verdict for r in results] == ["yes", "unknown"]
-    assert len(invoker.calls) == 2
-    assert "REF" in invoker.calls[0] and "【文章一】" in invoker.calls[0]
-    assert "文章一没写到”一律判 no" in SYSTEM_PROMPT
+    invoker = RaceInvoker()
+    rows = await judge_case_race(case, report="R", attempt=1, invoker=invoker, reference="REF")
+    assert (rows[0].target_score, rows[0].reference_score) == (7.0, 9.0)
+    assert (rows[1].target_score, rows[1].reference_score) == (None, None)
+    assert "解析失败" in rows[1].analysis or "judge 调用或解析失败" in rows[1].analysis
+    assert "REF" in invoker.calls[0] and "文章二" in invoker.calls[0]
 
 
 @pytest.mark.asyncio
-async def test_judge_transport_failure_degrades_to_unknown():
-    class Broken:
-        async def complete(self, system, user):
-            raise RuntimeError("429")
+async def test_judge_case_race_swap_maps_scores_back_to_target_and_reference():
+    class FixedInvoker:
+        def __init__(self):
+            self.calls = []
 
-    case = _case(criteria=(Criterion(id="a", dimension="insight", text="甲"),))
-    results = await judge_case(case, report="R", attempt=1, invoker=Broken())
-    assert results[0].verdict == "unknown"
-    assert "429" in results[0].reason
+        async def complete(self, system: str, user: str, max_tokens: int) -> str:
+            self.calls.append(user)
+            # 文章一恒得 9 分、文章二恒得 3 分，不辨内容——专门验证映射方向。
+            return '{"analysis": "x", "article_1_score": 9, "article_2_score": 3}'
 
-
-def test_parse_verdict_prefix_ordering():
-    assert parse_verdict("unknown") == "unknown"
-    assert parse_verdict("NO.") == "no"
-    assert parse_verdict("yes, clearly") == "yes"
+    case = _case(criteria=(Criterion(id="a", dimension="insight", text="甲", weight=1.0),))
+    invoker = FixedInvoker()
+    normal = await judge_case_race(case, report="R", attempt=1, invoker=invoker, reference="REF")
+    assert (normal[0].target_score, normal[0].reference_score) == (9.0, 3.0)
+    swapped = await judge_case_race(
+        case, report="R", attempt=1, invoker=invoker, reference="REF", swap_positions=True
+    )
+    assert (swapped[0].target_score, swapped[0].reference_score) == (3.0, 9.0)
+    for prompt in invoker.calls:
+        assert "专家参考文章" not in prompt and "待评估报告" not in prompt
+        assert "**文章一**" in prompt and "**文章二**" in prompt
+    assert "REF" in invoker.calls[-1].split("**文章一**")[1].split("**文章二**")[0]
 
 
 def test_parse_race_scores_strict_lenient_and_clamp():
@@ -448,66 +375,8 @@ def test_parse_race_scores_strict_lenient_and_clamp():
         parse_race_scores("两篇都不错，无法给分")
 
 
-@pytest.mark.asyncio
-async def test_judge_case_race_scores_both_articles_and_degrades_on_garbage():
-    class RaceInvoker:
-        def __init__(self):
-            self.calls = []
-
-        async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str:
-            self.calls.append(user)
-            if len(self.calls) == 1:
-                return '{"analysis": "甲覆盖更广", "article_1_score": 7, "article_2_score": 9}'
-            return "输出坏了"
-
-    case = _case(
-        track="external",
-        criteria=(
-            Criterion(id="a", dimension="insight", text="甲", weight=0.5),
-            Criterion(id="b", dimension="insight", text="乙", weight=0.5),
-        ),
-        dimension_weights={"insight": 1.0},
-    )
-    invoker = RaceInvoker()
-    rows = await judge_case_race(case, report="R", attempt=1, invoker=invoker, reference="REF")
-    assert (rows[0].target_score, rows[0].reference_score) == (7.0, 9.0)
-    assert (rows[1].target_score, rows[1].reference_score) == (None, None)
-    assert "解析失败" in rows[1].analysis or "judge 调用或解析失败" in rows[1].analysis
-    assert "REF" in invoker.calls[0] and "文章二" in invoker.calls[0]
-
-
-@pytest.mark.asyncio
-async def test_judge_case_race_swap_maps_scores_back_to_target_and_reference():
-    class FixedInvoker:
-        def __init__(self):
-            self.calls = []
-
-        async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str:
-            self.calls.append(user)
-            # 文章一恒得 9 分、文章二恒得 3 分，不辨内容——专门验证映射方向。
-            return '{"analysis": "x", "article_1_score": 9, "article_2_score": 3}'
-
-    case = _case(
-        track="external",
-        criteria=(Criterion(id="a", dimension="insight", text="甲", weight=1.0),),
-        dimension_weights={"insight": 1.0},
-    )
-    invoker = FixedInvoker()
-    normal = await judge_case_race(case, report="R", attempt=1, invoker=invoker, reference="REF")
-    assert (normal[0].target_score, normal[0].reference_score) == (9.0, 3.0)
-    swapped = await judge_case_race(
-        case, report="R", attempt=1, invoker=invoker, reference="REF", swap_positions=True
-    )
-    assert (swapped[0].target_score, swapped[0].reference_score) == (3.0, 9.0)
-    for prompt in invoker.calls:
-        assert "专家参考文章" not in prompt and "待评估报告" not in prompt
-        assert "**文章一**" in prompt and "**文章二**" in prompt
-    assert "REF" in invoker.calls[-1].split("**文章一**")[1].split("**文章二**")[0]
-
-
 def test_score_case_race_handles_round_without_rows() -> None:
     case = _case(
-        track="external",
         dimension_weights={"comprehensiveness": 1.0},
         criteria=(Criterion(id="c1", dimension="comprehensiveness", text="丙", weight=1.0),),
     )
@@ -518,7 +387,6 @@ def test_score_case_race_handles_round_without_rows() -> None:
 
 def test_score_case_race_official_weighting_and_ratio():
     case = _case(
-        track="external",
         dimension_weights={"comprehensiveness": 0.6, "readability": 0.4},
         criteria=(
             Criterion(id="c1", dimension="comprehensiveness", text="丙", weight=2.0),
@@ -543,121 +411,45 @@ def test_score_case_race_official_weighting_and_ratio():
     assert scored.missing_count == 1
 
 
-def test_external_weighted_score_and_threshold():
-    case = _case(
-        track="external",
-        dimension_weights={"comprehensiveness": 1.0},
-        criteria=(
-            Criterion(id="a", dimension="comprehensiveness", text="甲", weight=0.5),
-            Criterion(id="b", dimension="comprehensiveness", text="乙", weight=0.5),
-        ),
-    )
-    results = [
-        CriterionResult("x-1", 1, "gate:citation_integrity", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "gate:done_exactly_once", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "gate:seq_continuous", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "a", "comprehensiveness", "yes", "judge"),
-        CriterionResult("x-1", 1, "b", "comprehensiveness", "no", "judge"),
-    ]
-    score = aggregate.score_case(case, 1, results)
-    assert score.quality_score == 50.0 and not score.passed
-    assert score.track == "external"
-    # unknown 不是有效交付:保守按 0 分计,同时另报 unknown_rate。
-    unknown_b = [
-        dataclasses.replace(r, verdict="unknown") if r.criterion_id == "b" else r for r in results
-    ]
-    score = aggregate.score_case(case, 1, unknown_b)
-    assert score.quality_score == 50.0 and not score.passed
+def test_score_case_requires_both_orders_and_passing_gates():
+    forward = [RaceCriterionScore("x-1", 1, "a", "insight", 8.0, 4.0)]
+    swapped = [RaceCriterionScore("x-1", 1, "a", "insight", 7.0, 5.0)]
+    score = aggregate.score_case(_case(), 1, _gates(), forward, swapped)
+    assert score.gates_green and score.passed
+    assert score.race_forward.overall == round(8 / 12, 4)
+    assert score.race_swapped.overall == round(7 / 12, 4)
+    assert score.race_mean == round((8 / 12 + 7 / 12) / 2, 4)
 
+    # 单序缺失时双序均值不成立,该轮不判过。
+    single = aggregate.score_case(_case(), 1, _gates(), forward, [])
+    assert single.race_mean is None and not single.passed
 
-def test_behavior_judge_requires_an_explicit_yes():
-    """unknown 进健康度报表供人工复核，但不能把产品 case 判通过。"""
-    case = _case(criteria=(Criterion(id="j", dimension="grounding", text="未编造", weight=1),))
-    gates = [
-        CriterionResult("x-1", 1, "gate:citation_integrity", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "gate:done_exactly_once", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "gate:seq_continuous", "grounding", "yes", "deterministic"),
-    ]
-    undecidable = [*gates, CriterionResult("x-1", 1, "j", "grounding", "unknown", "judge")]
-    score = aggregate.score_case(case, 1, undecidable)
-    assert not score.passed and score.unknown_count == 1 and score.judge_failures == ["j"]
-    violated = [*gates, CriterionResult("x-1", 1, "j", "grounding", "no", "judge")]
-    score = aggregate.score_case(case, 1, violated)
-    assert not score.passed and score.judge_failures == ["j"]
+    # 均值过线但某个门未通过,仍不过。
+    failed_gate = _gates(verdicts={"gate:citation_integrity": "no"})
+    assert not aggregate.score_case(_case(), 1, failed_gate, forward, swapped).passed
 
-
-def test_track_summary_never_mixes_behavior_judge_score_into_report_quality():
-    external = aggregate.CaseScore("external", 1, "external", True, quality_score=20.0)
-    behavior = aggregate.CaseScore("behavior", 1, "behavior", True, quality_score=100.0)
-    metrics = {
-        "external": {"pass_any": False, "pass_all": False},
-        "behavior": {"pass_any": True, "pass_all": True},
-    }
-
-    summary = aggregate.track_summary([external, behavior], metrics)
-
-    assert summary["report_quality"]["mean"] == 20.0
-    assert summary["system_reliability"]["pass_all"] == 1
-    per_case = aggregate.k_metrics([external, behavior])
-    assert per_case["behavior"]["mean_quality"] is None
-
-
-def test_clarify_flow_is_vacuously_true_when_no_clarification():
-    """未触发澄清时前件为假,条件断言空真记 yes;不因模型这次没问而假失败。"""
-    from evals.deterministic import CHECKS
-
-    art = _artifact()
-    result = CHECKS["clarify_flow"](art, Criterion(id="cf", dimension="behavior", text="t"))
-    assert result.verdict == "yes" and "空真" in result.reason
+    # 双序均值 ≤ 0.5 即未超专家参考,不过。
+    low_forward = [RaceCriterionScore("x-1", 1, "a", "insight", 4.0, 8.0)]
+    low_swapped = [RaceCriterionScore("x-1", 1, "a", "insight", 3.0, 9.0)]
+    assert not aggregate.score_case(_case(), 1, _gates(), low_forward, low_swapped).passed
 
 
 def test_k_metrics_pass_any_vs_all():
-    case = _case()
-    rows = [
-        CriterionResult("x-1", 1, "gate:citation_integrity", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "gate:done_exactly_once", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 1, "gate:seq_continuous", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 2, "gate:citation_integrity", "grounding", "no", "deterministic"),
-        CriterionResult("x-1", 2, "gate:done_exactly_once", "grounding", "yes", "deterministic"),
-        CriterionResult("x-1", 2, "gate:seq_continuous", "grounding", "yes", "deterministic"),
+    rows = [*_gates(1), *_gates(2, {"gate:citation_integrity": "no"})]
+    forward = [
+        RaceCriterionScore("x-1", 1, "a", "insight", 8.0, 4.0),
+        RaceCriterionScore("x-1", 2, "a", "insight", 8.0, 4.0),
     ]
-    scores = [aggregate.score_case(case, attempt, rows) for attempt in (1, 2)]
+    swapped = [
+        RaceCriterionScore("x-1", 1, "a", "insight", 7.0, 5.0),
+        RaceCriterionScore("x-1", 2, "a", "insight", 7.0, 5.0),
+    ]
+    scores = [aggregate.score_case(_case(), attempt, rows, forward, swapped) for attempt in (1, 2)]
     metrics = aggregate.k_metrics(scores)
     assert metrics["x-1"]["pass_any"] is True
     assert metrics["x-1"]["pass_all"] is False
-
-
-def test_annotation_roundtrip_and_agreement():
-    results = [
-        CriterionResult("x-1", 1, "j", "grounding", "yes", "judge", "r"),
-        CriterionResult("x-1", 1, "k", "grounding", "unknown", "judge", "u"),
-    ]
-    case = _case(criteria=(Criterion(id="j", dimension="grounding", text="乙"),))
-    csv_text = aggregate.export_annotation_csv(results, {"x-1": case})
-    rows = list(csv.DictReader(io.StringIO(csv_text)))
-    assert len(rows) == 2 and rows[0]["criterion_text"] == "乙"
-    # 人工填写 j 与 k 都记 yes:j 与 judge 一致;k 因 judge 为 unknown 不进一致率,计入 unknown 率。
-    for row in rows:
-        row["human_verdict"] = "yes"
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=aggregate.ANNOTATION_COLUMNS)
-    writer.writeheader()
-    writer.writerows(rows)
-    imported = aggregate.import_annotation_csv(buffer.getvalue())
-    assert [r["agree"] for r in imported] == ["1", ""]
-    report = aggregate.agreement_report(imported)
-    assert report["labeled"] == 2 and report["both_binary"] == 1
-    assert report["raw_agreement"] == 1.0
-    assert report["judge_unknown_rate"] == 0.5
-
-
-def test_cohen_kappa_basic():
-    # 完全一致 kappa 为 1.0;完全相反时 kappa 为 -1.0,断言取绝对值。
-    assert aggregate._cohen_kappa(["yes", "no", "yes", "no"], ["yes", "no", "yes", "no"]) == 1.0
-    assert (
-        abs(aggregate._cohen_kappa(["yes", "no", "yes", "no"], ["no", "yes", "no", "yes"])) - 1.0
-        < 1e-9
-    )
+    assert metrics["x-1"]["mean_race"] == round((8 / 12 + 7 / 12) / 2, 4)
+    assert metrics["x-1"]["missing_criterion_count"] == 0
 
 
 # judge 身份约束:引擎模型给自己产出打分有偏好,自评需显式开启,异构模型不受限。
@@ -697,6 +489,55 @@ def test_judge_heterogeneous_model_needs_no_optin(monkeypatch):
     assert judge.identity == {"model": "another-family-70b", "self_judging": False}
 
 
+@pytest.mark.asyncio
+async def test_cmd_judge_writes_both_orders(fake_drb, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from evals import cli as evals_cli
+
+    results_dir = tmp_path / "results"
+    (results_dir / "drb-zh-001").mkdir(parents=True)
+    (results_dir / "drb-zh-001" / "round1.json").write_text(
+        json.dumps(
+            [
+                {
+                    "attempt": 1,
+                    "run_id": "r1",
+                    "detail": {"status": "completed", "report_markdown": "正文"},
+                    "events": [],
+                }
+            ]
+        ),
+        "utf-8",
+    )
+
+    class DualInvoker:
+        def __init__(self):
+            self.calls: list[str] = []
+            self.self_judging = False
+
+        @property
+        def identity(self):
+            return {"model": "fake-judge", "self_judging": False}
+
+        async def complete(self, system: str, user: str, max_tokens: int) -> str:
+            self.calls.append(user)
+            return '{"analysis": "x", "article_1_score": 9, "article_2_score": 3}'
+
+    fake = DualInvoker()
+    monkeypatch.setattr(evals_cli, "OpenAICompatJudge", lambda: fake)
+    monkeypatch.setattr(evals_cli, "RESULTS_DIR", results_dir)
+    args = SimpleNamespace(case=None, drb_root=str(fake_drb), attempt=None)
+    await evals_cli.cmd_judge(args)
+
+    assert len(fake.calls) == 4  # fake_drb 每题 2 条 criterion × 双序
+    forward = load_race_results(results_dir / "judge_race.jsonl")
+    swapped = load_race_results(results_dir / "judge_race_swapped.jsonl")
+    assert len(forward) == 2 and len(swapped) == 2
+    assert all(row.target_score == 9.0 for row in forward)
+    assert all(row.target_score == 3.0 for row in swapped)
+
+
 def test_round_persist_resume_roundtrip_is_atomic(tmp_path, monkeypatch):
     import asyncio
 
@@ -715,6 +556,39 @@ def test_round_persist_resume_roundtrip_is_atomic(tmp_path, monkeypatch):
     assert harness._load_round(case, 2) is None
     (tmp_path / "rt-1" / "round1.json").write_text("{broken", encoding="utf-8")
     assert harness._load_round(case, 1) is None, "半截 JSON 按缺跑处理"
+    asyncio.run(harness.close())
+
+
+def test_round_load_ignores_retired_payload_keys(tmp_path, monkeypatch):
+    """历史轮次产物带 run_row/control/evidences 键,--resume 读回时按白名单忽略。"""
+    import asyncio
+
+    from evals.runner import RunHarness
+
+    monkeypatch.setenv("EVAL_PASSWORD", "pw")
+    monkeypatch.setenv("SERVICE_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    harness = RunHarness(out_dir=tmp_path)
+    case = _case(case_id="old-1")
+    (tmp_path / "old-1").mkdir()
+    (tmp_path / "old-1" / "round1.json").write_text(
+        json.dumps(
+            [
+                {
+                    "run_id": "r",
+                    "attempt": 1,
+                    "detail": {"status": "completed"},
+                    "run_row": {"fence_token": 2},
+                    "control": {"auto_resumed": True},
+                    "events": [],
+                    "evidences": [{"evidence_id": "e1"}],
+                    "metrics": {"status": "completed"},
+                }
+            ]
+        ),
+        "utf-8",
+    )
+    loaded = harness._load_round(case, 1)
+    assert loaded is not None and loaded[0].run_id == "r"
     asyncio.run(harness.close())
 
 

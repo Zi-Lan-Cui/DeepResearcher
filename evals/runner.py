@@ -1,14 +1,10 @@
-"""Runner：用户旅程走 HTTP API，行为判定的事实来源走数据库。
+"""Runner：用户旅程走 HTTP API，门禁判定所需的事件原始记录走数据库直读。
 
 分工刻意为之：
-- 提交、澄清回答、取消、详情全部经 API:评测必须跑在与真实用户相同的路径上,
+- 提交、澄清代答、取消、详情全部经 API:评测必须跑在与真实用户相同的路径上,
   绕过 API 就测不到用户可见行为;
-- run_events 原始记录、runs.fence_token 等走 DB 直读:SSE 只有投影帧,行为断言需
-  要原始事件序列;harness 用操作者视图,产品 API 不为评测需求扩展。
-
-故障注入中 kill/stop 接管类需要 harness 掌控 worker 进程生命周期,按
-tests/verify_service_processes.py 的模式在第二阶段接线;本文件已覆盖
-fault=none/rerun_cache 与 duplicate_answer。
+- run_events 走 DB 直读:SSE 只有投影帧,门禁(seq 连续、run_done 帧数)需要
+  原始事件序列;harness 用操作者视图,产品 API 不为评测需求扩展。
 """
 
 from __future__ import annotations
@@ -20,18 +16,15 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
 from sqlalchemy import select
 
-from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.service.persistence.database import make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunEvent
-from deepresearcher.service.settings import checkpoint_dsn
+from deepresearcher.service.persistence.models import RunEvent
 from evals.deterministic import Artifact, process_metrics
 from evals.schemas import EvalCase
 
 TERMINAL = ("completed", "failed", "cancelled")
-# external 轨题被 Clarifier 偶发追问时的默认回复:让系统自行界定范围、直接研究。
+# DRB 题属直接作答式,被 Clarifier 偶发追问时的默认代答:让系统自行界定范围、直接研究。
 DEFAULT_CLARIFY_ANSWER = "请以我的原问题为准，按你认为最合理的范围直接开展研究，不必再追问。"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
@@ -59,52 +52,16 @@ class RunHarness:
             raise RuntimeError("EVAL_PASSWORD 未设置（评测账号密码）。")
         dsn = database_url or os.environ.get("SERVICE_DATABASE_URL", "")
         if not dsn:
-            raise RuntimeError("SERVICE_DATABASE_URL 未设置：行为断言需要 DB 特权读。")
+            raise RuntimeError("SERVICE_DATABASE_URL 未设置：门禁判定需要 DB 特权读。")
         self._session_factory = make_session_factory(make_engine(dsn))
-        self._checkpoint_dsn = checkpoint_dsn(dsn)
-        self._checkpoint_cm: Any = None
-        self._checkpointer: Any = None
-        self._checkpoint_lock = asyncio.Lock()
         self.out_dir = out_dir
         self.timeout_seconds = timeout_seconds
         self.queue_wait_seconds = queue_wait_seconds
         self._token = ""
 
     async def close(self) -> None:
-        if self._checkpoint_cm is not None:
-            await self._checkpoint_cm.__aexit__(None, None, None)
         engine = self._session_factory.kw["bind"]
         await engine.dispose()
-
-    async def _checkpoint_evidences(self, run_id: str) -> list[dict[str, Any]]:
-        """直读持久 checkpoint 中的 Evidence；仅 eval harness 使用。"""
-        if self._checkpoint_dsn is None:
-            return []
-        if self._checkpointer is None:
-            # 并发 run_case 共享本 harness:双检加锁,避免重复建连后只关得掉一个。
-            async with self._checkpoint_lock:
-                if self._checkpointer is None:
-                    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-                    self._checkpoint_cm = AsyncPostgresSaver.from_conn_string(
-                        self._checkpoint_dsn, serde=build_checkpointer_serde()
-                    )
-                    self._checkpointer = await self._checkpoint_cm.__aenter__()
-        tuple_ = await self._checkpointer.aget_tuple(
-            {"configurable": {"thread_id": run_id, "checkpoint_ns": ""}}
-        )
-        if tuple_ is None:
-            return []
-        values = tuple_.checkpoint.get("channel_values", {})
-        raw = values.get("evidences", []) if isinstance(values, dict) else []
-        items = raw if isinstance(raw, list) else []
-        evidences: list[dict[str, Any]] = []
-        for item in items:
-            if isinstance(item, BaseModel):
-                evidences.append(item.model_dump(mode="json"))
-            elif isinstance(item, dict):
-                evidences.append(dict(item))
-        return evidences
 
     async def _auth(self, client: httpx.AsyncClient) -> dict[str, str]:
         if not self._token:
@@ -151,74 +108,48 @@ class RunHarness:
                     raise TimeoutError(f"case 执行超时未收敛: {run_id} status={status}")
             await asyncio.sleep(POLL_SECONDS)
 
-    async def _drive_once(self, case: EvalCase, client: httpx.AsyncClient) -> Artifact:
+    async def _drive_once(self, case: EvalCase, attempt: int, client: httpx.AsyncClient) -> Artifact:
         headers = await self._auth(client)
         create = await client.post(
             f"{self.base_url}/api/runs", json={"query": case.prompt}, headers=headers
         )
         create.raise_for_status()
         run_id = create.json()["run_id"]
-        control: dict[str, Any] = {}
         detail = await self._await_state(client, headers, run_id)
 
+        # Clarifier 偶发追问时代答一次继续研究;再次追问说明无法收敛,取消本 run
+        # 并抛出,由 cmd_run 记为该题失败。
+        auto_resumed = False
         while detail.get("status") == "awaiting_input":
-            answer = case.clarify_answer
-            if not answer:
-                # DRB 题属直接作答式,没配澄清回答;Clarifier 偶发追问时代答一
-                # 次继续研究,再次追问说明无法收敛,取消本 run 并抛出,由 cmd_run
-                # 记为该题失败。
-                if control.get("auto_resumed"):
-                    await client.post(f"{self.base_url}/api/runs/{run_id}/cancel", headers=headers)
-                    raise RuntimeError(f"{case.case_id} 连续多轮澄清，评测放弃该题")
-                answer = DEFAULT_CLARIFY_ANSWER
-                control["auto_resumed"] = True
+            if auto_resumed:
+                await client.post(f"{self.base_url}/api/runs/{run_id}/cancel", headers=headers)
+                raise RuntimeError(f"{case.case_id} 连续多轮澄清，评测放弃该题")
+            auto_resumed = True
             resume = await client.post(
                 f"{self.base_url}/api/runs/{run_id}/resume",
-                json={"answer": answer},
+                json={"answer": DEFAULT_CLARIFY_ANSWER},
                 headers=headers,
             )
-            control["first_resume_status"] = resume.status_code
-            if case.duplicate_answer:
-                again = await client.post(
-                    f"{self.base_url}/api/runs/{run_id}/resume",
-                    json={"answer": case.clarify_answer},
-                    headers=headers,
-                )
-                control["second_resume_status"] = again.status_code  # 期待 409
+            resume.raise_for_status()
             detail = await self._await_state(client, headers, run_id)
 
-        events, run_row = await self._read_db(run_id)
-        evidences = await self._checkpoint_evidences(run_id)
+        events = await self._read_db(run_id)
         return Artifact(
             case_id=case.case_id,
-            attempt=1,
+            attempt=attempt,
             run_id=run_id,
             detail=detail,
             events=events,
-            run_row=run_row,
-            control=control,
-            evidences=evidences,
         )
 
-    async def _read_db(self, run_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    async def _read_db(self, run_id: str) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
             rows = (
                 await session.scalars(
                     select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
                 )
             ).all()
-            run = await session.get(Run, run_id)
-            row = (
-                {}
-                if run is None
-                else {
-                    "fence_token": run.fence_token,
-                    "status": run.status,
-                    "lease_owner": run.lease_owner,
-                    "terminal_reason": run.terminal_reason,
-                }
-            )
-        return [r.record for r in rows], row
+        return [r.record for r in rows]
 
     async def warmup_auth(self) -> None:
         """并发执行前预热评测账号 token,避免 gather 下重复注册登录。"""
@@ -236,8 +167,11 @@ class RunHarness:
             return None
         artifacts: list[Artifact] = []
         for row in payload:
-            # metrics 由 process_metrics 现算;case_id 不落 payload,按目录名归位。
-            fields = {key: row[key] for key in row if key != "metrics"}
+            # 只取白名单键:metrics 由 process_metrics 现算,历史产物中的多余键忽略;
+            # case_id 按目录名归位。
+            fields = {
+                key: row[key] for key in ("attempt", "run_id", "detail", "events") if key in row
+            }
             artifacts.append(Artifact(case_id=case.case_id, **fields))
         return artifacts
 
@@ -248,43 +182,30 @@ class RunHarness:
             existing = self._load_round(case, attempt)
             if existing is not None:
                 return existing
-        if case.fault in {"kill", "stop", "stop_during_awaiting"}:
-            raise NotImplementedError(
-                f"{case.case_id} 的故障注入（fault={case.fault}）需要 harness 掌控 worker "
-                "进程，第二阶段按 tests/verify_service_processes.py 模式接线。"
-            )
         async with httpx.AsyncClient(timeout=60.0) as client:
-            artifacts = [await self._drive_once(case, client)]
-            if case.fault == "rerun_cache":
-                # 同题二跑:验证语义缓存命中,重提交不再产生外部调用费用。
-                artifacts.append(await self._drive_once(case, client))
-        for index, artifact in enumerate(artifacts, start=1):
-            artifact.attempt = index + (attempt - 1) * (2 if case.fault == "rerun_cache" else 1)
+            artifacts = [await self._drive_once(case, attempt, client)]
         self._persist(case, attempt, artifacts)
         return artifacts
 
     async def capture(self, case: EvalCase, run_id: str, attempt: int) -> Artifact:
         """把一次已存在或恢复中的 durable run 收成产物,不重跑。
 
-        clarify、故障注入这类跨进程流程常需人工或外部推动,评测可以附着到正
-        在运行的 run:capture 用 API 与 DB 现状补齐 artifact,免去为收集结果
-        重跑一遍的费用。
+        clarify 这类跨进程流程常需人工或外部推动,评测可以附着到正在运行的
+        run:capture 用 API 与 DB 现状补齐 artifact,免去为收集结果重跑一遍的
+        费用。
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             headers = await self._auth(client)
             detail = (
                 await client.get(f"{self.base_url}/api/runs/{run_id}", headers=headers)
             ).json()
-        events, run_row = await self._read_db(run_id)
-        evidences = await self._checkpoint_evidences(run_id)
+        events = await self._read_db(run_id)
         artifact = Artifact(
             case_id=case.case_id,
             attempt=attempt,
             run_id=run_id,
             detail=detail,
             events=events,
-            run_row=run_row,
-            evidences=evidences,
         )
         self._persist(case, attempt, [artifact])
         return artifact
@@ -300,10 +221,7 @@ class RunHarness:
                 "run_id": a.run_id,
                 "attempt": a.attempt,
                 "detail": a.detail,
-                "run_row": a.run_row,
-                "control": a.control,
                 "events": a.events,
-                "evidences": a.evidences,
                 "metrics": process_metrics(a),
             }
             for a in artifacts

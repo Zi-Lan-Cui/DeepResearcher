@@ -1,15 +1,12 @@
-"""评测数据契约：两轨的 case 与 criterion 级结果统一为同一形态。
+"""评测数据契约：DeepResearch Bench 的 case 与逐条判定记录。
 
-external 轨用 DeepResearch Bench 的专家二元 criterion 与四维官方权重,behavior
-轨用自研行为断言,都归一到 ``EvalCase``;确定性 scorer、LLM judge、人工标注三
-方判定全部写入同一批 ``CriterionResult`` 记录,人机一致率、unknown 率、pass^k
-等都在这批记录上计算,不另设第二套数据。
+题集全部来自 DRB 中文题池,criterion 与维度权重取官方 rubric;判分走 RACE 口径
+(被测与专家参考文章各打 0-10 分,见 judge/aggregate)。确定性门对每份产物自动
+附加,判定写入 ``CriterionResult``,与 pass^k 同批记录计算,不另设第二套数据。
 
 设计约束:
-- criterion 一律二元可判 yes/no,并保留 unknown 出口;某条 criterion 的
-  unknown 率异常,回查 rubric 定义是否歧义;
 - 打分单位是 criterion,judge 每条独立调用,不给整篇报告打印象分;
-- 工程行为断言写 ``deterministic:<check>`` 由代码判定,不经过 LLM。
+- 门行不写进题集,由 ``deterministic.score_artifact`` 注入,gate 前缀见该模块。
 """
 
 from __future__ import annotations
@@ -17,20 +14,17 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-# 前四维沿用 DRB 官方维度名;behavior/grounding 是评测自增的维度。
+# 维度名沿用 DRB 官方四维;门行自带 grounding 维,不在题集 rubric 范围内。
 DIMENSIONS = (
     "comprehensiveness",
     "insight",
     "instruction_following",
     "readability",
-    "behavior",
-    "grounding",
 )
 
 Verdict = Literal["yes", "no", "unknown"]
-JUDGE_SCORER = "judge"
 
 
 @dataclass(frozen=True)
@@ -40,35 +34,17 @@ class Criterion:
     text: str
     explanation: str = ""
     weight: float = 1.0
-    # judge 或 deterministic:<check>,check 注册表见 deterministic.py
-    scorer: str = JUDGE_SCORER
 
 
 @dataclass(frozen=True)
 class EvalCase:
     case_id: str
-    track: Literal["external", "behavior"]
     prompt: str
     criteria: tuple[Criterion, ...]
     language: str = "zh"
     topic: str = ""
-    group: str = ""  # behavior 轨子类:B 澄清 / C 口径冲突 / D 保守交付 / F 恢复缓存
     repeat: int = 1
-    require_clarify: bool = False
-    clarify_answer: str = ""
-    duplicate_answer: bool = False  # 回答后再提交一次,期待 409,用于校验 payload 单次消费
-    fault: str = "none"  # none|rerun_cache|kill|stop,后两者需 harness 掌控 worker 进程
-    phase: int = 1  # 2 表示骨架已备、故障编排未接线的题,CLI 默认跳过并明示
-    dimension_weights: dict[str, float] = field(default_factory=dict)  # external 轨官方权重
-
-    def judge_criteria(self) -> list[Criterion]:
-        return [c for c in self.criteria if c.scorer == JUDGE_SCORER]
-
-    def deterministic_criteria(self) -> list[Criterion]:
-        return [c for c in self.criteria if c.scorer.startswith("deterministic:")]
-
-    def check_of(self, criterion: Criterion) -> str:
-        return criterion.scorer.split(":", 1)[1]
+    dimension_weights: dict[str, float] = field(default_factory=dict)  # DRB 官方维度权重
 
 
 @dataclass(frozen=True)
@@ -78,27 +54,8 @@ class CriterionResult:
     criterion_id: str
     dimension: str
     verdict: Verdict
-    source: Literal["deterministic", "judge", "human"]
+    source: Literal["deterministic"]
     reason: str = ""
-
-
-def cases_to_jsonl(cases: list[EvalCase]) -> str:
-    lines = []
-    for case in cases:
-        row = asdict(case)
-        row["criteria"] = [asdict(c) for c in case.criteria]
-        lines.append(json.dumps(row, ensure_ascii=False))
-    return "\n".join(lines) + "\n"
-
-
-def case_from_row(row: dict[str, Any]) -> EvalCase:
-    criteria = tuple(Criterion(**c) for c in row.get("criteria", []))
-    return EvalCase(**{**row, "criteria": criteria})
-
-
-def load_cases(path: Path) -> list[EvalCase]:
-    rows = [json.loads(line) for line in path.read_text("utf-8").splitlines() if line.strip()]
-    return [case_from_row(row) for row in rows]
 
 
 def results_to_jsonl(results: list[CriterionResult]) -> str:
@@ -187,12 +144,8 @@ def validate_case(case: EvalCase) -> list[str]:
         seen.add(c.id)
         if c.dimension not in DIMENSIONS:
             problems.append(f"未知维度: {c.dimension}")
-        if c.scorer != JUDGE_SCORER and not c.scorer.startswith("deterministic:"):
-            problems.append(f"未知 scorer: {c.scorer}")
         if c.weight <= 0:
             problems.append(f"权重非正: {c.id}")
-    if case.require_clarify and not case.clarify_answer:
-        problems.append("require_clarify 但没有澄清回答，runner 将永远等不到终态")
     if case.dimension_weights:
         total = sum(case.dimension_weights.values())
         if abs(total - 1.0) > 0.02:
