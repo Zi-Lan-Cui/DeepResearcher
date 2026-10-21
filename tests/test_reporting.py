@@ -57,7 +57,7 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
 
 
 def test_render_final_report_collapses_multiline_title_and_quote():
-    """标题/引文内嵌换行必须折成单行：来源表按行消费，前端逐行解析，
+    """标题/引文内嵌换行必须合并为单行：来源表按行消费，前端逐行解析，
     换行会把一条记录劈断导致整条失配（实场 Adams Historical Returns 无来源事故）。"""
     report = render_final_report(
         body="正文。[[cite:e1]]",
@@ -131,8 +131,8 @@ def test_render_final_report_strip_stops_at_next_same_level_heading():
         ],
     )
     assert "这里还要引用" in report  # 剥段范围越界会吃掉后文
-    assert report.count("## 证据来源") == 1  # 正文的 ## 参考来源 被剥,只剩管道追加的表
-    # e1 在存活正文中再次出现仍入表,e2 首现更早故 e1 编号为 2
+    assert report.count("## 证据来源") == 1  # 正文的 ## 参考来源 被剥，只剩管道追加的表
+    # e1 在存活正文中再次出现仍入表，e2 首现更早故 e1 编号为 2
     assert "「第一条。」" in report
     assert report.index("前言") < report.index("这里还要引用")
 
@@ -169,7 +169,7 @@ def test_render_final_report_ignores_cite_markers_inside_code():
 
 
 def test_render_final_report_node_routes_failure_paths():
-    # 写作失败 → 兜底渲染
+    # 写作失败 → 降级渲染
     result = asyncio.run(
         render_final_report_node(
             {
@@ -181,7 +181,7 @@ def test_render_final_report_node_routes_failure_paths():
     assert result["answer_mode"] == "research_incomplete"
     assert "报告写作未能完成" in result["report"]
 
-    # 审阅拒绝且恢复耗尽 → 兜底渲染
+    # 审阅拒绝且恢复耗尽 → 降级渲染
     result = asyncio.run(
         render_final_report_node(
             {
@@ -221,7 +221,7 @@ def test_render_final_report_node_routes_failure_paths():
     assert "## 证据来源" in result["report"]
     assert "审阅修订已达上限" in result["report"]
 
-    # 正常路径:草稿 + citations → 渲染
+    # 正常路径：草稿 + citations → 渲染
     result = asyncio.run(
         render_final_report_node(
             {
@@ -353,7 +353,7 @@ def test_final_report_is_article_shaped_with_model_title():
     )
     assert report.startswith("# A 的真相\n")
     assert "## 研究问题" not in report  # 不再输出系统结构小节
-    assert "研究问题" not in report  # 问题与统计由页面展示,不写入报告正文
+    assert "研究问题" not in report  # 问题与统计由页面展示，不写入报告正文
     assert "## 证据来源" in report
 
 
@@ -383,9 +383,9 @@ def test_incomplete_report_collapses_zero_evidence_to_diagnostic_card():
     report = render_incomplete_report(state, ["搜索服务额度耗尽"])
 
     assert "搜索服务额度耗尽" in report
-    assert "系统性故障" in report  # provider_exhausted 命中,给系统性说明
+    assert "系统性故障" in report  # provider_exhausted 命中，给系统性说明
     assert "恢复方式" in report
-    assert "方向结果" not in report  # 塌缩,不再逐条罗列
+    assert "方向结果" not in report  # 塌缩，不再逐条罗列
     assert "未闭合缺口" not in report
 
 
@@ -412,6 +412,6 @@ def test_partial_report_dedups_and_caps_gap_list():
     report = render_incomplete_report(state, ["预算耗尽"])
 
     assert "方向结果" in report
-    assert "…" in report  # 超长课题被截断,不再逐字回声
+    assert "…" in report  # 超长课题被截断，不再逐字回声
     assert report.count("需要 实证 来源") == 1  # 大小写/空白归一后去重
     assert "未闭合缺口" in report

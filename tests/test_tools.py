@@ -192,7 +192,7 @@ def test_search_parses_tavily_response_without_network():
 def test_tavily_null_raw_content_still_validates_as_result():
     """回归守卫:Tavily 对无法抽取正文的页返回 JSON null,键本身存在。
 
-    .get(k,"") 只在缺键时兜底,null 会漏成 None,令 SearchToolResult 的 Pydantic
+    .get(k,"") 只在缺键时回退，null 会漏成 None，令 SearchToolResult 的 Pydantic
     校验整批失败、researcher 反复重试空转。null 须归一为 "" 并能过 model_validate。"""
     from deepresearcher.tools.web.search.models import SearchToolResult
 
@@ -385,7 +385,7 @@ def test_aliyun_account_level_sdk_error_trips_provider_exhausted():
         asyncio.run(call_with("InvalidAccessKeyId"))
     assert caught.value.user_code == "invalid_key"
 
-    # 鉴权以外的错误(如瞬态 5xx)不映射成账户级:误熔断代价高于多撞一次。
+    # 鉴权以外的错误(如瞬态 5xx)不映射成账户级：误熔断代价高于多撞一次。
     with pytest.raises(ToolRequestError) as transient:
         asyncio.run(call_with("ServiceUnavailable"))
     assert transient.value.retryable is True
@@ -475,7 +475,7 @@ def test_fetch_service_policy_rejection_short_circuits_provider_chain():
     managed = SucceedingProvider()
     with pytest.raises(UnsafeUrlError, match="不能访问本机"):
         asyncio.run(FetchService([guarded, managed]).afetch("http://169.254.169.254/meta"))
-    # 策略拒绝不触发 provider 回退:下一家是不经公网守卫的服务端代取,不得被触达。
+    # 策略拒绝不触发 provider 回退：下一家是不经公网守卫的服务端代取，不得被触达。
     assert guarded.calls == 1
     assert managed.calls == 0
 
@@ -882,7 +882,7 @@ class _ConcurrencyTrackingProvider:
 
 
 def test_search_client_caps_provider_concurrency(monkeypatch):
-    """跨 worker 并发查询被收敛到同时最多 max_concurrent_requests 路。"""
+    """跨 worker 并发查询被限制到同时最多 max_concurrent_requests 路。"""
     provider = _ConcurrencyTrackingProvider()
     config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
     client = SearchService(config)
@@ -910,7 +910,7 @@ def test_search_client_queued_request_bails_when_breaker_opens(monkeypatch):
         async def asearch(self, query, limit):
             self.calls += 1
             if self.calls == 1:
-                await release.wait()  # 占住唯一许可,让第二个请求排队
+                await release.wait()  # 占住唯一许可，让第二个请求排队
                 error = ToolRequestError("请求失败（重试 3 次）")
                 error.rate_limit_reset_ts = _time.monotonic() + 30
                 raise error

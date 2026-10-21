@@ -29,6 +29,6 @@ class ResumeRunBody(BaseModel):
 
 
 class UpdatePreferencesBody(BaseModel):
-    """整份个人研究偏好提交;键与取值的合法性由 service.preferences 单一事实源校验。"""
+    """整份个人研究偏好提交；键与取值的合法性由 service.preferences 单一事实源校验。"""
 
     preferences: dict[str, Any]

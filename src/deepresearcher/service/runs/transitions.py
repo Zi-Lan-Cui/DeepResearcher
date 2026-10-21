@@ -1,24 +1,9 @@
-"""Run 生命周期迁移的唯一事实来源（service 外壳层）。
+"""Run 生命周期迁移表：动因名 → 合法来源集 → 目标状态 → 固定原因。
 
-行按命名迁移组织：键是动因的名字（claim、settle_cancelled 等），值是
-合法来源集合 -> 目标状态 -> 固定原因。同为落到 running 的动因，合法来源并不
-相同：claim 不得触碰 awaiting_input 行，生命周期自愈可以。"来源->目标"
-的二元表无法表达这种区别，必须逐个动因命名。
-
-两种执行机制共用这份数据：
-
-- 条件 UPDATE（claim/resume 等竞争路径）：从表取来源写入 WHERE 条件，写与
-  判定仍在同一条语句内原子完成，本模块不接管执行；
-- 锁内 ORM 写（settle/reap/cancel 等）：apply_transition 在已加载行上按该迁移
-  自己的来源集校验再赋值，校验严于目标并集，用错迁移名同样报错。
-
-side_effects 只收目标状态唯一决定的值（lease/finished_at/resume_payload）；
-terminal_reason 只在它由动因纯决定时随迁移行固定：reap 与 release 是同一条
-边、仅 reason 不同，可见 reason 无法由目标状态单独推出。引擎产出的动态原因
-（finish/fail）与用户文案（error_message）不经表，由调用点覆写。
-两类内容刻意不进表：lease_owner 与 fence_token 是所有权谓词，回答谁能推进而非
-能否推进；无 claim 的对账写（执行器把状态机真相回写进行）只受 may_overwrite
-的不覆盖终态约束，不属于命名迁移。
+两种写路径共用本表：条件 UPDATE 把来源集写进 WHERE 子句，判定与写入在同一条语句内
+完成；锁内 ORM 写由 apply_transition 按该迁移自己的来源集校验后赋值。
+side_effects 只放目标状态唯一决定的值；terminal_reason 仅在由动因纯决定时随行固定，
+其余由调用点覆写。lease_owner 与 fence_token 是所有权谓词，不进表。
 """
 
 from __future__ import annotations
@@ -38,14 +23,14 @@ ALL_STATUSES = (
 )
 
 # per-user 并发配额计数的状态集合：用户已受理且未完成的行。
-# awaiting_input 必须计入：answer_resume 把它 CAS 回 queued 时不重过准入闸，
+# awaiting_input 必须计入：answer_resume 把它 CAS 回 queued 时不重过准入检查，
 # 不计入则可以先建立一批待澄清行、再逐一回答来绕过上限。
 OUTSTANDING_STATUSES = tuple(sorted(frozenset(ALL_STATUSES) - frozenset(TERMINAL_STATUSES)))
 
 
 @dataclass(frozen=True)
 class Transition:
-    """一条命名迁移:合法来源 -> 目标状态;reason 是该动因固定携带的终态原因。"""
+    """一条命名迁移：合法来源 -> 目标状态；reason 是该动因固定携带的终态原因。"""
 
     target: str
     sources: frozenset[str]
@@ -54,21 +39,21 @@ class Transition:
 
 # 动因名 -> 迁移
 TRANSITIONS: dict[str, Transition] = {
-    # 领取:FIFO 只动 queued;resume 领取额外允许被 reap 的 interrupted。
+    # 领取：FIFO 只动 queued;resume 领取额外允许被 reap 的 interrupted。
     "claim": Transition("running", frozenset({"queued"})),
     "claim_resume": Transition("running", frozenset({"queued", "interrupted"})),
-    # 生命周期自愈：执行器无 claim 地把行拉回 running。awaiting_input 只在
+    # 生命周期自动恢复：执行器无 claim 地把行回滚 running。awaiting_input 只在
     # 与用户回答竞态的残余窗口出现，claim 路径不会命中该状态。
     "mark_running": Transition("running", frozenset({"queued", "interrupted", "awaiting_input"})),
-    # 引擎暂停等待澄清:释放租约但保留行,等待 answer_resume。
+    # 引擎暂停等待澄清：释放租约但保留行，等待 answer_resume。
     "await_input": Transition("awaiting_input", frozenset({"running"})),
-    # 落到 interrupted 的两条路:reap 由清理扫描补写(lease_expired),
+    # 落到 interrupted 的两条路：reap 由清理扫描补写(lease_expired),
     # release 由持有者主动让位(server_shutdown)。
     "reap": Transition("interrupted", frozenset({"running"}), reason="lease_expired"),
     "release": Transition("interrupted", frozenset({"running"}), reason="server_shutdown"),
-    # 用户提交澄清回答:awaiting_input 重新入队。
+    # 用户提交澄清回答：awaiting_input 重新入队。
     "answer_resume": Transition("queued", frozenset({"awaiting_input"})),
-    # 取消的三条路:未领取行立即结算;running 由执行器收到信号后自写;
+    # 取消的三条路：未领取行立即结算；running 由执行器收到信号后自写；
     # executor 退出遗留的 interrupted 行由 settle_cancelled 补写终态。
     "cancel_pending": Transition(
         "cancelled", frozenset({"queued", "awaiting_input", "interrupted"}), reason="user_cancelled"
@@ -77,10 +62,10 @@ TRANSITIONS: dict[str, Transition] = {
     "settle_cancelled": Transition(
         "cancelled", frozenset({"interrupted"}), reason="user_cancelled"
     ),
-    # 正常终态只能由 running 的执行者写出;reason 来自引擎产物,不经表。
+    # 正常终态只能由 running 的执行者写出；reason 来自引擎产物，不经表。
     "finish": Transition("completed", frozenset({"running"})),
     "fail": Transition("failed", frozenset({"running"})),
-    # 启动恢复:无租约的 running/上轮遗留的 interrupted 且无 checkpoint → 判定不可恢复。
+    # 启动恢复：无租约的 running/上轮遗留的 interrupted 且无 checkpoint → 判定不可恢复。
     "recover_dead": Transition(
         "failed", frozenset({"running", "interrupted"}), reason="server_restart"
     ),
@@ -88,7 +73,7 @@ TRANSITIONS: dict[str, Transition] = {
 
 
 class IllegalTransitionError(RuntimeError):
-    """任何命名迁移的来源集之外的改状态——状态机的 bug,不是运行时数据问题。"""
+    """任何命名迁移的来源集之外的改状态——状态机的 bug，不是运行时数据问题。"""
 
 
 def transition_for(name: str) -> Transition:
@@ -101,7 +86,7 @@ for _transition in TRANSITIONS.values():
 
 
 def is_legal(source: str, target: str) -> bool:
-    """这条箭头原则上存在吗(不分动因,取该目标所有迁移来源的并集)。"""
+    """这条箭头原则上存在吗(不分动因，取该目标所有迁移来源的并集)。"""
     return source in _LEGAL.get(target, frozenset())
 
 
@@ -138,15 +123,15 @@ def side_effects(target: str, *, now: datetime) -> dict[str, Any]:
 def apply_transition(row: Any, name: str, *, now: datetime) -> None:
     """在已加载(且调用方保证已持锁或处于单写路径)的行上执行一条命名迁移。
 
-    校验用该迁移自己的来源集:箭头存在但用错动因名(如拿 cancel_pending 推
+    校验用该迁移自己的来源集：箭头存在但用错动因名(如拿 cancel_pending 推
     running 行)同样拒绝。迁移固定携带的 reason 在结构副作用之后写入。
 
-    参数:
+    参数：
         row: 已加载的 Run 行(鸭子类型)。
         name: 动因名。
         now: 用于终态字段的时间戳。
 
-    抛出:
+    抛出：
         IllegalTransitionError: 当前状态不在该迁移来源集内时。
     """
     transition = TRANSITIONS[name]
@@ -162,5 +147,5 @@ def apply_transition(row: Any, name: str, *, now: datetime) -> None:
 
 
 def may_overwrite(status: str) -> bool:
-    """无 claim 的对账写唯一纪律:不覆盖终态。"""
+    """无 claim 的对账写唯一纪律：不覆盖终态。"""
     return status not in TERMINAL_STATUSES

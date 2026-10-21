@@ -23,7 +23,7 @@ from deepresearcher.usage_runtime import record_external_request
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # 429/503 是“配额/限流”型失败：除了退避重试，还要给调用方留下跨请求的恢复点。
 _RATE_LIMITED_STATUS = {429, 503}
-# 搜索提供方同一 key 下不可自愈的状态码：重试单条无意义，抛 ProviderExhaustedError 触发熔断。
+# 搜索提供方同一 key 下不可自动恢复的状态码：重试单条无意义，抛 ProviderExhaustedError 触发熔断。
 # 只对 request_kind=="search" 生效；fetch 的 401/403 来自单个来源的付费墙或登录墙，
 # 不代表提供方整体不可用。
 _SEARCH_PROVIDER_FATAL = {

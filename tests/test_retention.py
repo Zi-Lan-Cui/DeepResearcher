@@ -79,14 +79,14 @@ async def test_sweep_prunes_expired_terminal_runs_and_keeps_reports(session_fact
     assert sorted(checkpointer.deleted) == ["run-old-1", "run-old-2", "run-old-3"]
 
     async with session_factory() as session:
-        # runs 行与报告本体永存,只打标
+        # runs 行与报告本体永存，只打标
         pruned = await session.scalars(select(Run.id).where(Run.retention_pruned_at.is_not(None)))
         assert sorted(pruned) == ["run-old-1", "run-old-2", "run-old-3"]
         report = await session.scalar(select(Run.report_markdown).where(Run.id == "run-old-1"))
         assert report == "# 报告"
         # 未超窗与非终态的留档原样在
         kept_events = await session.scalar(select(func.count()).select_from(RunEvent))
-        assert kept_events == 0  # 仅旧三场有事件;recent/live 未播种事件
+        assert kept_events == 0  # 仅旧三场有事件；recent/live 未播种事件
         assert await session.get(Run, "run-recent") is not None
         assert await session.get(Run, "run-live") is not None
         remaining_usage = await session.scalar(select(func.count()).select_from(RunUsage))
@@ -104,11 +104,11 @@ async def test_sweep_is_idempotent_and_batched(session_factory):
     )
     assert second["runs"] == 1  # 批限分轮消化
     third = await sweep_run_traces(session_factory, checkpointer, retention_days=14, now=NOW)
-    assert third == {}  # 打标后不再入候选,重扫成本归零
+    assert third == {}  # 打标后不再入候选，重扫成本归零
     assert len(checkpointer.deleted) == 3
 
 
 async def test_sweep_disabled_or_without_window(session_factory):
     assert await sweep_run_traces(session_factory, None, retention_days=0, now=NOW) == {}
-    # 窗口大到没人超窗:无事发生,checkpointer 为 None 也不触碰
+    # 窗口大到没人超窗：无事发生，checkpointer 为 None 也不触碰
     assert await sweep_run_traces(session_factory, None, retention_days=3650, now=NOW) == {}

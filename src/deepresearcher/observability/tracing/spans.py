@@ -1,9 +1,7 @@
-"""span/trace 上下文管理器:OTel span 是唯一的执行记录引擎。
+"""span/trace 上下文管理器：OTel span 是唯一的执行记录引擎。
 
-span 身份与父子嵌套由 OpenTelemetry 当前上下文承载;run/session/node 业务标签
-仍走 context.py 的 ContextVar,建 span 时写入 creation-time 属性,供账本处理器
-ledger.py 按 run 路由。langfuse.* 等观测后端的属性词汇刻意收拢在本文件与
-ledger 的映射处,换后端时其余模块不动。
+span 身份与父子嵌套由 OpenTelemetry 当前上下文承载；run/session/node 业务标签走
+context.py 的 ContextVar，建 span 时写入 creation-time 属性，供 ledger.py 按 run 路由。
 """
 
 import asyncio
@@ -17,13 +15,13 @@ from opentelemetry import trace as opentelemetry_trace
 from deepresearcher.errors import clip_text
 from deepresearcher.observability.tracing.context import bind_context, current_context
 
-# OTel 语义惯例:出站依赖调用(工具触网)用 CLIENT,图内编排节点用 INTERNAL。
+# OTel 语义惯例：出站依赖调用(工具触网)用 CLIENT，图内编排节点用 INTERNAL。
 _SPAN_KIND_MAP = {
     "tool": opentelemetry_trace.SpanKind.CLIENT,
     "node": opentelemetry_trace.SpanKind.INTERNAL,
     "trace": opentelemetry_trace.SpanKind.INTERNAL,
 }
-# langfuse 把 observation.type 为 tool 的 span 渲染为工具叶;其余按普通 span。
+# langfuse 把 observation.type 为 tool 的 span 渲染为工具叶；其余按普通 span。
 _LANGFUSE_OBSERVATION_TYPE = {"tool": "tool"}
 INSTRUMENTATION_SCOPE = "deepresearcher.tracing"
 
@@ -58,12 +56,12 @@ def _recording(
     attributes: Mapping[str, object],
     input: object = None,
 ) -> Iterator[str]:
-    """创建并激活 OTel span,体内 current context 即它,子 span 自动以它为父。
+    """创建并激活 OTel span，体内 current context 即它，子 span 自动以它为父。
 
-    返回:
-        str: 本 span 的 OTel trace id,32 位 hex;无 provider 时为空串。
-    体内异常按两种终止形态归类后原样重抛:CancelledError 与
-    KeyboardInterrupt 记为 cancelled 且不标 ERROR,其余记 ERROR 并携带错误文本。
+    返回：
+        str: 本 span 的 OTel trace id,32 位 hex；无 provider 时为空串。
+    体内异常按两种终止形态归类后原样重抛：CancelledError 与
+    KeyboardInterrupt 记为 cancelled 且不标 ERROR，其余记 ERROR 并携带错误文本。
     """
     tracer = opentelemetry_trace.get_tracer(INSTRUMENTATION_SCOPE)
     span = tracer.start_span(
@@ -82,7 +80,7 @@ def _recording(
         yield format(span.get_span_context().trace_id, "032x")
     except BaseException as exc:
         if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
-            # 取消不算错误,不标 ERROR,但原因写入属性留档,账本终态记录照旧携带。
+            # 取消不算错误，不标 ERROR，但原因写入属性留档，事件日志终态记录照旧携带。
             span.set_attribute("deepresearcher.status", "cancelled")
             span.set_attribute("deepresearcher.error", type(exc).__name__)
         else:
@@ -97,7 +95,7 @@ def _recording(
 
 
 def record_output(value: object) -> None:
-    """把输出写到当前 span;面板 Traces 列表的 Output 列取根 observation 的输出。"""
+    """把输出写到当前 span；面板 Traces 列表的 Output 列取根 observation 的输出。"""
     current = opentelemetry_trace.get_current_span()
     if not current.is_recording():
         return
@@ -109,7 +107,7 @@ def record_output(value: object) -> None:
 
 @contextmanager
 def span(name: str, *, kind: str = "node", input: object = None) -> Iterator[str]:
-    """开一个非 trace 根的 span(node/tool);身份与父子关系由 OTel 上下文决定。"""
+    """开一个非 trace 根的 span(node/tool)；身份与父子关系由 OTel 上下文决定。"""
     with _recording(name, kind=kind, attributes=_label_attributes(kind), input=input) as trace_id:
         yield trace_id
 
@@ -123,10 +121,10 @@ def trace(
     metadata: Mapping[str, object] | None = None,
     input: object = None,
 ) -> Iterator[str]:
-    """开一次 run 的根 span;同时把 run/session 绑定为业务标签向体内传播。
+    """开一次 run 的根 span；同时把 run/session 绑定为业务标签向体内传播。
 
-    metadata 双写到两类属性:deepresearcher.metadata 是 JSON 字符串,供账本
-    还原记录形状;langfuse.observation.metadata.* 前缀供面板展示。
+    metadata 双写到两类属性：deepresearcher.metadata 是 JSON 字符串，供事件日志
+    还原记录结构；langfuse.observation.metadata.* 前缀供面板展示。
     """
     attributes = _label_attributes("trace")
     explicit_labels: dict[str, str | None] = {}

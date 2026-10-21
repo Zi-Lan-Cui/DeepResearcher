@@ -144,7 +144,7 @@ def _render_grep_window(
     max_chars: int,
     line_budget: int,
 ) -> DocumentGrepMatch | None:
-    """按剩余页预算渲染单个命中窗口；一行都放不下时返回 None,由调用方停止发页。"""
+    """按剩余页预算渲染单个命中窗口；一行都放不下时返回 None，由调用方停止发页。"""
 
     start, end = window
     rendered: list[str] = []
@@ -194,11 +194,8 @@ def grep_patterns(
 ) -> GrepPatternsResult:
     """多关键词字面检索：命中按文档行号归并成一条流，segments 从流上切窗。
 
-    每词命中窗口各自去重后按文档行号合并为一条流，offset 恒指归并流位置；
-    不同词命中同一窗口时合并展示、hit_patterns 并列。字符预算在整份结果内共享，
-    预算耗尽后其馀段 returned=0 并置 has_more；单段窗口数受 max_matches_per_segment
-    钳制。超长行裁切并标注；窗口尾部被裁记入 tail_omitted_lines，被裁行不属于
-    后段，补读走 ReadDocument 按行号。空词与重复词跳过。
+    每词命中窗口各自去重后按行号合并，offset 恒指归并流位置。字符预算在整份结果内
+    共享，耗尽后其余段 returned=0 并置 has_more。超长行裁切并标注，被裁行不属于后段。
     """
 
     folded_lines = [line.casefold() for line in lines]

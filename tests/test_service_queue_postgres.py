@@ -126,7 +126,7 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
         assert len(winners) == 1
         assert winners[0].fence_token == 1
 
-        # seq 并发安全直测 store:append 只负责事务内编号落库,不承担通知。
+        # seq 并发安全直测 store:append 只负责事务内编号落库，不承担通知。
         store = RunEventStore(factory)
         batches = await asyncio.gather(
             store.append(run_id, [{"event_type": "pg-event-a", "payload": {}}]),
@@ -134,7 +134,7 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
         )
         assert sorted(batch[0]["seq"] for batch in batches) == [1, 2]
 
-        # committed 唤醒经 hub.flush 投递,按该路径断言。
+        # committed 唤醒经 hub.flush 投递，按该路径断言。
         sender = PostgresSignalBus()
         receiver = PostgresSignalBus()
         await sender.start(database_url)
@@ -204,8 +204,8 @@ async def test_two_postgres_claimers_cannot_own_the_same_run():
                 ]
             )
             await session.commit()
-        # 领取的 FOR UPDATE SKIP LOCKED 效果:双实例并发领取队首,
-        # 两边互不等待,各领到不同的行。
+        # 领取的 FOR UPDATE SKIP LOCKED 效果：双实例并发领取队首，
+        # 两边互不等待，各领到不同的行。
         queue_a = PostgresRunQueue(factory)
         queue_b = PostgresRunQueue(factory)
         slot_claims = await asyncio.gather(

@@ -1,9 +1,7 @@
-"""节点级观测:instrument_node 记录生命周期(started/completed/failed/cancelled)并原样重抛。
+"""节点级观测：instrument_node 记录生命周期并原样重抛。
 
-本模块只记录、不改变运行结果——失败转 RunStatus 的收口归 node_runner.execute_node;
-两处失败事件的 error/code/retryable 字段共用 schemas 的 failure_event_fields。
-也不解读业务字段:节点产出的字段摘要由装配层以 summarize 注入,
-缺省只登记 updated_fields。
+本模块只记录、不改变运行结果；失败转 RunStatus 的收尾归 node_runner.execute_node。
+节点产出的字段摘要由调用方以 summarize 注入，缺省只登记 updated_fields。
 """
 
 import asyncio
@@ -60,7 +58,7 @@ def instrument_node(
                 span_link: SpanContext | None = None
                 with span(name):
                     # 生命周期事件统一归属本节点 span;span_link 在进入 span 后立即
-                    # 读取,failed 与 cancelled 分支才能同样带上该 span 的身份。
+                    # 读取，failed 与 cancelled 分支才能同样带上该 span 的身份。
                     span_link = current_span_context()
                     value = node(state)
                     if inspect.isawaitable(value):
@@ -124,5 +122,5 @@ def instrument_node(
 
 
 def _base_summary(value: dict[str, Any]) -> dict[str, Any]:
-    """与业务无关的最小摘要:更新了哪些通道。"""
+    """与业务无关的最小摘要：更新了哪些通道。"""
     return {"updated_fields": sorted(value.keys())}

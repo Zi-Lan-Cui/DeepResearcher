@@ -51,14 +51,14 @@ def test_release_receipt_has_three_keys_and_post_mutation_snapshot():
     assert receipt["released_evidence_ids"] == ["e1"]
     assert receipt["not_in_working_set_ids"] == []
     assert receipt["unknown_evidence_ids"] == []
-    # 快照必须在释放之后求值:活跃数应已减 1。
+    # 快照必须在释放之后求值：活跃数应已减 1。
     assert receipt["active_evidence_count"] == 1
 
 
 def test_duplicate_and_unknown_ids_classified_consistently_on_both_ops():
     release_state = FakeWorkingSet(["e1"], ["e1"])
     receipt = release_working_set(release_state, ["e1", "e1", "ghost"], snapshot=lambda: {})
-    # 请求按序去重,重复 id 不在任何键里出现两次;ghost 不在档案中,归入 unknown。
+    # 请求按序去重，重复 id 不在任何键里出现两次；ghost 不在档案中，归入 unknown。
     assert receipt["released_evidence_ids"] == ["e1"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]
 
@@ -88,7 +88,7 @@ def test_clean_receipt_has_no_did_you_mean_key():
 
 
 def test_inbound_evidence_id_fields_strip_control_noise_and_dedupe():
-    # 模型在超大快照里转写长 ID 会混入 \r 等噪声;字段边界归一化后按原顺序去重。
+    # 模型在超大快照里转写长 ID 会混入 \r 等噪声；字段边界归一化后按原顺序去重。
     noisy = ["task\r-0005-ev-7382e2a63f32a52a", "task-0005-ev-7382e2a63f32a52a"]
     assert ReleaseEvidence(evidence_ids=noisy, reason="r").evidence_ids == [
         "task-0005-ev-7382e2a63f32a52a"

@@ -59,7 +59,7 @@ class PublicUrlGuard:
         if not resolved:
             raise UnsafeUrlError("URL 主机名没有可连接的地址。")
         # 双栈主机同时返回 A 与 AAAA，个别记录可能落在拦截段：存在可连接
-        # 地址即放行并把连接固定到这些地址；全部被拦（真 SSRF）才拒绝。
+        # 地址即允许通过并把连接固定到这些地址；全部被拦（真 SSRF）才拒绝。
         addresses = tuple(a for a in resolved if self._is_connectable(a))
         if not addresses:
             raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")

@@ -70,8 +70,8 @@ def test_workbench_arguments_leave_selected_derivation_to_program():
     assert "selected_evidence_ids" not in str(batch.model_dump())
     intent = WORKBENCH_INTENT_ADAPTER.validate_python(batch.changes[1])
     assert isinstance(intent, WorkbenchUpdateFraming)
-    assert intent.framing.answer_goal is None  # 省略字段=不动,由候选合成沿用现稿
-    with pytest.raises(ValidationError):  # 拼错的 framing 字段名当场拒绝,不静默丢弃
+    assert intent.framing.answer_goal is None  # 省略字段=不动，由候选合成沿用现稿
+    with pytest.raises(ValidationError):  # 拼错的 framing 字段名当场拒绝，不静默丢弃
         SynthesisFraming.model_validate({"unknown_field": 1})
 
 
@@ -405,7 +405,7 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
     assert result["supervisor_next"] == "writer"
     context = [str(message.content) for message in result["supervisor_messages"]]
     assert any("研究委托" in message for message in context)
-    # 派发批回执只表受理;方向报告经 WaitDirection 收据送达,含结论与该方向带回的 Evidence claim。
+    # 派发批回执只表受理；方向报告经 WaitDirection 收据送达，含结论与该方向带回的 Evidence claim。
     assert len([message for message in context if '"status": "dispatched"' in message]) == 2
     arrivals = [
         message
@@ -490,8 +490,8 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
                 },
             }
 
-    # complete_args=None 使 fake 每轮重发同一批方向:产品不做程序化去重,重复
-    # 方向每次都真实执行。fake 不会主动收尾,最终由模型调用次数上限终止循环。
+    # complete_args=None 使 fake 每轮重发同一批方向：产品不做程序化去重，重复
+    # 方向每次都真实执行。fake 不会主动收尾，最终由模型调用次数上限终止循环。
     # 声明式 rank 让更强的 MODEL_CALL_LIMIT_EXCEEDED 压过轮次预算(终态归属回归)。
     supervisor = ResearchSupervisor(
         SupervisorLLM(delegate_topics=["重复方向"], complete_args=None),
@@ -508,10 +508,10 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
         )
     )
 
-    # 重复方向每次都真实执行,说明派发层没有去重;未判充分,走部分报告。
+    # 重复方向每次都真实执行，说明派发层没有去重；未判充分，走部分报告。
     assert len(result["task_results"]) > 1
     assert result["supervisor"].status == "incomplete"
-    # 终态归属真正的终止者：模型调用天花板压过轮次预算。
+    # 终态归属真正的终止者：模型调用上限优先于轮次预算。
     assert "模型调用预算已耗尽" in result["writer"].feedback
 
 
@@ -555,12 +555,12 @@ def test_supervisor_rejects_completion_without_evidence():
         for message in result["supervisor_messages"]
         if isinstance(message, ToolMessage) and message.name == "ResearchComplete"
     ]
-    # 拒绝不再是终态:回执留环,模型每一回合都能重提,直到真实终止者出现。
+    # 拒绝不再是终态：回执留环，模型每一回合都能重提，直到真实终止者出现。
     assert len(complete_receipts) >= 2
     assert '"status": "rejected"' in str(complete_receipts[0].content)
     assert result["supervisor"].status == "incomplete"
     assert result["supervisor_next"] == "render_final_report"
-    # 终态归属模型调用天花板，而非"ResearchComplete 拒绝"这类协议措辞。
+    # 终态归属模型调用上限，而非"ResearchComplete 拒绝"这类协议措辞。
     assert "模型调用预算已耗尽" in result["writer"].feedback
 
 
@@ -695,7 +695,7 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
         for message in result["supervisor_messages"]
         if isinstance(message, ToolMessage) and message.name == "ResearchComplete"
     ]
-    assert len(complete_receipts) == 2  # 先拒后收,同环完成自愈
+    assert len(complete_receipts) == 2  # 先拒后收，同环完成自愈
     assert '"status": "rejected"' in str(complete_receipts[0].content)
     assert '"status": "accepted"' in str(complete_receipts[1].content)
     assert result["working_set_revision"] == 1
@@ -714,10 +714,10 @@ def _workbench_tool_messages(result: dict) -> list[ToolMessage]:
 
 
 def test_freeze_without_draft_loops_to_model_call_ceiling():
-    """无草稿冻结被拒且留环恢复;模型反复不成时,终态归属真实终止者=模型调用天花板。
+    """无草稿冻结被拒且留环恢复；模型反复不成时，终态归属真实终止者=模型调用上限。
 
     键级协议下"过期版本"场景消失(时间戳程序盖章),留存的等价守卫是:
-    协议拒绝不得写进 coverage_gaps,循环靠天花板收敛。
+    协议拒绝不得写进 coverage_gaps,循环靠调用上限结束。
     """
 
     class NoDraftFreezeLLM:
@@ -774,7 +774,7 @@ def test_freeze_without_draft_loops_to_model_call_ceiling():
         for message in result["supervisor_messages"]
         if isinstance(message, ToolMessage) and message.name == "ResearchComplete"
     ]
-    assert len(complete_receipts) >= 2  # 反复坚持,每次都被拒
+    assert len(complete_receipts) >= 2  # 反复坚持，每次都被拒
     assert all('"status": "rejected"' in str(message.content) for message in complete_receipts)
     assert result["research_synthesis"] is None
     assert result["working_set_revision"] == 1
@@ -881,7 +881,7 @@ def test_workbench_rejects_evidence_outside_active_working_set():
     assert '"invalid_evidence_ids"' in rejected
     assert "终态活跃证据" in rejected
     assert result["research_synthesis"] is None
-    # 活跃集已空且没有落盘综合稿:不能进入写作。
+    # 活跃集已空且没有落盘综合稿：不能进入写作。
     assert result["supervisor_next"] == "render_final_report"
 
 
@@ -889,7 +889,7 @@ def test_supervisor_agent_failure_routes_exception_to_failure_details():
     """agent loop 抛异常:异常文本只进执行诊断与内部事件,不得作为"未闭合缺口"进报告。
 
     模型调用异常会被 ModelRetryMiddleware 软化成引导文本，到不了 loop 级 except；
-    这里整体替换 _agent_loop，模拟图级故障（递归天花板、checkpointer 等）。
+    这里整体替换 _agent_loop，模拟图级故障（递归上限、checkpointer 等）。
     """
 
     class ExplodingLoop:
@@ -1312,7 +1312,7 @@ def test_supervisor_per_round_delegate_quota_blocks_excess_dispatches():
 
 
 def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
-    """模型调用天花板触发时,终止原因记为天花板,不得记成轮次耗尽。"""
+    """模型调用上限触发时，终止原因记为上限，不得记成轮次耗尽。"""
 
     class ReadLoopLLM:
         def bind_tools(self, _tools, tool_choice="any"):
@@ -1340,28 +1340,28 @@ def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
 
 
 def test_stop_reason_vocabulary_single_source():
-    """StopReason 是停止原因的唯一来源:值可回环构造,描述与兜底判定都在成员上。"""
+    """StopReason 是停止原因的唯一来源:值可回环构造,描述与默认值判定都在成员上。"""
     from deepresearcher.schemas import StopReason
     from deepresearcher.schemas.sections import _STOP_REASON_DESCRIPTIONS
 
     for reason in StopReason:
         assert StopReason(reason.value) is reason
         assert isinstance(reason, str)  # terminal_reason/JSON 等 str 消费点兼容
-    # 描述表全覆盖:漏登记的成员会落到兜底句,而兜底句对显式收尾语义相反。
+    # 描述表全覆盖：漏登记的成员会落到默认句，而默认句对显式结束语义相反。
     assert set(_STOP_REASON_DESCRIPTIONS) == set(StopReason)
 
-    # 校验 allows_partial_report 集合与 compose_final_update 里写明的清单一致:
+    # 校验 allows_partial_report 集合与 compose_final_update 里写明的清单一致：
     assert {r for r in StopReason if r.allows_partial_report} == {
         StopReason.ENDED_WITHOUT_COMPLETION,
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
         StopReason.MODEL_CALL_LIMIT_EXCEEDED,
     }
-    # 描述文案逐字校验;改文案须同步这里:
+    # 描述文案逐字校验；改文案须同步这里：
     assert (
         StopReason.ENDED_WITHOUT_COMPLETION.description
         == "模型结束研究而未显式收尾，按最新工作台交付部分报告。"
     )
-    assert StopReason.COMPLETED.description.startswith("Supervisor 完成研究收束")
+    assert StopReason.COMPLETED.description.startswith("Supervisor 完成研究并冻结综合稿")
 
 
 def test_stop_reason_rank_is_a_declared_total_order():
@@ -1370,15 +1370,15 @@ def test_stop_reason_rank_is_a_declared_total_order():
 
     ranks = {reason: reason.rank for reason in StopReason}
     assert len(set(ranks.values())) == len(ranks)  # 无并列，全序确定
-    # 现存最弱信号是轮次预算,天花板必须强于它。
+    # 现存最弱信号是轮次预算，上限必须强于它。
     assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.ENDED_WITHOUT_COMPLETION.rank
     assert min(ranks.values()) == StopReason.ENDED_WITHOUT_COMPLETION.rank
     # 模型的显式收尾决定是最高终态，压过基础设施失败。
     assert StopReason.COMPLETED.rank > StopReason.AGENT_FAILED.rank
-    # 全局轮次预算强于单轮，且都低于天花板命中。
+    # 全局轮次预算强于单轮，且都低于调用上限。
     assert StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank > StopReason.ENDED_WITHOUT_COMPLETION.rank
     assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank
-    # 账户级熔断认证介于天花板与真实异常之间。
+    # 账户级熔断认证介于调用上限与真实异常之间。
     assert StopReason.PROVIDER_EXHAUSTED.rank > StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank
     assert StopReason.AGENT_FAILED.rank > StopReason.PROVIDER_EXHAUSTED.rank
 
@@ -1389,14 +1389,14 @@ def test_loop_state_set_stop_reason_adopts_by_rank():
 
     state: ResearchState = {}
     loop_state = SupervisorLoopState(state, current_round=4, active_evidence_limit=30)
-    # current_round 只由构造参数注入,持久化 section 不作为第二个来源。
+    # current_round 只由构造参数注入，持久化 section 不作为第二个来源。
     assert loop_state.current_round == 4
 
     assert loop_state.stop_reason is None
     loop_state.set_stop_reason(StopReason.ENDED_WITHOUT_COMPLETION)
     assert loop_state.stop_reason == StopReason.ENDED_WITHOUT_COMPLETION
 
-    # 先记录轮次预算、随后命中天花板 → 应升级为 MODEL_CALL_LIMIT。
+    # 先记录轮次预算、随后命中调用上限 → 应升级为 MODEL_CALL_LIMIT。
     loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
     assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
@@ -1488,14 +1488,14 @@ def test_dispatch_research_allows_repeat_topic_and_scopes_run_id():
     assert first_task["run_id"] == "run-a" and second_task["run_id"] == "run-a"
     assert first_entry["task_id"] == first_task["id"]
     assert second_entry["subtask"]["run_id"] == "run-a"
-    assert agent_a.task_run_ids == []  # 受理不执行,方向体在 tools 层拉起
+    assert agent_a.task_run_ids == []  # 受理不执行，方向体在 tools 层拉起
 
     agent_b = _RecordingDelegateAgent()
     sup_b, ctx_b = _delegate_context("run-b", current_round=1, agent=agent_b)
     task_b, _, entry_b = _dispatch(ctx_b, "重复主题")
     assert task_b["run_id"] == "run-b"
     assert entry_b["subtask"]["run_id"] == "run-b"
-    assert agent_b.task_run_ids == []  # 无跨 run 泄漏:受理只落本 context 的编号与登记
+    assert agent_b.task_run_ids == []  # 无跨 run 泄漏：受理只落本 context 的编号与登记
 
 
 class _GatedResearchAgent(FixedResearchAgent):
@@ -1576,7 +1576,7 @@ def test_research_delegate_receipt_precedes_direction_completion():
         assert list(entry_add) == ["task-0001"]
         assert command.update["task_index_counter"] == 1
         assert context.direction_tasks["task-0001"] is not None
-        assert agent.entered == [] or agent.entered == ["task-0001"]  # 任务体刚排队,未完成
+        assert agent.entered == [] or agent.entered == ["task-0001"]  # 任务体刚排队，未完成
 
         agent.gate.set()
         execution = await context.direction_tasks.pop("task-0001")
@@ -1656,7 +1656,7 @@ def test_wait_direction_blocks_then_returns_reports():
             services.wait_for_directions(deps, context.loop_state, context.direction_tasks)
         )
         await asyncio.sleep(0.05)
-        assert not waiter.done()  # 门未开:唯一合法的挂起点就是 wait
+        assert not waiter.done()  # 门未开：唯一合法的挂起点就是 wait
 
         agent.gate.set()
         reports, delta, _timed_out = await waiter
@@ -1711,7 +1711,7 @@ def test_wait_direction_returns_immediately_when_arrivals_pending():
             services._execute_research_task(deps, slow_entry["subtask"])  # type: ignore[arg-type]
         )
         context.direction_tasks["task-0002"] = slow_task
-        await asyncio.sleep(0.05)  # slow 已进 gate 等待:在途而非欠账,不得被清算判 lost
+        await asyncio.sleep(0.05)  # slow 已进 gate 等待：在途而非欠账，不得被清算判 lost
 
         try:
             reports, _delta, _timed_out = await asyncio.wait_for(
@@ -1723,7 +1723,7 @@ def test_wait_direction_returns_immediately_when_arrivals_pending():
             await asyncio.wait([slow_task])
         assert [item["task_id"] for item in reports] == ["task-0001"]
         assert "task-0001" not in context.direction_tasks
-        assert "task-0002" in context.direction_tasks  # 在途的继续挂后台,不被裹挟
+        assert "task-0002" in context.direction_tasks  # 在途的继续挂后台，不被裹挟
 
     asyncio.run(scenario())
 
@@ -1833,7 +1833,7 @@ class _ExitAttemptThenWaitModel:
 
 
 class _PlanAndDispatchSameReplyModel:
-    """首回合混批:UpdateWorkbench 记计划与 ResearchDelegate 派发同单发出,两者都执行。"""
+    """首回合同批：UpdateWorkbench 记计划与 ResearchDelegate 派发在同一条回复里发出，两者都执行。"""
 
     def bind_tools(self, _tools, tool_choice="any"):
         return self
@@ -1885,7 +1885,7 @@ class _PlanAndDispatchSameReplyModel:
 
 
 def test_workbench_and_delegate_may_share_a_reply():
-    """实跑 run-bb3b 回归:混批不再被串行整批驳回,"先写计划再派活"是一等公民。"""
+    """实跑 run-bb3b 回归：同批不再被串行校验整批驳回，"先写计划再派活"是一等公民。"""
     supervisor = ResearchSupervisor(
         _PlanAndDispatchSameReplyModel(),
         AgentConfig(max_research_rounds=1, max_subtasks_per_round=1),
@@ -1899,7 +1899,7 @@ def test_workbench_and_delegate_may_share_a_reply():
         if isinstance(message, ToolMessage)
         and message.name in {"UpdateWorkbench", "ResearchDelegate"}
     ]
-    assert len(receipts) == 2  # 两个工具都执行了,而非一条 mixed-batch 驳回
+    assert len(receipts) == 2  # 两个工具都执行了，而非一条 mixed-batch 驳回
     assert [item.task_id for item in result["task_results"]] == ["task-0001"]
 
 
@@ -1952,7 +1952,7 @@ def test_bare_exit_without_draft_or_dispatch_is_nudged(tmp_path):
 
 def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
     """方向仍未完成时,纯文本结束被 submission_guard 拦回;
-    模型改用 WaitDirection 后正常收尾,结果经 wait_tool 吸收而非 drain 兜底。"""
+    模型改用 WaitDirection 后正常收尾,结果经 wait_tool 吸收而非 drain 回退。"""
     from deepresearcher.observability.events import JsonlSink
     from fakes import event_types
 
@@ -1973,7 +1973,7 @@ def test_supervisor_nudged_when_model_ends_with_inflight(tmp_path):
     assert "direction_arrival_merged" in types
     assert [item.task_id for item in result["task_results"]] == ["task-0001"]
     assert result["task_results"][0].execution_status == "completed"
-    # 本场内主动等待的注入形态是收据:历史里有 WaitDirection 的 ToolMessage。
+    # 本场内主动等待的注入形态是收据：历史里有 WaitDirection 的 ToolMessage。
     context = [str(m.content) for m in result["supervisor_messages"]]
     assert any("端到端延迟" in message and "evidence" in message for message in context)
 
@@ -1999,7 +1999,7 @@ def test_completed_direction_injected_at_turn_start_without_wait(tmp_path):
     records = read_events(tmp_path / "events.jsonl")
     arrivals = [r for r in records if r["event_type"] == "direction_arrival_merged"]
     assert [r["payload"]["merged_via"] for r in arrivals] == ["model_turn"]
-    # 已注入即无在途:文本结束合法,既不被 nudge,也没有 WaitDirection 调用。
+    # 已注入即无在途：文本结束合法，既不被 nudge,也没有 WaitDirection 调用。
     assert "supervisor_tool_loop_nudged" not in [r["event_type"] for r in records]
     assert not any(
         isinstance(m, ToolMessage) and m.name == "WaitDirection"
@@ -2109,7 +2109,7 @@ def test_workbench_repairs_double_encoded_changes_payload():
 
     loop_state = _apply_fixture()
     broken = services.apply_workbench_changes(loop_state, ["not-json"])
-    assert broken["status"] == "rejected"  # 无法还原的残串仍进拒绝回执,不触框架层
+    assert broken["status"] == "rejected"  # 无法还原的残串仍进拒绝回执，不触框架层
     assert "op" in str(broken["rejections"][0]["reason"])
 
 
@@ -2134,7 +2134,7 @@ def test_workbench_rejects_unknown_op_duplicates_and_malformed_aspect():
     assert duplicated["status"] == "rejected"
     assert duplicated["rejections"][0]["key"] == "framing"
 
-    # aspect 身份只来自 value:键值双写不再可表达,形状错误由 pydantic 逐字段点名。
+    # aspect 身份只来自 value:键值双写不再可表达，形状错误由 pydantic 逐字段点名。
     malformed = services.apply_workbench_changes(
         loop_state, [{"op": "upsert_aspect", "aspect": {"aspect_id": "core"}}]
     )
@@ -2184,7 +2184,7 @@ def test_workbench_plan_roundtrip_and_aspect_lifecycle():
     removed = services.apply_workbench_changes(
         loop_state, [{"op": "remove_aspect", "aspect_id": "core"}]
     )
-    # 草稿期合法:aspect 删空、framing 仍在,稿子存在但过不了竣工验收。
+    # 草稿期合法：aspect 删空、framing 仍在，稿子存在但过不了竣工验收。
     assert removed["status"] == "applied"
     assert loop_state.research_synthesis is not None
     assert loop_state.research_synthesis.aspects == []
@@ -2262,7 +2262,7 @@ def test_synthesis_draft_is_free_form_and_acceptance_deferred_to_freeze():
             {"op": "framing", "framing": {}},
         ],
     )
-    assert cleared["status"] == "applied"  # 三件非空,稿子还在但再次过不了验收
+    assert cleared["status"] == "applied"  # 三件非空，稿子还在但再次过不了验收
     assert services.freeze_synthesis(loop_state, "拆过头")["status"] == "rejected"
 
     legacy = ResearchSynthesis.model_validate(
@@ -2301,7 +2301,7 @@ def test_framing_explicit_empty_string_counts_as_untouched():
 
 
 def test_workbench_evidence_is_set_semantic_with_same_batch_slot_release():
-    """add/remove 是集合语义:id 不得同时出现在两侧(打回);
+    """add/remove 是集合语义:id 不得同时出现在两侧（会退回）；
     先释放后找回,同批腾出的槽位立即可用,回执与落盘只有一个事实源。"""
     loop_state = SupervisorLoopState(
         {
@@ -2433,14 +2433,14 @@ def test_workbench_acknowledge_restamps_without_editing_draft():
     frozen_before = loop_state.research_synthesis
     assert frozen_before.based_on_working_set_revision == loop_state.working_set_revision
 
-    loop_state._bump_working_set()  # 模拟:一波到达吸收了
+    loop_state._bump_working_set()  # 模拟：一波到达吸收了
     assert not loop_state.synthesis_is_fresh(frozen_before)
     rejected_freeze = services.freeze_synthesis(loop_state, "提前冻结")
     assert rejected_freeze["status"] == "rejected"
 
     ack = services.apply_workbench_changes(loop_state, [{"op": "acknowledge"}])
     assert ack["status"] == "applied"
-    assert loop_state.research_synthesis.revision == 1  # 只重盖章,稿内容与版本不动
+    assert loop_state.research_synthesis.revision == 1  # 只重盖章，稿内容与版本不动
     accepted = services.freeze_synthesis(loop_state, "表态后冻结")
     assert accepted["status"] == "accepted"
 
@@ -2451,7 +2451,7 @@ def test_workbench_acknowledge_restamps_without_editing_draft():
             {"op": "framing", "framing": {"thesis": "又改。"}},
         ],
     )
-    assert eager["status"] == "rejected"  # 与实改同单时 acknowledge 冗余,拒绝引导单发
+    assert eager["status"] == "rejected"  # 与实改同单时 acknowledge 冗余，拒绝引导单发
 
 
 def test_workbench_view_shape_lock():
@@ -2492,7 +2492,7 @@ def test_freeze_rejected_while_directions_running():
 
 
 def test_drain_absorbs_late_directions_and_registers_nothing_left():
-    """节点收口:等齐在途并吸收,merged_via=drain 落事件;登记清空。"""
+    """节点收尾：等齐在途并吸收，merged_via=drain 落事件；登记清空。"""
     from deepresearcher.observability.execution import AgentExecutionScope
 
     async def scenario():
@@ -2572,7 +2572,7 @@ def test_direction_task_body_has_no_await_before_agent_run():
 
     tree = ast.parse(inspect.getsource(services._execute_research_task))
     awaits = [node for node in ast.walk(tree) if isinstance(node, ast.Await)]
-    assert len(awaits) == 1  # async with worker_limit 不产生 Await 节点,唯一挂起点即方向执行。
+    assert len(awaits) == 1  # async with worker_limit 不产生 Await 节点，唯一挂起点即方向执行。
 
 
 def test_render_outcome_vocabulary_and_user_text_lookup():
@@ -2584,14 +2584,14 @@ def test_render_outcome_vocabulary_and_user_text_lookup():
         assert RenderOutcome(outcome.value) is outcome
     assert set(_RENDER_OUTCOME_DESCRIPTIONS) == set(RenderOutcome)
 
-    # 第一域:StopReason 值必须映射成中文描述,裸词不得直接进用户报告。
+    # 第一域：StopReason 值必须映射成中文描述，裸词不得直接进用户报告。
     assert (
         terminal_reason_text(StopReason.ENDED_WITHOUT_COMPLETION)
         == "模型结束研究而未显式收尾，按最新工作台交付部分报告。"
     )
-    # 第二域:RenderOutcome 值。
+    # 第二域：RenderOutcome 值。
     assert terminal_reason_text(RenderOutcome.REPORT_RENDERED) == "报告已渲染交付。"
-    # 第三域:lifecycle 字符串原样透传(自有包装点)。
+    # 第三域：lifecycle 字符串原样透传(自有包装点)。
     assert terminal_reason_text("user_cancelled") == "user_cancelled"
     assert terminal_reason_text("") == "研究未完成。"
 
@@ -2688,7 +2688,7 @@ def test_absorb_certifies_provider_exhaustion_then_freeze_accepts_evidenceless()
 
 
 def test_compose_floor_uses_certified_execution_fault_not_round_budget():
-    """默认兜底按实际原因记录:熔断认证后记 PROVIDER_EXHAUSTED,未认证仍记 ENDED_WITHOUT_COMPLETION。"""
+    """默认值按实际原因记录：熔断认证后记 PROVIDER_EXHAUSTED，未认证仍记 ENDED_WITHOUT_COMPLETION。"""
     unproven = _blank_loop_state()
     services.compose_final_update(_blank_state(), unproven, AgentConfig())
     assert unproven.stop_reason is StopReason.ENDED_WITHOUT_COMPLETION
@@ -2699,12 +2699,12 @@ def test_compose_floor_uses_certified_execution_fault_not_round_budget():
 
     assert certified.stop_reason is StopReason.PROVIDER_EXHAUSTED
     assert update.run.terminal_reason == "supervisor_provider_exhausted"
-    # 零证据进不了正文写作:直送终局渲染,诊断文案取自熔断事实而非轮次预算。
+    # 零证据进不了正文写作：直送终局渲染，诊断文案取自熔断事实而非轮次预算。
     assert update.supervisor_next == "render_final_report"
     assert "账户级不可用" in update.writer.feedback
 
 
-# 通道化不变式守卫:覆盖 §5 硬点与批重建合同。
+# 通道化不变式守卫：覆盖 §5 硬点与批重建合同。
 
 
 def _reducer_of(hint):
@@ -2722,7 +2722,7 @@ def _replace_semantics_channels() -> set[str]:
 
 
 def test_only_research_delegate_and_workbench_are_concurrent():
-    """§5 静态守卫:除 ResearchDelegate 与 UpdateWorkbench(通道互不相交,可混批)外
+    """§5 静态守卫:除 ResearchDelegate 与 UpdateWorkbench（通道互不相交，可同批）外
     每个工具都必须落在串行名单内。"""
     tool_names = {item.name for item in build_supervisor_tools()}
     assert tool_names - set(SUPERVISOR_SERIAL_TOOLS) == {"ResearchDelegate", "UpdateWorkbench"}
@@ -2763,7 +2763,7 @@ def test_concurrent_delegate_never_snapshots_replace_channels():
     )
     assert set(delta) & _replace_semantics_channels() == set()
     assert delta["pending_directions"] == {"add": {}, "remove": ["task-0001"]}
-    assert loop_state.pending_directions == {}  # 吸收即销账,登记不留残值
+    assert loop_state.pending_directions == {}  # 吸收即销账，登记不留残值
 
 
 def test_loop_state_round_trips_through_channels():
@@ -2829,7 +2829,7 @@ def test_pending_directions_round_trip_and_inflight_snapshot():
     ).model_dump()
     source = SupervisorLoopState({"query": "问题"}, current_round=2, active_evidence_limit=6)
     source.pending_directions = {"task-0001": entry}
-    # 在途登记不经入口种子:重放再施加 {} 会抹掉已提交登记,只由派发批 Command 写入。
+    # 在途登记不经入口种子：重放再施加 {} 会抹掉已提交登记，只由派发批 Command 写入。
     assert "pending_directions" not in source.initial_channel_state()
 
     restored = SupervisorLoopState.from_channel_values(
@@ -2842,7 +2842,7 @@ def test_pending_directions_round_trip_and_inflight_snapshot():
     snapshot = working_set_snapshot(restored)
     assert snapshot["inflight"] == [{"task_id": "task-0001", "display_title": "短题", "round": 2}]
     empty = SupervisorLoopState({"query": "问题"}, current_round=1, active_evidence_limit=6)
-    assert working_set_snapshot(empty)["inflight"] == []  # 形状恒有键,不随有无在途漂移
+    assert working_set_snapshot(empty)["inflight"] == []  # 形状恒有键，不随有无在途漂移
 
 
 def test_rebuild_middleware_discards_uncommitted_memory():
@@ -2855,7 +2855,7 @@ def test_rebuild_middleware_discards_uncommitted_memory():
     committed = SupervisorLoopState(
         {"query": "q", "evidences": []}, current_round=1, active_evidence_limit=6
     )
-    # abefore_model 触 loop_state、两个标量与 deps.config 里的上限,scope 用占位对象即可。
+    # abefore_model 触 loop_state、两个标量与 deps.config 里的上限，scope 用占位对象即可。
     context = SupervisorLoopContext(
         scope=SimpleNamespace(),
         deps=SimpleNamespace(
@@ -2866,7 +2866,7 @@ def test_rebuild_middleware_discards_uncommitted_memory():
         current_round=1,
     )
     # 先固化已提交通道(入口 input 在生产里经 langgraph 施加通道 reducer),再对内存对象
-    # 做未 Command 提交的改动:重建只认前者。
+    # 做未 Command 提交的改动：重建只认前者。
     committed_channels = committed.initial_channel_state()
     committed_channels["active_evidence_ids"] = merge_active_set(
         None, committed_channels["active_evidence_ids"]
@@ -2923,13 +2923,13 @@ def test_report_brief_projection_filters_by_disclose():
     assert brief.chapters[1].conclusion == "尚未研究"
     assert brief.caveats == [
         "缺口|板块「章一」:关键期数据缺失",
-        "口径冲突|板块「章一」:两来源口径不相容",
+        "结论冲突|板块「章一」:两来源口径不相容",
         "缺口|板块「章二」:尚未研究",
     ]
 
 
 def test_legacy_research_synthesis_shape_migrates():
-    """旧 checkpoint 形状搬运:summary/remaining_gap 改名落地,全局 gaps/conflicts 折入首块。"""
+    """旧 checkpoint 结构迁移：summary/remaining_gap 改名生效，全局 gaps/conflicts 并入首块。"""
     legacy = ResearchSynthesis.model_validate(
         {
             "revision": 2,

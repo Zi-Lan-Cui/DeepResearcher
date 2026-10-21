@@ -31,7 +31,7 @@ def build_harness_graph(*, event_sink, checkpointer=None, **_kwargs):
     marker_dir = Path(os.environ["WORKER_MARKER_DIR"])
 
     async def checkpoint_ready(_state: HarnessState) -> dict:
-        # 先提交一个空 superstep 作为恢复点,controlled_work 才被文件信号阻塞。
+        # 先提交一个空 superstep 作为恢复点，controlled_work 才被文件信号阻塞。
         return {}
 
     async def controlled_work(state: HarnessState) -> dict:

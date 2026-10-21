@@ -1,7 +1,7 @@
-"""SearchService：供应商无关的搜索编排层。
+"""SearchService：与供应商无关的搜索编排。
 
-选路、扇出、限流排队与账户级熔断在此；上层是 agent 面的 SearchTool，下层是各
-SearchProvider。结果契约(SearchResult/SearchCandidate)在 models。
+选路、扇出、限流排队与账户级熔断都在这里。调用方是 SearchTool，下接各个
+SearchProvider；结果契约（SearchResult / SearchCandidate）在 models。
 """
 
 import asyncio
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from deepresearcher.tools.transport.aliyun import AliyunDtsApi
 
 # 账户级不可用（额度/鉴权）的默认熔断窗口：长到足以停止连续请求该提供方，
-# 又能在上游恢复后自愈。
+# 又能在上游恢复后自动恢复。
 _PROVIDER_HEALTH_SECONDS = 900.0
 
 
@@ -39,10 +39,10 @@ class SearchService:
         self.config = config
         self.http = http_client or HttpClient(config)
         # 供应商级断路表：provider -> 单调时钟恢复点。传输层在 429/503 上
-        # 记录的恢复时间会写到这里，窗口内的新请求不再出网向供应商重复请求。
+        # 记录的恢复时间会写到这里，窗口内的新请求不再发起外部请求向供应商重复请求。
         self._rate_limit_deadlines: dict[str, float] = {}
         # 供应商级并发上限：provider -> Semaphore。worker × query 的乘性并发
-        # 在这里收敛为对供应商的恒定在飞请求数。
+        # 在这里限制为对供应商的恒定在飞请求数。
         self._provider_semaphores: dict[str, asyncio.Semaphore] = {}
         self._aliyun_client = aliyun_client
         # 账户级健康（额度/鉴权）：可跨进程共享；默认进程内存。
@@ -50,7 +50,7 @@ class SearchService:
 
     async def asearch(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
         provider = self.provider_name
-        # 账户级熔断优先：同 key 已不可用时连出网都不必。
+        # 账户级熔断优先：同 key 已不可用时连发起外部请求都不必。
         open_reason = await self._health.is_open(provider)
         if open_reason:
             raise ProviderExhaustedError(

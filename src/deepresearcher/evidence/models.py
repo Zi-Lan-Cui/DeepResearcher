@@ -8,12 +8,12 @@ from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH, Support
 
 # 系统生成的 evidence_id 形如 {task_id}-ev-{hex16}，合法字符集里没有空白与控制符；
-# 模型转写长 ID 时会混入 \r 之类噪声，入站剥除这些字符是无损归一化。
+# 模型转写长 ID 时会混入 \r 之类干扰，入站移除这些字符是无损归一化。
 _EVIDENCE_ID_NOISE_RE = re.compile(r"[\s\x00-\x1f\x7f\u200b\u2060\ufeff]+")
 
 
 def normalize_evidence_id(value: str) -> str:
-    """剥除单个入站 evidence_id 中的空白与控制字符。"""
+    """移除单条入站 evidence_id 中的空白与控制字符。"""
     return _EVIDENCE_ID_NOISE_RE.sub("", value)
 
 
@@ -33,7 +33,7 @@ _WHITESPACE_RUN_RE = re.compile(r"\s+")
 
 
 def normalize_title_whitespace(value: str) -> str:
-    """把网页标题里的换行与连续空白折成单空格：标题会被逐行消费（证据来源表），
+    """把网页标题里的换行与连续空白合并为单空格：标题会被逐行消费（证据来源表），
     内嵌换行会把一行记录劈成两行，下游按行解析即整条失配。"""
     return _WHITESPACE_RUN_RE.sub(" ", value).strip()
 
@@ -50,7 +50,7 @@ class Evidence(BaseModel):
     published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
     # 来源方法是自由字符串，当前词表在 vocab.RETRIEVAL_*；新 provider 经 fetch
-    # 编排层拼接产生的新值必须原样保留，词表外的值不应导致 Evidence 构造报错。
+    # 上游拼接出的新值必须原样保留，词表外的值不应导致 Evidence 构造报错。
     retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
     support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)

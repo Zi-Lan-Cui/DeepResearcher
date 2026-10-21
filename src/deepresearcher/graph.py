@@ -41,8 +41,7 @@ from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
     """记录运行元数据和有界预览；完整正文不进入事件流或普通日志。
 
-    认识这些 State 字段名是装配层的职责，观测层 instrumentation 不解读业务字段;
-    projector 的面向用户帧从这里登记的键读取。
+    字段名由本模块决定，instrument_node 不解读业务字段；projector 从这里登记的键取数。
     """
     summary: dict = {"updated_fields": sorted(result.keys())}
     for key in (
@@ -111,7 +110,7 @@ def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
 
 
 def _guarded_node(name, node, *, event_sink=None, max_text_chars: int):
-    """组合观测层与 node_runner 的失败处理，保持两层职责独立。"""
+    """把 instrument_node 的观测与 node_runner 的失败处理接在一起，两边职责互不侵扰。"""
     observed = instrument_node(
         name,
         node,
@@ -162,16 +161,13 @@ def build_graph(
 ):
     """装配完整研究应用；必需模型和联网工具缺失时立即失败。
 
-    参数:
+    参数：
         settings: 省略时取 get_settings()。
         llm: 注入的模型；省略时按 settings 构造。
-        checkpointer: LangGraph BaseCheckpointSaver，如 AsyncPostgresSaver。
-            每个 superstep 结束持久化 state 通道，调用方以
-            config={"configurable": {"thread_id": run_id}} 获得断点重放与续跑能力；
-            省略时不做持久化。
-    返回:
-        编译后的 LangGraph。
-    抛出:
+        checkpointer: LangGraph BaseCheckpointSaver；省略时不做持久化。传入后配合
+            config={"configurable": {"thread_id": run_id}} 获得断点重放与续跑。
+
+    抛出：
         LLMConfigurationError: 模型配置缺失。
         ToolConfigurationError: 搜索 Provider 缺少所需凭据。
     """
@@ -281,7 +277,7 @@ def build_graph(
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
         ),
-        # terminal phase 的失败/收束会直达渲染终点；destinations 是图形状
+        # terminal phase 的失败/结束会直达渲染终点；destinations 是图结构
         # 唯一机器可读声明，必须包含 RENDER_FINAL_REPORT，漏掉会误导读者与绘图工具。
         destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
     )

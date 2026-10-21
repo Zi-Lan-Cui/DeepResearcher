@@ -61,7 +61,7 @@ async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windo
         source_url="https://example.com",
     )
 
-    # 首页:context_lines=0 时每窗单行,段 (0,3) 返回前 3 窗并显式给出 has_more。
+    # 首页：context_lines=0 时每窗单行，段 (0,3) 返回前 3 窗并显式给出 has_more。
     first = await store.grep_patterns(
         ref.document_id,
         ["match"],
@@ -75,7 +75,7 @@ async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windo
     assert [m.start_line for m in first.segments[0].matches] == [1, 2, 3]
     assert first.has_more and first.segments[0].returned == 3
 
-    # 续段:offset=3 与首页不重叠、不遗漏。
+    # 续段：offset=3 与首页不重叠、不遗漏。
     second = await store.grep_patterns(
         ref.document_id,
         ["match"],
@@ -88,9 +88,9 @@ async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windo
     assert [m.start_line for m in second.segments[0].matches] == [4, 5, 6]
     assert second.has_more and second.segments[0].returned == 3
 
-    # 字符预算触顶:第二个窗口连首行都装不下时整窗不发,has_more 保留,首窗完整。
+    # 字符预算触顶：第二个窗口连首行都装不下时整窗不发，has_more 保留，首窗完整。
     # 每行原文 "L{n} match"，grep 再加 "L{n}: " 前缀；首窗 (context_lines=2, 命中第1行)
-    # = "L1: L1 match\nL2: L2 match\nL3: L3 match" 共 38 字符;max_chars=40 容首窗拒次窗。
+    # = "L1: L1 match\nL2: L2 match\nL3: L3 match" 共 38 字符；max_chars=40 容首窗拒次窗。
     tight = await store.grep_patterns(
         ref.document_id,
         ["match"],
@@ -104,7 +104,7 @@ async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windo
     assert tight.segments[0].matches[0].content == "L1: L1 match\nL2: L2 match\nL3: L3 match"
     assert tight.has_more and tight.segments[0].returned == 1
 
-    # 一轮取两个不相邻段:流上 offset 0 与 18,首尾命中直接同框比较。
+    # 一轮取两个不相邻段：流上 offset 0 与 18,首尾命中直接同框比较。
     head_to_head = await store.grep_patterns(
         ref.document_id,
         ["match"],
@@ -240,7 +240,7 @@ def test_grep_patterns_clips_oversized_line_within_line_budget():
 
 def test_grep_patterns_window_tail_cut_is_marked_and_skipped_on_next_segment():
     """窗口尾部因页预算裁掉:行号标注 + tail_omitted_lines;下一段从下一窗口起,不回补被裁尾行。"""
-    # 命中行相隔 10,避免相邻命中窗口重叠;上下文行同样长，凑出"单窗放不进一页"的裁尾。
+    # 命中行相隔 10,避免相邻命中窗口重叠；上下文行同样长，凑出"单窗放不进一页"的裁尾。
     lines = [
         ("alpha " if index in (0, 10) else "body ") + f"{index} " + "z" * 390 for index in range(20)
     ]
@@ -307,7 +307,7 @@ def test_grep_patterns_merges_patterns_in_document_order():
         max_line_chars=2_000,
     )
     assert result.pattern_totals == {"beta": 1, "gamma": 2}
-    assert result.total_windows == 2  # 第二行两词同窗,合并成一个窗口
+    assert result.total_windows == 2  # 第二行两词同窗，合并成一个窗口
     windows = result.segments[0].matches
     assert [w.start_line for w in windows] == [2, 3]
     assert windows[0].hit_patterns == ["beta", "gamma"]

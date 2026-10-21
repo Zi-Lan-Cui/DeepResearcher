@@ -56,7 +56,7 @@ class ReadSources(BaseModel):
 
 
 class ListSearchResults(BaseModel):
-    """分页查看已落盘的搜索结果。"""
+    """分页查看已写入磁盘的搜索结果。"""
 
     search_id: str = Field(min_length=1, description="SearchSources 返回的搜索结果句柄。")
     offset: int = Field(default=0, ge=0, description="从第几条结果开始，从 0 计数。")
@@ -72,7 +72,7 @@ class ListSearchResults(BaseModel):
 class _DocumentIdSanitizer(BaseModel):
     """持有 document_id 入参的模型的共同底座：模型回填长 id 时偶发夹入空白与控制字符，先归一再比对。"""
 
-    # check_fields=False:字段由各自子类声明,基类单独建类时不校验存在性。
+    # check_fields=False：字段由各自子类声明，基类单独建类时不校验存在性。
     @field_validator("document_id", mode="before", check_fields=False)
     @classmethod
     def strip_injected_whitespace_and_control_chars(cls, value: object) -> object:
@@ -96,11 +96,9 @@ class GrepWindowSegment(BaseModel):
 class GrepDocument(_DocumentIdSanitizer):
     """在已读取长文中按多个普通文本词定位相关行；命中按文档行号归并成一条流。
 
-    多个关键词一次列进 patterns，不按词拆成多次调用。segments 可在同一次调用里
-    取流上多个不相邻的段——比较首尾命中不必逐页翻。回执带每词命中窗口总数，
-    据此决定哪个词值得追加段深挖；只追一个词时把它单独列进 patterns 即可。
-    offset 恒指归并流位置，与单词检索同形。超长行与窗口尾部会裁切并标注，
-    裁掉的内容不在后续段里——按标注行号用 ReadDocument 补读。
+    多个关键词一次列进 patterns，不按词拆成多次调用。segments 可在同一次调用里取多个
+    不相邻的段。offset 恒指归并流位置。超长行与窗口尾部会裁切并标注，被裁内容不在
+    后续段里，按标注行号用 ReadDocument 补读。
     """
 
     document_id: str = Field(
@@ -171,7 +169,7 @@ class EvidenceSubmission(_DocumentIdSanitizer):
 
 
 class AddEvidence(BaseModel):
-    """批量提交 Evidence 候选；系统逐字验证后才会入池。"""
+    """批量提交 Evidence 候选；系统逐字验证后才会写入。"""
 
     evidences: list[EvidenceSubmission] = Field(min_length=1, max_length=32)
     reason: str = Field(description="这些 Evidence 如何回答当前方向。")
@@ -259,7 +257,7 @@ class ResearchDelegate(BaseModel):
 
 
 class WaitDirection(BaseModel):
-    """等待在途方向完成并收取方向报告；无在途时返回提示，不挂死。"""
+    """等待在途方向完成并收取方向报告；无在途时返回提示，不会卡死。"""
 
     task_ids: list[str] = Field(
         default_factory=list,
@@ -275,7 +273,7 @@ class WaitDirection(BaseModel):
     @field_validator("task_ids", mode="before")
     @classmethod
     def strip_injected_whitespace_and_control_chars(cls, value: object) -> object:
-        """剔除模型在长 id 流中夹入的空白与控制字符,避免 id 匹配不上在途。"""
+        """剔除模型在长 id 流中夹入的空白与控制字符，避免 id 匹配不上在途。"""
         if not isinstance(value, list):
             return value
         cleaned = [re.sub(r"[\s\x00-\x1f\x7f]", "", str(item)) for item in value]
@@ -289,7 +287,7 @@ class ResearchComplete(BaseModel):
 
 
 class SynthesisFraming(BaseModel):
-    """framing 操作的整值:只带要修改的字段,省略即不动;未知字段名直接拒绝。"""
+    """framing 操作的整值：只带要修改的字段，省略即不动；未知字段名直接拒绝。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -315,7 +313,7 @@ class SynthesisFraming(BaseModel):
     @field_validator("answer_goal", "thesis", "decision_rationale", mode="before")
     @classmethod
     def empty_string_means_untouched(cls, value: object) -> object:
-        """显式空串按"本字段不改"处理:空值不是内容,拒它只是白烧回合(实场 run-3234 T01 实证)。"""
+        """显式空串按"本字段不改"处理：空值不是内容，拒它只是白烧回合(实场 run-3234 T01 实证)。"""
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -350,7 +348,7 @@ class WorkbenchSetPlan(BaseModel):
 
 
 class WorkbenchMoveEvidence(BaseModel):
-    """活跃证据槽位差量。"""
+    """活跃证据槽位增量。"""
 
     op: Literal["evidence"]
     add: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
@@ -381,9 +379,9 @@ WORKBENCH_INTENT_ADAPTER: TypeAdapter[WorkbenchIntent] = TypeAdapter(WorkbenchIn
 def _normalize_changes(value: object) -> object:
     """修复模型把 changes 数组或其中单个操作再次编码成 JSON 字符串的常见偏差。
 
-    嵌套越深模型越倾向把整个 changes 序列化成字符串;
-    列表元素类型收紧后这种偏差会在工具调用框架层报错,到不了拒绝回执,
-    所以在此处先行还原,让 services 的判别并集继续给出具名反馈。
+    嵌套越深模型越倾向把整个 changes 序列化成字符串；
+    列表元素类型收紧后这种偏差会在工具调用框架层报错，到不了拒绝回执，
+    所以在此处先行还原，让 services 的判别并集继续给出具名反馈。
     """
     if isinstance(value, str):
         raw = value.strip()
@@ -409,7 +407,7 @@ def _normalize_changes(value: object) -> object:
 class UpdateWorkbench(BaseModel):
     """工作台唯一写入口：提交操作列表，每个操作整值替换其目标段。
 
-    形状校验在此层保持宽松（changes 收原始对象），由 services 用判别并集解析后
+    结构校验在此层保持宽松（changes 收原始对象），由 services 用判别并集解析后
     统一转成拒绝回执——工具调用层的校验错误到不了 rejections 的 did_you_mean 通道。
     """
 
@@ -430,13 +428,13 @@ class UpdateWorkbench(BaseModel):
         return _normalize_changes(value)
 
 
-# 工具回执前缀:模型靠它区分工具结果与用户补充;observability 剥同一前缀
-# 提取计数指标。三处共用,单一来源在此。
+# 工具回执前缀：模型靠它区分工具结果与用户补充；observability 移除同一前缀
+# 提取计数指标。三处共用，单一来源在此。
 TOOL_RECEIPT_PREFIX = "【系统工具执行结果"
 
 
 def format_tool_receipt(payload: object) -> str:
-    """统一工具回执格式:前缀行 + JSON 串(或原样字符串)。"""
+    """统一工具回执格式：前缀行 + JSON 串(或原样字符串)。"""
     body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     return f"{TOOL_RECEIPT_PREFIX}；非用户补充】\n{body}"
 

@@ -25,7 +25,7 @@ def _auth(token: str) -> dict[str, str]:
 
 @pytest_asyncio.fixture
 async def client(tmp_path, monkeypatch):
-    # 已提交帧的推送节奏在 sqlite 下只靠 SSE_DB_POLL_SECONDS 轮询,没有 NOTIFY 可用;
+    # 已提交帧的推送节奏在 sqlite 下只靠 SSE_DB_POLL_SECONDS 轮询，没有 NOTIFY 可用；
     # 压到 0.1s 以免 tail 轮询吃掉用例超时。生产常量由 verify_service 在 PG 上验证。
     from deepresearcher.service.web.routes import events as events_route
 
@@ -50,14 +50,14 @@ async def client(tmp_path, monkeypatch):
     settings = service_settings(tmp_path)
     config = service_config(tmp_path, worker_poll_seconds=0.01)
     # API 与 Worker 是各自独立的 lifespan,共享同一 sqlite 文件。
-    # httpx ASGITransport 不执行 lifespan:两个上下文都在当前循环内手动进出,
+    # httpx ASGITransport 不执行 lifespan:两个上下文都在当前循环内手动进出，
     # engine/hub/manager/worker 与测试共享同一事件循环。
     async with worker_lifespan(settings, config, graph_factory=graph_factory) as worker:
         app = create_app(settings, config)
         async with app.router.lifespan_context(app):
             # sqlite 上没有跨 host NOTIFY:API 发出的 run_available / cancel
-            # 通知只唤 API 自己的订阅者,故在同进程桥给 worker。
-            # event_committed 刻意不桥:已提交帧必须走 SSE 的 DB tail,
+            # 通知只唤 API 自己的订阅者，故在同进程桥给 worker。
+            # event_committed 刻意不桥：已提交帧必须走 SSE 的 DB tail,
             # 这正是分进程世界的真实路径。
             api_bus = app.state.manager.signal_bus
             api_bus.subscribe("run_available", lambda _payload: worker.wake())
@@ -145,7 +145,7 @@ async def test_successful_login_clears_only_the_account_budget(client):
     success = await client.post("/api/login", json={"email": "a@test.dev", "password": PASSWORD})
     assert success.status_code == 200
 
-    # 此前的账号失败计数已清零,预算完整可用。
+    # 此前的账号失败计数已清零，预算完整可用。
     for _ in range(5):
         assert (await client.post("/api/login", json=wrong)).status_code == 401
     assert (await client.post("/api/login", json=wrong)).status_code == 429
@@ -159,14 +159,14 @@ async def test_run_lifecycle_detail_and_list(client):
 
     body = await wait_status(client, token, run_id, {"completed"})
     assert body["query"] == "研究一下"
-    # 双标题:headline 来自澄清提交(此处由 FakeGraph 终态注入),title 随终态落库。
+    # 双标题：headline 来自澄清提交(此处由 FakeGraph 终态注入),title 随终态落库。
     assert body["headline"] == "测试浓缩题"
     assert body["title"] == "测试报告标题"
     assert body["report_markdown"].startswith("# 研究报告")
     assert body["citations"][0]["id"] == "e1"
     assert (body["evidence_count"], body["source_count"]) == (3, 2)
 
-    # headline 落库当场推帧:进行中的头部从长问题收敛为短题。
+    # headline 落库当场推帧：进行中的头部从长问题换成短题。
     frames = await read_sse(client, token, run_id)
     headline_frames = [data for event, data in frames if event == "headline"]
     assert [data["text"] for data in headline_frames] == ["测试浓缩题"]
@@ -183,9 +183,9 @@ async def test_run_lifecycle_detail_and_list(client):
 
 
 async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
-    """没有 worker host 时 run 停在 queued,控制面结构上无法执行。
+    """没有 worker host 时 run 停在 queued,控制层结构上无法执行。
 
-    校验的是结构:create_app 没有 graph 注入口,app.state 上也不存在执行面属性。
+    校验的是结构:create_app 没有 graph 注入口,app.state 上也不存在执行层属性。
     """
     app = create_app(service_settings(tmp_path), service_config(tmp_path))
     async with app.router.lifespan_context(app):
@@ -264,7 +264,7 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
 
     view = (await client.get("/api/me", headers=_auth(token))).json()
     assert view["runs"] == {"total": 2, "active": 1}
-    # 当日花费只聚合本用户的 llm 类记录:他人的行与非模型支出不计入。
+    # 当日花费只聚合本用户的 llm 类记录：他人的行与非模型支出不计入。
     assert view["usage_today"]["cost_cny"] == pytest.approx(0.25)
 
 
@@ -424,7 +424,7 @@ async def test_sse_last_event_id_resumes_from_watermark(client):
     resumed_seqs = [data["seq"] for _, data in resumed]
     assert resumed_seqs, "水位之后仍有帧"
     assert all(seq > watermark for seq in resumed_seqs)  # 已消费部分不重发
-    assert [event for event, _ in resumed][-1] == "done"  # 兜底终帧照常合成
+    assert [event for event, _ in resumed][-1] == "done"  # 合成终帧照常发出
     # 非法水位回退全量回放，不因坏头断流。
     broken = await read_sse(client, token, run_id, extra_headers={"Last-Event-ID": "not-a-number"})
     assert [data["seq"] for _, data in broken] == full_seqs
@@ -542,7 +542,7 @@ async def test_static_frontend_served(client):
 
 
 async def test_concurrent_register_same_email_single_winner(client):
-    """快速路径查重可被并发穿透,UNIQUE 索引兜底时须映射为 409 而非 500。"""
+    """快速路径查重可被并发穿透,UNIQUE 索引拦下时须映射为 409 而非 500。"""
     payload = {"email": "twin@test.dev", "password": PASSWORD}
     first, second = await asyncio.gather(
         client.post("/api/register", json=payload),
@@ -556,7 +556,7 @@ async def test_concurrent_register_same_email_single_winner(client):
 
 async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
     """done 帧整批丢在失败 flush 里时,行状态才是终止权威,
-    SSE 须靠兜底合成 done 收敛,不能持续轮询而不结束。"""
+    SSE 须靠合成 done 帧结束，不能持续轮询而不结束。"""
     token = await register(client)
     client.graphs.append(FakeGraph())
     run_id = (await client.post("/api/runs", json={"query": "q"}, headers=_auth(token))).json()[
@@ -573,8 +573,8 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
         await session.execute(
             delete(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
         )
-        # 复刻最坏形态:done 整批丢失、且最后落库的一行本身就是会被投出的帧,
-        # 此时合成帧与最后已投帧同号,会被前端水位去重吞掉。
+        # 复刻最坏形态：done 整批丢失、且最后落库的一行本身就是会被投出的帧，
+        # 此时合成帧与最后已投帧同号，会被前端水位去重吞掉。
         from sqlalchemy import select
 
         rows = (
@@ -594,11 +594,11 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
 
     frames = await read_sse(client, token, run_id, timeout=8.0)
     events = [event for event, _ in frames]
-    assert events[-1] == "done"  # 兜底帧结束流,连接不反复重连
+    assert events[-1] == "done"  # 合成帧结束流，连接不反复重连
     done_seq = frames[-1][1]["seq"]
     delivered_seqs = [payload.get("seq", 0) for _, payload in frames[:-1]]
-    # 前端按水位去重(seq <= lastSeq 即丢,app.js handleFrame):
-    # 合成帧与最后已投帧同号会被吞掉——兜底必须在唯一要兜的场景里真的生效。
+    # 前端按水位去重(seq <= lastSeq 即丢，app.js handleFrame):
+    # 合成帧与最后已投帧同号会被吞掉——合成逻辑必须在唯一需要的场景里真的生效。
     assert all(done_seq > last for last in delivered_seqs)
 
 
@@ -622,7 +622,7 @@ async def test_sse_idle_survives_poll_timeout_and_sends_heartbeat(client, monkey
     await wait_status(client, token, run_id, {"running"})
 
     async def release_after_idle_ticks() -> None:
-        # 先让 SSE 空转十几个 poll 周期;轮询一旦抛错,第一个周期就会断开连接。
+        # 先让 SSE 空转十几个 poll 周期；轮询一旦抛错，第一个周期就会断开连接。
         await asyncio.sleep(0.3)
         gate.set()
 

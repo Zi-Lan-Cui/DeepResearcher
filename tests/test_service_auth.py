@@ -58,8 +58,8 @@ def test_token_from_other_secret_rejected():
 
 
 def test_expired_token_rejected_with_injected_clock():
-    # PyJWT 的 decode 只认系统真实时钟,无法注入过期判定时刻;改为把签发
-    # 时间拨到两小时前,让 TTL 一小时按真实时间判为已过期。
+    # PyJWT 的 decode 只认系统真实时钟，无法注入过期判定时刻；改为把签发
+    # 时间拨到两小时前，让 TTL 一小时按真实时间判为已过期。
     import time
 
     real_now = time.time()

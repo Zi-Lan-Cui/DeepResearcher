@@ -1,7 +1,6 @@
-"""run 控制面准入服务。
+"""run 控制层准入服务：把受理的工作持久为 queued。
 
-本服务把受理的工作持久为 ``queued``。它刻意不知道 asyncio 任务、
-LangGraph、checkpoint 或 worker。
+不涉及 asyncio 任务、LangGraph、checkpoint 或 worker。
 """
 
 from __future__ import annotations

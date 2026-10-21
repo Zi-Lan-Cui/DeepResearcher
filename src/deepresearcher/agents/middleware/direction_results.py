@@ -1,12 +1,7 @@
 """每模型回合前把已完成的方向结果注入上下文的中间件。
 
-WaitDirection 只在模型主动调用时收取；模型不调用它而直接推进，例如继续改稿或派发
-其他方向时，已完成的报告就在本回合被漏读。本中间件在每个模型回合前结算无主登记并做
-非阻塞接收，报告与通道差量随本钩子的 superstep 一并落盘，崩溃语义与工具收据同构：
-节点失败时注入与吸收同弃。
-凡 context 提供 direction_tasks 与 loop_state 即可挂；必须排在
-LoopStateRebuildMiddleware 之后，先重建 loop_state 再接收，避免重建用通道旧值
-覆盖本钩子的吸收结果。supervisor 包与本模块互相引用，重依赖在函数体内延迟导入。
+必须排在 LoopStateRebuildMiddleware 之后：先重建 loop_state 再接收，否则重建会用
+通道旧值覆盖本钩子的结果。context 提供 direction_tasks 与 loop_state 即可挂载。
 """
 
 from typing import Any

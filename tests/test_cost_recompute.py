@@ -75,7 +75,7 @@ async def test_recompute_prices_rows_once_and_is_idempotent(recompute_db, monkey
         run = await session.get(Run, "run-a")
     assert Decimal(str(actual.cost_cny)) == Decimal("1.10000000")
     assert actual.detail_json["price_version"] == PRICE_TABLE_VERSION
-    # estimated 行与运行时口径一致：豁免在成本之外。
+    # estimated 行与运行时判定一致：豁免不计入成本。
     assert Decimal(str(estimated.cost_cny)) == Decimal("0")
     assert estimated.detail_json["price_version"] == "unpriced"
     assert Decimal(str(run.estimated_cost_cny)) == Decimal("1.10000000")

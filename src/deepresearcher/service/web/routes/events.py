@@ -35,14 +35,14 @@ async def run_events(
 ) -> StreamingResponse:
     """以 SSE 回放并实时尾随某个 run 的持久事件流。
 
-    返回:
-        StreamingResponse: 帧流，直到 done 或行终态兜底。
+    返回：
+        StreamingResponse: 帧流，直到 done 或行终态为止。
     """
     state = app_state(request)
 
     async def stream() -> AsyncIterator[str]:
-        # 两条唤醒源、一条数据路:已提交帧只从 DB tail 读(notify 或 poll 唤醒);
-        # 预览帧读 EphemeralEventBus 订阅。没有进程内直投,也就不需要去重。
+        # 两条唤醒源、一条数据路：已提交帧只从 DB tail 读(notify 或 poll 唤醒);
+        # 预览帧读 EphemeralEventBus 订阅。没有进程内直投，也就不需要去重。
         notify_key, notify_queue = state.manager.signal_bus.subscribe_event(run.id)
         preview_subscription = None
         if state.ephemeral_bus is not None:
@@ -50,7 +50,7 @@ async def run_events(
                 preview_subscription = await state.ephemeral_bus.subscribe(run.id)
             except Exception:  # noqa: BLE001 - durable DB stream remains available
                 logger.warning("preview_subscribe_failed run_id=%s", run.id, exc_info=True)
-        # 浏览器静默断线后的重连带 Last-Event-ID：从已收水位续放。
+        # 浏览器静默断线后的重连带 Last-Event-ID：从已收序号续放。
         try:
             last_seq = max(0, int(request.headers.get("last-event-id", "0")))
         except ValueError:
@@ -58,7 +58,7 @@ async def run_events(
         last_ping = asyncio.get_running_loop().time()
 
         def _drain(rows) -> tuple[list[str], bool]:
-            """把 DB 行投成 SSE 帧;返回 (frames, 是否见到 done)。"""
+            """把 DB 行投成 SSE 帧；返回 (frames, 是否见到 done)。"""
             nonlocal last_seq
             frames: list[str] = []
             saw_done = False
@@ -73,7 +73,7 @@ async def run_events(
         async def _terminate_if_settled() -> tuple[list[str], bool]:
             """done 帧可能整批丢在失败的 flush 里，行的终态才是权威。
 
-            合成前先重读一次 tail，避免合成帧排在刚落库的 done 之前；仍读不到才合成。
+            合成前先重读一次 tail，避免合成帧排在刚写入数据库的 done 之前；仍读不到才合成。
             """
             frames, saw_done = _drain(await state.manager.event_store.after(run.id, last_seq))
             if saw_done:
@@ -82,7 +82,7 @@ async def run_events(
             if terminal is None:
                 return frames, False
             # 合成帧的 seq 必须严格大于最后已投帧：前端按已收帧的最大 seq 去重，
-            # 同号帧会被当作回放丢弃，兜底 done 反而送不到客户端。
+            # 同号帧会被当作回放丢弃，合成的 done 帧反而送不到客户端。
             synthesized = project(
                 {
                     "run_id": run.id,
@@ -133,7 +133,7 @@ async def run_events(
                 if preview_wait is not None and preview_wait in done:
                     items.append(preview_wait.result())
                 if notify_wait in done:
-                    # notify 只是唤醒信号,payload 是 None,数据由下一轮循环头的 tail 取。
+                    # notify 只是唤醒信号，payload 是 None，数据由下一轮循环头的 tail 取。
                     notify_wait.result()
                 if not items:
                     # 本轮无预览可发（wait 超时或仅 notify 唤醒）：走一次心跳检查
@@ -144,7 +144,7 @@ async def run_events(
                         yield ": ping\n\n"
                     continue
                 for item in items:
-                    # 预览总线只投 text_delta，由 preview_event 白名单闸保证；
+                    # 预览总线只投 text_delta，由 preview_event 白名单校验保证；
                     # project() 默认拒绝，非白名单帧返回 None。
                     frame = project(item)
                     if frame is not None:

@@ -1,11 +1,7 @@
 """Checkpointer serde：把 State 类型加入 msgpack 允许清单。
 
-LangGraph 把每个 superstep 的 state 以 msgpack 存进 Postgres；反序列化遇到未知自定义
-类型目前告警，未来严格模式会直接拒绝，崩溃恢复与澄清 resume 会在升级后失败。这里显式
-放行 deepresearcher 自有包里的 Pydantic 模型、Enum 与 dataclass，这些即可能进入
-ResearchState 的通道类型；既消除告警，也不对外部类开放反序列化。
-
-扫描式收集：新增 state 类型只要落在这些包内即自动覆盖，清单无需手维护。
+反序列化遇到未知自定义类型会告警，未来严格模式下直接拒绝。这里显式允许
+deepresearcher 自有包内的 Pydantic 模型、Enum 与 dataclass，不对外部类开放。
 """
 
 from __future__ import annotations

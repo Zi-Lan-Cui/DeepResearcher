@@ -1,12 +1,8 @@
-"""PostgreSQL advisory lock 原语:全仓唯一直写锁 SQL 的地方。
+"""PostgreSQL advisory lock 原语：全仓唯一直写锁 SQL 的地方。
 
-advisory lock 是会话连接的能力，不属于任何一张表的领域；各平面持它串行化
-计数加写入这类跨行不变量。非 PG（SQLite 测试）统一在此降级为空操作，
-调用点不再各自写方言判断。两种锁生命周期不同，按场景不可选错：
-
-- acquire_xact_lock：事务级，commit/rollback 自动释放，保护当前事务的临界区；
-- held_session_lock：会话级，跨任意代码块持有、退出时显式释放；进程崩溃时
-  随连接断开自动解锁，适合启动归类这类跨事务的编排。
+非 PG（SQLite 测试）在此统一降级为空操作。两种锁生命周期不同，不可选错：
+acquire_xact_lock 事务级，commit/rollback 自动释放；held_session_lock 会话级，
+跨代码块持有、退出时显式释放，进程崩溃随连接断开自动解锁。
 """
 
 from __future__ import annotations
@@ -32,15 +28,15 @@ def _is_postgres(session_or_connection: Any) -> bool:
 
 
 async def acquire_xact_lock(session_or_connection: Any, key: int) -> None:
-    """取事务级 advisory 锁;非 PG 上空操作(各调用点的进程内锁负责降级)。"""
+    """取事务级 advisory 锁；非 PG 上空操作(各调用点的进程内锁负责降级)。"""
     if _is_postgres(session_or_connection):
         await session_or_connection.execute(_XACT_LOCK, {"lock_id": key})
 
 
 async def try_acquire_xact_lock(session_or_connection: Any, key: int) -> bool:
-    """非阻塞事务级 advisory 锁:抢到 True,已被占 False;非 PG 恒 True(单进程)。
+    """非阻塞事务级 advisory 锁：抢到 True，已被占 False；非 PG 恒 True(单进程)。
 
-    周期清扫用——拿不到锁的副本本轮直接跳过,不与持有者排队,
+    周期清扫用——取不到锁的副本本轮直接跳过，不与持有者排队，
     否则 N 个 worker 会在锁上串成一条比清扫本身更长的队。
     """
     if not _is_postgres(session_or_connection):

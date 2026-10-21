@@ -1,12 +1,8 @@
 """图节点命名与路由决策的单一来源。
 
-节点名是跨模块契约：graph.py 用它挂边，node_runner 与 Supervisor 把
-``supervisor_next`` 写进 State。因此常量必须放在 ``nodes/`` 与
-``graph.py`` 之外的中性模块，避免叶子 Agent 反向 import 装配层。
-
-路由规则只有一条主干 ``route_after``：节点一旦声明 terminal phase，
-无条件收束到渲染终点；否则跟随该节点写下的业务交接。各节点的出口
-函数是主干加各自一个字段的业务判断，全部路由出口都定义在本文件。
+节点名是跨模块契约，常量必须放在 nodes/ 与 graph.py 之外的中性模块，避免叶子
+Agent 反向 import graph.py。主干 route_after：节点声明 terminal phase 则转渲染终点，
+否则跟随该节点写下的业务交接。
 """
 
 from collections.abc import Mapping
@@ -24,18 +20,17 @@ class NodeName(StrEnum):
 
 
 # failed：node_runner 接管；rendering：节点自行宣告的提前终止（预算耗尽、
-# 即时回答、证据不足、写作失败）；completed：防御性收束。
+# 即时回答、证据不足、写作失败）；completed：防御性结束。
 TERMINAL_PHASES = frozenset({"failed", "rendering", "completed"})
 
-# 可丢弃预览通道白名单的唯一事实源；值是产出方的节点名，即 astream 的 ns 头。
-# 生成端 executor、preview 总线、消费端 projector 三处同读这一份，放开新通道
-# 只改这里。tests/test_service_architecture 守卫持久事件面与预览面互不 import，
-# 常量因此必须住在两面都可达的中性词表模块。
+# 可丢弃预览通道白名单的唯一事实源，值是产出方节点名，即 astream 的 ns 头。生成端
+# executor、preview 总线、消费端 projector 三处同读这一份，放开新通道只改这里。
+# 持久事件层与预览通道互不 import，常量只能放在这里的中性词表模块。
 PREVIEW_CHANNELS = frozenset({NodeName.SUPERVISOR})
 
 
 def _field(state: Mapping[str, object], name: str, field: str, default: str) -> str:
-    """非变更读取路由字段；条件边不能像 ``section()`` 那样恢复模型并写回 State。"""
+    """非变更读取路由字段；条件边不能像 section() 那样恢复模型并写回 State。"""
     value = state.get(name)
     if value is None:
         return default
@@ -60,8 +55,8 @@ def route_after_router(state: Mapping[str, object]) -> str:
 
 
 def route_after_clarify(state: Mapping[str, object]) -> str:
-    # 澄清完成（含轮次用尽按原问题收束）后一律进 Supervisor；
-    # terminal phase 的直达渲染收口由 route_after 统一处理。
+    # 澄清完成（含轮次用尽按原问题结束）后一律进 Supervisor；
+    # terminal phase 的直达渲染的出口由 route_after 统一处理。
     return route_after(state, NodeName.SUPERVISOR)
 
 
@@ -76,7 +71,7 @@ def route_after_supervisor(state: Mapping[str, object]) -> str:
 
 def route_after_writer(state: Mapping[str, object]) -> str:
     # Writer 的所有非成功路径（快速回答/证据不足/耗尽）都会把 phase 置为
-    # rendering，由主干收束；这里只需要声明“成功草稿去审阅”。
+    # rendering，由主干结束；这里只需要声明“成功草稿去审阅”。
     return route_after(state, NodeName.REVIEWER)
 
 

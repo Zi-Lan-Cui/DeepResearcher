@@ -1,13 +1,8 @@
-"""LedgerSpanProcessor:把本项目的 span 写成事件账本记录(run_events/JSONL)。
+"""LedgerSpanProcessor：把本项目的 span 写成事件日志记录（run_events/JSONL）。
 
-记录派生自 OTel span 的生命周期:on_start 写 *_started,on_end 写
-*_completed/failed/cancelled;id 即 OTel 32/16 位 hex。只处理本 instrumentation
-scope 的 span,按 creation-time 的 deepresearcher.run_id 属性路由到该 run 注册
-的 sink;查无 sink 时丢弃并告警一次,写 sink 抛错不得波及 span 路径。
-
-同一节点执行会落双轨记录,两轨分工不同:本模块的 span_* 承载 trace 树形,
-供面板、evals、回放按 span 消费;instrumentation 的 node_* 承载业务字段摘要,
-供 projector 面向用户的投影消费;两侧以 span_id 互链。
+on_start 写 *_started，on_end 写 *_completed/failed/cancelled。只处理本
+instrumentation scope 的 span，按 deepresearcher.run_id 路由到该 run 的 sink；
+查无 sink 时丢弃并告警一次，写 sink 抛错不得波及 span 路径。
 """
 
 import json
@@ -25,19 +20,19 @@ _warned_runs: set[str] = set()
 
 
 def attach_to_provider(provider) -> None:
-    """给 provider 挂账本处理器,每 provider 只挂一次(装配根与测试共用)。"""
+    """给 provider 注册事件日志处理器，每 provider 只注册一次(装配根与测试共用)。"""
     if not getattr(provider, "_deepresearcher_ledger_attached", False):
         provider.add_span_processor(LedgerSpanProcessor())
         provider._deepresearcher_ledger_attached = True  # type: ignore[attr-defined]
 
 
 def attach_run_sink(run_id: str, sink: TraceSink) -> None:
-    """登记某 run 的账本 sink;RunExecutor 在 execute 入口调用。"""
+    """登记某 run 的事件日志 sink;RunExecutor 在 execute 入口调用。"""
     _SPAN_SINKS[run_id] = sink
 
 
 def detach_run_sink(run_id: str) -> None:
-    """注销 sink;调用方须在本 run 的根 span 结束后执行,否则终态记录会丢。"""
+    """注销 sink；调用方须在本 run 的根 span 结束后执行，否则终态记录会丢。"""
     _SPAN_SINKS.pop(run_id, None)
     _warned_runs.discard(run_id)
 
@@ -56,10 +51,10 @@ def _labels(span: ReadableSpan) -> tuple:
 
 
 def _terminal_fields(span: ReadableSpan) -> tuple[str, str | None]:
-    """(status, error):cancelled 与 GraphInterrupt 单独归类,failed 取 status.description。
+    """(status, error):cancelled 与 GraphInterrupt 单独归类，failed 取 status.description。
 
-    LangGraph 的澄清挂起以 Interrupt 异常文本进入 span status,它是设计内
-    中断;记成 failed 会把正常挂起混进真错误统计。
+    LangGraph 的澄清挂起以 Interrupt 异常文本进入 span status，它是设计内
+    中断；记成 failed 会把正常挂起混进真错误统计。
     """
     attributes = span.attributes or {}
     if attributes.get("deepresearcher.status") == "cancelled":
@@ -74,10 +69,10 @@ def _terminal_fields(span: ReadableSpan) -> tuple[str, str | None]:
 
 
 class LedgerSpanProcessor(SpanProcessor):
-    """OTel 处理链上的账本写入端;与 langfuse/console 处理器并列、互不依赖。"""
+    """OTel 处理链上的事件日志写入端；与 langfuse/console 处理器并列、互不依赖。"""
 
     def on_start(self, span: ReadableSpan, parent_context=None) -> None:
-        # started/终态的分流在 _record 内按 end_time 判定,两个钩子共用组装。
+        # started/终态的分流在 _record 内按 end_time 判定，两个钩子共用组装。
         self._write(span)
 
     def on_end(self, span: ReadableSpan) -> None:

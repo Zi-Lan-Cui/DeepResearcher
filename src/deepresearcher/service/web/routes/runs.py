@@ -25,7 +25,7 @@ async def create_run(
     if not query:
         raise HTTPException(status_code=422, detail="研究问题不能为空。")
     state = app_state(request)
-    # 个人偏好在创建时刻冻结进 run 行:此后用户改偏好、服务器改 env 都不回溯本场。
+    # 个人偏好在创建时刻冻结进 run 行：此后用户改偏好、服务器改 env 都不回溯本场。
     preferences_snapshot = frozen_snapshot(user.preferences, state.settings.agent)
     try:
         run_id = await state.manager.start(user.id, query, preferences_snapshot)
@@ -48,9 +48,9 @@ async def get_run(
     request: Request,
     run: Run = Depends(owned_run),
 ) -> dict[str, Any]:
-    # 事件读取与状态判断收口在 manager;这里只做呈现投影与响应组装。
+    # 事件读取与状态判断集中在 manager；这里只做呈现投影与响应组装。
     payload = await app_state(request).manager.pending_clarification_payload(run)
-    # 与 SSE 共用投影:截断/白名单一处演化,REST 不再抄一份。
+    # 与 SSE 共用投影：截断/白名单一处演化，REST 不再抄一份。
     clarification = project_clarification(payload) if payload is not None else None
     return {
         **run_summary(run),
@@ -91,7 +91,7 @@ async def resume_run(
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except RuntimeError as exc:
         # 三种 RuntimeError 语义不同，必须分开文案：混显会把真实故障
-        # （如 already_resumed 的 CAS 未命中）伪装成"不在等待输入"。
+        # （如 already_resumed 的 CAS 未命中）误报为"不在等待输入"。
         reason = str(exc)
         detail = {
             "checkpoint_missing": "恢复断点不存在，请重新发起。",

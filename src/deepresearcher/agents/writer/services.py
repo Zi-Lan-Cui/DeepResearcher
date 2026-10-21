@@ -1,7 +1,7 @@
-"""Writer 业务实现:不感知 langgraph 的纯函数。
+"""Writer 业务实现：不感知 langgraph 的纯函数。
 
-装配与 loop 控制留在 agent.py,工具回执留在 tools.py;本模块所需全部经参数注入,
-包括 state、config、emit、render_incomplete,模型可见事件经 emit 回调发射。
+装配与 loop 控制留在 agent.py，工具回执留在 tools.py；本模块所需全部经参数注入，
+包括 state、config、emit、render_incomplete，模型可见事件经 emit 回调发射。
 """
 
 from collections.abc import Callable, Sequence
@@ -67,7 +67,7 @@ def state_update_for_quick_answer(state: ResearchState) -> dict[str, object]:
 
 
 def last_submitted_markdown(messages: Sequence[BaseMessage]) -> str:
-    """取最后一次 CompleteReport 提交的正文,用于耗尽兜底时保留底稿。"""
+    """取最后一次 CompleteReport 提交的正文，用于轮次耗尽时保留底稿。"""
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             for call in message.tool_calls or []:
@@ -208,7 +208,7 @@ def prepare_evidence(
 
 
 def require_writer_directive(state: ResearchState) -> WriterDirective:
-    """WriterDirective 是写作的唯一入口事实源;缺席即不可开始。"""
+    """WriterDirective 是写作的唯一入口事实源；缺席即不可开始。"""
     directive = state.get("writer_directive")
     if directive is None:
         raise WriterGenerationError("Supervisor 未提供 WriterDirective，不能开始报告写作。")
@@ -225,7 +225,7 @@ def build_generation_messages(
     *,
     writer_feedback_chars: int,
 ) -> list[BaseMessage]:
-    """构造写作回合的首条 Human 消息:任务书、约束、上一稿与 Evidence 目录。"""
+    """构造写作回合的首条 Human 消息：任务书、约束、上一稿与 Evidence 目录。"""
     revision_feedback = ""
     if directive.revision_instructions:
         feedback = "；".join(directive.revision_instructions)[:writer_feedback_chars]
@@ -263,7 +263,7 @@ def state_update_for_insufficient_evidence(
     config: AgentConfig,
     render_incomplete: Callable[[ResearchState], str],
 ) -> dict[str, object]:
-    """无可用材料时以降级报告收束,如实说明 support 不足。"""
+    """无可用材料时以降级报告结束，如实说明 support 不足。"""
     support_message = ""
     if evidences:
         support_message = (
@@ -299,7 +299,7 @@ def state_update_for_exhausted_result(
     config: AgentConfig,
     emit: AgentEmit,
 ) -> dict[str, object]:
-    """回合耗尽:发 WRITER_EXHAUSTED 事件并以 rejected_draft 留底稿。"""
+    """回合耗尽：发 WRITER_EXHAUSTED 事件并以 rejected_draft 留底稿。"""
     emit(
         EventName.WRITER_EXHAUSTED,
         {
@@ -320,7 +320,7 @@ def state_update_for_exhausted_result(
             selected_evidence_ids=[],
         ),
         rejected_draft=last_markdown,
-        # 新草稿开启下一次审阅,但 attempts 保留跨草稿的累计值、不清零,
+        # 新草稿开启下一次审阅，但 attempts 保留跨草稿的累计值、不清零，
         # 否则 Supervisor 的审阅恢复上限会失效。
         review=ReviewProgress(status="pending", attempts=review_attempts),
     ).state_update()
@@ -333,7 +333,7 @@ def state_update_for_ready_result(
     evidence_count: int,
     emit: AgentEmit,
 ) -> dict[str, object]:
-    """校验通过的草稿:发 WRITER_DRAFT_READY 并交审阅。"""
+    """校验通过的草稿：发 WRITER_DRAFT_READY 并交审阅。"""
     source_count = len({item.url for item in draft.citations if item.url})
     emit(
         EventName.WRITER_DRAFT_READY,

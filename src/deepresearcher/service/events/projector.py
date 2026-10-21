@@ -1,29 +1,20 @@
 """事件 → 客户端安全帧 的纯函数投影。
 
-默认拒绝：只处理映射表里显式列出的 event_type，未知类型返回 None，
-引擎将来新增事件不会自动把 payload 带到浏览器。每一帧逐字段新建 dict，
-不整包转发 payload；``error``/``*_preview``/``prompt`` 等敏感键在代码层面
-就没有进入路径。
+未列入下列词汇表的 event_type 返回 None；payload 逐字段重建，不整包转发。
+帧格式与前端共用；其中一部分帧由 service 侧合成：
 
-下列 SSE 帧词汇表与前端、服务层合成事件共用。呈现原则：管线每个阶段
-对应一个阶段块，出现即开始、完成即灰化，阶段自己的判断文本进该块；
-方向卡是 Supervisor 块的子项。
-
-- ``stage_open``  阶段开始 {stage, title}
-- ``plan``        阶段旁白一行 {stage, text}（规划理由/决策/跳过原因）
-- ``stage_done``  阶段结束+结论 {stage, status, text}
-- ``tick``        全局杂项一行（取消、未知阶段）
-- ``stats``       运行指标 → 标题区（轮次/方向/证据计数）
-- ``task_open``   开一张方向卡 {task, title}
-- ``task_update`` 方向卡滚动一条动作 {task, text}
-- ``task_done``   方向卡收束 {task, status, summary}
-- ``status``      运行状态变化（服务层合成）
-- ``headline``    浓缩标题落库（服务层合成，进行中的头部即时收敛）
-- ``error``       需要用户知道的异常提示（仅安全文案）
-- ``done``        终态 {status, answer_mode, report_available}
-
-各 agent 的 model_turn 计数不面向用户；唯一例外是 supervisor 的规划文字
-（有文本才发帧，见 plan）。
+  stage_open   阶段开始 {stage, title}
+  plan         阶段旁白一行 {stage, text}
+  stage_done   阶段结束与结论 {stage, status, text}
+  tick         全局杂项一行
+  stats        运行指标 {轮次, 方向, 证据计数}
+  task_open    开一张方向卡 {task, title}
+  task_update  方向卡滚动一条动作 {task, text}
+  task_done    方向卡结束 {task, status, summary}
+  status       运行状态变化（service 合成）
+  headline     浓缩标题写入数据库（service 合成）
+  error        需要用户知道的异常提示
+  done         终态 {status, answer_mode, report_available}
 """
 
 from __future__ import annotations
@@ -62,7 +53,7 @@ _SOURCE_SKIP_LABELS: dict[str, str] = {
 
 
 def _display_host(url: object) -> str:
-    """URL → 展示用主机名：剥协议、路径与查询串，只留可辨认的站点。"""
+    """URL → 展示用主机名：去掉协议、路径与查询串，只留可辨认的站点。"""
     try:
         host = urlsplit(str(url or "")).hostname or ""
     except ValueError:
@@ -77,7 +68,7 @@ class SseFrame:
 
 
 def project_clarification(payload: Mapping[str, Any]) -> dict[str, Any] | None:
-    """clarification_requested 载荷 → 客户端可见的 {question, options};空 question 不成帧。
+    """clarification_requested 载荷 → 客户端可见的 {question, options}；空 question 不成帧。
 
     截断上限为 options 最多 3 条、每条 120 字，question 最多 500 字。这是敏感
     文案的白名单出口，SSE 与 REST 两条通道共用此一处，改动不得另起一份副本。
@@ -121,9 +112,8 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
             )
         return None
     if event_type == EventName.NODE_FAILED:
-        # 只说哪个阶段失败，内部异常文本不出网关，完整信息在 RunEvent 与日志。
-        # 已知节点必须用 failed 的 stage_done 关框，否则阶段框停在"运行中"，
-        # reviewer content_filter 事故即由此而来；未知节点退回全局错误行。
+        # 只说哪个阶段失败，内部异常文本不外发，完整信息在 RunEvent 与日志。已知节点必须
+        # 用 failed 的 stage_done 关框，否则阶段框停在"运行中"；未知节点退回全局错误行。
         if isinstance(node, str) and node in _STAGE_TITLES:
             return _frame(
                 "stage_done",
@@ -147,7 +137,7 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == EventName.DELEGATE_COMPLETED:
         status = str(payload.get("status", ""))
         if status == "blocked":
-            return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，开始收束")
+            return _plan(seq, NodeName.SUPERVISOR, "研究轮次预算耗尽，停止派发新方向")
         return None
     if event_type == EventName.DIRECTION_ARRIVAL_MERGED:
         title = _text(payload.get("display_title"), 40) or _text(payload.get("task_id"), 40)
@@ -185,10 +175,10 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
     if event_type == EventName.RESEARCH_TASK_FAILED:
         return _task("task_done", seq, payload, {"status": "failed", "summary": "研究未成功"})
     if event_type == EventName.DIRECTION_EVIDENCE_ADDED:
-        # 该事件是每次 AddEvidence 提交的审计,accepted=0 表示全被退回修正,不是入池。
+        # 该事件是每次 AddEvidence 提交的审计，accepted=0 表示全被退回修正，不是新增。
         accepted = _int(payload.get("accepted_count"))
         if accepted > 0:
-            return _task("task_update", seq, payload, {"text": f"证据入池 +{accepted}"})
+            return _task("task_update", seq, payload, {"text": f"新增证据 +{accepted}"})
         if _int(payload.get("rejected_count")) or _int(payload.get("duplicate_count")):
             return _task("task_update", seq, payload, {"text": "证据未通过校验，正在修正"})
         return None
@@ -289,14 +279,14 @@ def project(record: Mapping[str, Any]) -> SseFrame | None:
         )
     if event_type == EventName.TEXT_DELTA:
         # 生产者是 RunExecutor 把 astream(subgraphs=True) 的 messages 按命名空间路由；
-        # 通道白名单与总线闸读同一份 routing.PREVIEW_CHANNELS，此处是投影侧的再次校验。
+        # 通道白名单与总线开关读同一份 routing.PREVIEW_CHANNELS，此处是投影侧的再次校验。
         channel = _text(payload.get("channel"), 24)
         text = _text(payload.get("text"), 200)
         if channel not in PREVIEW_CHANNELS or not text:
             return None
         return SseFrame(event=EventName.TEXT_DELTA, data={"channel": channel, "text": text})
 
-    # 服务层合成事件
+    # service 合成的帧
     if event_type == EventName.RUN_HEADLINE_UPDATED:
         headline = _text(payload.get("headline"), RUN_HEADLINE_MAX_CHARS)
         return _frame("headline", seq, {"text": headline}) if headline else None
@@ -343,7 +333,7 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
     if node == NodeName.WRITER:
         return {
             "completed": "草稿通过校验",
-            "exhausted": "写作未正常收束",
+            "exhausted": "写作轮次耗尽",
             "failed": "写作失败",
         }.get(str(payload.get("writer_status", "")), "")
     if node == NodeName.REVIEWER:

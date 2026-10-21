@@ -1,7 +1,7 @@
-"""环境变量读取的解析语义单源:strip、大小写、失败回退只在这一处定义。
+"""环境变量读取的解析语义单源：strip、大小写、失败回退只在这一处定义。
 
-引擎 Settings(config.py)与服务 ServiceConfig(settings.py)两套配置共享本模块;
-max、choices、必填这类各自的校验与夹取留在自己的构造处,这里只保证
+引擎 Settings(config.py)与服务 ServiceConfig(settings.py)两套配置共享本模块；
+max、choices、必填这类各自的校验与夹取留在自己的构造处，这里只保证
 同一种写法在两边解析结果相同。
 """
 

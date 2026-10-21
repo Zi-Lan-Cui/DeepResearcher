@@ -20,7 +20,7 @@ def test_every_prompt_loads_nonempty():
 
 
 def test_language_directive_matches_template_byte_for_byte():
-    # 语言纪律模板必须原样产出,文案不漂移。
+    # 语言纪律模板必须原样产出，文案不漂移。
     out = language_directive("中文")
     assert out.startswith("---\n\n## Output language") and out.endswith("leave code as is.\n")
     assert "{language}" not in out
@@ -30,7 +30,7 @@ def test_role_prompts_keep_identity_markers():
     assert "# Role" in load_prompt("researcher")
     assert "Supervisor" in load_prompt("supervisor")
     assert "overall reviewer" in load_prompt("reviewer")
-    # writer 保留语言占位符,由调用点 .replace 填充
+    # writer 保留语言占位符，由调用点 .replace 填充
     assert "__LANG__" in load_prompt("writer")
 
 
@@ -50,10 +50,10 @@ def test_researcher_prompt_teaches_early_evidence_submission_with_examples():
 def test_supervisor_prompt_carries_dispatch_fewshots():
     prompt = load_prompt("supervisor")
     assert "## Examples" in prompt
-    # 派发示例两字段各就各位,反面说明禁止截断复述。
+    # 派发示例两字段各就各位，反面说明禁止截断复述。
     assert '"display_title":' in prompt and '"research_topic":' in prompt
     assert "merely truncates" in prompt
-    # 末轮示例校验收束动作:折叠、诚实 partial、完成或结束。
+    # 末轮示例校验结束动作：折叠、诚实 partial、完成或结束。
     assert "no further pass" in prompt and "honest partial status" in prompt
     # 不向模型描述程序侧不可达的防御分支。
     assert "status=blocked" not in prompt
@@ -63,7 +63,7 @@ def test_supervisor_prompt_documents_workbench_protocol():
     prompt = load_prompt("supervisor")
     assert "### `UpdateWorkbench`" in prompt
     assert '"op": "upsert_aspect"' in prompt
-    assert '"op": "acknowledge"' not in prompt  # 操作表里 acknowledge 单列,示例不演示空转表态
+    assert '"op": "acknowledge"' not in prompt  # 操作表里 acknowledge 单列，示例不演示空转表态
     assert "acknowledge" in prompt
     assert "ResearchComplete` refuses" in prompt
     assert "ReviseResearchSynthesis" not in prompt

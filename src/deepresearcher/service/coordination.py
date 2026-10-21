@@ -1,15 +1,13 @@
 """独立服务进程共享的稳定 PostgreSQL 协调键。
 
-advisory lock 的键是全库范围的协调契约：保持具名、唯一、
-跨滚动部署稳定。旧进程存活期间改键，会把一段临界区拆成
-两把互不相干的锁。
+advisory lock 的键必须具名、唯一、跨滚动部署稳定：旧进程存活期间改键，
+一段临界区会被拆成两把互不相干的锁。
 """
 
 DATABASE_MIGRATION_LOCK_ID = 731_904_620
-# 731_904_621 曾是 RUN_CLAIM_CAPACITY_LOCK_ID,为 claim 容量检查的临界区。
-# 该锁已随全局在跑上限一并退役:并发总量改由 worker 本地槽位约束。
-# 编号保留不复用——旧进程存活期间若把它分配给别的临界区,
-# 会出现两段互不相干的区共用一把锁。
+# 731_904_621 曾是 RUN_CLAIM_CAPACITY_LOCK_ID，为 claim 容量检查的临界区，该锁已随
+# 全局并发上限退役，并发总量改由 worker 本地槽位约束。编号保留不复用：旧进程存活
+# 期间若把它分配给别的临界区，会出现两段不相干的区共用一把锁。
 RETIRED_RUN_CLAIM_CAPACITY_LOCK_ID = 731_904_621
 WORKER_STARTUP_RECOVERY_LOCK_ID = 731_904_622
 RUN_ADMISSION_LOCK_ID = 731_904_623

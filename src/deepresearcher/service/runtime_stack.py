@@ -1,10 +1,6 @@
-"""进程无关的基础设施栈：API 与 Worker 两种 runtime 共用的装配核。
+"""API 与 Worker 进程共用的基础设施装配。
 
-本文件只收两种 role 下逐字相同的装配与逆序拆解:migrate/engine/session、事件 Hub、
-信号总线、checkpointer、事件 store/publisher。刻意不收的差异留在各自 runtime 文件里:
-- API 独有的 auth、login-limiter、RunManager;Worker 独有的 WorkerRuntime、信号订阅、恢复锁;
-- material_store 与 http_client 仅 `role="worker"` 创建,API 是纯控制面,不执行 run;
-- redis 预览总线两种 role 同规则:按 `redis_preview_enabled` 开关,工厂失败退化为 None。
+material_store 与 http_client 只有 worker 需要，不在此列。
 """
 
 from __future__ import annotations
@@ -36,7 +32,7 @@ from deepresearcher.tools.transport import HttpClient
 
 @dataclass
 class RuntimeStack:
-    """基础设施栈的持有物;装配对象(WorkerRuntime/RunManager)由各 runtime 自行构造。"""
+    """本进程用到的 engine、session、事件与信号组件。"""
 
     engine: Any
     session_factory: async_sessionmaker[AsyncSession]
@@ -58,11 +54,9 @@ async def build_runtime_stack(
     *,
     role: Role,
 ) -> AsyncIterator[RuntimeStack]:
-    """装配两种 runtime 共享的基础设施,退出时按相反顺序释放。
+    """装配两种 runtime 共享的基础设施，退出时按相反顺序释放。
 
-    每获取一个资源就立刻登记进 AsyncExitStack，这样装配半途抛错时也按相反顺序
-    释放已登记的资源，不留悬挂连接。role 是两种进程差异的最小表达，新增
-    runtime 形态前先确认这里的差异划分仍然成立。
+    每获取一个资源就登记进 AsyncExitStack，装配半途抛错时也按相反顺序释放。
     """
     async with AsyncExitStack() as resources:
         await migrate_database(service_config.database_url)
@@ -93,7 +87,7 @@ async def build_runtime_stack(
                 channel_prefix=service_config.redis_channel_prefix,
                 queue_size=service_config.redis_preview_queue_size,
             )
-            if ephemeral_bus is not None:  # 工厂可降级为 None,此时持久事件仍可用,None 无需登记释放
+            if ephemeral_bus is not None:  # 工厂可能返回 None；持久事件仍可用，无需登记释放
                 resources.push_async_callback(ephemeral_bus.close)
 
         checkpointer = None

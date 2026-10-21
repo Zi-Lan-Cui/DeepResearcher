@@ -41,7 +41,7 @@ class SearchCandidate(BaseModel):
 
 
 # 规则只是读取前的候选先验；必须匹配完整 hostname，避免
-# ``fake-gov.cn`` / ``bilibili.com.evil.test`` 等后缀欺骗。``(?:^|\.)`` 自动覆盖子域。
+# fake-gov.cn / bilibili.com.evil.test 等后缀欺骗。(?:^|\.) 自动覆盖子域。
 def _domain(*domains: str) -> re.Pattern[str]:
     alternatives = "|".join(re.escape(domain) for domain in domains)
     return re.compile(rf"(?:^|\.)(?:{alternatives})$")

@@ -1,7 +1,7 @@
-"""worker 执行面 runtime:进程装配、启动恢复与生命周期。
+"""worker 执行层 runtime：进程装配、启动恢复与生命周期。
 
 API 拥有 HTTP、鉴权与 SSE；本模块拥有图执行资源，并自主消费持久队列。
-基础设施装配在 ``service.runtime_stack``，与 API runtime 共享，material_store 与
+基础设施装配在 service.runtime_stack，与 API runtime 共享，material_store 与
 http_client 仅 role="worker" 时创建。本文件保留的 Worker 独有差异：启动恢复
 持 advisory lock、运行时的信号订阅与 shutdown。
 """
@@ -41,7 +41,7 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 logger = get_logger("deepresearcher.service.execution.runtime")
 
-# 保留清扫循环首轮延迟:等连接池与启动归类收口,随机抖动另防副本齐动。
+# 保留清扫循环首轮延迟：等连接池与启动归类集中处理，随机抖动另防副本齐动。
 _FIRST_SWEEP_DELAY_SECONDS = 60
 
 
@@ -129,8 +129,6 @@ class WorkerRuntime:
         """保留期清扫的常驻循环：首轮短延迟后错峰，此后按配置间隔。
 
         首轮不等满一个间隔，让重启也起到清淤作用；随机抖动防多副本齐动。
-        清扫与在线执行争用同一 DB 是设计内的：批次小、幂等、advisory lock
-        互斥，任何一轮失败只等下一轮，不影响在线路径。
         """
         config = self._config
         logger.info(
@@ -170,7 +168,7 @@ class WorkerRuntime:
         self.executor.shutdown_langfuse()
 
     async def _settle_cancellations(self) -> None:
-        """带取消意图却停在 interrupted 的行:终态化 cancelled 并补 done 帧。
+        """带取消意图却停在 interrupted 的行：终态化 cancelled 并补 done 帧。
 
         取消意图的执行不依赖 executor 存活：claim/reap 始终跳过带取消标记的行，
         没有这一步，那些 run 会停在 interrupted 直到用户再次取消。
@@ -184,7 +182,7 @@ class WorkerRuntime:
     async def reconcile_startup(self) -> tuple[int, list[tuple[str, int, str]]]:
         """在自主轮询开始前归类 queued/interrupted/孤儿 run。
 
-        返回:
+        返回：
             判死的行数，以及可续跑的 (run_id, user_id, query) 列表。
         """
         resumable: list[tuple[str, int, str]] = []
@@ -254,7 +252,7 @@ class WorkerRuntime:
 
     async def resume_runs(self, pending: list[tuple[str, int, str]]) -> int:
         for run_id, user_id, query in pending:
-            # 同 _recover_expired:恢复广播推迟到 claim 成功之后(worker 侧发)。
+            # 同 _recover_expired：恢复广播推迟到 claim 成功之后(worker 侧发)。
             self._hub.open(run_id)
             await self.worker.submit(
                 RunWork(run_id=run_id, user_id=user_id, query=query, resume=True)
@@ -267,8 +265,8 @@ class WorkerRuntime:
 async def _startup_recovery_lock(session_factory: Callable[[], Any]) -> AsyncIterator[None]:
     """跨 Worker 进程串行化启动归类。
 
-    claim 本身已由行锁/CAS 保护。本锁只保护对 ``interrupted`` 行的
-    一次性扫描——它可能产生终态事件，因此不得跑两次。
+    claim 本身已由行锁/CAS 保护。本锁只保护对 interrupted 行的
+    一次性扫描——它可能产生终态事件，因此不得执行两次。
     """
     async with session_factory() as session:
         async with held_session_lock(session, WORKER_STARTUP_RECOVERY_LOCK_ID):
@@ -284,15 +282,15 @@ async def worker_lifespan(
 ) -> AsyncIterator[WorkerRuntime]:
     """创建一个独立 Worker 进程拥有的全部资源。
 
-    返回:
+    返回：
         已进入启动流程的 worker 运行时，上下文退出时释放。
     """
     service_config = config or get_service_config()
     engine_settings = settings or get_settings()
-    # 先于 RunExecutor(首次 Langfuse())装配全局 provider,让 langfuse 接管同一棵树。
+    # 先于 RunExecutor(首次 Langfuse())装配全局 provider，让 langfuse 接管同一棵树。
     configure_tracer_provider(service_config)
     async with build_runtime_stack(service_config, engine_settings, role="worker") as stack:
-        # 保留期清扫(jsonl + run 过程数据)统一由 WorkerRuntime 的背景循环承担,
+        # 保留期清扫(jsonl + run 过程数据)统一由 WorkerRuntime 的背景循环承担，
         # 启动路径不再各自做一次性清理。
         worker = WorkerRuntime(
             settings=engine_settings,

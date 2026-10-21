@@ -329,7 +329,7 @@ def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
 
     message = _build_limit_exceeded_message(1, 9, None, 8)
     assert LIMIT_MESSAGE_MARKER in message
-    # observability 以 startswith 判定回执归属,再剥前缀提取指标
+    # observability 以 startswith 判定回执归属，再剥前缀提取指标
     receipt = format_tool_receipt({"evidence_count": 2})
     assert receipt.startswith("【系统工具执行结果")
     assert receipt.split("\n", 1)[-1] == '{"evidence_count": 2}'
@@ -354,7 +354,7 @@ async def test_observable_summarization_emits_compaction_metrics():
     summary = HumanMessage(content="摘要")
 
     async def fake_super(_self, _state, _runtime):
-        # 替换真实压缩,只观察本类自身逻辑;真实触发路径由集成测试覆盖。
+        # 替换真实压缩，只观察本类自身逻辑；真实触发路径由集成测试覆盖。
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary]}
 
     real_super = factory_module.SummarizationMiddleware.abefore_model

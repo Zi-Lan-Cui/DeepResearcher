@@ -1,8 +1,8 @@
 """State 分区、运行生命周期与节点结果契约。
 
-``StopReason`` 是本模块的词汇单一来源：赋值端，即 Supervisor 及其工具，与
-消费端，即兜底判定和面向用户的描述文案，都引用枚举成员，避免两处
-各自维护字符串清单造成漂移。
+StopReason 是本模块的词汇单一来源：赋值端，即 Supervisor 及其工具，与
+消费端，即终止判定和面向用户的描述文案，都引用枚举成员，避免两处
+各自维护字符串清单造成不一致。
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class StopReason(StrEnum):
 
     @property
     def allows_partial_report(self) -> bool:
-        """研究未走到显式收尾时，允许按最新工作台兜底进入 Writer 的终止原因。"""
+        """研究未走到显式收尾时，允许按最新工作台降级进入 Writer 的终止原因。"""
         return self in {
             StopReason.ENDED_WITHOUT_COMPLETION,
             StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
@@ -52,33 +52,21 @@ class StopReason(StrEnum):
 
     @property
     def rank(self) -> int:
-        """终止原因的优先级数字;rank 大的覆盖 rank 小的。
+        """终止原因的优先级数字，数值大的覆盖数值小的。
 
-        Supervisor 一次运行里多个写点都可能给 stop_reason 赋值:轮次预算、
-        模型调用上限、异常、模型显式决定。此前优先级靠物理书写顺序和零散的
-        is None 判断隐式规定,新增写点稍有不慎就会覆盖本该显示的终态;改为
-        单调 rank 后,SupervisorLoopState.set_stop_reason 按 rank 采纳,
-        新增写点只需选合适的 rank,与书写顺序无关。
-
-        分级理由:
-        - ENDED_WITHOUT_COMPLETION 是最低级:它只是"未收尾即离场"的兜底记录,
-          后者是在轮次用尽之前就被强制终止。
-        - GLOBAL 含义是轮次用尽,低于模型调用上限;MODEL_CALL_LIMIT 表示没有机会收尾。
-        - PROVIDER_EXHAUSTED 排在调用上限与异常之间:模型确实显式收尾,
-          但动因是账户级系统性不可用;同一轮若再出现真实异常,异常优先。
-        - AGENT_FAILED 高于以上各项:基础设施失败需要显式暴露。
-        - COMPLETED 排最高:模型显式决定收尾,优先于基础设施信号。
+        多个写点都可能给 stop_reason 赋值，SupervisorLoopState.set_stop_reason 按 rank 采纳，
+        新增写点只需选定合适的 rank，与代码书写顺序无关。
         """
         return _STOP_REASON_RANKS.get(self, 0)
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
-    # tests/test_supervisor.py 校验每个 StopReason 都登记了描述:缺描述会静默落到语义相反的兜底句。
-    StopReason.COMPLETED: "Supervisor 完成研究收束并冻结综合稿；不足是否随稿披露由各板块的 disclose 决定。",
+    # tests/test_supervisor.py 校验每个 StopReason 都登记了描述：缺描述会静默落到语义相反的默认句。
+    StopReason.COMPLETED: "Supervisor 完成研究并冻结综合稿；不足是否随稿披露由各板块的 disclose 决定。",
     StopReason.ENDED_WITHOUT_COMPLETION: "模型结束研究而未显式收尾，按最新工作台交付部分报告。",
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
-    StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过天花板）。",
-    StopReason.PROVIDER_EXHAUSTED: "搜索供应商已被认证账户级不可用（额度耗尽或密钥无效），无法再获取任何新 Evidence，Supervisor 无证据收束本轮研究。",
+    StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过上限）。",
+    StopReason.PROVIDER_EXHAUSTED: "搜索供应商已被认证账户级不可用（额度耗尽或密钥无效），无法再获取任何新 Evidence，Supervisor 无证据结束本轮研究。",
     StopReason.AGENT_FAILED: "Supervisor 本轮执行失败，未能完成研究。",
 }
 
@@ -95,7 +83,7 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
 
 
 class DirectionStopReason(StrEnum):
-    """方向级 ResearchAgent 的终止原因;与 StopReason 分属两域,成员值就是序列化 wire 值。"""
+    """方向级 ResearchAgent 的终止原因；与 StopReason 分属两域，成员值就是序列化 wire 值。"""
 
     COMPLETE = "complete"
     STEP_BUDGET_EXHAUSTED = "step_budget_exhausted"
@@ -118,7 +106,7 @@ class RunError(BaseModel):
     @field_validator("message", "detail", mode="before")
     @classmethod
     def _clip_long_text(cls, value: object) -> object:
-        # 校验器只截断不抛错,避免错误处理路径自身因超长文本再抛出新异常。
+        # 校验器只截断不抛错，避免错误处理路径自身因超长文本再抛出新异常。
         text = str(value)
         if len(text) <= RUN_ERROR_TEXT_HARD_LIMIT_CHARS:
             return value
@@ -147,8 +135,8 @@ class RunError(BaseModel):
 def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str, Any]]:
     """失败事件与失败状态的公共字段单源。
 
-    状态侧 node_runner 与事件侧 instrumentation 由同一个 RunError 构造,
-    error/code/retryable 两处保持一致、不各自演化;link、duration 等场景
+    状态侧 node_runner 与事件侧 instrumentation 由同一个 RunError 构造，
+    error/code/retryable 两处保持一致、不各自演化；link、duration 等场景
     专有字段由调用方自行补进 make_node_event。
     """
     error = RunError.from_exception(stage, exc)
@@ -159,11 +147,11 @@ def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str
 
 
 class RenderOutcome(StrEnum):
-    """渲染终点节点写下的交付结局;terminal_reason 词汇的第二域,第一域是 StopReason。
+    """渲染终点节点写下的交付结局；terminal_reason 词汇的第二域，第一域是 StopReason。
 
-    成员值已被 checkpoint 与前端冻结,本枚举不改变 wire,只作枚举成员与用户可读
-    文案的单一来源;跨进程持久化的 lifecycle 终态,如 user_cancelled、
-    server_shutdown,是第三域,仅登记于 DB 侧,不经此枚举。
+    成员值已被 checkpoint 与前端冻结，本枚举不改变 wire，只作枚举成员与用户可读
+    文案的单一来源；跨进程持久化的 lifecycle 终态，如 user_cancelled、
+    server_shutdown，是第三域，仅登记于 DB 侧，不经此枚举。
     """
 
     QUICK_ANSWER = "quick_answer"
@@ -191,11 +179,11 @@ _RENDER_OUTCOME_DESCRIPTIONS: dict[RenderOutcome, str] = {
 
 
 def terminal_reason_text(value: object) -> str:
-    """把 terminal_reason 换成面向用户的中文,三域词汇的统一查表出口。
+    """把 terminal_reason 换成面向用户的中文，三域词汇的统一查表出口。
 
-    terminal_reason 混装 StopReason 值、RenderOutcome 值与 DB lifecycle 字符串;
-    凡渲染进用户报告的 terminal_reason 都经此函数,机器可读词不直达用户。
-    未登记的值原样返回,lifecycle 词汇在 DB 侧自有中文包装点。
+    terminal_reason 混装 StopReason 值、RenderOutcome 值与 DB lifecycle 字符串；
+    凡渲染进用户报告的 terminal_reason 都经此函数，机器可读词不直达用户。
+    未登记的值原样返回，lifecycle 词汇在 DB 侧自有中文包装点。
     """
     text = str(value or "")
     if not text:
@@ -229,7 +217,7 @@ class RunStatus(BaseModel):
 class SupervisorProgress(BaseModel):
     status: ResearchStatus = "not_started"
     current_round: int = Field(default=0, ge=0)
-    # 方向结果汇总的观测缺口,供中断诊断;与板块 gaps 台账分属两路。
+    # 方向结果汇总的观测缺口，供中断诊断；与板块 gaps 登记表分属两路。
     coverage_gaps: list[str] = Field(default_factory=list)
     generation_mode: GenerationMode = "not_ready"
 
@@ -373,8 +361,7 @@ class WriterResult(BaseModel):
     def state_update(self) -> dict[str, object]:
         """转为 LangGraph 状态增量，阶段状态只通过嵌套模型交接。
 
-        None 字段不产生增量;模型字段以对象整体写入:若用 model_dump 摊平成
-        dict,同 run 内消费方拿到模型对象的前提就被破坏。dict 与模型的转换
-        只发生在 checkpoint 边界。
+        None 字段不产生增量；模型字段必须整体写入，不得用 model_dump 摊平成 dict——
+        同 run 内消费方依赖拿到模型对象，dict 与模型的转换只发生在 checkpoint 边界。
         """
         return {name: value for name, value in self if value is not None}

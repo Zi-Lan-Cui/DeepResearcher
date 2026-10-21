@@ -1,8 +1,8 @@
 """Writer 的标准工具注册表。
 
-写状态的工具在出口把回执写进 messages、簿记增量写进 WriterAgentState 通道:ReadEvidence
+写状态的工具在出口把回执写进 messages、状态增量写进 WriterAgentState 通道：ReadEvidence
 交本批新增的 read_evidence_ids;CompleteReport 串行写 validated_draft/last_error/last_markdown。
-回执文本逐字节不变。
+回执文本按字节不变。
 """
 
 from typing import Any
@@ -39,11 +39,9 @@ def _writer_command(
 
 
 def build_writer_tools(*, turn_budget: int, read_batch: int):
-    """组装 Writer 工具;机制写在工具描述里,随运行配置动态生成。
+    """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。
 
-    一次可请求的窗口是防失控的宽松值,每轮实际交付量由 read_batch 决定,差额走
-    not_read_ids 显式排队。引用总条数刻意不设上限:聚焦度是写作质量问题,交给系统
-    提示词引导、已读校验与审阅把关,硬上限只会催生为凑数而选。剩下的约束只有三条:
+    每轮实际交付量由 read_batch 决定，差额走 not_read_ids 显式排队。约束只有三条：
     cite 必须已读、每轮交付 read_batch 条、正文有字符上限。
     """
 
@@ -69,7 +67,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         del reason
         context = runtime.context
         requested = list(dict.fromkeys(evidence_ids))
-        # 截断必须显式回传给模型:静默截断会让模型误以为"请求即已读",
+        # 截断必须显式回传给模型：静默截断会让模型误以为"请求即已读",
         # 引用被截掉的证据后反复循环直到耗尽轮次。
         unknown = [item for item in requested if item not in context.evidence_by_id]
         already_read = [
@@ -142,7 +140,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         markdown: str,
         runtime: ToolRuntime[WriterLoopContext],
     ) -> Command:
-        # 模型可见契约在上方 description=;校验失败文本即下一轮修正指令。
+        # 模型可见契约在上方 description=；校验失败文本即下一轮修正指令。
         context = runtime.context
         context.last_markdown = markdown
         try:

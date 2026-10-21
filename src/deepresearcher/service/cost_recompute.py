@@ -1,8 +1,8 @@
-"""按现行价表重算历史 LLM 用量行的成本，price_version 为幂等界。
+"""按现行价表重算历史 LLM 用量行的成本，price_version 为幂等边界。
 
-牌价更动或补录缺价模型后显式运行一次：
+价目更动或补录缺价模型后显式运行一次：
     python -m deepresearcher.service.cost_recompute
-estimated 行的 token 是 char/4 估算而非真实回执，与运行时记账同口径不计成本，不触碰。
+estimated 行的 token 是 char/4 估算而非真实回执，与运行时记账按同一判定标准，不计成本，不触碰。
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ async def recompute_llm_costs(
 ) -> dict[str, int]:
     """重算 LLM 行的 cost_cny 与 price_version，并按行汇总回写 run 累计成本。
 
-    参数/返回:
+    参数/返回：
         session_factory: 异步会话工厂。
-        target_version: 目标牌价批次；行的期望版本已是它的跳过不写。
-    返回: {"rows_updated": 改写行数, "runs_updated": 回写累计成本的 run 数}。
+        target_version: 目标价目批次；行的期望版本已是它的跳过不写。
+    返回： {"rows_updated": 改写行数， "runs_updated": 回写累计成本的 run 数}。
     """
 
     rows_updated = 0

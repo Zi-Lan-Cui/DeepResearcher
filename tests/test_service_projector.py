@@ -73,7 +73,7 @@ def test_node_completed_closes_stage_with_conclusion():
     assert sup.data["text"] == "规划完成 · 第 2 轮 · 本次新增证据 49"
     reviewer = project(_record("node_completed", {"review_status": "approved"}, node="review"))
     assert reviewer.data["text"] == "审阅通过"
-    # 未注册的收尾事件不出口;SECRET 类字段均不透出
+    # 未注册的收尾事件不出口；SECRET 类字段均不透出
     assert project(_record("node_completed", node="unknown_node")) is None
     assert "SECRET" not in json.dumps(done.data, ensure_ascii=False)
 
@@ -107,7 +107,7 @@ def test_unmapped_model_turn_agent_returns_none():
 
 def test_node_failed_uses_safe_text_only():
     frame = project(_record("node_failed", node="review"))
-    # 已知节点失败也要关框,状态标 failed,不能停留在 running
+    # 已知节点失败也要关框，状态标 failed,不能停留在 running
     assert (frame.event, frame.data["stage"], frame.data["status"]) == (
         "stage_done",
         "review",
@@ -292,7 +292,7 @@ def test_research_task_card_lifecycle():
     )
     assert opened.event == "task_open"
     assert opened.data["task"] == "task-0001"
-    assert len(opened.data["title"]) == 140  # 无短题时回退截断到 140 字,存量事件的契约
+    assert len(opened.data["title"]) == 140  # 无短题时回退截断到 140 字，存量事件的契约
     titled = project(
         _record(
             "research_task_started",
@@ -303,7 +303,7 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert titled.data["title"] == "性善论的先验根据"  # 有短题优先用短题,不展示长问题
+    assert titled.data["title"] == "性善论的先验根据"  # 有短题优先用短题，不展示长问题
     started = project(
         _record(
             "source_fetch_started",
@@ -359,7 +359,7 @@ def test_research_task_card_lifecycle():
     extracting = project(
         _record("direction_evidence_added", {"task_id": "task-0001", "accepted_count": 4})
     )
-    assert extracting.data["text"] == "证据入池 +4"
+    assert extracting.data["text"] == "新增证据 +4"
     all_rejected = project(
         _record(
             "direction_evidence_added",
@@ -373,7 +373,7 @@ def test_research_task_card_lifecycle():
     )
     assert all_rejected.data["text"] == "证据未通过校验，正在修正"
     empty_audit = project(_record("direction_evidence_added", {"task_id": "task-0001"}))
-    assert empty_audit is None  # 零入池零退回的审计记录不打扰用户
+    assert empty_audit is None  # 零新增零退回的审计记录不打扰用户
     done = project(
         _record(
             "research_task_completed",
@@ -395,17 +395,17 @@ def test_research_task_card_lifecycle():
 def test_writer_stage_lifecycle():
     opened = project(_record("node_started", node="writer"))
     assert (opened.event, opened.data["stage"]) == ("stage_open", "writer")
-    # 草稿 ready 是 Writer 内部事件;审阅阶段自行开框,不在 Writer 阶段提前播报。
+    # 草稿 ready 是 Writer 内部事件；审阅阶段自行开框，不在 Writer 阶段提前播报。
     assert project(_record("writer_draft_ready", {})) is None
-    # writer 内部 turn/finished 帧不出口;阶段收束由 node_completed 承载
+    # writer 内部 turn/finished 帧不对外输出；阶段结束由 node_completed 承载
     assert project(_record("writer_agent_finished", {"stop_reason": "final_response"})) is None
     assert project(_record("writer_model_turn", {"turn": 2})) is None
     closed = project(_record("node_completed", {"writer_status": "exhausted"}, node="writer"))
-    assert (closed.event, closed.data["text"]) == ("stage_done", "写作未正常收束")
+    assert (closed.event, closed.data["text"]) == ("stage_done", "写作轮次耗尽")
 
 
 def test_agent_finished_events_are_silent():
-    """agent 内部收尾帧不进用户视图,阶段收束统一走 stage_done。"""
+    """agent 内部收尾帧不进用户视图，阶段结束统一走 stage_done。"""
     assert project(_record("supervisor_agent_finished", {"stop_reason": "final_response"})) is None
     assert (
         project(_record("researcher_agent_finished", {"stop_reason": "model_call_limit_exceeded"}))
@@ -457,7 +457,7 @@ def test_clarification_projection_only_exposes_prompt_and_three_options():
 def test_text_delta_whitelist_and_no_seq():
     ok = project(_record("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"}))
     assert (ok.event, ok.data) == ("text_delta", {"channel": "supervisor", "text": "先梳理缺口，"})
-    # 逐字预览只开给 supervisor;writer 正文是工具参数,
+    # 逐字预览只开给 supervisor;writer 正文是工具参数，
     # research_agent 与空文本都不出口
     assert project(_record("text_delta", {"channel": "research_agent", "text": "x"})) is None
     assert project(_record("text_delta", {"channel": "writer", "text": "写报告中"})) is None
@@ -465,8 +465,8 @@ def test_text_delta_whitelist_and_no_seq():
     assert "seq" not in ok.data and "SECRET" not in json.dumps(ok.data, ensure_ascii=False)
 
 
-# stream_truncated 已无生产者,仍留在下方 default-deny 名单里:
-# 若有代码重新投影这类帧,出口仍会被拒绝。
+# stream_truncated 已无生产者，仍留在下方 default-deny 名单里：
+# 若有代码重新投影这类帧，出口仍会被拒绝。
 
 
 def test_search_query_progress_becomes_task_update():
@@ -484,7 +484,7 @@ def test_search_query_progress_becomes_task_update():
             "search_query_completed", {"task_id": "t1", "query": "关键词甲", "candidate_count": 0}
         )
     )
-    assert empty.data["text"] == "关键词甲 → 未见相关来源"  # 零候选是检索无结果,不是失败
+    assert empty.data["text"] == "关键词甲 → 未见相关来源"  # 零候选是检索无结果，不是失败
     failed = project(_record("search_query_failed", {"task_id": "t1", "query": "x"}))
     assert failed.data["text"].startswith("检索失败，已跳过")
 
@@ -498,10 +498,10 @@ def test_search_query_progress_becomes_task_update():
             "本批检索完成：3 条候选来源，其中 1 个查询失败",
         ),
         ({"candidate_count": 0, "failure_count": 0}, "本批检索完成：未找到相关来源"),
-        # 全部查询失败:逐查询行已逐条说明,批次行不再重复下结论。
+        # 全部查询失败：逐查询行已逐条说明，批次行不再重复下结论。
         ({"candidate_count": 0, "failure_count": 2}, None),
         ({"candidate_count": 0, "failure_count": 2, "status": "failed"}, None),
-        # 没有逐查询行可依托的批次失败必须留一行,否则用户看不到失败。
+        # 没有逐查询行可依托的批次失败必须留一行，否则用户看不到失败。
         ({"candidate_count": 0, "failure_count": 0, "status": "failed"}, "检索失败"),
     ],
 )
@@ -512,7 +512,7 @@ def test_direction_search_completed_distinguishes_empty_from_failed(payload, exp
         assert frame is None
     else:
         assert frame.data["text"] == expected
-    # 存量事件(无 failure_count/status)仍走旧口径,不因新分支变化。
+    # 存量事件（无 failure_count/status）仍按旧判定，不因新分支变化。
     legacy = project(_record("direction_search_completed", {"task_id": "t1", "candidate_count": 5}))
     assert legacy.data["text"] == "本批检索完成：5 条候选来源"
 
@@ -525,7 +525,7 @@ def test_direction_search_completed_distinguishes_empty_from_failed(payload, exp
         "node_cancelled",
         "direction_search_completed",
         "research_round_completed",
-        "research_stopped",  # 无生产者的历史事件名:必须仍默认拒绝
+        "research_stopped",  # 无生产者的历史事件名：必须仍默认拒绝
         "source_fetch_started",
         "source_document_registered",
         "source_read_failed",

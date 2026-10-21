@@ -23,14 +23,7 @@ def build_clarifier_tools():
         options: list[str],
         runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
     ) -> Command | str:
-        """暂停当前 Run 并向真人询问一个关键问题。
-
-        当必要选择缺失，或时间、地域、对象、受众、技术层级、对比范围、交付范围等
-        研究边界不确定，而且不同答案会明显改变检索材料、研究计划或最终结论时使用。
-        不要用它询问可通过研究自行解决的事实，也不要因为问题宽泛或包含多个维度就追问。
-        调用后系统会保存 checkpoint，展示三个默认选项和 Other，并在用户回答后再次交给
-        Clarifier 判断是否已经足够；它不是提交研究任务或输出最终答案的工具。
-        """
+        """暂停当前 Run，向用户提出一个关键问题，回答后由 Clarifier 判断是否已足够。"""
         choices = list(dict.fromkeys(item.strip() for item in options if item.strip()))
         if len(choices) != CLARIFICATION_OPTION_COUNT:
             return json.dumps(
@@ -43,7 +36,7 @@ def build_clarifier_tools():
             return Command(
                 update={
                     "intent_summary": query,
-                    "assumptions": ["澄清轮次已用尽，按原问题并列覆盖合理解释。"],
+                    "assumptions": ["澄清轮次已用尽，按原问题字面含义处理，保留多种合理解释。"],
                     "clarification_completed": True,
                     "messages": [
                         _tool_message(runtime, {"status": "limit_reached"}, "AskClarification")
@@ -68,13 +61,7 @@ def build_clarifier_tools():
         assumptions: list[str],
         runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
     ) -> Command:
-        """确认用户意图与研究边界已经足以开始研究，并提交意图摘要与假设。
-
-        当原问题本身已经明确，或用户回答已消除关键歧义时使用。只写用户要什么、
-        边界在哪；研究重点与方向的规划是 Supervisor 的职责，不在此表达。
-        可在 assumptions 中记录不影响继续研究的合理假设。
-        不得用普通文本结束；这是 Clarifier 的唯一完成信号。
-        """
+        """确认意图与研究边界已足以开始研究，提交标题、摘要与假设；这是 Clarifier 唯一完成信号。"""
         return Command(
             update={
                 "run_headline": headline.strip()[:RUN_HEADLINE_MAX_CHARS],

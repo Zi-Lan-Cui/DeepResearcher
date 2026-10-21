@@ -1,4 +1,4 @@
-"""Supervisor 的运行态辅助对象与内层 agent 的状态通道。"""
+"""Supervisor 的依赖、loop 上下文与状态合并规则。"""
 
 import asyncio
 from dataclasses import dataclass, field
@@ -50,8 +50,8 @@ def _merge_stop_reason_by_rank(
 def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
     """在发起本次执行的 AIMessage 中定位该派发在 ResearchDelegate 序列里的序。
 
-    只数派发调用而非整批 tool_calls 下标:UpdateWorkbench 与派发混批时
-    编号照样连续,且对同一 AIMessage 的重放仍确定。
+    只数派发调用而非整批 tool_calls 下标：UpdateWorkbench 与派发同批时
+    编号照样连续，且对同一 AIMessage 的重放仍确定。
     """
     entries = messages if isinstance(messages, list) else []
     for message in reversed(entries):
@@ -69,12 +69,12 @@ def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
 
 
 class SupervisorAgentState(AgentState):
-    """Supervisor 内层图的 state_schema:循环业务状态的持久化载体。
+    """Supervisor 内层图的 state_schema：循环业务状态的持久化载体。
 
-    reducer 按工具的串行/并发身份选择,共用 reducer 见 agents/channels.py:
-    ResearchDelegate 同批并发,只写合并语义通道;UpdateWorkbench、
-    ResearchComplete 串行,可写 replace 通道。active 工作集通道存集合本身,
-    工具出口只交 {add,remove} 差量,避免并发整字段快照互相覆盖。
+    reducer 按工具的串行/并发身份选择，共用 reducer 见 agents/channels.py:
+    ResearchDelegate 同批并发，只写合并语义通道；UpdateWorkbench、
+    ResearchComplete 串行，可写 replace 通道。active 工作集通道存集合本身，
+    工具出口只交 {add,remove} 增量，避免并发整字段快照互相覆盖。
     """
 
     evidences: Annotated[list[Evidence], merge_evidences]
@@ -89,14 +89,14 @@ class SupervisorAgentState(AgentState):
     provider_exhausted: Annotated[bool, merge_or]
     stop_reason: Annotated[StopReason | None, _merge_stop_reason_by_rank]
     task_index_counter: Annotated[int, merge_monotonic]
-    # 在途方向登记表 {task_id: PendingDirection.model_dump()}:派发批并发 add,
-    # 到达吸收与丢失判定在独占批 remove。崩溃重放时通道值是"哪些方向欠账"的唯一事实源。
+    # 在途方向登记表 {task_id: PendingDirection.model_dump()}：派发批并发 add,
+    # 到达吸收与丢失判定在独占批 remove。崩溃重放时通道值是"哪些方向未结算"的唯一事实源。
     pending_directions: Annotated[dict[str, dict], merge_registry_by_key]
-    # 计划便签 [PlanItem.model_dump()]:UpdateWorkbench 独写(key="plan"),不进外层持久化。
+    # 计划清单 [PlanItem.model_dump()]：UpdateWorkbench 独自写入（key="plan"），不进外层持久化。
     plan: Annotated[list[dict], replace_channel]
 
 
-# 老检查点的方向结果没有短题时,卡片回退用长契约截断到此长度。
+# 老检查点的方向结果没有短题时，卡片回退用长契约截断到此长度。
 _DIRECTION_FALLBACK_CHARS = 30
 
 
@@ -134,11 +134,11 @@ def evidence_card(evidence: Evidence, direction_title: str = "") -> dict[str, ob
 
 
 def synthesis_card(synthesis: ResearchSynthesis | None) -> dict[str, object] | None:
-    """综合稿的扁平内容卡;无稿为 None。"""
+    """综合稿的扁平内容卡；无稿为 None。"""
     if synthesis is None:
         return None
     return {
-        # 模型可见面统一工作台措辞;schema 字段 based_on_working_set_revision 是持久化名,不随视图改名。
+        # 模型可见面统一工作台措辞；schema 字段 based_on_working_set_revision 是持久化名，不随视图改名。
         "based_on_workbench_revision": synthesis.based_on_working_set_revision,
         "answer_goal": synthesis.answer_goal,
         "thesis": synthesis.thesis,
@@ -149,7 +149,7 @@ def synthesis_card(synthesis: ResearchSynthesis | None) -> dict[str, object] | N
 
 
 def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]:
-    """Supervisor 工具回执与轮次观察共用的视图:恒两键、形状不随有无综合稿漂移。"""
+    """Supervisor 工具回执与轮次观察共用的视图：恒两键、结构不随有无综合稿而变。"""
     return {
         "synthesis_revision": synthesis.revision if synthesis is not None else 0,
         "research_synthesis": synthesis_card(synthesis),
@@ -158,7 +158,7 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
 
 @dataclass(frozen=True)
 class SupervisorDeps:
-    """ResearchSupervisor 构造期的稳定零件;跨并发 loop 共享、只读,frozen 数据类保证这一点。"""
+    """ResearchSupervisor 构造期的稳定零件；跨并发 loop 共享、只读，frozen 数据类保证这一点。"""
 
     config: AgentConfig
     research_agent: ResearchAgent
@@ -170,13 +170,8 @@ class SupervisorDeps:
 class SupervisorLoopContext:
     """Supervisor 一次工具 loop 的注入载荷。
 
-    loop_state 是当前工具批的可变状态:每次模型回合前由 rebuild_loop_state 从通道重建,
-    批内工具共享同一对象,工具出口把改动作为 Command 增量写回通道;它不进 checkpoint,
-    持久状态以通道为准。research_query、current_round、active_evidence_limit 是重建
-    所需的标量。业务实现在 services.py,tools.py 从本对象转交参数。
-
-    消费方含中间件,删改字段前先 grep agents/middleware/:
-      scope → observability:事件归因
+    loop_state 是当前工具批的可变状态，每回合前由 rebuild_loop_state 从通道重建，
+    不进 checkpoint，持久状态以通道为准。删改字段前先 grep agents/middleware/。
     """
 
     scope: AgentExecutionScope
@@ -184,16 +179,14 @@ class SupervisorLoopContext:
     loop_state: "SupervisorLoopState"
     research_query: str = ""
     current_round: int = 0
-    # 派发出去的在途方向后台任务 {task_id: Task[TaskExecution]};进程级,不进通道不进 checkpoint。
-    # "哪些方向欠账"的事实源是 loop_state.pending_directions(通道),这里只是执行载体。
+    # 派发出去的在途方向后台任务 {task_id: Task[TaskExecution]}；进程级，不进通道不进 checkpoint。
+    # "哪些方向未结算"的事实源是 loop_state.pending_directions(通道)，这里只是执行载体。
     direction_tasks: dict[str, "asyncio.Task[TaskExecution]"] = field(default_factory=dict)
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
-        """每次模型回合前从通道现值重建状态对象,替代上一批的内存对象。
+        """每次模型回合前从通道现值重建状态对象，替代上一批的内存对象。
 
-        外层 State 的业务资产已在入口经 initial_channel_state 种进通道;重建的两个
-        标量派生自入口 State 且不进通道,只由本 context 承载,上限直接从 deps.config
-        现取。
+        两个标量派生自入口 State 且不进通道，只由本 context 承载。
         """
         self.loop_state = SupervisorLoopState.from_channel_values(
             values,
@@ -208,7 +201,7 @@ class SupervisorLoopContext:
 class TaskExecution:
     """一次方向研究执行的完整产物：结果模型与 absorb 所需的 Evidence/来源清单。
 
-    模型看到的方向报告由 services.absorb_arrival 在本对象产物上渲染,
+    模型看到的方向报告由 services.absorb_arrival 在本对象产物上渲染，
     本对象只承载数据、不承载消息。
     """
 
@@ -244,11 +237,11 @@ class TaskExecution:
 
 
 class SupervisorLoopState:
-    """Supervisor 工具循环的可变业务状态:证据聚合、active 工作集、task result、
+    """Supervisor 工具循环的可变业务状态：证据聚合、active 工作集、task result、
     coverage/failure、research synthesis、working_set_revision、stop reason、熔断认证位、轮次。
 
-    持久化由 SupervisorAgentState 通道承担:每次模型回合前从通道重建,工具批内原地改、
-    出口经 Command 增量写回通道,loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。
+    持久化由 SupervisorAgentState 通道承担：每次模型回合前从通道重建，工具批内原地改、
+    出口经 Command 增量写回通道，loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。
     """
 
     def __init__(
@@ -259,7 +252,7 @@ class SupervisorLoopState:
         active_evidence_limit: int,
         max_research_rounds: int = 0,
     ):
-        # 计划便签:工作台的一个键,轮内便签不进外层持久化;dict 形态存储(PlanItem.model_dump)。
+        # 计划清单：工作台的一个键，轮内清单不进外层持久化；dict 形态存储（PlanItem.model_dump）。
         self.plan = [dict(item) for item in (state.get("plan") or []) if isinstance(item, dict)]
         self.max_research_rounds = max_research_rounds
         self.evidences = list(state.get("evidences", []))
@@ -272,24 +265,24 @@ class SupervisorLoopState:
         self.active_evidence_limit = active_evidence_limit
         self.source_refs = list(state.get("source_refs", []))
         self.task_results = list(state.get("task_results", []))
-        # 当前轮次只来源于构造参数:由 _run_agent_loop 从持久化的 SupervisorProgress 推一次。
-        # 这里读 SupervisorProgress 只为取持久化的 coverage_gaps,不决定轮次。
+        # 当前轮次只来源于构造参数：由 _run_agent_loop 从持久化的 SupervisorProgress 推一次。
+        # 这里读 SupervisorProgress 只为取持久化的 coverage_gaps，不决定轮次。
         persisted = section(state, "supervisor", SupervisorProgress)
         self.current_round: int = current_round
         self.coverage_gaps = list(persisted.coverage_gaps)
-        # 执行失败详情,如截断后的异常文本。coverage_gaps 只装研究内容缺口,会渲染进用户
-        # 报告的"未闭合缺口";两者的可见面与恢复策略不同,不能混用同一个字段。
+        # 执行失败详情，如截断后的异常文本。coverage_gaps 只装研究内容缺口，会渲染进用户
+        # 报告的"未闭合缺口"；两者的可见面与恢复策略不同，不能混用同一个字段。
         self.failure_details: list[str] = []
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
         self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
         self.completed_synthesis: ResearchSynthesis | None = None
         self.stop_reason: StopReason | None = None
-        # 账户级熔断认证位:absorb 见到任何带该标志的方向结果即置真。这类故障是系统性
-        # 不可用而非单个方向偶发,一个方向足以为全局认证。ResearchComplete 据此放行
-        # 无证据收束,执行故障轮不再被迫记成预算耗尽。
+        # 账户级熔断认证位：absorb 见到任何带该标志的方向结果即置真。这类故障是系统性
+        # 不可用而非单个方向偶发，一个方向足以为全局认证。ResearchComplete 据此允许通过
+        # 无证据结束，执行故障轮不再被迫记成预算耗尽。
         self.provider_exhausted = False
-        # 在途方向登记 {task_id: PendingDirection dict};通道为事实源,批内共享对象。
+        # 在途方向登记 {task_id: PendingDirection dict}；通道为事实源，批内共享对象。
         self.pending_directions: dict[str, dict] = dict(state.get("pending_directions") or {})
 
         self._task_counter: int = 0
@@ -312,11 +305,11 @@ class SupervisorLoopState:
         active_evidence_limit: int,
         max_research_rounds: int = 0,
     ) -> "SupervisorLoopState":
-        """从内层通道现值重建状态对象:仅依赖标量参数与通道,不持有外层 State。
+        """从内层通道现值重建状态对象：仅依赖标量参数与通道，不持有外层 State。
 
         缺席键回落到空态默认(等同尚无工具写入的新建状态)。
         """
-        # 传新建空 dict:__init__ 里的 section(...) 会就地写入入参,复用常量会被交叉污染。
+        # 传新建空 dict:__init__ 里的 section(...) 会就地写入入参，复用常量会被交叉污染。
         view = cls(
             {},
             current_round=current_round,
@@ -330,7 +323,7 @@ class SupervisorLoopState:
                 for item in values["evidences"]
             ]
         if "active_evidence_ids" in values:
-            # 通道值即当前活跃集(merge_active_set 合并差量后的排序列表),直读。
+            # 通道值即当前活跃集(merge_active_set 合并增量后的排序列表)，直读。
             view.active_evidence_ids = set(values["active_evidence_ids"])
         if "source_refs" in values:
             view.source_refs = list(values["source_refs"])
@@ -364,7 +357,7 @@ class SupervisorLoopState:
         return view
 
     def initial_channel_state(self) -> dict[str, Any]:
-        """构造 ainvoke 的入口 input:外层 State 资产一次性种进内层通道。"""
+        """构造 ainvoke 的入口 input：外层 State 资产一次性写入内层通道。"""
         return {
             "evidences": list(self.evidences),
             "active_evidence_ids": {"add": sorted(self.active_evidence_ids), "remove": []},
@@ -383,14 +376,14 @@ class SupervisorLoopState:
 
     @property
     def task_index_counter(self) -> int:
-        """派发批出口随 Command 提交的编号水位(merge_monotonic,重复提交无害)。"""
+        """派发批出口随 Command 提交的派发编号(merge_monotonic，重复提交无害)。"""
         return self._task_counter
 
     def set_stop_reason(self, reason: StopReason) -> None:
         """按 `StopReason.rank` 采纳终止原因；低权威度不覆盖已采纳的高权威度。
 
-        写点只需调用本方法并选对 reason;冲突由声明在 StopReason.rank 上的权威度
-        裁决,与写入先后无关。
+        写点只需调用本方法并选对 reason；冲突由声明在 StopReason.rank 上的权威度
+        裁决，与写入先后无关。
         """
         current = self.stop_reason
         if current is None or reason.rank >= current.rank:
@@ -399,30 +392,26 @@ class SupervisorLoopState:
     def _bump_working_set(self) -> None:
         """工作集版本前进的唯一出口。
 
-        不变式:任何改变 `active_evidence_ids` 成员的操作都必须经此推进 revision,
-        否则 `synthesis_is_fresh` 会误判综合稿仍然新鲜,放行基于过期证据的
-        ResearchComplete。新增 mutation 方法时必须调用它:revision 的单调性
-        无法由类型系统表达,只能靠此约定维持。
+        任何改变 active_evidence_ids 成员的操作都必须经此推进 revision，否则
+        synthesis_is_fresh 会误判综合稿仍然新鲜。
         """
         self.working_set_revision += 1
 
     def allocate_task_index(self) -> int:
-        """活视图顺次分配;仅在调用位置不可得时兜底。
+        """活视图顺次分配；仅在调用位置不可得时回退。
 
-        正常派发走 allocate_task_index_for_call。此路径依赖批内共享对象,
-        崩溃重放时不同生命周期会算出相同编号,merge_task_results 按 id
-        去重会吞掉一个方向的研究结果,因此只能作为无持久位置信息时的退路。
+        正常派发走 allocate_task_index_for_call。此路径依赖批内共享对象，崩溃重放时不同
+        生命周期会算出相同编号，merge_task_results 按 id 去重会丢弃一个方向。
         """
         completed_max = max((item.task_index for item in self.task_results), default=0)
         self._task_counter = max(self._task_counter, completed_max) + 1
         return self._task_counter
 
     def allocate_task_index_for_call(self, origin_state: dict[str, Any], tool_call_id: str) -> int:
-        """任务序号由发起消息内的调用位置派生,不把研究轮次编码进任务 ID。
+        """任务序号由发起消息内的调用位置派生，不把研究轮次编码进任务 ID。
 
-        批初 task_index_counter 与 AIMessage 的 tool_calls 顺序都已在通道里持久化:
-        同一 tool_call 在任何生命周期重放到同一编号,journal 命中与重跑各得各位,
-        嵌套 researcher 的 ns(键含 task id)因此跨重放稳定。
+        批初 task_index_counter 与 tool_calls 顺序都已持久化，同一 tool_call 在任何生命周期
+        重放到同一编号，嵌套 researcher 的 ns 因此跨重放稳定。
         """
         position = _tool_call_position(origin_state.get("messages", []), tool_call_id)
         if position is None:
@@ -489,10 +478,10 @@ _WORKBENCH_RESERVE_CARD_LIMIT = 20
 
 
 def workbench_view(loop_state: "SupervisorLoopState") -> dict[str, object]:
-    """Supervisor 桌面的唯一视图构造处:模型每回合、ReadWorkbench、拒绝回执都读它。
+    """Supervisor 工作台的唯一视图构造处：模型每回合、ReadWorkbench、拒绝回执都读它。
 
-    设计不变式:通道持有的运行事实都要在这里有窗,或不给模型看并说明理由
-    (failure_details 属后者)。收据会随压缩腐烂,directions 段是它的持久档案。
+    设计不变式：通道持有的运行事实都要在这里有窗，或不给模型看并说明理由
+    (failure_details 属后者)。收据会随压缩腐烂，directions 段是它的持久档案。
     """
     titles = _direction_titles(loop_state)
     active = loop_state.active_evidences()

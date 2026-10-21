@@ -26,22 +26,22 @@ from deepresearcher.tools.web.search.models import SearchCandidate
 
 
 def _candidate_channel_entry(candidate: SearchCandidate) -> SearchCandidate:
-    """进通道的候选去掉 raw_content:正文留在材料缓存,检查点只存可重取的引用信息。"""
+    """进通道的候选去掉 raw_content：正文留在材料缓存，检查点只存可重取的引用信息。"""
     return candidate.model_copy(update={"raw_content": ""})
 
 
 def _document_channel_entry(view: DocumentRef) -> DocumentRef:
-    """文档进通道降为 DocumentRef:去掉 content 与 inline,grep/read 时经 material_store 按需取回。"""
+    """文档进通道降为 DocumentRef：去掉 content 与 inline,grep/read 时经 material_store 按需取回。"""
     return DocumentRef.model_validate(view.model_dump())
 
 
 class ResearcherAgentState(AgentState):
-    """ResearchAgent 内层图的 state_schema:方向业务状态的持久化载体。
+    """ResearchAgent 内层图的 state_schema：方向业务状态的持久化载体。
 
-    AddEvidence、ReadSources 与 SearchSources 并发执行,只写合并语义通道;Release、
+    AddEvidence、ReadSources 与 SearchSources 并发执行，只写合并语义通道；Release、
     Restore、ResearchDirectionComplete 串行执行(单独一轮),conclusion、remaining_gaps、
-    stop_detail 这几个 replace 通道只由它们写。active 工作集通道存集合本身,
-    工具出口只交 {add,remove} 差量;候选与文档进通道时剥离正文,只留可重取的引用信息。
+    stop_detail 这几个 replace 通道只由它们写。active 工作集通道存集合本身，
+    工具出口只交 {add,remove} 增量；候选与文档进通道时剥离正文，只留可重取的引用信息。
     """
 
     evidences: Annotated[list[Evidence], merge_evidences]
@@ -78,7 +78,7 @@ def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[s
 
 
 def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]:
-    """方向工作集的轻量摘要唯一构造处;与 supervisor 的 working_set_snapshot 对称。"""
+    """方向工作集的轻量摘要唯一构造处；与 supervisor 的 working_set_snapshot 对称。"""
     evidences = loop_state.active_evidences()
     return {
         "active_evidence": [
@@ -103,7 +103,7 @@ def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]
 
 @dataclass(frozen=True)
 class ResearcherDeps:
-    """ResearchAgent 构造期的稳定零件;跨并发 run 共享、只读,frozen 数据类保证这一点。"""
+    """ResearchAgent 构造期的稳定零件；跨并发 run 共享、只读，frozen 数据类保证这一点。"""
 
     config: AgentConfig
     search_tool: SearchTool
@@ -114,14 +114,10 @@ class ResearcherDeps:
 
 @dataclass
 class ResearcherLoopContext:
-    """ResearchAgent 一次 run 的注入载荷:字段全是数据,不含行为。
+    """ResearchAgent 一次 run 的注入载荷：字段全是数据，不含行为。
 
-    deps 为共享零件;task、loop_state、event_context 属本轮 run。
-    行为实现是 services.py 里的纯函数,tools.py 从本对象转交参数;本清单之外,
-    工具不依赖 agent 内部任何其他对象。
-
-    消费方除 tools.py 还有中间件:observability._event_context 用 getattr 读取 scope,
-    模型回合与工具事件的 run_id 等归因依赖它;缺席不崩溃,但事件静默失去归属。
+    行为实现在 services.py，tools.py 从本对象转交参数。相对路径为相对仓库根。
+    中间件 observability 用 getattr 读取 scope 做事件归因，缺席不崩溃但事件失去归属。
     """
 
     deps: ResearcherDeps
@@ -131,7 +127,7 @@ class ResearcherLoopContext:
     event_context: dict[str, object] = field(default_factory=dict)
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
-        """每次模型回合前从通道现值重建 loop_state;两个上限按本轮 config 现取,不进通道。"""
+        """每次模型回合前从通道现值重建 loop_state；两个上限按本轮 config 现取，不进通道。"""
         config = self.deps.config
         self.loop_state = ResearcherLoopState.from_channel_values(
             values,
@@ -160,8 +156,8 @@ class ResearcherLoopState:
     conclusion: str = ""
     stop_reason: DirectionStopReason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
     stop_detail: str = "方向级探索步数预算已耗尽。"
-    # 搜索提供方账户级不可用,即额度耗尽或鉴权失败。仅作数据:本方向与 Supervisor 的
-    # 模型读到后自然收尾、停止派发,不引入控制流分支。
+    # 搜索提供方账户级不可用，即额度耗尽或鉴权失败。仅作数据：本方向与 Supervisor 的
+    # 模型读到后自然收尾、停止派发，不引入控制流分支。
     provider_exhausted: bool = False
 
     def active_evidences(self) -> list[Evidence]:
@@ -195,18 +191,18 @@ class ResearcherLoopState:
         return restored
 
     def capture_active(self) -> set[str]:
-        """并发工具执行前的活跃集快照,出口据此算 add/remove 差量。"""
+        """并发工具执行前的活跃集快照，出口据此算 add/remove 增量。"""
         return set(self.active_evidence_ids)
 
     def active_diff_since(self, before: set[str]) -> dict[str, list[str]]:
-        """本批活跃集变化折成 {add,remove} 差量,只经 active_evidence_ids 通道提交。"""
+        """本批活跃集变化合并为 {add,remove} 增量，只经 active_evidence_ids 通道提交。"""
         return {
             "add": sorted(self.active_evidence_ids - before),
             "remove": sorted(before - self.active_evidence_ids),
         }
 
     def initial_channel_state(self) -> dict[str, Any]:
-        """把当前 loop_state 一次性种进内层通道,作 ainvoke 入口 input。"""
+        """把当前 loop_state 一次性写入内层通道，作 ainvoke 入口 input。"""
         return {
             "evidences": list(self.evidences),
             "active_evidence_ids": {"add": sorted(self.active_evidence_ids), "remove": []},
@@ -238,7 +234,7 @@ class ResearcherLoopState:
         active_evidence_limit: int,
         evidence_archive_limit: int,
     ) -> "ResearcherLoopState":
-        """从内层通道现值重建 loop_state;缺席键回落空态默认。"""
+        """从内层通道现值重建 loop_state；缺席键回落空态默认。"""
         view = cls(
             active_evidence_limit=active_evidence_limit,
             evidence_archive_limit=evidence_archive_limit,

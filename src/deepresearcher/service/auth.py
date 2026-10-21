@@ -1,8 +1,7 @@
 """鉴权：argon2 口令哈希、HS256 JWT 编解码、每请求的 current_user 依赖。
 
-无状态 JWT，刻意不建 sessions 表：服务端因此无法主动吊销 token，登出只由
-前端删除本地 token，用短 TTL（默认 12h）限制风险窗口。decode 之后仍要回表
-查 User，删号立即生效，用户存在性检查集中在这一个入口。
+无状态 JWT，不建 sessions 表：登出只由前端删除本地 token，靠短 TTL 限制风险窗口。
+decode 之后仍回表查 User，删号立即生效。
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ _hasher = PasswordHasher()
 
 
 class TokenError(ValueError):
-    """token 层失败都收敛为该异常：过期、伪造或载荷异常，调用方据此出 401。"""
+    """token 层失败都归为该异常：过期、伪造或载荷异常，调用方据此出 401。"""
 
 
 def hash_password(password: str) -> str:

@@ -90,7 +90,7 @@ async def _wait_status(client, token, run_id, expected):
 
 
 async def _wait_graph_count(graphs, expected):
-    # 领取在构图之前就把 ``running`` 提交;观测第二个条件,
+    # 领取在构图之前就把 running 提交；观测第二个条件，
     # 而不是假设两个动作原子发生。
     async with asyncio.timeout(3):
         while len(graphs) != expected:
@@ -134,7 +134,7 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
                     await _wait_graph_count(built_graphs, 1)
                     assert len(built_graphs) == 1
 
-            # 第一个 API 已退出,被 Worker 独立持有的图仍在运行。
+            # 第一个 API 已退出，被 Worker 独立持有的图仍在运行。
             gate.set()
             second_app = create_app(settings, config)
             async with second_app.router.lifespan_context(second_app):

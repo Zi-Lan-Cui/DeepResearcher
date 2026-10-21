@@ -1,6 +1,6 @@
 """FastAPI 应用装配根。
 
-路由、鉴权、SSE 与 worker 生命周期的实现位于 ``service.web``，本模块只做装配。
+路由、鉴权、SSE 与 worker 生命周期的实现位于 service.web，本模块只做装配。
 """
 
 from pathlib import Path
@@ -25,10 +25,10 @@ def create_app(
     settings: Settings | None = None,
     config: ServiceConfig | None = None,
 ) -> FastAPI:
-    """装配 HTTP 控制面并挂载静态前端。
+    """装配 HTTP 控制层并挂载静态前端。
 
-    控制面在结构上无法执行 run：图装配与 worker 生命周期
-    只存在于 ``deepresearcher.worker``。
+    控制层在结构上无法执行 run：图装配与 worker 生命周期
+    只存在于 deepresearcher.worker。
     """
 
     app = FastAPI(

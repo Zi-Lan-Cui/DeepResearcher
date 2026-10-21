@@ -1,8 +1,8 @@
-"""OTel TracerProvider 的服务侧装配:全局 provider 一次性注册,langfuse 优先接管。
+"""OTel TracerProvider 的服务侧装配：全局 provider 一次性注册，langfuse 优先接管。
 
-必须在构造 RunExecutor，即首次 ``Langfuse()`` 之前调用 :func:`configure_tracer_provider`:
-langfuse SDK 检测到已存在的全局 SDK provider 会直接接管并挂上自己的导出 processor,
-两端共享同一棵树;若先建 langfuse 再装配 provider，只能复用其自带 provider，
+必须在构造 RunExecutor，即首次 Langfuse() 之前调用 :func:`configure_tracer_provider`:
+langfuse SDK 检测到已存在的全局 SDK provider 会直接接管并接上自己的导出 processor,
+两端共享同一棵树；若先建 langfuse 再装配 provider，只能复用其自带 provider，
 配置与本模块的装配路径不一致。观测面装配失败不得影响启动，整体 fail-open。
 """
 
@@ -28,10 +28,10 @@ _OTLP_EXPORTER_LOGGER = "opentelemetry.exporter.otlp.proto.http.trace_exporter"
 
 
 class _FirstRecordOnlyFilter(logging.Filter):
-    """同一 (logger, 函数) 的重复记录只放行第一条。
+    """同一 (logger, 函数) 的重复记录只允许通过第一条。
 
-    观测栈未启动是常态运行形态,导出器的连接失败会按批反复抛出;
-    告知一次即可,重复出现交给观测栈自身的健康度去看。
+    观测栈未启动是常态运行形态，导出器的连接失败会按批反复抛出；
+    告知一次即可，重复出现交给观测栈自身的健康度去看。
     """
 
     def __init__(self) -> None:
@@ -47,19 +47,19 @@ class _FirstRecordOnlyFilter(logging.Filter):
 
 
 def configure_tracer_provider(config: ServiceConfig) -> None:
-    """按 ``otel_exporter`` 装配全局 TracerProvider;非法值告警后按 none 处理。"""
+    """按 otel_exporter 装配全局 TracerProvider；非法值告警后按 none 处理。"""
     try:
         provider = opentelemetry_trace.get_tracer_provider()
         if not isinstance(provider, TracerProvider):
             created = TracerProvider()
             opentelemetry_trace.set_tracer_provider(created)
-            # set_tracer_provider 是一次性的;竞态下以先装上的那份为准。
+            # set_tracer_provider 是一次性的；竞态下以先装上的那份为准。
             current = opentelemetry_trace.get_tracer_provider()
             provider = current if isinstance(current, TracerProvider) else created
-        # 账本处理器常驻：span 是唯一的执行记录，run 是否落账由注册表决定。
+        # 事件日志处理器常驻：span 是唯一的执行记录，run 是否计入由注册表决定。
         ledger.attach_to_provider(provider)
-        # langfuse SDK 的导出 processor 随 Langfuse() 构造注册在同一个 OTel provider 下;
-        # 这里对它的连接失败日志去重,logger 名在首次导入前即可挂载。
+        # langfuse SDK 的导出 processor 随 Langfuse() 构造注册在同一个 OTel provider 下；
+        # 这里对它的连接失败日志去重，logger 名在首次导入前即可挂载。
         exporter_logger = logging.getLogger(_OTLP_EXPORTER_LOGGER)
         if not any(isinstance(item, _FirstRecordOnlyFilter) for item in exporter_logger.filters):
             exporter_logger.addFilter(_FirstRecordOnlyFilter())
@@ -69,7 +69,7 @@ def configure_tracer_provider(config: ServiceConfig) -> None:
             provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter(out=sys.stdout)))
         elif config.otel_exporter != "none":
             logger.warning(
-                "SERVICE_OTEL_EXPORTER=%r 不可识别(可用 none|console),按 none 处理。",
+                "SERVICE_OTEL_EXPORTER=%r 不可识别（可用 none|console），按 none 处理。",
                 config.otel_exporter,
             )
     except Exception:

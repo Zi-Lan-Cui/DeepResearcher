@@ -366,7 +366,7 @@ class RunUsageCallback(AsyncCallbackHandler):
                 output_tokens=output_tokens,
                 cached_input_tokens=cached_tokens,
                 # estimated 行的 token 是 char/4 估算而非真实回执；估算只记用量不计成本，
-                # 否则伪造数字会污染成本闸与对账。
+                # 否则伪造数字会污染成本上限与核对。
                 cost_cny=(
                     Decimal("0")
                     if estimated

@@ -144,7 +144,7 @@ async def _drive_two_directions(saver):
             if ns:
                 nested_ns.add(ns)
     finally:
-        # 演示同库不留测试线程:断言失败也要回收,否则每次跑批都往生产 checkpoint 里漏行。
+        # 演示同库不留测试线程：断言失败也要回收，否则每次跑批都往生产 checkpoint 里漏行。
         await saver.adelete_thread(thread)
     return counters["evidence"], nested_ns, thread
 
@@ -169,7 +169,7 @@ def test_two_concurrent_researchers_resume_on_postgres_checkpoint():
         pytest.skip("Postgres checkpointer 不可达")
 
     evidence_runs, nested_ns, _thread = outcome
-    # 每个方向的取证只应执行一次:两个 researcher 都从自己的 superstep 续跑,未整体重放。
+    # 每个方向的取证只应执行一次：两个 researcher 都从自己的 superstep 续跑，未整体重放。
     assert evidence_runs == 2, f"取证执行数应为 2(续跑),实测 {evidence_runs}(疑似整体重跑/ns 漂移)"
-    # 两个并发分支落在彼此独立的嵌套 ns 下,dirA 与 dirB 各有一条 tools 级 ns。
+    # 两个并发分支落在彼此独立的嵌套 ns 下，dirA 与 dirB 各有一条 tools 级 ns。
     assert len(nested_ns) >= 2, f"应见 ≥2 个独立嵌套 ns,实测 {sorted(nested_ns)}"

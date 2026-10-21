@@ -75,7 +75,7 @@ def test_summarization_call_is_recorded_but_bypasses_model_wrappers():
                 _ProbeWrap(),
             ],
         )
-        # 需要构造足够历史才触发摘要:单条消息会被 keep 窗口全部保留,不触发。
+        # 需要构造足够历史才触发摘要：单条消息会被 keep 窗口全部保留，不触发。
         history = []
         for i in range(6):
             history.append({"role": "user", "content": f"问题{i} " + "用于超过阈值的中文。" * 10})
@@ -88,11 +88,11 @@ def test_summarization_call_is_recorded_but_bypasses_model_wrappers():
     _ProbeWrap.wrapped = 0
     model, starts, result = asyncio.run(run())
 
-    # 摘要确实发生:模型被调了不止一次(摘要 + 回合)。
+    # 摘要确实发生：模型被调了不止一次(摘要 + 回合)。
     assert model._calls >= 2  # noqa: SLF001
-    # 传播成立:astream 级 callbacks 覆盖了摘要调用,RunUsageCallback 能记到它。
+    # 传播成立：astream 级 callbacks 覆盖了摘要调用，RunUsageCallback 能记到它。
     assert starts.chat_model_starts == model._calls  # noqa: SLF001
-    # 预检不覆盖:摘要绕开 awrap_model_call,即 enforce_usage_budget 所在层,
-    # 预算接近耗尽时仍可能多花一次摘要调用,靠事后记账、下回合拦截。
+    # 预检不覆盖：摘要绕开 awrap_model_call,即 enforce_usage_budget 所在层，
+    # 预算接近耗尽时仍可能多花一次摘要调用，靠事后记账、下回合拦截。
     assert _ProbeWrap.wrapped < model._calls
     assert result["messages"][-1].content == "已摘要/完成"

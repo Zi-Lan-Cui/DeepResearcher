@@ -4,7 +4,7 @@ from deepresearcher.service.checkpoint_serde import build_checkpointer_serde, pr
 
 def test_allowlist_covers_our_state_types():
     keys = projected_type_keys()
-    # 触发过告警的类型必须在允许清单里,否则恢复在严格模式下失败。
+    # 触发过告警的类型必须在允许清单里，否则恢复在严格模式下失败。
     assert ("deepresearcher.schemas.sections", "ResearchDirectionResult") in keys
 
 

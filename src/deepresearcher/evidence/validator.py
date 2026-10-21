@@ -1,12 +1,8 @@
-"""Evidence 的确定性来源校验：按提交的首尾片段锚在原文中定位，程序逐字回填 quote。
+"""Evidence 的确定性来源校验：按首尾片段锚在原文中定位，程序逐字回填 quote。
 
-anchor_resolve 把锚点与原文归一为词序列（忽略空白与标点样式）后匹配，返回的
-quote 是原文严格子串；PDF、网页里 exam‑ple、ﬁ 这类编码变体因此天然命中，
-模型无需手抄整段。失败以理由码回执：empty_anchor / anchor_not_found（附
-最近似原文句作纠错指引）/ ambiguous_start（提示加长片段取得唯一性）/
+锚点与原文归一为词序列（忽略空白与标点样式）后匹配，返回的 quote 是原文严格子串。
+失败以理由码回执：empty_anchor / anchor_not_found / ambiguous_start /
 end_not_found / span_too_long。
-不做行号定位：行号数错是静默错误（行号永远"合法"，程序无从察觉），
-锚点匹配则把错误暴露为未命中/不唯一。
 """
 
 import difflib
@@ -25,7 +21,7 @@ def _is_word_char(char: str) -> bool:
 
 def _wordonly_scan(text: str) -> tuple[str, list[tuple[int, int, int, int]]]:
     """只保留字母/数字/CJK 做归一（NFKC + casefold，剔标点/引号/破折号/省略号/零宽），
-    并行返回逐字符的键区间映射 [(键起, 键止, 源起, 源止)]，供命中后回取原文子串。"""
+    并行返回逐字符的键区间映射 [(键起， 键止， 源起， 源止)]，供命中后回取原文子串。"""
     pieces: list[str] = []
     spans: list[tuple[int, int, int, int]] = []
     cursor = 0
@@ -44,7 +40,7 @@ def nearest_source_passage(source_text: str, quote: str, max_chars: int = 200) -
     """返回与改述引用词面重叠最高的原文句子，供模型逐字替换为正确的原文。
 
     按句读切分后逐句比对归一词串的相似度，低于 0.4 视为无提示，
-    避免把无关句子返回给模型造成误导。只用于拒绝回执的纠错指引，不构成入池依据。
+    避免把无关句子返回给模型造成误导。只用于拒绝回执的纠错指引，不构成写入依据。
     """
     quote_key, _ = _wordonly_scan(quote)
     if not quote_key:
@@ -95,7 +91,7 @@ def anchor_resolve(
 ) -> AnchorResolution:
     """按段落首尾片段在原文中定位，返回原文逐字子串；模型不手抄整段。
 
-    匹配口径与入池判定一致（词序列归一，忽略空白/标点样式）。
+    匹配规则与写入判定一致（词序列归一，忽略空白/标点样式）。
     失败理由码：empty_anchor / anchor_not_found / ambiguous_start /
     end_not_found / span_too_long；not_found 附最近似原文句作提示。
     """

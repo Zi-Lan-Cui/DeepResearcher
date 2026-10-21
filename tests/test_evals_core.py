@@ -73,7 +73,7 @@ def test_dev_test30_partition_zh50() -> None:
     test30 = json.loads((profiles / "test30.json").read_text("utf-8"))["external_ids"]
     zh50 = {f"drb-zh-{index:03d}" for index in range(1, 51)}
     assert len(dev) == 20 and len(test30) == 30
-    # 开发集与实测集零交集,合起来恰好铺满 DRB 中文 50 题。
+    # 开发集与实测集零交集，合起来恰好铺满 DRB 中文 50 题。
     assert set(dev) & set(test30) == set()
     assert set(dev) | set(test30) == zh50
 
@@ -274,7 +274,7 @@ def test_process_metrics_carries_cache_and_token_fields():
     assert metrics["saved_external_request_count"] == 7
     agg = aggregate.summarize_metrics([metrics, metrics])
     assert agg["cached_input_tokens"] == 1600 and agg["llm_call_count"] == 186
-    assert agg["cost_note"]  # token-only 口径显式标注
+    assert agg["cost_note"]  # token-only 统计方式显式标注
 
 
 def test_citation_gate_pass_and_dangling():
@@ -400,8 +400,8 @@ def test_score_case_race_official_weighting_and_ratio():
         RaceCriterionScore("x-1", 1, "r1", "readability", None, None, "judge 调用或解析失败"),
     ]
     scored = aggregate.score_case_race(case, 1, rows)
-    # comprehensiveness 加权均分: target (8*2+10*1)/3≈8.667, reference (4*2+10*1)/3=6.0
-    # readability 整维无有效分→均分 0(与官方置零一致,比值项被剔除)
+    # comprehensiveness 加权均分： target (8*2+10*1)/3≈8.667, reference (4*2+10*1)/3=6.0
+    # readability 整维无有效分→均分 0(与官方置零一致，比值项被剔除)
     assert scored.target_total == round(26 / 3 * 0.6, 4)
     assert scored.reference_total == round(6.0 * 0.6, 4)
     assert scored.overall == round(
@@ -420,15 +420,15 @@ def test_score_case_requires_both_orders_and_passing_gates():
     assert score.race_swapped.overall == round(7 / 12, 4)
     assert score.race_mean == round((8 / 12 + 7 / 12) / 2, 4)
 
-    # 单序缺失时双序均值不成立,该轮不判过。
+    # 单序缺失时双序均值不成立，该轮不判过。
     single = aggregate.score_case(_case(), 1, _gates(), forward, [])
     assert single.race_mean is None and not single.passed
 
-    # 均值过线但某个门未通过,仍不过。
+    # 均值过线但某个门未通过，仍不过。
     failed_gate = _gates(verdicts={"gate:citation_integrity": "no"})
     assert not aggregate.score_case(_case(), 1, failed_gate, forward, swapped).passed
 
-    # 双序均值 ≤ 0.5 即未超专家参考,不过。
+    # 双序均值 ≤ 0.5 即未超专家参考，不过。
     low_forward = [RaceCriterionScore("x-1", 1, "a", "insight", 4.0, 8.0)]
     low_swapped = [RaceCriterionScore("x-1", 1, "a", "insight", 3.0, 9.0)]
     assert not aggregate.score_case(_case(), 1, _gates(), low_forward, low_swapped).passed
@@ -452,7 +452,7 @@ def test_k_metrics_pass_any_vs_all():
     assert metrics["x-1"]["missing_criterion_count"] == 0
 
 
-# judge 身份约束:引擎模型给自己产出打分有偏好,自评需显式开启,异构模型不受限。
+# judge 身份约束：引擎模型给自己产出打分有偏好，自评需显式开启，异构模型不受限。
 
 
 def _fake_llm_settings(monkeypatch, model: str = "mimo-v2.5"):
@@ -681,7 +681,7 @@ def test_await_state_execution_budget_starts_after_queue(tmp_path, monkeypatch):
     harness = evals_runner.RunHarness(out_dir=tmp_path, timeout_seconds=0.05)
 
     async def scenario():
-        # 8 轮 queued ≈160ms,超出 50ms 执行预算:排队时段不计入执行预算。
+        # 8 轮 queued ≈160ms,超出 50ms 执行预算：排队时段不计入执行预算。
         client = _Client(["queued"] * 8)
         return await harness._await_state(client, {}, "run-x")
 

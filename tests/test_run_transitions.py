@@ -45,7 +45,7 @@ EXPECTED_TRANSITIONS: dict[str, tuple[str, frozenset[str], str | None]] = {
     "recover_dead": ("failed", frozenset({"running", "interrupted"}), "server_restart"),
 }
 
-# 来源并集:每个目标状态的全部合法来源。
+# 来源并集：每个目标状态的全部合法来源。
 EXPECTED_LEGAL: dict[str, frozenset[str]] = {
     "running": frozenset({"queued", "interrupted", "awaiting_input"}),
     "awaiting_input": frozenset({"running"}),
@@ -75,14 +75,14 @@ def test_terminal_states_are_sinks() -> None:
 
 
 def test_reason_is_carried_by_fixed_provenance_transitions() -> None:
-    # reap/release 目标与来源完全相同、仅 reason 不同:说明 reason 不是状态本身的函数。
+    # reap/release 目标与来源完全相同、仅 reason 不同：说明 reason 不是状态本身的函数。
     assert TRANSITIONS["reap"].target == TRANSITIONS["release"].target
     assert TRANSITIONS["reap"].sources == TRANSITIONS["release"].sources
-    # 两边都必须带固定原因:只查"互异"会放过 None != "server_shutdown" 的情况。
+    # 两边都必须带固定原因：只查"互异"会放过 None != "server_shutdown" 的情况。
     assert TRANSITIONS["reap"].reason is not None
     assert TRANSITIONS["release"].reason is not None
     assert TRANSITIONS["reap"].reason != TRANSITIONS["release"].reason
-    # finish/fail 的 reason 由引擎按运行结果填写,迁移表中不固定。
+    # finish/fail 的 reason 由引擎按运行结果填写，迁移表中不固定。
     assert TRANSITIONS["finish"].reason is None
     assert TRANSITIONS["fail"].reason is None
 
@@ -123,7 +123,7 @@ def test_side_effects_terminal_and_intermediate() -> None:
     assert interrupted["lease_owner"] is None
     assert interrupted["finished_at"] is None
     assert "resume_payload" not in interrupted  # 中断行保留 payload,供 resume 领取
-    assert "terminal_reason" not in interrupted  # 由迁移行自带的 reason 写入,不在副作用里填
+    assert "terminal_reason" not in interrupted  # 由迁移行自带的 reason 写入，不在副作用里填
 
     assert side_effects("running", now=NOW) == {"status": "running"}
     assert side_effects("queued", now=NOW) == {"status": "queued"}
@@ -157,13 +157,13 @@ def test_apply_transition_fills_fixed_reason() -> None:
 
 
 def test_apply_transition_rejects_wrong_name_even_when_edge_exists() -> None:
-    # running→cancelled 这条边经 cancel_running 存在,但 cancel_pending 不能用它:
+    # running→cancelled 这条边经 cancel_running 存在，但 cancel_pending 不能用它：
     # 按迁移名校验严于按来源并集校验。
     row = _row("running")
     doomed_before = vars(row).copy()
     with pytest.raises(IllegalTransitionError):
         apply_transition(row, "cancel_pending", now=NOW)
-    assert vars(row) == doomed_before  # 校验先于赋值,失败不留半状态
+    assert vars(row) == doomed_before  # 校验先于赋值，失败不留半状态
 
 
 def test_apply_transition_rejects_illegal_source() -> None:

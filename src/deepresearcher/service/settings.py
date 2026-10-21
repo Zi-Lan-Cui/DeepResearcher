@@ -1,9 +1,9 @@
 """服务层配置：数据库、JWT、监听与配额。
 
-引擎配置（LLM、搜索、agent 预算）仍由 ``deepresearcher.config.get_settings()`` 提供，
-本模块只定义把它跑成多用户服务所需的新键。env 文件沿用同一约定：
-``DEEPRESEARCHER_ENV_FILE``，默认 ``env/.env``，``load_dotenv(override=False)``
-不会与引擎侧的加载互相覆盖；环境判别复用 ``APP_ENV``。
+引擎配置（LLM、搜索、agent 预算）仍由 deepresearcher.config.get_settings() 提供，
+本模块只定义把它部署成多用户服务所需的新键。env 文件沿用同一约定：
+DEEPRESEARCHER_ENV_FILE，默认 env/.env，load_dotenv(override=False)
+不会与引擎侧的加载互相覆盖；环境判别复用 APP_ENV。
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ class ServiceConfig:
     token_ttl_hours: int = 12
     max_concurrent_runs_per_user: int = 2
     max_global_queued_runs: int = 100
-    # 单个 worker 进程的同时执行槽位;多副本部署时全局总量等于该值乘以副本数,
+    # 单个 worker 进程的同时执行槽位；多副本部署时全局总量等于该值乘以副本数，
     # 对上游供应商的总量保护由每进程的 LLM_PROVIDER_RPM/TPM 按副本数折算承担。
-    # 与 max_global_queued_runs 是两件事:那是准入侧排队长度上限,这是执行侧并发数。
+    # 与 max_global_queued_runs 是两件事：那是准入侧排队长度上限，这是执行侧并发数。
     worker_max_running_runs: int = 3
     worker_lease_seconds: int = 60
     worker_heartbeat_seconds: int = 20
@@ -64,7 +64,7 @@ class ServiceConfig:
     service_log_dir: Path = _PROJECT_ROOT / "var" / "service"
     jsonl_events: bool = True
     jsonl_retention_days: int = 14
-    # 终态 run 过程数据(events/usage 行 + checkpoint 线程)的保留窗口与清扫间隔;
+    # 终态 run 过程数据(events/usage 行 + checkpoint 线程)的保留窗口与清扫间隔；
     # 报告与 runs 行不在清除范围。retention_days=0 关闭清扫。
     run_trace_retention_days: int = 14
     retention_sweep_interval_seconds: int = 21_600
@@ -153,9 +153,8 @@ def clear_service_config_cache() -> None:
 def checkpoint_dsn(database_url: str) -> str | None:
     """由业务库 URL 派生 checkpointer 的 psycopg DSN。
 
-    langgraph 的 AsyncPostgresSaver 走 psycopg，不认 SQLAlchemy 的 +asyncpg 方言，
-    因此要改写协议前缀；两个连接层共享同一个 PG 实例。非 postgresql URL
-    （测试用 SQLite）返回 None，装配方据此跳过 checkpointer，恢复能力随部署形态降级。
+    AsyncPostgresSaver 走 psycopg，不认 SQLAlchemy 的 +asyncpg 方言，需改写协议前缀。
+    非 postgresql URL（测试用 SQLite）返回 None，装配方据此跳过 checkpointer。
     """
     if not database_url.startswith("postgresql"):
         return None

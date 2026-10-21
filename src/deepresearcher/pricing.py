@@ -1,15 +1,15 @@
-"""LLM 单价表：记账币种人民币，单位 元/百万 token。
+"""LLM 单价表：计价币种人民币，单位 元/百万 token。
 
-价格按公开牌价登记，缺价模型不猜价——落库记 0 并保留 unpriced 版本戳，
-对账时缺价是可见事实而非隐藏误差。牌价更动时同步更新 PRICE_TABLE_VERSION，
-重算入口按版本戳幂等回填历史行。
+价格按厂商公开价目登记，未登记价目的模型不估算：成本记 0，并在
+price_version 列写 unpriced，让缺价在数据中可见，而不是混进总额。
+价目变动时同步更新 PRICE_TABLE_VERSION，重算入口按版本戳回填历史行。
 """
 
 from dataclasses import dataclass
 from decimal import Decimal
 
-# 现行牌价批次（小米 MiMo 2026-05-27 永久调价公告生效日）。
-PRICE_TABLE_VERSION = "2026-05-27-cny"
+# 现行价目批次（小米 MiMo V2.6 系列，2026-09-22 发布，延续 V2.5 定价）。
+PRICE_TABLE_VERSION = "2026-10-22-cny-v26"
 
 
 @dataclass(frozen=True)
@@ -19,10 +19,20 @@ class ModelPrice:
     output_cny_per_million: float
 
 
-# 键为 provider 回执的模型名（run_usage.model 列）。
+# 键为 provider 回执中的模型名（对应 run_usage.model 列）。
+# V2.6 与 V2.5 定价相同；V2.5 系列已于 2026-10-21 下线，条目保留供重算历史用量。
 MODEL_PRICES: dict[str, ModelPrice] = {
-    # 小米 MiMo 国内牌价：缓存写入限时免费，记 0；海外平台按美元另有牌价，本表不掺。
-    # 官方公告 2026-10-14 起 v2.5 自动路由至 v2.6 系列，届时回执模型名若不在表内即落 unpriced。
+    # 小米 MiMo 国内价目。缓存命中按 99% 折扣计价；海外平台另按美元标价，本表不采。
+    "mimo-v2.6-flash": ModelPrice(
+        input_cny_per_million=1.0,
+        cached_input_cny_per_million=0.02,
+        output_cny_per_million=2.0,
+    ),
+    "mimo-v2.6-pro": ModelPrice(
+        input_cny_per_million=3.0,
+        cached_input_cny_per_million=0.025,
+        output_cny_per_million=6.0,
+    ),
     "mimo-v2.5": ModelPrice(
         input_cny_per_million=1.0,
         cached_input_cny_per_million=0.02,
@@ -37,7 +47,7 @@ MODEL_PRICES: dict[str, ModelPrice] = {
 
 
 def price_for_model(model: str | None) -> ModelPrice | None:
-    """按模型名查现行牌价；未登记返回 None（记 unpriced）。"""
+    """按模型名查现行价目；未登记返回 None（记 unpriced）。"""
 
     if not model:
         return None
@@ -47,7 +57,7 @@ def price_for_model(model: str | None) -> ModelPrice | None:
 def cost_cny(
     model: str | None, input_tokens: int, output_tokens: int, cached_input_tokens: int
 ) -> Decimal:
-    """按现行牌价计一次调用的人民币成本；缺价返回 0。"""
+    """按现行价目计一次调用的人民币成本；缺价返回 0。"""
 
     price = price_for_model(model)
     if price is None:

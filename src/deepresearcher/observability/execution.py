@@ -11,7 +11,7 @@ class AgentExecutionScope:
     """标识一次 Agent 执行属于哪个 run/任务。
 
     Scope 随运行时上下文注入，不进入 checkpoint；工具名、tool_call_id、
-    turn 和耗时由中间件在调用现场补充。
+    turn 和耗时由中间件在调用处补充。
     """
 
     run_id: str

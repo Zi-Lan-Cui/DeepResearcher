@@ -1,4 +1,4 @@
-"""按日 token 用量统计:账户页图表的数据源。"""
+"""按日 token 用量统计：账户页图表的数据源。"""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,9 +20,9 @@ async def stats_daily(
     user: User = Depends(current_user),
     days: int = 30,
 ) -> dict[str, Any]:
-    """最近 N 天逐日聚合:runs 数、输入/输出/已缓存 token 与输入侧命中率。
+    """最近 N 天逐日聚合：runs 数、输入/输出/已缓存 token 与输入侧命中率。
 
-    日期按 UTC 分组（方言中立的 ``date()``）；无 run 的日期不补零，缺位由前端图表处理。
+    日期按 UTC 分组（方言中立的 date()）；无 run 的日期不补零，缺位由前端图表处理。
     """
     if days not in STATS_WINDOW_DAYS:
         days = 30

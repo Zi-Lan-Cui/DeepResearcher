@@ -1,9 +1,7 @@
-"""ResearchAgent 方向级工具的业务实现:不感知 langgraph 的纯 async 函数。
+"""ResearchAgent 方向级工具的业务实现：不感知 langgraph 的纯 async 函数。
 
-每个函数只依赖显式入参:deps 是 agent 构造期的稳定零件,跨 run 共享只读;
-task、loop_state、event_context 属本轮 run,由 tools.py 从
-ResearcherLoopContext 转交。工具回执的字符串协议留在 tools.py,这里只回 dict;
-对 loop_state 的改写全部收在不含 await 的同步段内,原子性由事件循环的单线程调度保证。
+deps 是构造期的稳定零件，跨 run 共享只读；task、loop_state、event_context 属本轮。
+对 loop_state 的改写收在不含 await 的同步段内。
 """
 
 import asyncio
@@ -129,7 +127,7 @@ async def search_sources(
             source_profile=describe_source(url),
         )
     raw_results = [dict(item) for item in result.results]
-    # 预览与 ListSearchResults 共用同一卡片形状 + 同一 raw_results 下标偏移口径。
+    # 预览与 ListSearchResults 共用同一卡片结构 + 同一 raw_results 下标偏移基准。
     preview, next_offset = _candidate_cards(
         loop_state, raw_results, start=0, count=SEARCH_RESULTS_PREVIEW_COUNT
     )
@@ -405,13 +403,13 @@ async def _validate_submissions(
     """锁外逐条校验提交：原文读取、锚定回填 quote、批内去重、置信度解析。
 
     返回 (candidates, rejected, duplicates)。产物只是候选 Evidence 与拒因清单，不触碰
-    loop_state——入池的并发/容量判断全部留给 add_evidence 的同步临界区。
+    loop_state——写入的并发/容量判断全部留给 add_evidence 的同步临界区。
     """
     rejected: list[dict[str, object]] = []
     duplicates: list[str] = []
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
-    # 批内缓存:同一文档的多条引用只取一次原文,Redis 后端下省去重复的全量 GET。
+    # 批内缓存：同一文档的多条引用只取一次原文，Redis 后端下省去重复的全量 GET。
     source_texts: dict[str, str] = {}
     assert deps.material_store is not None  # 调用方已守卫
     for index, raw in enumerate(submissions):
@@ -431,8 +429,8 @@ async def _validate_submissions(
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
             source_texts[document_id] = source_text
-        # 入池不变式:quote 是原文严格子串——由锚定解析从原文逐字回填,模型不手抄整段。
-        # 锚未命中、有歧义或跨度超限都是提交错误,回执理由码,anchor_not_found 附最接近的原文句。
+        # quote 必须是原文严格子串——由锚定解析从原文逐字回填，模型不手抄整段。
+        # 锚未命中、有歧义或跨度超限都是提交错误，回执理由码，anchor_not_found 附最接近的原文句。
         resolution = anchor_resolve(source_text, quote_start, quote_end)
         if resolution.reason:
             rejection: dict[str, object] = {"index": index, "reason": resolution.reason}
@@ -489,11 +487,11 @@ async def add_evidence(
     submissions: list[dict[str, object]],
     reason: str,
 ) -> dict[str, object]:
-    """逐条校验(可含网络读)→ 排序截断 → 入池同步临界区一次走完。
+    """逐条校验(可含网络读) → 排序截断 → 在同步临界区内一次写入。
 
-    边界:校验不触碰 loop_state;去重、每源容量、档案容量的检查-然后-动作收在
-    同一个同步段里走完,并发提交不会重复占用槽位、不会越过每源上限——原子性由
-    单线程调度保证,段内禁引入 await,否则需恢复互斥。
+    边界：校验不触碰 loop_state；去重、每源容量、档案容量的检查-然后-动作收在
+    同一个同步段里走完，并发提交不会重复占用槽位、不会越过每源上限——原子性由
+    单线程调度保证，段内禁引入 await，否则需恢复互斥。
     """
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
@@ -535,10 +533,10 @@ async def add_evidence(
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "duplicate_count": len(duplicates),
-            # 直方图记录证据被拒原因的分布;锚定类理由码为 empty_anchor/anchor_not_found/
+            # 直方图记录证据被拒原因的分布；锚定类理由码为 empty_anchor/anchor_not_found/
             # ambiguous_start/end_not_found/span_too_long,unknown_document_id 单列。
             "rejected_reasons": rejected_reasons,
-            # 模型提交证据时给出的理由,留作审计与归因的可解释信号。
+            # 模型提交证据时给出的理由，留作审计与归因的可解释信号。
             "reason": reason.strip()[:400],
         },
     )
@@ -607,8 +605,8 @@ def _candidate_cards(
     start: int,
     count: int,
 ) -> tuple[list[dict[str, object]], int | None]:
-    """按 raw_results 原始下标分页出候选卡,SearchSources 预览与 ListSearchResults 共用。
-    同一候选在两处形状一致,offset 口径相同:跳过空 url 时不推进 offset。"""
+    """按 raw_results 原始下标分页出候选卡，SearchSources 预览与 ListSearchResults 共用。
+    同一候选在两处结构一致，offset 基准相同：跳过空 url 时不推进 offset。"""
     cards: list[dict[str, object]] = []
     for raw in raw_results[start : start + count]:
         url = str(raw.get("url", "")).strip()
@@ -624,7 +622,7 @@ def _candidate_cards(
 
 
 def _search_candidate_card(candidate: SearchCandidate) -> dict[str, object]:
-    """统一的候选卡形状:始终带截断后的 snippet,让模型在预览阶段就能判断是否值得读取。"""
+    """统一的候选卡结构：始终带截断后的 snippet，让模型在预览阶段就能判断是否值得读取。"""
     return {
         "candidate_id": candidate.candidate_id,
         "title": candidate.title,
@@ -650,10 +648,10 @@ def complete_direction(
     conclusion: str,
     remaining_gaps: list[str],
 ) -> dict[str, object]:
-    """ResearchDirectionComplete 业务:校验选定集、落定 stop_reason,返回完整回执。
+    """ResearchDirectionComplete 业务：校验选定集、落定 stop_reason，返回完整回执。
 
-    只引用活跃 Evidence;选定即收敛工作集。无活跃证据时按 BLOCKED_WITHOUT_EVIDENCE
-    落定,并把 reason 兜底进 remaining_gaps,保证缺口清单留有内容。
+    只引用活跃 Evidence；选定即确定工作集。无活跃证据时按 BLOCKED_WITHOUT_EVIDENCE
+    落定，并把 reason 作为回退写入 remaining_gaps，保证缺口清单留有内容。
     """
     requested = list(dict.fromkeys(selected_evidence_ids))
     active = set(loop_state.active_evidence_ids)

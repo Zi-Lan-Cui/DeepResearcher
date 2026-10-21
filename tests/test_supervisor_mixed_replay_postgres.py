@@ -128,12 +128,12 @@ class _MixedResearchAgent:
             return result
         if self.mode == "hang-child":
             await self._a_done.wait()
-            # 不抛不返回:B 纯挂起,整步不会有 __error__,等待外部 SIGKILL。
+            # 不抛不返回：B 纯挂起，整步不会有 __error__,等待外部 SIGKILL。
             while True:
                 await asyncio.sleep(0.5)
         if self.mode == "exception" and not self._killed_once:
             await self._a_done.wait()
-            # 留出窗口:让 A 的工具任务先完成。
+            # 留出窗口：让 A 的工具任务先完成。
             await asyncio.sleep(0.3)
             self._killed_once = True
             raise _ProcessKilled("simulated process kill after sibling completed")
@@ -232,13 +232,13 @@ async def _drive(saver):
             "active_count": len(update.get("active_evidence_ids") or []),
         }
     finally:
-        # 演示同库不留测试线程:崩溃路径同样回收,否则每跑一次批就往生产 checkpoint 里漏一批行。
+        # 演示同库不留测试线程：崩溃路径同样回收，否则每跑一次批就往生产 checkpoint 里漏一批行。
         await saver.adelete_thread(thread)
 
 
 def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
     """崩溃恢复:派发批 journal 命中不重跑方向体,节点内吸收(含 WaitDirection)随失败丢弃,
-    欠账在收口处全部判 lost 结算;编号稳定、两方向不互吞。"""
+    未结算的派发在收尾处全部判 lost 结算；编号稳定、两方向不互吞。"""
     saver_context = _make_saver()
     if saver_context is None:
         pytest.skip("checkpointer 未配置(非 postgresql 部署形态)")
@@ -256,9 +256,9 @@ def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 派发制合同:WaitDirection 正常返回即完成消费,其吸收随内层 superstep 提交并在恢复后保留;
+    # 派发制合同：WaitDirection 正常返回即完成消费，其吸收随内层 superstep 提交并在恢复后保留；
     # 崩溃时仍欠的是"未被消费的在途"——恢复不重跑(receipts/编号有 journal),只把欠账判 lost。
-    # B 的抛错发生在外层节点体 drain 阶段,内层图已正常结束,A 的收据不在丢弃范围内。
+    # B 的抛错发生在外层节点体 drain 阶段，内层图已正常结束，A 的收据不在丢弃范围内。
     assert facts["calls"] == {"A": 1, "B": 1}, facts["calls"]
     assert facts["task_count"] == 2, facts
     assert facts["task_ids"] == ["task-0001", "task-0002"], facts["task_ids"]

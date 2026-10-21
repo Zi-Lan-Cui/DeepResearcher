@@ -71,7 +71,7 @@ async def login(body: LoginBody, request: Request) -> dict[str, Any]:
 
 @router.get("/me")
 async def me(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
-    """当前用户的身份与账本视图。"""
+    """当前用户的身份与事件日志视图。"""
     state = app_state(request)
     day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     async with state.session_factory() as session:

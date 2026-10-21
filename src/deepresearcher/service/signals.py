@@ -1,6 +1,6 @@
 """API 与 Worker 进程之间由 PostgreSQL 承载的尽力而为信号。
 
-本模块是全仓唯一允许绕开 sqlalchemy 引擎、直接 `asyncpg.connect` 的地方:
+本模块是全仓唯一允许绕开 sqlalchemy 引擎、直接 `asyncpg.connect` 的地方：
 LISTEN 订阅连接随进程存活、不能放入请求式 session 池。该约束由守卫
 test_asyncpg_raw_connections_live_only_in_signals 校验。
 """
@@ -97,7 +97,7 @@ class PostgresSignalBus:
         if self._send_connection is None:
             return
         message = json.dumps({"kind": kind, "payload": payload}, separators=(",", ":"))
-        # asyncpg 连接同一时刻只允许一个操作;并发 notify 在该锁上排队发送,
+        # asyncpg 连接同一时刻只允许一个操作；并发 notify 在该锁上排队发送，
         # 否则发送失败丢掉唤醒。
         async with self._send_lock:
             try:

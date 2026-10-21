@@ -70,7 +70,7 @@ class RunWorker:
         return self._worker_id
 
     async def start(self) -> None:
-        """启动信号驱动的派发与兜底轮询；可安全重复调用。"""
+        """启动信号驱动的派发与回退轮询；可安全重复调用。"""
         if self._closed:
             return
         self._ensure_background_tasks()
@@ -140,7 +140,7 @@ class RunWorker:
                     await self.wake()
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - 恢复路径自身不能再有单点:瞬断下轮重扫
+                except Exception:  # noqa: BLE001 - 恢复路径自身不能再有单点：瞬断下轮重扫
                     logger.warning("queue_poll_db_error", exc_info=True)
         except asyncio.CancelledError:
             return
@@ -201,7 +201,7 @@ class RunWorker:
                 transient_failures += 1
                 if cancelled is None and transient_failures < self._heartbeat_failure_budget:
                     # 无法区分真丢租与 DB 瞬断时按后者处理：真丢租另有 reap 与
-                    # settle 路径兜底，误判取消却会让健康 run 白白重跑。
+                    # settle 路径作为回退，误判取消却会让健康 run 白白重试。
                     continue
                 self._executor.mark_lease_lost(work.run_id)
                 if owner_task is not None:
@@ -227,8 +227,8 @@ class RunWorker:
                         await self._after_reap()
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - reap 是状态机最后的兜底,本循环自身不许抛异常退出
-                    # 半途失败不补扫:reap_expired 每轮全量重扫,幂等吞掉瞬断即可。
+                except Exception:  # noqa: BLE001 - reap 是状态机最后的保障，本循环自身不许抛异常退出
+                    # 半途失败不补扫：reap_expired 每轮全量重扫，幂等丢弃瞬断即可。
                     logger.warning("lease_reap_db_error", exc_info=True)
         except asyncio.CancelledError:
             return
@@ -258,7 +258,7 @@ class RunWorker:
             task.cancel()
         await asyncio.gather(*background, *self._dispatch_tasks, return_exceptions=True)
         # 在锁内做快照：先让已穿过 _closed 检查、正等 dispatch 锁的 wake 全部
-        # 落地，再决定 release 范围；否则会出现 release 完成后才被领取的孤儿行，
+        # 完成，再决定 release 范围；否则会出现 release 完成后才被领取的孤儿行，
         # 状态为 running 而进程已退出，只能等租约过期。
         async with self._dispatch_lock:
             live = [

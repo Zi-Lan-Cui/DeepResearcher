@@ -126,7 +126,7 @@ def test_rejected_receipt_stays_in_loop_until_accepted():
     )
     result = asyncio.run(agent.ainvoke({"messages": [HumanMessage("go")]}))
 
-    assert model.calls == 2  # 被拒后改正恰好多花一次,接受后不再多跑
+    assert model.calls == 2  # 被拒后改正恰好多花一次，接受后不再多跑
     assert result["committed"] is True
 
 

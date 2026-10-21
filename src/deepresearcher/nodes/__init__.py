@@ -1,12 +1,12 @@
 """LangGraph 普通节点，按职责拆分并统一导出。
 
-与 agents/ 的切分判据:一次模型调用出结论的住这里;多轮工具循环的住 agents/。
+与 agents/ 的切分判定依据：一次模型调用出结论的住这里；多轮工具循环的住 agents/。
 """
 
-# 结构化调用的唯一测试注入点:包装层在调用期读本模块全局 ainvoke_structured
-# 并显式传给内层函数;内层函数不提供 def 期默认值,避免第二个注入点。
-# 测试只 patch deepresearcher.nodes.ainvoke_structured;该名字不是本包
-# 公共出口,不进 __all__。
+# 结构化调用的唯一测试注入点：包装层在调用期读本模块全局 ainvoke_structured
+# 并显式传给内层函数；内层函数不提供 def 期默认值，避免第二个注入点。
+# 测试只 patch deepresearcher.nodes.ainvoke_structured；该名字不是本包
+# 公共出口，不进 __all__。
 from deepresearcher.llm import ainvoke_structured
 from deepresearcher.nodes.quick_answer import quick_answer
 from deepresearcher.nodes.render import render_final_report_node

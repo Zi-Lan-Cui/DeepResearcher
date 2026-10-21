@@ -1,8 +1,8 @@
-"""Supervisor 业务实现:不感知 langgraph 的纯函数,async 与否按是否需要等待。
+"""Supervisor 业务实现：不感知 langgraph 的纯函数，async 与否按是否需要等待。
 
-工具回执的字符串协议与消息配对留在协议层 tools.py,本模块只回 dict,不构造
-ToolMessage。子 Agent 并发受 deps.worker_limit 限制;对 loop_state 的改写全部收在
-不含 await 的同步段内,原子性由事件循环的单线程调度保证。
+工具回执的字符串协议与消息配对留在协议层 tools.py，本模块只回 dict，不构造
+ToolMessage。子 Agent 并发受 deps.worker_limit 限制；对 loop_state 的改写全部收在
+不含 await 的同步段内，原子性由事件循环的单线程调度保证。
 """
 
 import asyncio
@@ -68,15 +68,11 @@ def dispatch_research(
     tool_call_id: str = "",
     origin_state: dict[str, object] | None = None,
 ) -> tuple[SubTask | None, dict[str, object], dict[str, object]]:
-    """受理一次 ResearchDelegate 派发请求:预算硬校验、任务编号、构造 SubTask。
+    """受理一次 ResearchDelegate 派发请求：预算硬校验、任务编号、构造 SubTask。
 
-    返回 (task, receipt, entry):预算越界时 task 为 None;entry 是待写进
-    pending_directions 通道的登记项,由派发批的 Command 与回执同批提交。
-    方向本体由 tools 层拉起后台任务执行,完成后经 absorb_arrival 吸收——
-    派发批不等方向完成,回合屏障由此拆除。
-    display_title 是方向卡的展示短题,topic 仍承载完整契约;缺省时前端回退截断 question。
-    程序不做主题去重:防重复交给提示词纪律与在途清单,浪费由 max_subtasks 与轮次预算封顶。
-    tool_call_id 与 origin_state 提供时编号按调用位置派生(跨重放稳定),否则退回活视图分配。
+    返回 (task, receipt, entry)；预算越界时 task 为 None。entry 是写进
+    pending_directions 通道的登记项，与回执同批提交。方向本体由 tools 层后台执行，
+    完成后经 absorb_arrival 吸收，派发批不等方向完成。
     """
     round_no = loop_state.current_round
     deps.emit(EventName.DELEGATE_STARTED, {"topic_chars": len(topic)})
@@ -87,7 +83,7 @@ def dispatch_research(
             "reason": "round_budget_exhausted",
             "instruction": "研究轮次预算已耗尽；请修订最新研究综合稿。若达到完整标准则调用 ResearchComplete，否则直接结束，系统将按 partial 交付。",
         }
-        # 被预算拒绝的调用不产生方向,即时补全 delegate 事件对,让无产出轮次在事件流可解释。
+        # 被预算拒绝的调用不产生方向，即时补全 delegate 事件对，让无产出轮次在事件流可解释。
         deps.emit(
             EventName.DELEGATE_COMPLETED,
             {
@@ -137,10 +133,10 @@ def dispatch_research(
 
 
 async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExecution:
-    """后台任务体:等并发槽、执行单个方向研究,返回完整产物。
+    """后台任务体：等并发槽、执行单个方向研究，返回完整产物。
 
-    除取消外不抛异常——worker 异常在此降级为 failed 结果,保证 await 方总能取值。
-    完成/失败事件不在这里发:"完成"以吸收进工作集的时刻为准,见 absorb_arrival。
+    除取消外不抛异常——worker 异常在此降级为 failed 结果，保证 await 方总能取值。
+    完成/失败事件不在这里发："完成"以归入工作集的时刻为准，见 absorb_arrival。
     """
     round_no = int(task.get("round", 1))
     async with deps.worker_limit:
@@ -156,8 +152,8 @@ async def _execute_research_task(deps: SupervisorDeps, task: SubTask) -> TaskExe
         )
         try:
             result = await deps.research_agent.run(task)
-            # 子 Agent 边界:结果写入审计事件或 State 前先过契约校验;
-            # 同 run 内已是实例时不花校验开销,跨进程 checkpoint 恢复的 dict 由校验重建。
+            # 子 Agent 边界：结果写入审计事件或 State 前先过契约校验；
+            # 同 run 内已是实例时不花校验开销，跨进程 checkpoint 恢复的 dict 由校验重建。
             agent_result = (
                 result
                 if isinstance(result, ResearchAgentResult)
@@ -185,11 +181,11 @@ def absorb_lost_registrations(
     loop_state: SupervisorLoopState,
     live_task_ids: set[str],
 ) -> list[tuple[dict[str, object], dict[str, object]]]:
-    """崩溃恢复结算:通道有登记、进程无活任务体的方向一律判 failed 并移除登记。
+    """崩溃恢复结算：通道有登记、进程无活任务体的方向一律判 failed 并移除登记。
 
-    WaitDirection 在消费前先调用本函数,把无主登记结算成收据;节点收尾 drain 在
-    模型 nudge 上限用尽仍直接结束时以此兜底。两处都必须调用,只在一处结算会漏掉
-    另一处,在途方向就无声消失。返回逐项的方向报告与通道差量。
+    WaitDirection 在消费前先调用本函数，把未归属登记结算成收据；节点收尾 drain 在
+    模型 nudge 上限用尽仍直接结束时以此作为回退。两处都必须调用，只在一处结算会漏掉
+    另一处，在途方向就无声消失。返回逐项的方向报告与通道增量。
     """
     results: list[tuple[dict[str, object], dict[str, object]]] = []
     for task_id in sorted(list(loop_state.pending_directions)):
@@ -212,7 +208,7 @@ def absorb_lost_registrations(
 
 
 def _merge_channel_delta(delta: dict[str, object], part: dict[str, object]) -> None:
-    """把逐项吸收差量并入总差量;两个差量通道按各自形态合并,其余键后写覆盖(值同源幂等)。"""
+    """把逐项吸收增量并入总增量；两个增量通道按各自形态合并，其余键后写覆盖(值同源幂等)。"""
     for key, value in part.items():
         if key in ("active_evidence_ids", "pending_directions"):
             if key not in delta:
@@ -250,11 +246,11 @@ def receive_ready_directions(
     *,
     merged_via: str,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """非阻塞接收:结算无主登记,并吸收登记表中全部已完成且未领取的方向。
+    """非阻塞接收：结算未归属登记，并吸收登记表中全部已完成且未领取的方向。
 
-    进程内登记表弹出即领取标记,回合开头接收中间件与 WaitDirection 两个入口以它
-    互斥:先执行的一方消费,后执行的一方只见剩余。报告与通道差量一并返回,差量
-    只含 merge 语义通道。吸收原语按 id 幂等,两个入口不会重复计入。
+    进程内登记表弹出即领取标记，回合开头接收中间件与 WaitDirection 两个入口以它
+    互斥：先执行的一方消费，后执行的一方只见剩余。报告与通道增量一并返回，增量
+    只含 merge 语义通道。吸收原语按 id 幂等，两个入口不会重复计入。
     """
     reports: list[dict[str, object]] = []
     delta: dict[str, object] = {}
@@ -286,13 +282,10 @@ async def wait_for_directions(
     task_ids: list[str] | None = None,
     timeout: float | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object], bool]:
-    """等待并收取在途方向:先非阻塞接收,无结果才阻塞;返回报告、差量与是否到期。
+    """等待并收取在途方向：先非阻塞接收，无结果才阻塞。
 
-    已有完成未领取的立即返回,不再等待:实场 run-3234 中两个方向完成后仍挂置
-    372-382 秒,要等其他路全部返回才处理,边完成边处置的机会被落在最后一路之后。
-    timeout 限定阻塞秒数,到期无一完成则 timed_out 为真,不把等待到期
-    误报成无在途。任务体是 total 函数,除取消外不抛;指定 id 全部不在途时
-    不挂死,以现有结果即返。
+    已有完成未领取的立即返回。timeout 到期无一完成时 timed_out 为真。任务体除取消外
+    不抛；指定 id 全部不在途时以现有结果即返。
     """
     reports, delta = receive_ready_directions(deps, loop_state, registry, merged_via="wait_tool")
 
@@ -324,10 +317,10 @@ def compose_wait_receipt(
     *,
     timed_out: bool = False,
 ) -> dict[str, object]:
-    """WaitDirection 回执:等待到期回 timed_out,不与无在途情形混同。
+    """WaitDirection 回执：等待到期回 timed_out，不与无在途情形混同。
 
-    无报告但在途非空时,只可能是指定 id 全不在册或等待到期,
-    两种情形分别给出纠偏指令,避免回执自相矛盾。
+    无报告但在途非空时，只可能是指定 id 全不在册或等待到期，
+    两种情形分别给出纠偏指令，避免回执自相矛盾。
     """
     if reports:
         status = "completed"
@@ -350,7 +343,7 @@ def compose_wait_receipt(
         )
     elif status == "timed_out":
         payload["instruction"] = (
-            "等待时间已用尽,期间没有方向完成。可加长 timeout 再等,或先处理现有工作台。"
+            "等待时间已用尽，期间没有方向完成。可加长 timeout 再等，或先处理现有工作台。"
         )
     elif status == "no_inflight":
         payload["instruction"] = (
@@ -378,12 +371,10 @@ def absorb_arrival(
     *,
     merged_via: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """方向完成后的同步吸收段:并入工作集、移除登记、发事件,返回方向报告与通道差量。
+    """方向完成后的同步吸收段：并入工作集、移除登记、发事件，返回报告与通道增量。
 
-    段内禁引入 await(同旧 absorb 纪律)。调用方是 WaitDirection 工具与节点收尾
-    drain,都在循环线程上同步执行。差量只碰 merge 语义通道;事件在此发出使
-    task_done 帧与"证据已入工作集"同一时刻,卡片绿色即模型可见。
-    merged_via 记录吸收入口:model_turn|wait_tool|drain|lost。
+    调用方是 WaitDirection 与节点收尾 drain，都在循环线程上同步执行，段内禁 await。
+    merged_via 记录吸收入口：model_turn、wait_tool、drain 或 lost。
     """
     task_context = _task_context(deps, task)
     task_result = execution.task_result
@@ -441,7 +432,7 @@ def absorb_arrival(
         ],
     }
     if task_result.provider_exhausted:
-        # 只给数据、不加控制流分支:Supervisor 模型读到系统性不可用后自然停止派发、收尾。
+        # 只给数据、不加控制流分支：Supervisor 模型读到系统性不可用后自然停止派发、收尾。
         direction_report["provider_exhausted"] = True
         direction_report["instruction"] = (
             "搜索服务账户级不可用（额度耗尽/密钥无效），系统性问题：再派新方向也会同样失败。"
@@ -472,11 +463,11 @@ def _candidate_synthesis(
     aspect_upserts: dict[str, ResearchAspect],
     aspect_removals: list[str],
 ) -> ResearchSynthesis | None:
-    """把 framing 与 aspect 变更套到现稿上,产出候选稿;纯函数不落盘。
+    """把 framing 与 aspect 变更套到现稿上，产出候选稿；纯函数不写入磁盘。
 
-    aspect 顺序:沿用现稿次序,同 id upsert 原位替换,新 id 追加。
-    草稿期不要求任何字段齐备;变更后全空(无 aspect、三件与声明皆空)返回 None,
-    调用方据此把稿子清回未开稿状态——拆脚手架重来是合法动作。
+    aspect 顺序：沿用现稿次序，同 id upsert 原位替换，新 id 追加。
+    草稿期不要求任何字段齐备；变更后全空（无 aspect、三件与声明皆空）返回 None，
+    调用方据此把稿子清回未开稿状态，清空草稿重新开始是合法动作。
     """
     current = loop_state.research_synthesis
     aspects: dict[str, ResearchAspect] = {}
@@ -528,7 +519,7 @@ _WRITABLE_OPS_HINT = (
 
 @dataclass
 class _SubmissionEdits:
-    """一次 UpdateWorkbench 提交归并后的编辑集：各段候选输入，尚未落盘。"""
+    """一次 UpdateWorkbench 提交归并后的编辑集：各段候选输入，尚未写入磁盘。"""
 
     framing_updates: dict[str, object] = field(default_factory=dict)
     aspect_upserts: dict[str, ResearchAspect] = field(default_factory=dict)
@@ -544,7 +535,7 @@ class _SubmissionEdits:
 
 
 def _intent_identity(intent: WorkbenchIntent) -> str:
-    """去重身份按目标划:aspect 操作到单元粒度,其余 op 全局唯一。"""
+    """去重身份按目标划：aspect 操作到单元粒度，其余 op 全局唯一。"""
     if isinstance(intent, WorkbenchUpsertAspect):
         return f"upsert_aspect:{intent.aspect.aspect_id}"
     if isinstance(intent, WorkbenchRemoveAspect):
@@ -558,7 +549,7 @@ _TAG_ERROR_TYPES = frozenset({"union_tag_invalid", "union_tag_not_found"})
 def _project_submission(
     loop_state: SupervisorLoopState, changes: list[object]
 ) -> tuple[_SubmissionEdits, list[dict[str, object]]]:
-    """判别并集解析 → 目标去重 → 逐条投影;返回(编辑集, 拒绝项)。"""
+    """判别并集解析 → 目标去重 → 逐条投影；返回(编辑集， 拒绝项)。"""
     edits = _SubmissionEdits()
     rejections: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -592,7 +583,7 @@ def _project_submission(
             rejections.append(
                 {
                     "key": identity,
-                    "reason": "同一目标在一次提交内只允许一条操作;合并两次意图后重发。",
+                    "reason": "同一目标在一次提交内只允许一条操作；合并两次意图后重发。",
                 }
             )
             continue
@@ -606,8 +597,8 @@ def _project_submission(
 def _project_intent(
     edits: _SubmissionEdits, loop_state: SupervisorLoopState, intent: WorkbenchIntent
 ) -> dict[str, object] | None:
-    """把一条形状已合法的 intent 归并进编辑集;只保留存在性前置(删除目标须在、
-    add/remove 不得同 id),终态一致性在提交前统一判。"""
+    """把一条结构已合法的 intent 归并进编辑集；只保留存在性前置(删除目标须在、
+    add/remove 不得同 id)，终态一致性在提交前统一判。"""
     if isinstance(intent, WorkbenchUpsertAspect):
         edits.aspect_upserts[intent.aspect.aspect_id] = intent.aspect
     elif isinstance(intent, WorkbenchRemoveAspect):
@@ -627,7 +618,7 @@ def _project_intent(
         if overlap:
             return {
                 "key": "evidence",
-                "reason": "add 与 remove 不得包含同一 evidence_id;按期望终态二选一后重发。",
+                "reason": "add 与 remove 不得包含同一 evidence_id；按期望终态二选一后重发。",
                 "conflicting_evidence_ids": sorted(overlap),
             }
         edits.evidence_add = list(intent.add)
@@ -640,13 +631,10 @@ def _project_intent(
 def _simulate_active_slots(
     loop_state: SupervisorLoopState, evidence_add: list[str], evidence_remove: list[str]
 ) -> tuple[set[str], list[str], list[str]]:
-    """在活跃集副本上算终态，先释放后找回，不落盘。
+    """在活跃集副本上算终态，先释放后找回，不写入磁盘。
 
-    add 与 remove 已由投影层保证不相交,两段各是集合、段内无顺序语义;
-    先释放使同批腾出的槽位立即可用,与提交段的先后次序一致。
-    超槽跳过的 id 不在此预判——真实落盘由 restore_evidence 的上限守门,
-    回执从落盘后的现值如实标注,避免副本与提交各算一遍出两个答案。
-    返回 (终态活跃集, release 差量, restore 候选)。
+    返回 (终态活跃集, release 增量, restore 候选)。超槽跳过由 restore_evidence 的上限
+    守门，回执按写入磁盘后的现值标注。
     """
     simulated = set(loop_state.active_evidence_ids)
     release_ids = [
@@ -670,7 +658,7 @@ def _commit_edits(
     release_ids: list[str],
     restore_ids: list[str],
 ) -> dict[str, object]:
-    """全绿编辑集的正式落盘与回执装配。"""
+    """把全部校验通过的编辑集写入磁盘并装配回执。"""
     applied: list[str] = []
     active_delta: dict[str, list[str]] = {"add": [], "remove": []}
     if release_ids:
@@ -688,7 +676,7 @@ def _commit_edits(
         )
         applied.append("acknowledge")
     if edits.edits_draft:
-        # candidate 为 None 表示变更后全空:稿子清回未开稿状态,拆掉脚手架重来是合法动作。
+        # candidate 为 None 表示变更后全空：稿子清回未开稿状态，清空草稿重新开始是合法动作。
         if candidate is not None:
             candidate.based_on_working_set_revision = loop_state.working_set_revision
         loop_state.research_synthesis = candidate
@@ -714,7 +702,7 @@ def _commit_edits(
             if item.evidence_id not in assigned
         ],
         "plan": [dict(item) for item in loop_state.plan],
-        # 槽位实际落盘差量,tools.py 据此写 active 通道(add/remove)。
+        # 槽位实际写入磁盘增量，tools.py 据此写 active 通道(add/remove)。
         "slot_additions": active_delta["add"],
         "slot_removals": active_delta["remove"],
     }
@@ -729,25 +717,22 @@ def _commit_edits(
 def apply_workbench_changes(
     loop_state: SupervisorLoopState, changes: list[object]
 ) -> dict[str, object]:
-    """UpdateWorkbench 业务:工作台唯一写入口,操作级整值替换。
+    """UpdateWorkbench 业务：工作台唯一写入口，操作级整值替换。
 
-    管线:_project_submission 判别并集解析+归并(形状校验由 pydantic 承担)→ 表态冲突检查 →
-    候选终态(稿/活跃集)在副本上算出 → 终态过一次跨操作不变式(aspect 绑定 ⊆ 终态活跃集)
-    → 全部通过才落 loop_state。草稿期不要求稿子齐备,验收全在 freeze_synthesis。
-    任一项失败整单拒绝并点名操作——增量协议下重发只有几条操作,回滚成本可忽略。
-    framing/aspect 变更使 revision+1 并程序盖 based_on 时间戳;acknowledge 只重盖时间戳
-    (有结果注入但不改稿时的合法表态);plan 与写作判定无关。
+    解析并集 → 表态冲突检查 → 在副本上算候选终态 → 过一次跨操作不变式
+    （aspect 绑定 ⊆ 终态活跃集）→ 全部通过才写 loop_state。任一项失败整单拒绝并点名
+    操作。稿子齐备性不在此校验，由 freeze_synthesis 负责。
     """
     edits, rejections = _project_submission(loop_state, changes)
     if rejections:
         return {"status": "rejected", "rejections": rejections}
     if edits.acknowledge and edits.edits_draft:
         return _rejection(
-            "acknowledge", "同单已有 framing/aspect 变更时不需要 acknowledge,时间戳自动盖。"
+            "acknowledge", "同单已有 framing/aspect 变更时不需要 acknowledge，时间戳自动盖。"
         )
     if edits.acknowledge and loop_state.research_synthesis is None:
         return _rejection(
-            "acknowledge", "尚无综合稿可表态;先用 UpdateWorkbench 记录 aspect 或 framing。"
+            "acknowledge", "尚无综合稿可表态；先用 UpdateWorkbench 记录 aspect 或 framing。"
         )
 
     final_active, release_ids, restore_ids = _simulate_active_slots(
@@ -766,7 +751,7 @@ def apply_workbench_changes(
             if dangling:
                 return _rejection(
                     "aspect",
-                    "aspect 只能绑定终态活跃证据;下列 id 未活跃(在 reserve 或不存在),可先 restore 或改绑。",
+                    "aspect 只能绑定终态活跃证据；下列 id 未活跃（在 reserve 或不存在），可先 restore 或改绑。",
                     invalid_evidence_ids=dangling,
                 )
     return _commit_edits(loop_state, edits, candidate, release_ids, restore_ids)
@@ -791,16 +776,11 @@ def freeze_synthesis(
     loop_state: SupervisorLoopState,
     reason: str,
 ) -> dict[str, object]:
-    """ResearchComplete 业务:冻结通过竣工验收的最新综合稿。
+    """ResearchComplete 业务：冻结通过校验的最新综合稿。
 
-    版本对账由程序完成(单写者、时间戳自动盖),模型不再报版本号:稿子落后于
-    桌面(有未处理的方向结果/槽位变化)即拒,提示 UpdateWorkbench 修订或 acknowledge。
-    草稿期不校验齐备,这里统一验收:answer_goal/thesis/decision_rationale 三件
-    非空且至少一块 aspect——撤脚手架前大楼必须成形。
-    材料是否充分不再由程序自评:收尾即 COMPLETED,不足随各板块的 disclose
-    声明投影进任务书,交读者判别。无证据的稿仅在 provider_exhausted 认证后可
-    冻结,终态记 PROVIDER_EXHAUSTED。接受时 completed_synthesis 写通道,
-    SubmittedExitMiddleware 下一跳退出循环。
+    稿子落后于工作台（有未处理的方向结果或槽位变化）即拒，提示用 UpdateWorkbench
+    修订或 acknowledge。answer_goal、thesis、decision_rationale 三项非空且至少一块
+    aspect 才能提交。接受时写入 completed_synthesis，下一跳退出循环。
     """
     synthesis = loop_state.research_synthesis
     accepted = bool(
@@ -811,7 +791,7 @@ def freeze_synthesis(
         and (synthesis.selected_evidence_ids or loop_state.provider_exhausted)
     )
     if accepted:
-        assert synthesis is not None  # accepted 已包含该条件,供静态类型收窄。
+        assert synthesis is not None  # accepted 已包含该条件，供静态类型收窄。
         loop_state.completed_synthesis = synthesis
         loop_state.set_stop_reason(
             StopReason.PROVIDER_EXHAUSTED
@@ -832,7 +812,7 @@ def freeze_synthesis(
 
 
 def _completion_missing_fields(synthesis: ResearchSynthesis) -> list[str]:
-    """竣工验收清单:缺哪个点名哪个;三件+至少一块 aspect 齐了才够格冻结。"""
+    """校验清单：缺哪个点名哪个；三件+至少一块 aspect 齐了才够格冻结。"""
     missing = [
         field_name
         for field_name in ("answer_goal", "thesis", "decision_rationale")
@@ -863,13 +843,13 @@ def _freeze_rejection_cause(
     missing = _completion_missing_fields(synthesis)
     if missing:
         return (
-            f"综合稿未通过竣工验收,缺少：{'、'.join(missing)}。"
+            f"综合稿未通过完整性校验，缺少：{'、'.join(missing)}。"
             "用 UpdateWorkbench 的 framing 补齐 answer_goal/thesis/decision_rationale"
-            "(thesis 是全文要辩护的那一句核心主张),用 upsert_aspect 立块,再冻结。"
+            "(thesis 是全文要辩护的那一句核心主张)，用 upsert_aspect 立块，再冻结。"
         )
     if not loop_state.synthesis_is_fresh(synthesis):
         return (
-            "桌面在成稿后又有变化(方向结果或槽位调整)未反映:请修订 framing/aspect,"
+            "工作台在成稿后又有变化（方向结果或槽位调整）未反映：请修订 framing/aspect，"
             "或确认无需改动时用 acknowledge 表态后再冻结。"
         )
     return (
@@ -883,17 +863,16 @@ def compose_final_update(
     loop_state: SupervisorLoopState,
     config: AgentConfig,
 ) -> SupervisorStateUpdate:
-    """把工作状态转为 State 增量与路由决策,是终局合成的唯一出口。
+    """把工作状态转为 State 增量与路由决策，是终局合成的唯一出口。
 
-    explicitly_completed(是否走到模型显式收尾)只在这里判定一次,research_status、
-    generation_mode 与 WriterDirective 的相关字段都由它派生;它是机制事实,
-    不是对材料充分性的自评。
+    explicitly_completed 只在这里判定一次，research_status、generation_mode 与
+    WriterDirective 的相关字段都由它派生。
     """
     full_synthesis = loop_state.completed_synthesis
     explicitly_completed = full_synthesis is not None
-    # 默认终态只在整轮没有任何信号且未显式收尾时补写,不参与 rank 竞争:已采纳的
-    # 终态即便权威度更低,也不该被"预算耗尽"覆盖。账户级熔断已认证时终态记故障
-    # 本身,不能误标成预算耗尽。
+    # 默认终态只在整轮没有任何信号且未显式收尾时补写，不参与 rank 竞争：已采纳的
+    # 终态即便权威度更低，也不该被"预算耗尽"覆盖。账户级熔断已认证时终态记故障
+    # 本身，不能误标成预算耗尽。
     if not explicitly_completed and loop_state.stop_reason is None:
         loop_state.stop_reason = (
             StopReason.PROVIDER_EXHAUSTED
@@ -922,9 +901,8 @@ def compose_final_update(
     research_status = "completed" if explicitly_completed else "incomplete"
     generation_mode = "full" if explicitly_completed else "partial" if can_write else "not_ready"
     can_continue_to_writer = can_write
-    # evidences、source_refs、task_results 的 reducer 即 merge_evidences、merge_unique、
-    # merge_task_results,都按 id 折重、幂等,所以直接把 SupervisorLoopState 全量副本交给
-    # channel,效果等价于只发新增。
+    # evidences、source_refs、task_results 的 reducer 都按 id 去重且幂等，因此把
+    # SupervisorLoopState 全量副本交给 channel，与只发新增等价。
     return SupervisorStateUpdate(
         evidences=cast(list[Evidence], loop_state.evidences),
         source_refs=cast(list[str], loop_state.source_refs),
@@ -963,11 +941,11 @@ def partial_synthesis(
     loop_state: SupervisorLoopState,
     latest: ResearchSynthesis | None,
 ) -> ResearchSynthesis | None:
-    """选择可部分交付的最新综合稿；稿缺验收件时补齐中性值，无稿时生成最小固定版。"""
+    """选择可部分交付的最新综合稿；稿缺校验件时补齐中性值，无稿时生成最小固定版。"""
     active_ids = set(loop_state.active_evidence_ids)
     if latest is not None and latest.selected_evidence_ids:
         if set(latest.selected_evidence_ids).issubset(active_ids):
-            # partial 交付没有资格虚构总纲:缺什么补中性值,由 Writer 从材料自行归纳。
+            # partial 交付没有资格虚构总纲：缺什么补中性值，由 Writer 从材料自行归纳。
             return latest.model_copy(
                 update={
                     "answer_goal": latest.answer_goal
@@ -987,7 +965,7 @@ def partial_synthesis(
         "；".join(claims[:_FALLBACK_SUMMARY_CLAIM_LIMIT])
         or "已收集可追溯 Evidence，但未形成模型综合结论。"
     )
-    gap = "研究未走到模型显式收尾；报告只能陈述已验证材料及其适用边界。"
+    gap = "研究结束时模型未显式声明完成；报告只能陈述已验证材料及其适用边界。"
     return ResearchSynthesis(
         revision=(latest.revision + 1 if latest is not None else 1),
         based_on_working_set_revision=loop_state.working_set_revision,
@@ -1018,12 +996,12 @@ def build_writer_directive(
 ) -> WriterDirective:
     """从冻结综合版本派生 Writer 唯一可见的写作指令。
 
-    ReportBrief 在指令内部构造、随指令一起交接,State 顶层不保留平行的第二副本。
-    explicitly_completed 是"研究是否走到模型显式收尾"的事实,由调用方判定一次后传入。
+    ReportBrief 在指令内部构造、随指令一起交接，State 顶层不保留平行的第二副本。
+    explicitly_completed 是"研究是否走到模型显式收尾"的事实，由调用方判定一次后传入。
     """
     report_brief = report_brief_from_synthesis(synthesis, max_caveats=config.report_max_caveats)
     review = section(state, "review", ReviewProgress)
-    # rejected_draft 是校验失败的兜底稿:仅在无通过稿时作修订底稿。
+    # rejected_draft 是校验失败的备用稿：仅在无通过稿时作修订底稿。
     previous_draft = str(state.get("report_draft") or state.get("rejected_draft") or "")
     revision_instructions = (
         [
@@ -1054,10 +1032,10 @@ def build_writer_directive(
 
 
 def report_brief_from_synthesis(synthesis: ResearchSynthesis, *, max_caveats: int) -> ReportBrief:
-    """从冻结综合版本派生报告任务书,避免 ResearchComplete 再提交第二事实源。
+    """从冻结综合版本派生报告任务书，避免 ResearchComplete 再提交第二事实源。
 
-    章节卡是 aspect 的写作投影:剥离 aspect_id/status,空结论以首条 gap 替代;
-    caveats 只保留各板块 disclose=true 的条目,披露裁量留在台账。
+    章节卡是 aspect 的写作投影：剥离 aspect_id/status，空结论以首条 gap 替代；
+    caveats 只保留各板块 disclose=true 的条目，披露裁量留在登记表。
     """
     chapters = [
         ReportChapter(
@@ -1072,7 +1050,7 @@ def report_brief_from_synthesis(synthesis: ResearchSynthesis, *, max_caveats: in
     ]
     caveats: list[str] = []
     for aspect in synthesis.aspects:
-        for label, issues in (("缺口", aspect.gaps), ("口径冲突", aspect.conflicts)):
+        for label, issues in (("缺口", aspect.gaps), ("结论冲突", aspect.conflicts)):
             caveats.extend(
                 f"{label}|板块「{aspect.topic}」:{issue.text}" for issue in issues if issue.disclose
             )
@@ -1091,8 +1069,8 @@ def describe_research_stop(
 ) -> str:
     """把研究无法继续的原因保留给最终不完整报告与事件诊断。
 
-    文案单一来源是 ``StopReason.description``,这里只补本次运行的具体细节。
-    AGENT_FAILED 取 failure_details 的详情,其余原因取 coverage_gaps,两条通道不互串内容。
+    文案单一来源是 StopReason.description，这里只补本次运行的具体细节。
+    AGENT_FAILED 取 failure_details 的详情，其余原因取 coverage_gaps，两条通道不互串内容。
     """
     if stop_reason is StopReason.AGENT_FAILED:
         detail = next(
@@ -1100,8 +1078,8 @@ def describe_research_stop(
             "未记录到异常详情，详见运行事件流。",
         )
         return f"{stop_reason.description} {detail}"
-    # 诊断细节取 coverage_gaps 与 failure_details 并集的最后一条非空项;
-    # failure_details 只进诊断文案,不进报告"未闭合缺口"清单,两通道各守边界。
+    # 诊断细节取 coverage_gaps 与 failure_details 并集的最后一条非空项；
+    # failure_details 只进诊断文案，不进报告"未闭合缺口"清单，两通道各守边界。
     detail = next(
         (item for item in reversed([*coverage_gaps, *failure_details]) if item.strip()),
         "未形成可验证的完整覆盖。",

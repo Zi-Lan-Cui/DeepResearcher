@@ -26,7 +26,7 @@ async def test_trip_then_is_open_and_expiry(tmp_path):
     assert await health.is_open("tavily") is None
     await health.trip("tavily", "quota_exhausted", 3600)
     assert await health.is_open("tavily") == "quota_exhausted"
-    # 过期后自动视为可用:直接把行内恢复时刻改成过去来触发判定。
+    # 过期后自动视为可用：直接把行内恢复时刻改成过去来触发判定。
     from datetime import datetime, timedelta, timezone
 
     from deepresearcher.service.persistence.models import ProviderHealthRecord
@@ -85,7 +85,7 @@ async def test_searchservice_trips_shared_health_on_provider_exhausted(tmp_path)
     with pytest.raises(ProviderExhaustedError):
         await client.asearch("q")
     assert await health.is_open("tavily") == "quota_exhausted"
-    # 第二次调用的异常来自熔断短路,provider 不会被调到。
+    # 第二次调用的异常来自熔断短路，provider 不会被调到。
     with pytest.raises(ProviderExhaustedError):
         await client.asearch("q2")
     await http.aclose()

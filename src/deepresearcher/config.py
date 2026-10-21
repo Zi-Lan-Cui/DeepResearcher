@@ -1,7 +1,7 @@
 """统一配置入口。
 
-只有本模块负责读取环境变量和 ``env/.env``。业务模块通过
-``get_settings()`` 获取只读配置，或在测试/依赖注入时显式传入 ``Settings``。
+只有本模块负责读取环境变量和 env/.env。业务模块通过
+get_settings() 获取只读配置，或在测试/依赖注入时显式传入 Settings。
 """
 
 import re
@@ -43,7 +43,7 @@ def _ordered_choices_env(name: str, default: str, choices: set[str]) -> tuple[st
     invalid = [item or "<empty>" for item in values if item not in choices]
     if invalid:
         allowed = ", ".join(sorted(choices))
-        raise ValueError(f"{name} 包含无效值: {', '.join(invalid)}；可选值: {allowed}")
+        raise ValueError(f"{name} 包含无效值：{', '.join(invalid)}；可选值：{allowed}")
     return values
 
 
@@ -53,7 +53,7 @@ def project_path_env(name: str, default: Path) -> Path:
     return path if path.is_absolute() else _PROJECT_ROOT / path
 
 
-# 模型上下文窗口兜底;生产由 graph 从 settings 显式传,构造默认只服务测试。
+# 模型上下文窗口默认值；生产由 graph 从 settings 显式传，构造默认只服务测试。
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
 
 
@@ -69,14 +69,14 @@ class LLMConfig:
     provider_requests_per_minute: int = 0
     provider_tokens_per_minute: int = 0
     provider_output_token_reserve: int = 1_024
-    # 单次请求输出上限;不设时供应商默认上限高至 131k,一次异常生成就能占满整次调用的输出。
+    # 单次请求输出上限；不设时供应商默认上限高至 131k，一次异常生成就能占满整次调用的输出。
     max_completion_tokens: int = 32_768
     max_tokens_per_run: int = 0
     max_cost_cny_per_run: float = 0.0
     max_cost_cny_per_user_daily: float = 0.0
     max_cost_cny_platform_hourly: float = 0.0
     max_cost_cny_platform_daily: float = 0.0
-    # 单价不落这里：按行模型查 pricing 价表（人民币），全局标量撑不住多模型价差。
+    # 单价不落这里：按行模型查 pricing 价表（人民币），全局标量无法支撑多模型价差。
     price_version: str = PRICE_TABLE_VERSION
     # 内容级修复预算：结构化输出不合规时重新提交给模型修复的次数。传输级重试
     # 由 openai SDK 内建机制处理，循环级重试由 ModelRetryMiddleware 用自带参数

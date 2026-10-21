@@ -15,11 +15,11 @@ class RunEventStore:
         self._session_factory = session_factory
 
     async def append(self, run_id: str, records: Sequence[dict]) -> list[dict]:
-        """事务内分配 seq 并落库;返回带 seq 的完整记录。
+        """事务内分配 seq 并写入数据库；返回带 seq 的完整记录。
 
         本方法只负责持久化，不做投递与通知；唯一允许的调用者是 RunEventHub.flush，
         它在 append 成功后发 notify。其他位置直调本方法时消费端收不到唤醒，
-        只能等轮询追平。轮询是兜底路径，正确性不丢，但这绕过了唯一投递点。
+        只能等轮询追平。轮询是回退路径，正确性不丢，但这绕过了唯一投递点。
         """
         if not records:
             return []

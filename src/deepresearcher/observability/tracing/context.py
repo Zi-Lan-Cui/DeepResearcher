@@ -1,7 +1,7 @@
-"""业务关联标签的 ContextVar 载体:new_id 生成、current_span_context 冻结快照。
+"""业务关联标签的 ContextVar 载体：new_id 生成、current_span_context 冻结快照。
 
-trace/span 身份本身由 OpenTelemetry 当前上下文持有,见 spans.py;此处只保留
-run/session/node 三个业务标签——日志前缀与事件上的关联字段依赖它们,
+trace/span 身份本身由 OpenTelemetry 当前上下文持有，见 spans.py；此处只保留
+run/session/node 三个业务标签——日志前缀与事件上的关联字段依赖它们，
 与 span 生命周期解耦。
 """
 
@@ -26,13 +26,8 @@ class TraceContext:
 class SpanContext:
     """从活跃上下文冻结出的可携带关联身份。
 
-    用途:在 span 内取出，跨 ``with`` 边界或跨协程交给 helper 写事件时，
-    调用方传一个 ``link=`` 参数即可，不必直接传 trace/span 字符串。
-    ``link=None`` 时事件工厂自动读取当前上下文，两条路径语义相同。
-
-    ``trace_id``/``span_id`` 是当前 OTel span 的 32/16 位 hex（无 provider 时为
-    ``None``）；``run_id``/``session_id``/``node_id`` 是业务标签，与追踪字段同置
-    于一个只读快照。
+    在 span 内取出后，跨 with 边界或跨协程交给 helper 写事件时传 link= 即可，不必
+    直接传 trace/span 字符串；link=None 时事件工厂自动读取当前上下文。
     """
 
     trace_id: str | None = None
@@ -54,7 +49,7 @@ def current_context() -> TraceContext | None:
 
 
 def current_span_context() -> SpanContext:
-    """冻结当前关联身份:trace/span 两个 id 取自 OTel 当前 span,业务标签取自 ContextVar。"""
+    """冻结当前关联身份：trace/span 两个 id 取自 OTel 当前 span，业务标签取自 ContextVar。"""
     span_context = opentelemetry_trace.get_current_span().get_span_context()
     labels = _context.get()
     return SpanContext(

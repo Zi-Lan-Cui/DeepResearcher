@@ -130,7 +130,7 @@ async def create_redis_ephemeral_bus(
 ) -> RedisEphemeralEventBus | None:
     """按配置连接；失败时降级为只有持久流。
 
-    返回:
+    返回：
         RedisEphemeralEventBus | None: 连接不可用时为 None。
     """
 

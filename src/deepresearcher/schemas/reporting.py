@@ -21,21 +21,21 @@ from deepresearcher.vocab import GenerationMode, ResearchStatus, Support
 
 
 class AspectIssue(BaseModel):
-    """板块台账上的一条缺口或口径冲突;disclose 决定它是否进任务书告知读者。"""
+    """板块登记表上的一条缺口或判定标准冲突；disclose 决定它是否进任务书告知读者。"""
 
     text: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     disclose: bool = Field(
         default=True,
         description=(
-            "是否随任务书展示给读者。true 的条目原文进入报告 caveats,是公开声明;"
-            "缺口影响结论成立、或矛盾不可裁定且触及核心结论时 true;"
-            "结论已有可信次级支撑、只缺一手锚定时 false,属可优化项。"
+            "是否随任务书展示给读者。为 true 的条目原文进入报告 caveats 字段，是公开声明；"
+            "缺口影响结论成立，或矛盾不可裁定且触及核心结论时为 true；"
+            "结论已有可信次级支撑、只缺一手锚定时为 false，属可优化项。"
         ),
     )
 
 
 class ReportChapter(BaseModel):
-    """任务书里由 aspect 投影出的章节卡:本章结论、要点清单与各自的支撑证据。"""
+    """任务书里由 aspect 投影出的章节卡：本章结论、要点清单与各自的支撑证据。"""
 
     topic: str
     role: str
@@ -49,16 +49,16 @@ class ReportBrief(BaseModel):
     """Supervisor 交给 Writer 的任务书；不携带 Evidence 正文。"""
 
     answer_goal: str
-    # 全文核心主张:Writer 组织报告的脊柱;系统回退交接时可为空串,Writer 自行归纳。
+    # 全文核心主张：Writer 组织报告的主线；系统回退交接时可为空串，Writer 自行归纳。
     thesis: str = ""
     chapters: list[ReportChapter] = Field(min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    # 投影过滤结果:各板块 gaps/conflicts 中 disclose=true 的条目。
+    # 投影过滤结果：各板块 gaps/conflicts 中 disclose=true 的条目。
     # 日常裁剪由 AGENT_REPORT_MAX_CAVEATS 控制；这里仅防御异常膨胀。
     caveats: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
 
 
 class PlanItem(BaseModel):
-    """工作台计划便签的一条;顺序即列表位置,不另设 order 字段。"""
+    """工作台计划清单的一条；顺序即列表位置，不另设 order 字段。"""
 
     content: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     status: Literal["not_started", "in_progress", "done"] = "not_started"
@@ -67,8 +67,8 @@ class PlanItem(BaseModel):
 class ResearchAspect(BaseModel):
     """Supervisor 跨研究方向建立的证据支撑认知单元。
 
-    台账面用于覆盖管理与收尾验收；交接时逐块投影为任务书章节卡，
-    aspect_id 与 status 留在台账面不带入写作契约。
+    登记表面用于覆盖管理与收尾校验；交接时逐块投影为任务书章节卡，
+    aspect_id 与 status 留在登记表面不带入写作契约。
     """
 
     aspect_id: str = Field(min_length=1, max_length=STRUCTURED_IDENTIFIER_HARD_LIMIT_CHARS)
@@ -82,18 +82,18 @@ class ResearchAspect(BaseModel):
     gaps: list[AspectIssue] = Field(
         default_factory=list,
         max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
-        description="本板块尚未解决的缺口;动态更新——补齐或转可优化后重提本 aspect 改写台账,不留过期条目。",
+        description="本板块尚未解决的缺口；动态更新——补齐或转为可优化后重提本 aspect 改写记录，不留过期条目。",
     )
     conflicts: list[AspectIssue] = Field(
         default_factory=list,
         max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
-        description="本板块证据间的口径冲突;裁定或有新证据后同样重提改写。",
+        description="本板块证据间的结论冲突；裁定或有新证据后同样重提改写。",
     )
 
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_fields(cls, data: object) -> object:
-        """旧 checkpoint 形状兼容:summary 由 conclusion 承接,remaining_gap 并入首条 gap。"""
+        """旧 checkpoint 结构兼容：summary 由 conclusion 承接，remaining_gap 并入首条 gap。"""
         if isinstance(data, dict) and ("summary" in data or "remaining_gap" in data):
             data = dict(data)
             if "conclusion" not in data and "summary" in data:
@@ -102,7 +102,7 @@ class ResearchAspect(BaseModel):
                 data.pop("summary", None)
             legacy_gap = str(data.pop("remaining_gap", "") or "").strip()
             if legacy_gap:
-                # 综合稿级的折入先于本校验运行,可能已占用 gaps;旧缺口前置合并保序。
+                # 综合稿级的并入先于本校验运行，可能已占用 gaps；旧缺口前置合并保序。
                 data["gaps"] = [
                     {"text": legacy_gap, "disclose": True},
                     *(data.get("gaps") or []),
@@ -130,15 +130,15 @@ class ResearchAspect(BaseModel):
 class ResearchSynthesis(BaseModel):
     """Supervisor 的结构化研究综合状态。
 
-    记录当前工作集下各研究方面的覆盖、证据绑定、缺口与冲突。它不是最终报告,
-    也不是某个 ResearchAgent 的方向结果;只有经 ResearchComplete 校验并冻结后,
+    记录当前工作集下各研究方面的覆盖、证据绑定、缺口与冲突。它不是最终报告，
+    也不是某个 ResearchAgent 的方向结果；只有经 ResearchComplete 校验并冻结后，
     才成为交给 Writer 的交接版本。
     """
 
     revision: int = Field(ge=1)
     based_on_working_set_revision: int = Field(ge=0)
-    # 草稿期允许先立一块 aspect 再逐步补齐;answer_goal/thesis/decision_rationale 齐备
-    # 是 ResearchComplete 的验收项(freeze_synthesis),不是入场项。
+    # 草稿期允许先立一块 aspect 再逐步补齐；answer_goal/thesis/decision_rationale 齐备
+    # 是 ResearchComplete 的校验项(freeze_synthesis)，不是入场项。
     answer_goal: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     thesis: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     aspects: list[ResearchAspect] = Field(max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
@@ -152,7 +152,7 @@ class ResearchSynthesis(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_global_issues(cls, data: object) -> object:
-        """旧 checkpoint 形状兼容:全局 open_gaps/conflicts 折入首块 aspect 的 gaps 台账。"""
+        """旧 checkpoint 结构兼容：全局 open_gaps/conflicts 并入首块 aspect 的 gaps 登记表。"""
         if isinstance(data, dict) and ("open_gaps" in data or "conflicts" in data):
             data = dict(data)
             orphans = [
@@ -233,7 +233,7 @@ class ParagraphBinding(BaseModel):
 
 
 class MarkdownReportDraft(BaseModel):
-    """Writer Markdown 草稿的容量口径;测试替身按本形状造草稿,生产提交走 writer 工具的 CompleteReport。"""
+    """Writer Markdown 草稿的容量上限；测试替身按本结构造草稿，生产提交走 writer 工具的 CompleteReport。"""
 
     markdown: str = Field(default="", max_length=REPORT_MARKDOWN_HARD_LIMIT_CHARS)
     selected_evidence_ids: list[str] = Field(

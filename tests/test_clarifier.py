@@ -47,7 +47,8 @@ def test_clarifier_tools_explain_boundary_and_pause_contract():
     complete_schema = complete.args_schema.model_json_schema()
 
     assert "暂停当前 Run" in ask.description
-    assert "研究边界不确定" in ask.description
+    # 边界判据由参数 schema 承载：工具描述只说做什么，不再重复何时用。
+    assert "研究边界" in ask_schema["properties"]["question"]["description"]
     assert "Other" in ask_schema["properties"]["options"]["description"]
     assert "一个" in ask_schema["properties"]["question"]["description"]
     assert "唯一完成信号" in complete.description
@@ -190,7 +191,7 @@ def test_clarifier_subgraph_interrupt_resumes_through_parent_checkpoint():
     resumed = asyncio.run(compiled.ainvoke(Command(resume={"answer": "效果"}), config))
     assert resumed["clarified_query"] == "比较两个方案"
     assert resumed["intent_summary"] == "评估方案效果"
-    # 问答留痕走结构化通道进主图：原话、问题、选项、答案各归其位，供委托段分小节渲染。
+    # 问答记录写入 clarification_log：原话、问题、选项、答案各归其位，供委托段分小节渲染。
     assert resumed["clarification_log"] == [
         {
             "question": "你更关心哪一方面？",

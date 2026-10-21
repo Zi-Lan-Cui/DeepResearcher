@@ -1,4 +1,4 @@
-"""Writer 的内部准备态、校验结果与内层 agent 的状态通道。"""
+"""Writer 子图的中间产物、校验结果，以及内层 agent 的状态通道定义。"""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ from deepresearcher.state import merge_unique
 
 
 def evidence_index_card(evidence: Evidence) -> dict[str, object]:
-    """Writer 目录视图：只提供选材字段，不提前交付原文和完整 URL。"""
+    """返回证据的目录视图，只含选材字段；正文与完整 URL 须经 ReadEvidence 获取。"""
     return {
         "evidence_id": evidence.evidence_id,
         "claim": evidence.claim,
@@ -28,7 +28,7 @@ def evidence_index_card(evidence: Evidence) -> dict[str, object]:
 
 
 def evidence_detail_card(evidence: Evidence) -> dict[str, object]:
-    """ReadEvidence 详情视图：交付写作和引用所需的最小可验证材料。"""
+    """返回证据的详情视图，在目录字段之外补 quote、来源 URL 与权威等级。"""
     return {
         "evidence_id": evidence.evidence_id,
         "claim": evidence.claim,
@@ -43,19 +43,19 @@ def evidence_detail_card(evidence: Evidence) -> dict[str, object]:
 
 
 def _restore_draft(value: "ValidatedDraft | dict[str, Any] | None") -> "ValidatedDraft | None":
-    """从通道现值恢复草稿:同 run 与 checkpoint serde 往返后都已是 ValidatedDraft 实例,dict 只是防御性兜底。"""
+    """把通道中的草稿值统一为 ValidatedDraft 实例。"""
     if value is None or isinstance(value, ValidatedDraft):
         return value
+    # checkpoint 反序列化后可能得到 dict，需在此转回实例。
     return ValidatedDraft(**value)
 
 
 class WriterAgentState(AgentState):
-    """ReportWriter 内层图的 state_schema:草稿循环业务状态的持久化载体。
+    """ReportWriter 内层图的状态定义，承载草稿循环的业务状态。
 
-    read_evidence_ids 走 merge_unique:并发 ReadEvidence 各交本批新增,按值折重。
-    validated_draft、last_error、last_markdown 只由串行 CompleteReport 写,
-    reducer 是 replace 或 retain。evidence_by_id 是 run 入口从外层 State 派生的
-    只读目录,不进通道。
+    read_evidence_ids 由并发 ReadEvidence 各写本批新增，merge_unique 去重；
+    validated_draft、last_error、last_markdown 只由串行 CompleteReport 写，
+    用 replace_channel 整体覆盖。evidence_by_id 从外层 State 派生，只读、不设通道。
     """
 
     read_evidence_ids: Annotated[list[str], merge_unique]
@@ -66,7 +66,10 @@ class WriterAgentState(AgentState):
 
 @dataclass
 class WriterLoopContext:
-    """Writer 一次草稿循环的注入载荷:只读依赖留本对象,可变簿记进通道。"""
+    """Writer 单次草稿循环的只读依赖与可变状态载体。
+
+    可变状态经 LangGraph 通道传递，每轮模型调用前由 rebuild_loop_state 回填。
+    """
 
     scope: AgentExecutionScope
     evidence_by_id: dict[str, Evidence]
@@ -79,7 +82,7 @@ class WriterLoopContext:
     last_markdown: str = ""
 
     def initial_channel_state(self) -> dict[str, Any]:
-        """构造 ainvoke 入口 input:当前簿记一次性种进内层通道。"""
+        """构造 ainvoke 的入口输入，把当前状态一次性写入内层通道。"""
         return {
             "read_evidence_ids": sorted(self.read_evidence_ids),
             "validated_draft": self.validated_draft,
@@ -88,7 +91,7 @@ class WriterLoopContext:
         }
 
     def rebuild_loop_state(self, values: dict[str, Any]) -> None:
-        """每次模型回合前从通道现值回填四项可变簿记;只读依赖不动。"""
+        """用通道现值更新四项可变状态，只读依赖保持不变。"""
         if "read_evidence_ids" in values:
             self.read_evidence_ids = set(values["read_evidence_ids"] or [])
         if "validated_draft" in values:
@@ -111,6 +114,6 @@ class ValidatedDraft:
     paragraph_bindings: list[ParagraphBinding]
     citations: list[Citation]
     selected_evidence_ids: list[str]
-    # 模型为整篇回答拟的文章标题;内联兜底路径没有它,保持空串。
-    # 放最后并带默认值:既有位置参数构造点不受影响。
+    # 模型为整篇回答生成的文章标题。内联回退路径不产出标题，保持空串。
+    # 置于末位并带默认值，已有按位置传参的调用点无需改动。
     title: str = ""

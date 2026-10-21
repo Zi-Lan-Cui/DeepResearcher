@@ -1,7 +1,7 @@
-"""Run 执行面：驱动单个 LangGraph Run 并收敛其持久化结果。
+"""Run 执行层：驱动单个 LangGraph Run 并写入其持久化结果。
 
 RunExecutor 不受理用户请求、不检查队列配额、不选择下一个 Run；
-它只由 WorkerRuntime 在执行面调用。
+它只由 WorkerRuntime 在执行层调用。
 """
 
 from __future__ import annotations
@@ -103,8 +103,8 @@ class RunExecutor:
             if config.database_url.startswith("postgresql")
             else None
         )
-        # Langfuse 是把 trace 复制到外部的观测出口，callbacks 级挂入，失败或断网
-        # 不得影响 run，与预览总线同一合同。三个配置键缺任一即完全关闭，
+        # Langfuse 是把 trace 复制到外部的观测出口，callbacks 级注册，失败或断网
+        # 不得影响 run，与预览总线同一约定。三个配置键缺任一即完全关闭，
         # 未安装 extra 导致导入失败时同样降级为关闭。
         self._langfuse_client: Any | None = None
         self._langfuse_handler: Callable[[], Any] | None = None
@@ -145,7 +145,7 @@ class RunExecutor:
         self._lost_leases.add(run_id)
 
     def mark_cancellation_requested(self, run_id: str) -> None:
-        """标记该取消由持久化的控制面意图驱动。"""
+        """标记该取消由持久化的控制层意图驱动。"""
         self._cancellation_requests.add(run_id)
 
     async def execute(
@@ -160,10 +160,10 @@ class RunExecutor:
     ) -> None:
         """执行一个已领取的 run 直至终态或挂起。
 
-        Worker 可能与受理该 Run 的 API 不在同一进程,执行面必须自行打开本地
-        sink,不依赖 API 进程中的 hub.open()。
+        Worker 可能与受理该 Run 的 API 不在同一进程，执行层必须自行打开本地
+        sink，不依赖 API 进程中的 hub.open()。
 
-        参数:
+        参数：
             run_id/user_id/query: run 身份与研究问题。
             resume: 是否以恢复模式续跑。
             resume_input: 恢复输入（澄清回答等）。
@@ -203,7 +203,7 @@ class RunExecutor:
                 )
         except asyncio.CancelledError:
             if run_id not in self._shutdown_interrupts and run_id not in self._lost_leases:
-                # 用 shield 保护终态落库事务不被随后的第二次 cancel 打断
+                # 用 shield 保护终态写入数据库事务不被随后的第二次 cancel 打断
                 # （shutdown 后任务取消会再次到来）；本协程照常退出，写库由被 shield 的任务完成。
                 try:
                     persisted = await asyncio.shield(
@@ -229,8 +229,8 @@ class RunExecutor:
             )
             if claim is not None and not persisted:
                 self.mark_lease_lost(run_id)
-        except Exception as exc:  # noqa: BLE001 - 后台执行必须自收口
-            # 冒泡的原始 LLM 异常若属账户级不可用（key/余额/硬限流），按类型化原因收口，
+        except Exception as exc:  # noqa: BLE001 - 后台执行必须自行收尾
+            # 向上传播的原始 LLM 异常若属账户级不可用（key/余额/硬限流），按类型化原因终止，
             # 让前端能渲染明确错误，而不是笼统"运行失败"。
             llm_code = classify_llm_error(exc)
             if llm_code is not None:
@@ -273,7 +273,7 @@ class RunExecutor:
         return self._langfuse_client is not None
 
     def shutdown_langfuse(self) -> None:
-        """进程退出前把缓冲的 trace 刷出;失败静默(与预览面同一合同)。"""
+        """进程退出前把缓冲的 trace 刷出；失败静默（与预览通道同一约定）。"""
         if self._langfuse_client is not None:
             try:
                 self._langfuse_client.shutdown()
@@ -335,7 +335,7 @@ class RunExecutor:
         callbacks: list[Any] = [callback]
         if self._langfuse_handler is not None:
             callbacks.append(self._langfuse_handler())
-        # propagate_attributes 必须在图执行期间生效,langchain callbacks 生成的
+        # propagate_attributes 必须在图执行期间生效，langchain callbacks 生成的
         # trace 才会带上 session/user 归属。
         scope = (
             self._langfuse_scope(run_id=run_id, user_id=user_id)
@@ -405,9 +405,8 @@ class RunExecutor:
                     if headline and not headline_persisted:
                         headline_persisted = True
                         if await self._persist_headline(run_id, headline, claim=claim):
-                            # 落库成功即推帧：进行中的头部当场从长问题收敛为短题。
-                            # 根 values 块在 clarify 那一超步后即携带 run_headline，
-                            # 因此本帧在澄清中断处发出，而非 run 结束时。
+                            # 写库成功即推帧，进行中的头部当场从长问题换成短题。根 values 块
+                            # 在 clarify 之后即带 run_headline，所以本帧在澄清中断处发出。
                             self._hub.write(
                                 {
                                     "run_id": run_id,
@@ -453,7 +452,7 @@ class RunExecutor:
                 "payload": {"channel": channel, "text": text[:200]},
             }
             try:
-                # 预览只走注入的总线这一条路径：生产为 Redis，单栈 harness 注入 Local bus。
+                # 预览只走注入的总线这一条路径：生产为 Redis，单一技术栈 harness 注入 Local bus。
                 # 已提交帧不经过这里，SSE 从 DB tail 取。
                 if self._ephemeral_bus is not None:
                     await self._ephemeral_bus.publish(run_id, event)
@@ -474,10 +473,10 @@ class RunExecutor:
         announce_running: bool = True,
         claim: RunWork | None = None,
     ) -> bool:
-        """确认该行处于 running 且仍由本次执行持有,否则返回 False。
+        """确认该行处于 running 且仍由本次执行持有，否则返回 False。
 
-        claim 路径:领取的 UPDATE 已把行置为 running,这里只核实租约与 fence_token;
-        直连路径(claim=None):按 mark_running 迁移把行写进 running。
+        claim 路径：领取的 UPDATE 已把行置为 running，这里只核实租约与 fence_token;
+        直连路径(claim=None)：按 mark_running 迁移把行写进 running。
         """
         transitioned = False
         async with self._session_factory() as session:
@@ -504,12 +503,10 @@ class RunExecutor:
     async def _persist_headline(
         self, run_id: str, headline: str, *, claim: RunWork | None = None
     ) -> bool:
-        """澄清完成即把历史标题写进行:列表行从原 query 收敛为浓缩标题。
+        """澄清完成即把历史标题写进行：列表行从原 query 换成浓缩标题。
 
-        只写未落过 headline 的行——首个有效标题为准,重复到达幂等丢弃。
-        claim 路径补与终态写入同款租约谓词:headline 槽位一生只写一次,
-        不套 fence 的话,过期持有者复活会抢占槽位、把现任持有者的标题挡在门外。
-        返回是否由本次调用写入(决定要不要向 SSE 推更新帧)。
+        只写未落过 headline 的行，重复到达幂等丢弃。claim 路径补租约谓词，防止过期持有者
+        复活抢占槽位。返回是否由本次调用写入。
         """
         conditions = [Run.id == run_id, Run.headline.is_(None)]
         if claim is not None:
@@ -544,8 +541,8 @@ class RunExecutor:
                 return result.rowcount == 1
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
-            # 对账写(不经领取的直连路径):只受"不覆盖终态"约束,来源不必是
-            # running——自愈正是为残余竞态窗口准备的,故不走 await_input 迁移。
+            # 对账写(不经领取的直连路径)：只受"不覆盖终态"约束，来源不必是
+            # running——自动恢复正是为残余竞态窗口准备的，故不走 await_input 迁移。
             if run is None or not may_overwrite(run.status):
                 return False
             for key, value in side_effects("awaiting_input", now=_utcnow()).items():
@@ -587,13 +584,13 @@ class RunExecutor:
     ) -> bool:
         """把生命周期事实写成行状态，并落对应事件。
 
-        参数:
+        参数：
             run_id: 目标 run。
             status: 目标状态。
             claim: 提供时用 owner+fence_token CAS 写，防止过期持有者覆盖。
             **extra: 附加列；None 值跳过。
 
-        返回:
+        返回：
             是否写入成功，CAS 未命中或行已终态时为 False。
         """
         values = side_effects(status, now=_utcnow())

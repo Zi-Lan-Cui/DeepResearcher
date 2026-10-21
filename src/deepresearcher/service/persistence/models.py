@@ -1,8 +1,7 @@
 """SQLAlchemy ORM 模型：users / runs / run_events。
 
-字段类型刻意保持方言中立——只用通用 ``JSON``（PG 与 SQLite 都映射为 JSON），
-因此测试可用 ``sqlite+aiosqlite`` 内存库与生产 ``postgresql+asyncpg`` 跑同一套模型。
-不要在这里引入 JSONB、``server_default`` 等只属于单一方言的构造。
+字段类型保持方言中立，只用通用 JSON，使 SQLite 测试库与 PG 生产复用同一套模型。
+不要引入 JSONB、server_default 等只属于单一方言的构造。
 """
 
 from __future__ import annotations
@@ -23,8 +22,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# Run.status 用普通 str 而非枚举/CHECK 约束:增删状态不触发 ALTER。
-# 终态是唯一需要跨层共识的子集——SSE 兜底、claim 排除、租约结算共用这一份清单。
+# Run.status 用普通 str 而非枚举/CHECK 约束：增删状态不触发 ALTER。
+# 终态是唯一需要跨层共识的子集——SSE 合成帧、claim 排除、租约结算共用这一份清单。
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 _RETENTION_SWEEP_PREDICATE = text(
@@ -41,7 +40,7 @@ def utcnow() -> datetime:
 def as_utc(value: datetime) -> datetime:
     """SQLite 回读 naive、asyncpg 回读 aware:naive 一律按 UTC 补齐再比较。
 
-    方言中立模型层(迁移不加时区约束)的固有易错点,单源在此;
+    方言中立模型层(迁移不加时区约束)的固有易错点，单源在此；
     散落各处的重复转换漏一处就是静默的过期判断错误。
     """
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
@@ -73,7 +72,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    # 个人研究偏好整份集(账户页"研究偏好"保存);生效值 = 服务器默认 ⊕ 此列 ⊕ 创建时冻结。
+    # 个人研究偏好整份集(账户页"研究偏好"保存)；生效值 = 服务器默认 ⊕ 此列 ⊕ 创建时冻结。
     preferences: Mapped[dict | None] = mapped_column(JSON)
 
     runs: Mapped[list["Run"]] = relationship(back_populates="user")
@@ -94,7 +93,7 @@ class LoginThrottle(Base):
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
-        # retention sweep 只需"终态、已到期、未清理"这一窄集;两侧方言都支持部分索引。
+        # retention sweep 只需"终态、已到期、未清理"这一窄集；两侧方言都支持部分索引。
         Index(
             "ix_runs_retention_sweep",
             "finished_at",
@@ -107,9 +106,9 @@ class Run(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     query: Mapped[str] = mapped_column(Text)
-    # 两个标题:headline 由 Clarifier 浓缩问题(历史列表展示),
+    # 两个标题：headline 由 Clarifier 浓缩问题(历史列表展示),
     # title 由 Writer 命名回答(报告 H1 与 PDF 文件名)。
-    # create_all 只覆盖新库;既有库各补一次 ALTER TABLE runs ADD COLUMN。
+    # create_all 只覆盖新库；既有库各补一次 ALTER TABLE runs ADD COLUMN。
     headline: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(16), default="queued")
     answer_mode: Mapped[str | None] = mapped_column(String(32))
@@ -118,8 +117,8 @@ class Run(Base):
     report_markdown: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(String(160))
     citations_json: Mapped[list | None] = mapped_column(JSON)
-    # 创建时刻冻结的个人偏好全量快照:run 一生用它,用户中途改偏好不回溯;
-    # resume 从本行重读同一份,不取用户现值。键为 AgentConfig 字段名。
+    # 创建时刻冻结的个人偏好全量快照：run 一生用它，用户中途改偏好不回溯；
+    # resume 从本行重读同一份，不取用户现值。键为 AgentConfig 字段名。
     preferences_snapshot: Mapped[dict | None] = mapped_column(JSON)
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -131,7 +130,7 @@ class Run(Base):
     retention_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(96), index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    # 领取世代:fence token,仅在 claim 成功时 +1,所有权谓词的一部分。
+    # 领取世代：fence token，仅在 claim 成功时 +1，所有权谓词的一部分。
     fence_token: Mapped[int] = mapped_column(Integer, default=0)
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # none_as_null=True：清空载荷必须写 SQL NULL，才能被 resume 的 `is_(None)` CAS 命中；
@@ -147,7 +146,7 @@ class Run(Base):
     # 成本一律人民币元，价表见 deepresearcher.pricing。
     estimated_cost_cny: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     cache_hit_count: Mapped[int] = mapped_column(Integer, default=0)
-    # 缓存节省只计"少出网的外部请求"这一条口径；评测不得拿恒零的估计字段下结论。
+    # 缓存节省只计"少发起外部请求的外部请求"这一条判定标准；评测不得拿恒零的估计字段下结论。
     saved_external_request_count: Mapped[int] = mapped_column(Integer, default=0)
 
     user: Mapped["User"] = relationship(back_populates="runs")
@@ -162,8 +161,8 @@ class Run(Base):
 class RunEvent(Base):
     """研究过程事件的留档，供 SSE 断线重连回放与审计。
 
-    ``record`` 存引擎写出的原始事件 dict——引擎侧已对所有 ``*_preview``/error 做了
-    截断（≤1000 字），故单行体积天然有界。投影（面向用户的文案）不落库，回放时
+    record 存引擎写出的原始事件 dict——引擎侧已对所有 *_preview/error 做了
+    截断（≤1000 字），故单行体积天然有界。投影（面向用户的文案）不写入数据库，回放时
     经 projector 现算。
     """
 
@@ -184,8 +183,8 @@ class RunUsage(Base):
     __tablename__ = "run_usage"
     __table_args__ = (
         # 预算检查每次模型调用都按 (category='llm', created_at>=窗口) 求 SUM,
-        # 复合索引服务这条热路径。create_all 只在新库生效;既有库补一次
-        # CREATE INDEX 即可(项目不维护迁移链,与加表同一约定)。
+        # 复合索引服务这条热路径。create_all 只在新库生效；既有库补一次
+        # CREATE INDEX 即可(项目不维护迁移链，与加表同一约定)。
         Index("ix_run_usage_category_created_at", "category", "created_at"),
     )
 

@@ -24,7 +24,7 @@ class ParsedContent(TypedDict):
     """解析产出的字段基座(text/title/blocks);SourceDocument 在其上叠加抓取与缓存状态。
 
     解析函数按约定返回元组——plain 版给 (title, text),*_blocks 版给
-    (title, text, blocks);装配进本 schema 的责任在编排方(Provider/FetchService)。
+    (title, text, blocks)；装配进本 schema 的责任在编排方(Provider/FetchService)。
     """
 
     text: str

@@ -1,12 +1,7 @@
-"""进程内预览总线:EphemeralEventBus 协议的同环实现。
+"""进程内预览总线：EphemeralEventBus 协议的同环实现。
 
-只承载 text_delta 预览帧：无 seq、不落库、队满丢最旧。已提交事件不经
-进程内直投：SSE 从 DB tail run_events，由信号总线 notify 唤醒，权威副本在库里。
-
-生产装配不构造本类：redis 预览开启时用 Redis 总线，关闭时预览退化、durable 流
-不受影响。本类只服务于单栈 harness：测试里 worker 与订阅者同进程、同事件循环，
-用它把执行器的预览帧直接送进订阅队列。协议契约（白名单校验、丢帧可容忍、
-close 幂等）由协议测试覆盖，与 Redis 实现可互换。
+只承载 text_delta 预览帧：无 seq、不写库、队满丢最旧。仅用于 worker 与订阅者
+同进程同事件循环的场景；生产装配走 Redis 总线，关闭时预览退化、durable 流不受影响。
 """
 
 from __future__ import annotations
@@ -20,7 +15,7 @@ from deepresearcher.service.preview.protocol import (
 
 
 class LocalPreviewBus:
-    """同一事件循环内的预览总线;publish/subscribe/close 符合 EphemeralEventBus 协议。"""
+    """同一事件循环内的预览总线；publish/subscribe/close 符合 EphemeralEventBus 协议。"""
 
     def __init__(self, *, queue_maxsize: int = 256) -> None:
         self._queue_maxsize = queue_maxsize
@@ -57,6 +52,6 @@ class LocalPreviewBus:
         return EphemeralSubscription(queue=queue, _close=close_subscription)
 
     async def close(self) -> None:
-        """释放全部订阅并停止接收;幂等,迟到的 publish 静默丢弃。"""
+        """释放全部订阅并停止接收；幂等，迟到的 publish 静默丢弃。"""
         self._closed = True
         self._subs.clear()

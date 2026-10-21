@@ -37,16 +37,15 @@ from deepresearcher.state import ResearchState
 
 _WRITER_SYSTEM_PROMPT = load_prompt("writer")
 
-# CompleteReport 写 replace/retain 语义通道,即草稿、错误、底稿,是串行工具:必须
-# 单独一轮,与 ReadEvidence 等同批调用会被 SerialToolMiddleware 整批驳回、打回模型。
-# 名单约束由 tests/test_writer.py 的静态守卫测试校验(方案 §5 分类守卫)。
+# CompleteReport 写 replace/retain 语义通道，即草稿、错误、底稿，是串行工具，必须单独
+# 一轮；与 ReadEvidence 同批调用会被 SerialToolMiddleware 整批驳回并退回模型。
 WRITER_SERIAL_TOOLS: frozenset[str] = frozenset({"CompleteReport"})
 
 
 class ReportWriter:
     """生成报告草稿，并只重试 Writer 自身可修复的引用协议错误。
 
-    Supervisor 决定研究是否结束并交接 ``writer_directive``（含 report_brief）；
+    Supervisor 决定研究是否结束并交接 writer_directive（含 report_brief）；
     Writer 只负责基于给定 Evidence 组织文章。引用协议校验由 reporting 层提供，
     编号渲染发生在审阅通过后的终检渲染节点。
     """
@@ -90,7 +89,7 @@ class ReportWriter:
                             max_turns=self.config.writer_max_turns,
                             context_window_tokens=context_window_tokens,
                             serial_tools=set(WRITER_SERIAL_TOOLS),
-                            # 提交前输出纯文本不算结束:退回重试,退回次数耗尽后由 recover_inline_draft 兜底。
+                            # 提交前输出纯文本不算结束：退回重试，退回次数耗尽后由 recover_inline_draft 作回退。
                             submission_guard=SubmissionGuard(
                                 nudge_message=(
                                     "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
@@ -102,7 +101,7 @@ class ReportWriter:
                                 ),
                                 max_nudges=self.config.finalization_attempts,
                             ),
-                            # 草稿落定后下一跳退出循环:不依赖模型多跑一轮,提交后模型也没有继续调用工具的机会。
+                            # 草稿落定后下一跳退出循环：不依赖模型多调用一轮，提交后模型也没有继续调用工具的机会。
                             exit_probe=lambda ctx, _state: (
                                 getattr(ctx, "validated_draft", None) is not None
                             ),
@@ -112,11 +111,11 @@ class ReportWriter:
                 ],
             ),
             name="writer",
-            # 业务状态经通道持久化,崩溃重放从最后一个已提交 superstep 续跑。
+            # 业务状态经通道持久化，崩溃重放从最后一个已提交 superstep 续跑。
         )
 
     async def run(self, state: ResearchState) -> dict[str, object]:
-        """按固定路径完成模式分流、草稿生成、校验与状态收束;编号渲染不在本层。"""
+        """按固定路径完成模式分流、草稿生成、校验与状态汇总；编号渲染不在本层。"""
         if state.get("answer_mode") == "quick_answer":
             return services.state_update_for_quick_answer(state)
 
@@ -159,7 +158,7 @@ class ReportWriter:
                 loop_context.last_error or "Writer 回合预算耗尽，仍未提交有效报告。"
             )
         else:
-            # 从通道现值回填簿记:崩溃重放时上下文未经批重建,以通道为准可避免把已提交草稿读成 None。
+            # 从通道现值回填状态：崩溃重放时上下文未经批重建，以通道为准可避免把已提交草稿读成 None。
             loop_context.rebuild_loop_state(result)
         if loop_context.validated_draft is None:
             services.recover_inline_draft(loop_context, result.get("messages", []), emit=self._emit)

@@ -74,11 +74,11 @@ def _reject_manual_markers(markdown: str) -> None:
     if "[[cite:" in text_outside_cites.lower():
         raise DraftProtocolError("cite 标记格式错误；必须写成完整的 [[cite:evidence_id]]。")
     if re.search(r"</?cite\b", text_outside_cites, re.IGNORECASE):
-        raise DraftProtocolError("不再支持 <cite> 标签；请使用句末 [[cite:evidence_id]] 标记。")
+        raise DraftProtocolError("不支持 <cite> 标签；请使用句末 [[cite:evidence_id]] 标记。")
 
 
 def _extract_bindings(markdown: str) -> list[ParagraphBinding]:
-    """把草稿拆成可审阅块：剥掉 [[cite:...]] 标记，保留整段论证文本。"""
+    """把草稿拆成可审阅块：移除 [[cite:...]] 标记，保留整段论证文本。"""
     bindings: list[ParagraphBinding] = []
 
     def add_block(block: str) -> None:

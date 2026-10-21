@@ -1,6 +1,6 @@
 """网页与文档格式解析；只解析，不下载、不切 chunk。
 
-返回形状按名字规律：plain 版如 parse_html、parse_pdf 返回 (title, text)，
+返回结构按名字规律：plain 版如 parse_html、parse_pdf 返回 (title, text)，
 *_blocks 后缀版返回 (title, text, blocks)。pdf、docx 只有 plain 版：
 版式文档不产生结构化块，blocks 不出现是契约规定，不是实现缺口。
 """

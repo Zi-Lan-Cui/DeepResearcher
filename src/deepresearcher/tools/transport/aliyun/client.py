@@ -1,7 +1,7 @@
 """隔离阿里云生成式 SDK，避免云厂商类型泄漏到 Search/Fetch 服务。
 
-SDK 响应在本边界一次性转换为窄 dataclass：success 检查、错误分类与字段读取都收拢于此，
-两侧 provider 只接触 typed 字段，不再 getattr 探测云厂商响应形状。
+SDK 响应在本边界一次性转换为窄 dataclass：success 检查、错误分类与字段读取都集中于此，
+两侧 provider 只接触 typed 字段，不再 getattr 探测云厂商响应结构。
 """
 
 import asyncio
@@ -161,7 +161,7 @@ class AliyunDtsClient:
 def create_aliyun_dts_client(config: SearchConfig) -> AliyunDtsClient:
     """使用官方默认凭据链创建客户端，不在应用配置中持有 AccessKey。
 
-    云厂商 SDK 必须在 ``get_settings()`` 完成 dotenv 加载后导入；否则
+    云厂商 SDK 必须在 get_settings() 完成 dotenv 加载后导入；否则
     其默认凭据链会把导入当时的空环境变量缓存到进程内。
     """
     from alibabacloud_credentials.client import Client as CredentialClient

@@ -55,7 +55,7 @@ def test_reviewer_rejects_with_structured_evidence_feedback(monkeypatch):
 
     assert result["review"].status == "rejected"
     assert result["review"].gaps == ["缺少具体作品的文学性评价依据"]
-    assert "Supervisor 报告任务书" not in captured["context"]  # 独立评审,不带上游环节
+    assert "Supervisor 报告任务书" not in captured["context"]  # 独立评审，不带上游环节
     assert '"support": "direct"' in captured["context"]
     assert '"source_domain": ""' in captured["context"]
 
@@ -186,7 +186,7 @@ async def _no_sleep(_seconds):
 
 
 def test_reviewer_abstains_when_output_length_runaways(monkeypatch):
-    """全部尝试都触发输出长度上限:审阅弃权放行,不阻断报告。"""
+    """全部尝试都触发输出长度上限：审阅弃权，报告按原样返回。"""
     from types import SimpleNamespace
 
     from openai import LengthFinishReasonError

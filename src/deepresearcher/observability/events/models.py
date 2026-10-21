@@ -1,4 +1,4 @@
-"""以 NodeEvent 为主的事件模型与构造函数;失败字段单源在 schemas.sections.failure_event_fields。"""
+"""以 NodeEvent 为主的事件模型与构造函数；失败字段单源在 schemas.sections.failure_event_fields。"""
 
 from datetime import datetime, timezone
 from typing import Literal
@@ -50,7 +50,7 @@ def make_audit_event(
 ) -> dict[str, object]:
     """创建领域审计事件；关联字段按 显式参数 > link > 当前上下文 解析。
 
-    ``node_id_fallback`` 只在完全没有上下文时生效，例如单元测试直接调用
+    node_id_fallback 只在完全没有上下文时生效，例如单元测试直接调用
     本函数；调用方因此无需自己传入关联字段。
     """
     resolved = _link_or(link)

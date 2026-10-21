@@ -1,8 +1,8 @@
-"""测试共享 fake 与类型收口助手。
+"""测试共享 fake 与类型转换助手。
 
-生产构造器的 ``llm`` / ``state`` 参数是具体类型（BaseChatModel / ResearchState）；
-结构化兼容的测试替身经由 ``as_llm`` / ``as_state`` 单点收口，
-把 ``cast`` 集中在这一处，而不是散落到每个调用点。
+生产构造器的 llm / state 参数是具体类型（BaseChatModel / ResearchState）；
+结构化兼容的测试替身经由 as_llm / as_state 单点转换，
+把 cast 集中在这一处，而不是散落到每个调用点。
 """
 
 import asyncio
@@ -36,12 +36,12 @@ from deepresearcher.tools import SearchTool
 
 
 def as_llm(fake: Any) -> BaseChatModel:
-    """把结构化兼容的 fake LLM 收口为 BaseChatModel 类型。"""
+    """把结构化兼容的 fake LLM 转换为 BaseChatModel 类型。"""
     return cast(BaseChatModel, fake)
 
 
 def as_state(partial: dict[str, Any]) -> ResearchState:
-    """把部分 State 字典收口为 ResearchState。TypedDict 只在类型标注层生效,不做运行时校验。"""
+    """把部分 State 字典转换为 ResearchState。TypedDict 只在类型标注层生效，不做运行时校验。"""
     return cast(ResearchState, partial)
 
 

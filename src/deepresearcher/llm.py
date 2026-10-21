@@ -1,18 +1,7 @@
-"""模型装配与单次调用的唯一入口：build 出未经包装的 ChatOpenAI，节点在此做文本与结构化调用。
+"""模型装配与单次调用的统一入口：build 出未经包装的 ChatOpenAI。
 
-分层原则——谁在哪一层重试：
-- 传输级，超时与断连：openai SDK 内建 max_retries 指数退避，所有经 ChatOpenAI
-  发出的请求都归它，agent 循环与节点单次调用同样经过；
-- 循环级：ModelRetryMiddleware（agents/middleware/retry.py）把最终失败的模型调用
-  改写成指引文本，agent 得以继续；预算耗尽与账户级不可用是例外，
-  retry_on 对它们豁免，让其冒泡到既有 fail-fast 收口；
-- 内容级：本文件的 repair 循环，JSON 不合规时重新提交给模型修复，langchain
-  没有提供这一层;
-- 压缩级，属例外：SummarizationMiddleware 在 before_model 节点内直调模型做摘要，
-  库内没有注入口，这条路径不经过预算检查与循环级重试。它只在上下文越限后发生，
-  每次压缩至多一笔有界调用，是本分层原则明确承认的第四条模型调用路径。
-本模块不包装模型:create_agent 与中间件拿到的都是同一个未包装的 ChatOpenAI,
-网络抖动的重试归 SDK,不在 runnable 层再建一层重试。
+重试分三层：超时与断连归 openai SDK 内建，循环级归 ModelRetryMiddleware，
+JSON 不合规归本文件的 repair 循环。本模块不包装模型，不在 runnable 层再加重试。
 """
 
 from __future__ import annotations
@@ -45,19 +34,18 @@ class LLMConfigurationError(LLMError):
     code = "llm_configuration"
 
 
-# 账户级不可用——key 无效、无余额、硬限流——刻意不包装成自定义异常：
-# 模型调用失败时抛出的是 SDK 原始异常，executor 用本函数将其归类为
-# invalid_key、forbidden、insufficient_credit、rate_limited 四种稳定 user_code 再交给前端。
-# openai 等 SDK 的 APIStatusError 带 .status_code。
+# 账户级不可用（key 无效、无余额、硬限流）刻意不包装成自定义异常：模型调用失败时抛的是
+# SDK 原始异常，executor 用本函数归类出 invalid_key、forbidden、insufficient_credit、
+# rate_limited 四种稳定 user_code 交给前端。
 _LLM_FATAL_STATUS = {401: "invalid_key", 402: "insufficient_credit", 403: "forbidden"}
 
 
 def classify_llm_error(exc: BaseException) -> str | None:
     """把模型调用抛出的原始异常归类为 llm 不可用的稳定 user_code。
 
-    参数:
+    参数：
         exc: SDK 或传输层抛出的异常。
-    返回:
+    返回：
         命中账户级不可用时返回对应 user_code，其余情况返回 None。
     """
     status = getattr(exc, "status_code", None)
@@ -105,14 +93,9 @@ async def ainvoke_structured(
     *,
     request_kwargs: dict[str, Any] | None = None,
 ) -> SchemaT:
-    """只在已收到不合规 JSON 时 repair；传输级重试由 openai SDK 内建机制处理。
+    """只在已收到不合规 JSON 时 repair；传输级重试由 openai SDK 负责。
 
-    修复预算只从配置 LLM_STRUCTURED_REPAIR_ATTEMPTS 读取；测试的注入点是
-    各节点的 ``invoke_structured=`` 关键字，本函数不提供第二个注入点。
-
-    抛出:
-        OutputParserException / ValidationError / ValueError:
-            repair 预算耗尽仍未通过校验时，抛最后一次异常。
+    修复预算从配置 LLM_STRUCTURED_REPAIR_ATTEMPTS 读取。预算耗尽时抛最后一次异常。
     """
     repair_attempts = get_settings().llm.structured_repair_attempts
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
@@ -131,7 +114,7 @@ async def ainvoke_structured(
     for attempt in range(repair_attempts + 1):
         try:
             await enforce_usage_budget()
-            # with_structured_output 的运行期产物即 SchemaT;类型系统只看到 Runnable 宽签名。
+            # with_structured_output 的运行期产物即 SchemaT；类型系统只看到 Runnable 宽签名。
             return cast(SchemaT, await runnable.ainvoke(current_messages))
         except STRUCTURED_ERRORS as exc:
             if attempt >= repair_attempts:

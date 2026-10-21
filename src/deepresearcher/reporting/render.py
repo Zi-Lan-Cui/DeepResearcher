@@ -14,8 +14,8 @@ from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INL
 from deepresearcher.schemas import Citation, ResearchDirectionResult, RunError, SupervisorProgress
 from deepresearcher.state import ResearchState, section
 
-# Writer 提示词禁止自写引用列表，模型违反时仍需程序兜底：整段剥除，连同其中的
-# [[cite:…]] 标记一起剥掉，避免它们占用首现编号；编号只由本模块的追加段给出。
+# Writer 提示词禁止自写引用列表，模型违反时仍需程序侧处理：整段移除，连同其中的
+# [[cite:…]] 标记一并移除，避免它们占用首现编号；编号只由本模块的追加段给出。
 _REFERENCE_HEADING = re.compile(
     r"^(#{2,3})[ \t]*(?:证据来源|参考来源|引用来源|参考文献|引用列表|来源列表|参考文档|资料来源"
     r"|主要参考(?:资料|文献)?|引用(?:的)?来源|来源参考"
@@ -29,12 +29,12 @@ _NEXT_HEADING = {
 
 
 def _strip_reference_section(body: str) -> str:
-    """剥除 Writer 草拟正文里自造的来源/参考文献小节（防御性兜底）。"""
+    """移除 Writer 草拟正文里自造的来源/参考文献小节（防御性处理）。"""
     pieces: list[str] = []
     cursor = 0
     for heading in _REFERENCE_HEADING.finditer(body):
         before = body[cursor : heading.start()]
-        if before.count("```") % 2:  # 处于代码围栏内：宁可漏剥也不误剥
+        if before.count("```") % 2:  # 处于代码围栏内：宁可漏删也不误删
             continue
         next_heading = _NEXT_HEADING[len(heading.group(1))].search(body, heading.end())
         end = next_heading.start() if next_heading else len(body)
@@ -66,7 +66,7 @@ def render_final_report(
 
 
 def _render_body_markers(body: str) -> tuple[str, list[str], set[str]]:
-    """替换正文中的 [[cite:...]] 标记，返回 (渲染后正文, 首现顺序, 使用集合)。"""
+    """替换正文中的 [[cite:...]] 标记，返回 (渲染后正文， 首现顺序， 使用集合)。"""
     display_order: list[str] = []
     used_ids: set[str] = set()
 
@@ -118,7 +118,7 @@ def _reference_list(
             continue  # 正文引用了无元数据的 id：降级为只显示编号，不中断终检
         label = citation.title or urlsplit(citation.url).netloc or display[source_id]
         # 表行按行消费，标题或引文中残留的换行会把一条记录劈断（前端按行解析即失配），
-        # 生成侧统一折行兜底，存量数据重渲染同样受护。
+        # 生成侧统一做折行处理，存量数据重渲染同样受护。
         lines.append(
             f"- [{display[source_id]}] {normalize_title_whitespace(label)}: {citation.url}"
         )
@@ -149,7 +149,7 @@ def _summarize(text: object, max_chars: int) -> str:
 
 
 def render_incomplete_report(state: ResearchState, reasons: list[str]) -> str:
-    """研究未完成/写作失败路径的兜底报告；不补写任何研究结论。
+    """研究未完成/写作失败路径的降级报告；不补写任何研究结论。
 
     零证据路径塌缩为诊断卡（原因与恢复方式，不列方向与缺口）；有证据的部分报告
     保留方向短题与去重截断后的缺口清单。

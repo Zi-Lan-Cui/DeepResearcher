@@ -79,7 +79,7 @@ def test_frozen_snapshot_precedence_and_dirty_fallback():
     snapshot = frozen_snapshot({"max_research_rounds": 1}, agent)
     assert snapshot["max_research_rounds"] == 1
     assert snapshot["max_subtasks_per_round"] == agent.max_subtasks_per_round
-    # 脏值(枚举外)按默认,不采纳
+    # 脏值(枚举外)按默认，不采纳
     dirty = frozen_snapshot({"max_research_rounds": 99}, agent)
     assert dirty["max_research_rounds"] == agent.max_research_rounds
 
@@ -89,7 +89,7 @@ def test_apply_preferences_overrides_agent_and_ignores_illegal():
     applied = apply_preferences(agent, FULL)
     assert applied.max_research_rounds == 4
     assert applied.supervisor_max_active_evidences == 50
-    # 空快照或越枚举项静默回服务器值,绝不让脏数据生效
+    # 空快照或越枚举项静默回服务器值，绝不让脏数据生效
     assert apply_preferences(agent, None) is agent
     assert apply_preferences(agent, {"max_research_rounds": True, "bogus": 1}) is agent
 
@@ -129,7 +129,7 @@ async def test_run_snapshot_frozen_and_not_retroactive(client):
         first = await session.get(Run, run_id)
         assert first is not None and first.preferences_snapshot == FULL
 
-    # 之后改用户配置不回溯已建 run:再建一场取新值,旧行仍是 FULL
+    # 之后改用户配置不回溯已建 run:再建一场取新值，旧行仍是 FULL
     changed = {**FULL, "max_research_rounds": 1}
     await client.post("/api/preferences", json={"preferences": changed}, headers=_auth(token))
     second = await client.post("/api/runs", json={"query": "第二场"}, headers=_auth(token))
@@ -156,7 +156,7 @@ async def test_stats_daily_shape_after_run(client):
     assert len(payload["series"]) >= 1
     latest = payload["series"][-1]
     assert {"date", "runs", "input_tokens", "output_tokens", "cached_input_tokens"} <= set(latest)
-    # days 越界回落默认窗口,不报错
+    # days 越界回落默认窗口，不报错
     fallback = await client.get("/api/stats/daily?days=999", headers=_auth(token))
     assert fallback.json()["days"] == 30
     await _settle(client, token, created.json()["run_id"])

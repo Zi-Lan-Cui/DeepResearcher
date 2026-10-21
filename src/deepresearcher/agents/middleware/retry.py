@@ -18,12 +18,8 @@ from deepresearcher.usage_runtime import UsageBudgetExceeded
 def retry_on(error: Exception) -> bool:
     """只重试可恢复的模型调用异常。
 
-    配置错误、预算耗尽与账户级不可用——密钥失效、余额不足、硬限流——是
-    fail-fast 语义,必须冒泡到 node_runner / executor 的既有收口。在本层重试
-    它们,只会让 agent 带着已耗尽的额度继续发无效请求,并把 terminal_reason
-    写成研究语义而非模型故障。
-
-    取消不经此处:CancelledError 是 BaseException,库的重试循环只捕 Exception。
+    配置错误、预算耗尽与账户级不可用属 fail-fast，必须向上传播；在本层重试只会在
+    额度已耗尽时继续发无效请求。CancelledError 是 BaseException，不经此处。
     """
     if isinstance(error, (LLMConfigurationError, UsageBudgetExceeded)):
         return False
@@ -33,12 +29,10 @@ def retry_on(error: Exception) -> bool:
 
 
 class ToolErrorNormalizerMiddleware(AgentMiddleware):
-    """工具异常边界归一:重试层的判据是构造期声明,不是异常类型猜测。
+    """工具异常边界归一：重试层的判定依据是构造期声明，不是异常类型猜测。
 
-    工具重试的唯一准入是 ToolError.retryable;未被标记的意外异常在本层按性质
-    补声明:传输类内置异常 TimeoutError 与 ConnectionError 可重试——direct fetch
-    就显式抛这两个——其余按 bug 级判不可重试。观测中间件注册在本层之内,
-    记录到的仍是原始异常;归一只对重试语义生效。
+    工具重试的唯一准入是 ToolError.retryable；未标记的意外异常在本层补声明：
+    TimeoutError 与 ConnectionError 可重试，其余按 bug 级判不可重试。
     """
 
     @property
@@ -58,8 +52,8 @@ class ToolErrorNormalizerMiddleware(AgentMiddleware):
             ) from exc
 
 
-# 模型失败引导文本的指纹:ToolLoopGuard 据此区分后端故障引导与协议违规纯文本,
-# 对前者退回会把一次故障放大成一整轮新的重试;改动本串需同步 ToolLoopGuard 的匹配。
+# 模型失败引导文本的指纹：ToolLoopGuard 据此区分后端故障引导与协议违规纯文本，
+# 对前者退回会把一次故障放大成一整轮新的重试；改动本串需同步 ToolLoopGuard 的匹配。
 MODEL_FAILURE_MARKER = "的模型调用在重试后仍未成功"
 
 
@@ -74,7 +68,7 @@ def _failure_message(agent: str) -> Callable[[Exception], str]:
 
 
 def tool_retry_on(error: Exception) -> bool:
-    """只重试自标可恢复的错误;未标 ToolError 的意外异常由边界归一层补声明。"""
+    """只重试自标可恢复的错误；未标 ToolError 的意外异常由边界归一层补声明。"""
     return bool(getattr(error, "retryable", False))
 
 
@@ -135,8 +129,7 @@ def model_retry(
 ) -> ModelRetryMiddleware:
     """创建带有项目统一错误提示的模型重试中间件。
 
-    逐次尝试在库内部循环,无处挂钩;唯一可观测的时刻是重试耗尽,它意味着本回合
-    已无效消耗 max_retries+1 次请求,此前没有任何事件可见。
+    事件只在重试耗尽时发出，此时本回合已消耗 max_retries+1 次请求。
     """
 
     def on_failure(error: Exception) -> str:

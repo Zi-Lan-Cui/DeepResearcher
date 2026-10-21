@@ -12,13 +12,13 @@ KERNEL_ROOT = SRC_ROOT / "deepresearcher"
 SERVICE_PREFIX = "deepresearcher.service"
 EXECUTION_PREFIX = "deepresearcher.service.execution"
 
-# worker.py 是执行平面进程入口 python -m deepresearcher.worker,属外壳;
-# 放在包根只是为了模块路径短,不改变归属。
+# worker.py 是执行平面进程入口 python -m deepresearcher.worker,属外壳；
+# 放在包根只是为了模块路径短，不改变归属。
 SHELL_ENTRYPOINTS = frozenset({Path("src/deepresearcher/worker.py")})
 
-# 棘轮白名单:service 现存的每一条跨界 import,模块名与属性名都登记,按前缀
-# 匹配。新增跨界 import 必须显式加名单并说明它为何是内核对外端口;名单只收
-# 不放,收窄方向是 graph 与 protocol 类端口。
+# 棘轮白名单：service 现存的每一条跨界 import,模块名与属性名都登记，按前缀
+# 匹配。新增跨界 import 必须显式加名单并说明它为何是内核对外端口；名单只收
+# 不放，收窄方向是 graph 与 protocol 类端口。
 ALLOWED_KERNEL_IMPORTS = frozenset(
     {
         # 配置与模型出入口
@@ -133,7 +133,7 @@ def test_run_control_plane_does_not_import_execution_plane():
 
 
 def test_event_and_preview_planes_do_not_import_each_other():
-    """持久事件面与可丢弃预览面互不依赖;跨面接线只发生在执行器与 SSE 路由。"""
+    """持久事件层与可丢弃的预览通道互不依赖；跨层接线只发生在执行器与 SSE 路由。"""
     preview_prefix = "deepresearcher.service.preview"
     events_prefix = "deepresearcher.service.events"
     violations: list[str] = []

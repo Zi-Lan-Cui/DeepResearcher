@@ -96,7 +96,7 @@ def _build_child(checkpointer, evidence_runs: list[int], history_shapes: list[in
     )
 
 
-# 两级嵌套:外层节点函数调用内层 create_agent。
+# 两级嵌套：外层节点函数调用内层 create_agent。
 
 
 def _build_pair(child_checkpointer):
@@ -109,7 +109,7 @@ def _build_pair(child_checkpointer):
         done: bool
 
     async def outer_node(_state):
-        # 与生产调用点同形:只显式传 recursion_limit,thread 由上下文继承。
+        # 与生产调用点同形：只显式传 recursion_limit,thread 由上下文继承。
         await child.ainvoke(
             {"messages": [HumanMessage(content="go")], "seeded": ["x"]},
             config={"recursion_limit": 50},
@@ -137,11 +137,11 @@ def test_inherited_child_checkpointer_resumes_history_on_replay():
     with pytest.raises(BaseException):
         asyncio.run(app.ainvoke(None, config))
 
-    # 续跑证据:重放的模型回合直接看到已含 ToolMessage 的旧历史(3 条起步),
+    # 续跑证据：重放的模型回合直接看到已含 ToolMessage 的旧历史(3 条起步),
     # 已完成工具没有重跑(pending writes 记有结果)。
     assert history_shapes[2:] and history_shapes[2] >= 3
     assert len(evidence_runs) == 1
-    # seed 的裸 append 通道未被二次施加:重放后 seeded 仍为单元素。
+    # seed 的裸 append 通道未被二次施加：重放后 seeded 仍为单元素。
     seeded_sizes = [
         len((checkpoint_tuple.checkpoint or {}).get("channel_values", {}).get("seeded", []))
         for checkpoint_tuple in saver.list(config)
@@ -162,8 +162,8 @@ def test_disabled_child_checkpointer_replays_whole_node():
     with pytest.raises(BaseException):
         asyncio.run(app.ainvoke(None, config))
 
-    # 整体重跑证据:第二次尝试从初始消息重新开场,取证工具重新执行;
-    # 消息历史与业务状态同时重置,不存在不一致窗口。
+    # 整体重跑证据：第二次尝试从初始消息重新开场，取证工具重新执行；
+    # 消息历史与业务状态同时重置，不存在不一致窗口。
     third = history_shapes.index(1, 2)
     assert history_shapes[third:] == [1, 3]
     assert len(evidence_runs) == 2
@@ -248,7 +248,7 @@ def test_completed_child_not_reinjected_when_outer_uncommitted():
     armed["value"] = False
     final = asyncio.run(app.ainvoke(None, config))
     assert final["done"] is True
-    # 内层完成态被 WAL 复用:重放没有再调用内层模型,也没有重复取证。
+    # 内层完成态被 WAL 复用：重放没有再调用内层模型，也没有重复取证。
     assert history_shapes == [1, 3]
     assert len(evidence_runs) == 1
     seeded_sizes = [
@@ -259,7 +259,7 @@ def test_completed_child_not_reinjected_when_outer_uncommitted():
     assert seeded_sizes and max(seeded_sizes) == 1
 
 
-# 三级嵌套:外层节点、supervisor create_agent、Delegate 工具、researcher create_agent。
+# 三级嵌套：外层节点、supervisor create_agent、Delegate 工具、researcher create_agent。
 
 
 def test_delegate_resumed_inner_researcher_keeps_evidence():
@@ -357,13 +357,13 @@ def _build_triple(researcher_checkpointer):
     return outer.compile(checkpointer=MemorySaver()), counters
 
 
-# 生产校验:各循环构造时的 checkpointer 取值。
+# 生产校验：各循环构造时的 checkpointer 取值。
 
 
 def test_production_loops_compile_with_inherited_checkpointer():
     """生产三个 create_agent 循环均已通道化,业务状态并入各自通道,checkpointer 使用继承(None)。
 
-    supervisor/researcher/writer 把可变簿记写进各自 state_schema 通道,启用继承后,
+    supervisor/researcher/writer 把可变状态写进各自 state_schema 通道，启用继承后，
     崩溃重放从各内层最后一个已提交 superstep 续跑,见上方继承合同用例。
     """
     supervisor = ResearchSupervisor(object(), AgentConfig(), research_agent=object())

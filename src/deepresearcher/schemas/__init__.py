@@ -1,12 +1,6 @@
-"""契约模型包：按域分文件，公共 import 路径在此聚合。
+"""契约模型包：按域分文件（reporting、sections、tool_args、decisions）。
 
-- ``reporting``  报告域：任务书、引用元数据、段落绑定
-- ``sections``   State 分区与生命周期：进度模型、结果契约、StopReason 词汇
-- ``tool_args``  工具调用入参与工具结果
-- ``decisions``  模型结构化输出的决策 Schema
-
-外部一律 ``from deepresearcher.schemas import X``，不直接 import 子模块；
-聚合导出使调用方不受包内部拆分影响。
+外部一律 from deepresearcher.schemas import X，不直接 import 子模块。
 """
 
 from deepresearcher.schemas.decisions import (

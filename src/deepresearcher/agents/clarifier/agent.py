@@ -47,14 +47,13 @@ class Clarifier:
                         agent_name="Clarifier",
                         event_slug="clarifier",
                         model=llm,
-                        # +4 为防失控余量,不承担业务配额:轮次上限由
+                        # +4 为防失控余量，不承担业务配额：轮次上限由
                         # clarification_rounds 与程序侧守卫执行。
                         max_turns=MAX_CLARIFICATION_ROUNDS + 4,
                         context_window_tokens=context_window_tokens,
                         serial_tools={"AskClarification", "ClarificationComplete"},
-                        # clarifier 的提交事实在 state 通道,outer 子图按它路由:问题已
-                        # staged 待答或已完成,内层本轮工作即告结束,下一跳直接退出循环。
-                        # ask 节点收到回答会清空 pending_question,多轮澄清由此放行。
+                        # 提交事实在 state 通道，outer 子图按它路由：问题已 staged 或已提交，
+                        # 本轮即结束。ask 收到回答会清空 pending_question，因此可以多轮澄清。
                         exit_probe=lambda _ctx, state: (
                             bool(state.get("clarification_completed"))
                             or bool(str(state.get("pending_question") or "").strip())
@@ -66,7 +65,7 @@ class Clarifier:
         )
 
     async def run(self, state: ClarifierGraphState) -> dict[str, object]:
-        """构造本轮工具执行上下文(仅只读 scope);上下文不写入 checkpoint。"""
+        """构造本轮工具执行上下文(仅只读 scope)；上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
             context=ClarifierLoopContext(

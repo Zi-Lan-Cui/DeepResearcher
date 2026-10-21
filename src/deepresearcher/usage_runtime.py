@@ -1,4 +1,4 @@
-"""服务无关的 run 用量上下文:agent 与工具经 ContextVar 读取记账与预算。"""
+"""服务无关的 run 用量上下文：agent 与工具经 ContextVar 读取记账与预算。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ logger = get_logger("deepresearcher.usage_runtime")
 
 
 class UsageRecorder(Protocol):
-    """执行面拥有、暴露给引擎代码的最小能力。"""
+    """执行层拥有并暴露给引擎代码的最小能力。"""
 
     async def enforce_budget(self, run_id: str, config: LLMConfig) -> None: ...
 
@@ -67,7 +67,7 @@ def current_usage_runtime() -> UsageRuntime | None:
 async def enforce_usage_budget() -> None:
     """检查当前 run 的用量预算；不在服务执行上下文时是空操作。
 
-    抛出:
+    抛出：
         UsageBudgetExceeded: 预算耗尽时。
     """
 

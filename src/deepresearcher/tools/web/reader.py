@@ -51,7 +51,7 @@ class SourceReaderTool:
         material_store: ResearchMaterialStore,
         document_inline_max_tokens: int = 6_000,
     ):
-        # fetcher 必须是跑整条 provider 链、带 material_fetch_key 的 FetchService，
+        # fetcher 必须是执行整条 provider 链、带 material_fetch_key 的 FetchService，
         # 不能是单个 FetchProvider：两者的 afetch 协议同名，
         # 传错时缓存键缺失不会被类型检查发现。
         if fetcher is None:
@@ -146,12 +146,12 @@ class SourceReaderTool:
             # 但仍由 Researcher 阅读后决定是否提交 Evidence。
             document = self._search_content_document(result)
             if document is not None and self.event_sink is not None:
-                # 兜底成功也要留痕：被拦/失败的 requested_url 与原因只存在于这里，
+                # 改用搜索内容成功也要记录：被拦/失败的 requested_url 与原因只存在于这里，
                 # 登记事件本身分不清"正常抓取"与"搜索内容顶替"。
                 self.event_sink.write(
                     make_tool_event(
                         "fetch",
-                        "failed",  # 抓取本身确实失败；兜底信息由 event_name 与 payload 承载
+                        "failed",  # 抓取本身确实失败；回退信息由 event_name 与 payload 承载
                         component="source_reader",
                         link=link,
                         error=str(exc),

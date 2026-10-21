@@ -43,7 +43,7 @@ def test_anchor_rescues_encoding_variants():
 
 
 def test_ambiguous_start_anchor_is_rejected():
-    # 重复句里短锚命中多处：错误必须暴露为歧义，而不是任选一处静默入池。
+    # 重复句里短锚命中多处：错误必须暴露为歧义，而不是任选一处静默写入。
     source = "同一句结论。\f同一句结论。\r\n正文其他内容。"
     result = anchor_resolve(source, "同一句结论")
     assert result.reason == "ambiguous_start"

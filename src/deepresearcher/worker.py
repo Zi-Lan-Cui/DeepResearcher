@@ -1,4 +1,4 @@
-"""独立执行平面入口：``python -m deepresearcher.worker``。"""
+"""独立执行入口：python -m deepresearcher.worker。"""
 
 from __future__ import annotations
 

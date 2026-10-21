@@ -170,10 +170,10 @@ async def test_open_bounded_evicts_oldest(store, signal):
     hub.open("run-mid")
     assert hub.is_open("run-old") and hub.is_open("run-mid")
 
-    hub.open("run-new")  # 超限:run-old 按插入序出局
+    hub.open("run-new")  # 超限：run-old 按插入序出局
     assert not hub.is_open("run-old")
     assert hub.is_open("run-mid") and hub.is_open("run-new")
-    hub.write({"run_id": "run-old", "event_type": "late", "payload": {}})  # 静默丢弃,不抛错
+    hub.write({"run_id": "run-old", "event_type": "late", "payload": {}})  # 静默丢弃，不抛错
     await hub.flush("run-old")
     assert store.batches == []
 
@@ -184,7 +184,7 @@ async def test_flush_orders_append_then_notify(hub, store, log):
     hub.write({"run_id": "run-7", "event_type": "after", "payload": {}})
     await hub.flush("run-7")
 
-    assert log == ["append", "notify:run-7"]  # notify 每批一次,在 append 之后
+    assert log == ["append", "notify:run-7"]  # notify 每批一次，在 append 之后
     assert [r["event_type"] for r in store.batches[0]] == ["before", "after"]
     assert [r["seq"] for r in store.batches[0]] == [1, 2]
     with hub._lock:  # noqa: SLF001
@@ -192,7 +192,7 @@ async def test_flush_orders_append_then_notify(hub, store, log):
 
 
 async def test_flush_requeues_head_on_store_failure(hub, store, log):
-    """排水失败必须回插队首:done 帧整批丢失会让全部 SSE 靠兜底才收敛。"""
+    """排水失败必须回插队首:done 帧整批丢失会让全部 SSE 只能靠合成帧结束。"""
     hub.open("r1")
     hub.write({"run_id": "r1", "event_type": "engine_0", "payload": {}})
     hub.write({"run_id": "r1", "event_type": "run_done", "payload": {"status": "completed"}})
@@ -213,7 +213,7 @@ async def test_flush_requeues_head_on_store_failure(hub, store, log):
         "engine_0",
         "run_done",
         "engine_1",
-    ]  # 回插批次在新事件之前,seq 分配顺序不乱
+    ]  # 回插批次在新事件之前，seq 分配顺序不乱
 
 
 async def test_close_drops_seat_and_late_writes_drop(hub, store):
@@ -239,7 +239,7 @@ async def test_publish_done_is_idempotent_per_process(hub, store):
     await hub.publish_done("run-9")
     await hub.flush("run-9")
     assert [r["event_type"] for b in store.batches for r in b] == ["run_done"]
-    assert store.batches[0][0]["payload"]["status"] == "failed"  # 无行时的安全兜底
+    assert store.batches[0][0]["payload"]["status"] == "failed"  # 无行时的安全回退
 
 
 async def test_local_bus_satisfies_protocol():

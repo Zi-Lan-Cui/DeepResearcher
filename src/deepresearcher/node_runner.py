@@ -1,7 +1,7 @@
 """顶层节点的统一运行器。
 
-观测层只记录节点生命周期；本模块负责把未处理的节点异常转换成
-可供 LangGraph 继续收束的运行状态：失败收口在此产出降级报告
+instrument_node 只记录节点生命周期；本模块把未处理的节点异常转换成
+可供 LangGraph 继续推进的运行状态：失败收尾在此产出降级报告
 render_incomplete_report 或 render_error_report，终点渲染节点对
 failed 分支只透传。各节点因此不必各自复制一套 try/except。
 """
@@ -28,22 +28,16 @@ async def execute_node(
 ) -> dict[str, Any]:
     """执行一个顶层节点，并将普通异常转换为终止状态。
 
-    取消和键盘中断必须继续向上传播，不能被当成业务失败吞掉；其余异常
-    统一生成 ``RunError``，返回最小失败状态，由图中的最终渲染节点负责
-    结束本次运行。
+    取消与 KeyboardInterrupt 原样向上传播，其余异常生成 RunError 并返回最小失败状态，
+    由最终渲染节点收尾。
 
-    参数:
+    参数：
         state: 当前研究状态。
         stage: 节点名，用于失败事件与 RunError。
         node: 节点函数，可同步可异步。
 
-    返回:
-        dict: 节点 update，或失败收口 update。
-
-    抛出:
-        GraphBubbleUp / asyncio.CancelledError / KeyboardInterrupt /
-            NodeCancelledError: 冒泡信号原样传播。
-        Exception: 失败产物自身违反状态不变量时——运行器的 bug。
+    返回：
+        节点 update，或失败时收尾 update。
     """
     try:
         restore_state_models(state)

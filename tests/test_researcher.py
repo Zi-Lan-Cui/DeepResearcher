@@ -190,7 +190,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     assert first["result_count"] == 12
     assert len(first["candidates"]) == SEARCH_RESULTS_PREVIEW_COUNT
     assert first["has_more"] is True
-    # 预览与分页统一形状:首屏即带截断 snippet,模型无需再调 ListSearchResults(offset=0) 判断。
+    # 预览与分页统一形状：首屏即带截断 snippet,模型无需再调 ListSearchResults(offset=0) 判断。
     assert all(item["snippet"] and len(item["snippet"]) <= 1_200 for item in first["candidates"])
     assert first["next_offset"] == SEARCH_RESULTS_PREVIEW_COUNT  # 预览消费 0..N-1 → 下一页从 N
 
@@ -203,7 +203,7 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
     assert page["offset"] == 5
     assert page["returned_count"] == 3
     assert page["next_offset"] == 8
-    # 同一候选在预览与分页里字段完全一致,不再按 include_snippet 分叉两种字段集。
+    # 同一候选在预览与分页里字段完全一致，不再按 include_snippet 分叉两种字段集。
     assert set(first["candidates"][0]) == set(page["candidates"][0])
     # 分页重建只从 SearchTool 的进程/持久缓存取数，不再请求 Provider。
     assert client.calls == 1
@@ -274,7 +274,7 @@ def test_research_agent_can_inspect_and_forget_its_working_set():
     # 该测试只验证工具协议和观察回流；ID 不匹配时 ReleaseEvidence 应安全返回 unknown。
     result = asyncio.run(agent.run(TASK))
     assert result.task_result.execution_status == "completed"
-    # 锚在工具回执键而非提示词措辞:模型必须真的看到工作集快照回流。
+    # 锚在工具回执键而非提示词措辞：模型必须真的看到工作集快照回流。
     assert any(
         "active_evidence" in str(message.content)
         for snapshot in agent.llm.seen_messages
@@ -689,7 +689,7 @@ def test_add_evidence_validates_before_ranking_by_confidence():
 
 
 def test_add_evidence_anchor_resolves_across_punctuation_style():
-    # 模型只交词锚,弯引号/逗号样式由程序回填的原文子串承担,模型不需要抄对这些符号。
+    # 模型只交词锚，弯引号/逗号样式由程序回填的原文子串承担，模型不需要抄对这些符号。
     store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(
@@ -725,7 +725,7 @@ def test_add_evidence_anchor_resolves_across_punctuation_style():
                 {
                     "document_id": document.document_id,
                     "claim": "系统被认定稳健。",
-                    # 首尾锚只取两端词,中间整段(含弯引号)由程序逐字回填。
+                    # 首尾锚只取两端词，中间整段(含弯引号)由程序逐字回填。
                     "quote_start": "报告称",
                     "quote_end": "通过验收",
                     "confidence": 0.9,
@@ -965,7 +965,7 @@ def test_researcher_agent_crash_passes_through_as_failed_not_dressed_up():
     assert task_result.stop_detail == "graph exploded"
     assert task_result.coverage_status == "insufficient"
     assert any("direction_agent_failed" in item for item in task_result.failures)
-    # 交付层仍拿到降级说明与缺口标注,证据为零时的兜底文案不变
+    # 交付层仍拿到降级说明与缺口标注，证据为零时的默认文案不变
     assert "未获得可用 Evidence。" in task_result.remaining_gaps
 
 
@@ -990,7 +990,7 @@ def test_search_tool_emits_query_level_progress_events():
     }
     assert {("search_query_started", "甲"), ("search_query_completed", "甲")} <= query_events
     assert {("search_query_started", "乙"), ("search_query_completed", "乙")} <= query_events
-    # 整批聚合的 tool_started/tool_completed 仍在:卡的首行与批次行不受影响。
+    # 整批聚合的 tool_started/tool_completed 仍在：卡的首行与批次行不受影响。
     assert {r.event_type for r in sink.records} >= {"tool_started", "tool_completed"}
 
 
@@ -1018,7 +1018,7 @@ def test_search_tool_query_failed_event_reraises():
     )
 
 
-# 通道化不变式守卫:覆盖 §5 硬点、通道往返、ref 化、批重建与 serde。
+# 通道化不变式守卫：覆盖 §5 硬点、通道往返、ref 化、批重建与 serde。
 
 
 def _non_concurrency_safe_channels(state_cls) -> set[str]:
@@ -1084,7 +1084,7 @@ def test_researcher_channel_round_trip_strips_bodies():
     state.read_urls.append("https://a")
 
     channels = state.initial_channel_state()
-    # ref 化纪律:通道里既无候选正文,也无文档正文。
+    # ref 化纪律：通道里既无候选正文，也无文档正文。
     assert channels["candidates"]["c-1"].raw_content == ""
     assert "content" not in channels["documents"]["d-1"].model_dump()
     assert isinstance(channels["documents"]["d-1"], DocumentRef)
@@ -1229,7 +1229,7 @@ def test_read_sources_unknown_candidates_list_available_ids():
 
 
 def test_fetch_guarded_fallback_emits_url_bearing_audit_event():
-    """SSRF 守卫拦截后由搜索内容兜底登记时，落一条带 requested_url 与归因的审计事件。"""
+    """SSRF 守卫拦截后由搜索内容顶替登记时，落一条带 requested_url 与归因的审计事件。"""
 
     class Sink:
         def __init__(self) -> None:
@@ -1258,7 +1258,7 @@ def test_fetch_guarded_fallback_emits_url_bearing_audit_event():
         )
     )
 
-    assert result.status == "completed"  # 兜底照常登记，模型侧不报错
+    assert result.status == "completed"  # 回退路径照常登记，模型侧不报错
     fallbacks = [r for r in sink.records if r.event_type == "source_read_fallback"]
     assert len(fallbacks) == 1
     payload = fallbacks[0].payload

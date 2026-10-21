@@ -1,9 +1,6 @@
 """可丢弃预览的传输契约。
 
-Ephemeral 事件只改善实时观感：没有序号、不持久化，不得参与
-run 状态判定。协议有两个可互换的实现，装配时选定：
-``RedisEphemeralEventBus``（跨进程，生产）与 ``LocalPreviewBus``
-（同事件循环，单栈 harness）。
+帧没有序号、不持久化，不得参与 run 状态判定，由 preview_event 白名单重建。
 """
 
 from __future__ import annotations
@@ -44,13 +41,13 @@ class EphemeralEventBus(Protocol):
 
 
 def preview_event(value: object, *, run_id: str) -> dict | None:
-    """校验并重建可丢弃通道上唯一允许的事件形状。
+    """校验并重建可丢弃通道上唯一允许的事件结构。
 
-    参数:
+    参数：
         value: 待检查的原始事件对象。
         run_id: 事件宣称所属的 run。
 
-    返回:
+    返回：
         dict | None: 白名单通过时返回重建后的安全帧，否则 None。
     """
 

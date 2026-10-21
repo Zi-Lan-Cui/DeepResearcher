@@ -120,7 +120,7 @@ class _ScriptedResearcherModel:
                 "id": "a1",
             }
         elif not self._killed:
-            # 证据已随 superstep 提交进内层检查点;此刻模拟进程被杀,该异常不被 run() 捕获。
+            # 证据已随 superstep 提交进内层检查点；此刻模拟进程被杀，该异常不被 run() 捕获。
             self._killed = True
             raise _ProcessKilled("simulated process kill right after evidence committed")
         else:
@@ -227,7 +227,7 @@ async def _drive(saver):
             "evidence_id": result.evidences[0].evidence_id if result and result.evidences else None,
         }
     finally:
-        # 演示同库不留测试线程:崩溃路径同样回收,否则每跑一次批就往生产 checkpoint 里漏一批行。
+        # 演示同库不留测试线程：崩溃路径同样回收，否则每跑一次批就往生产 checkpoint 里漏一批行。
         await saver.adelete_thread(thread)
 
 
@@ -250,7 +250,7 @@ def test_e2e_researcher_resumes_without_rerunning_search_on_postgres():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 恢复后已提交的搜索与抓取只发生一次:researcher 从内层检查点续跑,而非整体重跑。
+    # 恢复后已提交的搜索与抓取只发生一次：researcher 从内层检查点续跑，而非整体重跑。
     assert facts["search_calls"] == 1, f"搜索应只 1 次,实测 {facts['search_calls']}(疑似整体重跑)"
     assert facts["fetch_calls"] == 1, f"抓取应只 1 次,实测 {facts['fetch_calls']}(疑似整体重跑)"
     assert facts["execution_status"] == "completed", facts["execution_status"]
@@ -338,7 +338,7 @@ async def _drive_supervisor(saver):
             await app.ainvoke({"done": False}, {"configurable": {"thread_id": thread}})
         except _ProcessKilled:
             killed = True
-        # 崩溃后、恢复前:reconcile._has_checkpoint 用的正是 aget_tuple(thread),证明确有可续检查点。
+        # 崩溃后、恢复前：reconcile._has_checkpoint 用的正是 aget_tuple(thread),证明确有可续检查点。
         checkpoint_after_crash = await saver.aget_tuple(config)
         # 执行器恢复经 reconcile、resume_runs、execute(resume=True),最终都走 astream(None)。
         async for _ in app.astream(None, config={"configurable": {"thread_id": thread}}):
@@ -359,7 +359,7 @@ async def _drive_supervisor(saver):
             "absorbed_evidence": len(absorbed),
         }
     finally:
-        # 演示同库不留测试线程:崩溃路径同样回收,否则每跑一次批就往生产 checkpoint 里漏一批行。
+        # 演示同库不留测试线程：崩溃路径同样回收，否则每跑一次批就往生产 checkpoint 里漏一批行。
         await saver.adelete_thread(thread)
 
 
@@ -382,9 +382,9 @@ def test_e2e_supervisor_nested_researcher_resumes_on_postgres():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # reconcile 据 aget_tuple 判定可续:崩溃后确有 thread 检查点。
+    # reconcile 据 aget_tuple 判定可续：崩溃后确有 thread 检查点。
     assert facts["has_checkpoint_after_crash"] is True
-    # 派发制 v1 合同:已提交派发批之后的在途方向不续跑、不重跑,恢复时判丢失结算。
+    # 派发制 v1 合同：已提交派发批之后的在途方向不续跑、不重跑，恢复时判丢失结算。
     # 搜索/抓取各只一次证明恢复链路没有重新驱动任何方向体。
     assert facts["search_calls"] == 1, f"搜索应只 1 次,实测 {facts['search_calls']}(疑似重跑方向)"
     assert facts["fetch_calls"] == 1, f"抓取应只 1 次,实测 {facts['fetch_calls']}(疑似重跑方向)"

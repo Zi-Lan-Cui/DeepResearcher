@@ -37,7 +37,7 @@ def test_sanitized_keeps_scalars_stringifies_rest():
 
 
 def test_kind_maps_cover_the_call_site_vocabulary():
-    # kind 词表由 instrumentation 与 tools 的调用点决定;缺项会静默落到 INTERNAL。
+    # kind 词表由 instrumentation 与 tools 的调用点决定；缺项会静默落到 INTERNAL。
     assert set(spans._SPAN_KIND_MAP) >= {"trace", "node", "tool"}
     assert spans.INSTRUMENTATION_SCOPE == "deepresearcher.tracing"
 
@@ -56,6 +56,6 @@ def test_span_body_exception_propagates_after_marking():
 
 
 def test_unregistered_run_writes_no_ledger_and_raises_nothing():
-    # 账本路由查无 sink 时静默丢弃:span 照常执行,不产生任何写出错误。
+    # 账本路由查无 sink 时静默丢弃：span 照常执行，不产生任何写出错误。
     with spans.span("orphan"):
         pass

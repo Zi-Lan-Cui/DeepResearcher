@@ -1,12 +1,8 @@
-"""LangGraph 顶层状态:跨节点交接物的类型与合并语义。
+"""LangGraph 顶层状态：跨节点交接物的类型与合并语义。
 
-字段按所有权分组;channel 直接存 Pydantic 模型。同一 run 内 LangGraph
-保持模型对象;跨进程 checkpoint 恢复时 incoming 可能是 dict,dict→模型的
-防御性恢复分三个入口,各自覆盖一段:
-list 通道由幂等 reducer(merge_evidences / merge_task_results / merge_unique)
-按 id 折回并顺带恢复;scalar 通道(run / supervisor / writer / review /
-writer_directive / research_synthesis)由 node_runner 在每节点入口调用
-restore_state_models 统一恢复;section() 是读侧最后一道兜底。
+同 run 内保持 Pydantic 模型对象；跨进程 checkpoint 恢复时 incoming 可能是 dict，
+由三个入口恢复：list 通道的幂等 reducer、node_runner 每节点入口的
+restore_state_models、读侧的 section()。
 """
 
 from collections.abc import MutableMapping
@@ -67,7 +63,7 @@ _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 def _coerce(model_cls: type[_ModelT], value: object) -> _ModelT:
-    """跨进程 checkpoint 恢复时值可能是 dict;恢复为模型,否则原样返回。"""
+    """跨进程 checkpoint 恢复时值可能是 dict；恢复为模型，否则原样返回。"""
     if isinstance(value, model_cls):
         return value
     return model_cls.model_validate(value)
@@ -89,7 +85,7 @@ def merge_task_results(
     current: list[ResearchDirectionResult],
     incoming: list[ResearchDirectionResult],
 ) -> list[ResearchDirectionResult]:
-    """按 task_id 去重合并;同一 task 因恢复而重跑时，以新结果覆盖旧结果。"""
+    """按 task_id 去重合并；同一 task 因恢复而重试时，以新结果覆盖旧结果。"""
     restored = [_coerce(ResearchDirectionResult, item) for item in [*current, *incoming]]
     by_id: dict[str, ResearchDirectionResult] = {}
     for item in restored:
@@ -98,12 +94,12 @@ def merge_task_results(
 
 
 def merge_unique(current: list[str], incoming: list[str]) -> list[str]:
-    """字符串集合语义合并,保持首次出现顺序。"""
+    """字符串集合语义合并，保持首次出现顺序。"""
     return list(dict.fromkeys([*current, *incoming]))
 
 
 class ResearchState(TypedDict, total=False):
-    # State 只保存数据快照；Agent、LLM、工具和锁由 Graph 装配层持有。
+    # State 只保存数据快照；Agent、LLM、工具和锁由 graph.py 装配时创建并持有。
     run: RunStatus
     supervisor: SupervisorProgress
     writer: WriterProgress
@@ -117,7 +113,7 @@ class ResearchState(TypedDict, total=False):
     route: str
     route_reason: str
     answer_mode: AnswerMode
-    # Clarifier 的交付面：逐字原话之外，意图摘要、系统假设与逐轮问答留痕分键存放，
+    # Clarifier 的输出：逐字原话之外，意图摘要、系统假设与逐轮问答记录分键存放，
     # supervisor 委托段按身份分小节消费。
     intent_summary: str
     assumptions: list[str]
@@ -137,13 +133,13 @@ class ResearchState(TypedDict, total=False):
     task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
     supervisor_next: NodeName
 
-    # Writer 未通过校验时的兜底草稿，exhausted 或 citation_protocol 失败时写入;
+    # Writer 未通过校验时的备用草稿，exhausted 或 citation_protocol 失败时写入；
     # 区别于 report_draft，rejection 回流时作为 Supervisor 的修订底稿。
     rejected_draft: str
-    # Writer 产出的草稿，以 [[cite:evidence_id]] 标记引用;
+    # Writer 产出的草稿，以 [[cite:evidence_id]] 标记引用；
     # 审阅通过后由终检渲染层编号并渲染为 report。
     report_draft: str
-    # 两个标题通道分工不同:run_headline 是 Clarifier 对问题的一句话浓缩，用于历史列表;
+    # 两个标题分工不同：run_headline 是 Clarifier 对问题的一句话浓缩，用于历史列表；
     # report_title 是 Writer 为回答拟的文章标题，用作报告 H1。
     run_headline: str
     report_title: str
@@ -156,8 +152,8 @@ class ResearchState(TypedDict, total=False):
     source_count: int
 
 
-# 允许为 None 的标量通道由类型注解派生,避免手工维护第二份名单:名单若漏了
-# 新增的 Optional 通道,恢复会对 None 调用带必填字段的 model_cls() 而当场报错。
+# 允许为 None 的标量通道由类型注解派生，避免手工维护第二份名单：名单若漏了
+# 新增的 Optional 通道，恢复会对 None 调用带必填字段的 model_cls() 而当场报错。
 _OPTIONAL_SCALAR_KEYS = frozenset(
     key for key, hint in get_type_hints(ResearchState).items() if type(None) in get_args(hint)
 )
@@ -220,7 +216,7 @@ def validate_state_invariants(
 ) -> None:
     """校验合并后的顶层生命周期状态。
 
-    节点通常只返回增量，因此必须在 ``current + update`` 的视图上校验，
+    节点通常只返回增量，因此必须在 current + update 的视图上校验，
     不能只检查节点自己的返回字典。
     """
     effective = {**current, **update}
@@ -230,7 +226,7 @@ def validate_state_invariants(
     run = _coerce(RunStatus, run)
     if run.phase == "failed" and run.error is None:
         raise StateInvariantError("run.phase=failed 时必须提供 run.error。")
-    # rendering 是进入终点的准备阶段:因预算耗尽收尾时，渲染层需要 terminal_reason
+    # rendering 是进入终点的准备阶段：因预算耗尽收尾时，渲染层需要 terminal_reason
     # 解释报告为何不完整，所以该阶段携带 terminal_reason 是合法的。
     if run.phase not in {"rendering", "completed", "failed"} and run.terminal_reason:
         raise StateInvariantError(f"run.phase={run.phase} 时不能设置 terminal_reason。")

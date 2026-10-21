@@ -253,8 +253,8 @@ def test_router_model_failure_fails_closed_to_deep_research():
 
 
 def test_router_bubbles_fail_fast_signals_instead_of_fallback_routing():
-    """预算耗尽与账户级不可用必须冒泡给 node_runner 收口,这是 llm.py 的契约;
-    折成 deep_research 兜底会继续消耗后续模型调用,并把真故障伪装成路由决定。"""
+    """预算耗尽与账户级不可用必须向上抛给 node_runner 统一处理，这是 llm.py 的契约；
+    改判为 deep_research 路由会继续消耗后续模型调用，并把真故障误报为路由决定。"""
     from deepresearcher.llm import LLMConfigurationError
     from deepresearcher.usage_runtime import UsageBudgetExceeded
 
@@ -283,7 +283,7 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert result["run"].error.stage == "broken"
     assert "研究流程中途失败" in result["report"]
     assert "boom" not in result["report"]
-    # 边界产出的失败产物必须通过与节点产物相同的不变量校验,此为回归用例。
+    # 边界产出的失败产物必须通过与节点产物相同的不变量校验，此为回归用例。
     validate_state_invariants({}, result)
 
 
@@ -493,7 +493,7 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
 
     monkeypatch.setattr(graph, "Clarifier", _CancellingClarifier)
 
-    # LangGraph 会把节点主动抛出的 CancelledError 包装成自己的取消异常;
+    # LangGraph 会把节点主动抛出的 CancelledError 包装成自己的取消异常；
     # 关键契约是它不会被 node_runner 转换成 RunError 并渲染成失败报告。
     with pytest.raises(BaseException) as caught:
         asyncio.run(
@@ -556,7 +556,7 @@ def test_approved_reviewer_bypasses_supervisor_and_renders_final_report():
 
 
 def test_terminal_phase_trunk_overrides_every_business_handoff():
-    """统一路由规则：节点声明 rendering/failed 后，无论业务字段写的是什么，去向都收束到渲染。"""
+    """统一路由规则：节点声明 rendering/failed 后，无论业务字段写的是什么，去向都归为渲染。"""
     exhausted_writer = {
         "run": {"phase": "rendering"},
         "writer": {"status": "exhausted"},
@@ -565,7 +565,7 @@ def test_terminal_phase_trunk_overrides_every_business_handoff():
     assert route_after_writer(
         {"run": {"phase": "reviewing"}, "writer": {"status": "completed"}}
     ) == (NodeName.REVIEWER)
-    # 审阅退回本应等回流,但 Supervisor 宣告终止时仍去渲染。
+    # 审阅退回本应等回流，但 Supervisor 宣告终止时仍去渲染。
     assert (
         route_after_reviewer({"run": {"phase": "rendering"}, "review": {"status": "rejected"}})
         == NodeName.RENDER_FINAL_REPORT

@@ -1,11 +1,7 @@
-"""账本事件名的登记表,跨层 wire 契约。
+"""事件日志事件名的登记表，跨层 wire 契约。
 
-发射侧，即 instrumentation、agents/tools 的 emit 调用、hub 服务层合成，与
-消费侧，即 projector 投影白名单、SSE 尾随、DB 查询，都引用这里的符号;
-改名只改这一处。动态拼接的事件名按约定记录,不作枚举成员:
-节点生命周期 `node_{status}` 见 observability/events/models.make_node_event;
-工具边界 `tool_{status}` 见 make_tool_event;各 Agent 回合与工具事件
-`{slug}_model_turn` / `{slug}_tool_{status}` 见 agents/middleware/observability。
+发射侧与消费侧都引用这里的符号，改名只改这一处。动态拼接的名字按约定记录、
+不作枚举成员：node_{status}、tool_{status}、{slug}_model_turn、{slug}_tool_{status}。
 """
 
 from enum import StrEnum
@@ -25,7 +21,7 @@ class EventName(StrEnum):
     SOURCE_READ_FAILED = "source_read_failed"
     SOURCE_READ_SKIPPED = "source_read_skipped"
     # 抓取失败但用搜索提供方已带回的原文/摘要完成登记时的审计事件；
-    # projector 不在白名单，对用户界面静默，仅落账本供归因。
+    # projector 不在白名单，对用户界面静默，仅落事件日志供归因。
     SOURCE_READ_FALLBACK = "source_read_fallback"
     DIRECTION_SEARCH_COMPLETED = "direction_search_completed"
     DIRECTION_EVIDENCE_ADDED = "direction_evidence_added"
@@ -35,7 +31,7 @@ class EventName(StrEnum):
     RESEARCH_ROUND_COMPLETED = "research_round_completed"
     DELEGATE_STARTED = "delegate_started"
     DELEGATE_COMPLETED = "delegate_completed"
-    # 方向结果吸收进工作集的时刻;lost 变体兼作进程重启欠账的清算记录。
+    # 方向结果归入工作集的时刻；lost 变体兼作进程重启后待清算的记录。
     DIRECTION_ARRIVAL_MERGED = "direction_arrival_merged"
     SUPERVISOR_MODEL_TURN = "supervisor_model_turn"
     CONTEXT_COMPACTED = "context_compacted"

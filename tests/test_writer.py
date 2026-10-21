@@ -216,7 +216,7 @@ def test_writer_result_keeps_nested_models_for_graph_state():
         paragraph_bindings=[ParagraphBinding(text="事实。", kind="evidence", evidence_ids=["e1"])],
     ).state_update()
 
-    # 同 run 内 State 恒为模型对象;dict↔模型转换只在 checkpoint 边界发生。
+    # 同 run 内 State 恒为模型对象；dict↔模型转换只在 checkpoint 边界发生。
     assert result["citations"] == [_cite("e1", url="https://example.com/a")]
     assert result["paragraph_bindings"] == [_binding("事实。", ["e1"])]
     assert result["report_draft"] == "## 结论\n\n事实。[[cite:e1]]"
@@ -787,13 +787,13 @@ def test_writer_guard_nudges_text_only_output_back_into_tool_submission(tmp_path
     assert "[[cite:e1]]" in result["report_draft"]
     events = _event_types(tmp_path)
     assert events.count("writer_tool_loop_nudged") == 1
-    # 走工具提交路径,而非内联草稿恢复
+    # 走工具提交路径，而非内联草稿恢复
     assert "writer_draft_ready" in events
     assert "writer_inline_draft_recovered" not in events
 
 
 def test_writer_guard_bounded_then_recovery_catches(tmp_path):
-    """模型坚持输出正文:守卫最多退回 2 次后放行,由内联草稿恢复兜底,不无限循环。"""
+    """模型坚持输出正文:守卫最多退回 2 次后放行，由内联草稿恢复作回退，不无限循环。"""
     writer, state, _ = _writer_inline_test_setup(tmp_path, _InlineReportLLM("e1"))
     result = asyncio.run(writer.run(state))
 
@@ -893,10 +893,10 @@ def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
     assert reads[0]["payload"]["truncated_ids"] == ["e3", "e4"]  # 截断显式
     assert reads[0]["payload"]["unknown_ids"] == ["ghost-1"]  # 编造 id 被点名
     assert reads[0]["payload"]["read_ids"] == ["e1", "e2"]  # 未知 id 不占配额
-    assert result["writer"].status == "completed"  # 截断信号可见,模型两步内补齐
+    assert result["writer"].status == "completed"  # 截断信号可见，模型两步内补齐
 
 
-# 通道化不变式守卫:覆盖 §5 分类、通道回环与批重建。
+# 通道化不变式守卫：覆盖 §5 分类、通道回环与批重建。
 
 
 def _non_concurrency_safe_channels(state_cls) -> set[str]:
@@ -945,6 +945,6 @@ def test_writer_rebuild_discards_uncommitted_memory():
     committed.validated_draft = ValidatedDraft("x", [], [], ["e1"])
 
     asyncio.run(LoopStateRebuildMiddleware().abefore_model(channels, _Runtime(committed)))
-    # 通道里只有 e1、无草稿:重建后未提交的 e-uncommitted 与野草稿都应消失。
+    # 通道里只有 e1、无草稿：重建后未提交的 e-uncommitted 与野草稿都应消失。
     assert committed.read_evidence_ids == {"e1"}
     assert committed.validated_draft is None

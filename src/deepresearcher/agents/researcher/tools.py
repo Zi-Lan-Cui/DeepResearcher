@@ -1,8 +1,8 @@
 """ResearchAgent 的标准工具注册表。
 
-写状态的工具在出口把回执写进 messages、业务增量写进 ResearcherAgentState 通道:并发工具
-(AddEvidence/ReadSources)只交合并语义差量,串行工具(SearchSources/Release/Restore/
-ResearchDirectionComplete)交定向的整字段快照。回执文本逐字节不变。
+写状态的工具在出口把回执写进 messages、业务增量写进 ResearcherAgentState 通道：并发工具
+(AddEvidence/ReadSources)只交合并语义增量，串行工具(SearchSources/Release/Restore/
+ResearchDirectionComplete)交定向的整字段快照。回执文本按字节不变。
 """
 
 from typing import Any
@@ -132,7 +132,7 @@ def build_researcher_tools() -> list[BaseTool]:
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
-        """分页查看 SearchSources 已落盘的完整候选目录。"""
+        """分页查看 SearchSources 已写入磁盘的完整候选目录。"""
         ctx = runtime.context
         result = await services.list_search_results(
             ctx.deps, ctx.task, ctx.loop_state, search_id, offset, limit, reason
@@ -189,7 +189,7 @@ def build_researcher_tools() -> list[BaseTool]:
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> Command:
-        """批量提交 Evidence；按首尾片段锚在已登记原文中定位，程序逐字回填 quote 后入池。"""
+        """批量提交 Evidence；按首尾片段在已登记原文中定位，程序逐字回填 quote 后写入。"""
         ctx = runtime.context
         loop_state = ctx.loop_state
         evidence_ids_before = {item.evidence_id for item in loop_state.evidences}
@@ -267,8 +267,8 @@ def build_researcher_tools() -> list[BaseTool]:
             channel_update={"active_evidence_ids": loop_state.active_diff_since(active_before)},
         )
 
-    # 不设 return_direct:被拒的提交也须留在循环内改正引用;接受后由 SubmittedExitMiddleware
-    # 依 stop_reason 在下一跳退出,与 Supervisor、Writer 的出口方式一致。
+    # 不设 return_direct：被拒的提交也须留在循环内改正引用；接受后由 SubmittedExitMiddleware
+    # 依 stop_reason 在下一跳退出，与 Supervisor、Writer 的出口方式一致。
     @tool("ResearchDirectionComplete", args_schema=ResearchDirectionComplete)
     async def complete_direction(
         reason: str,
@@ -288,7 +288,7 @@ def build_researcher_tools() -> list[BaseTool]:
             conclusion,
             remaining_gaps,
         )
-        # 被拒时 stop_reason 与活跃集都不变,不落通道,只回一份纠错回执。
+        # 被拒时 stop_reason 与活跃集都不变，不落通道，只回一份纠错回执。
         if result.get("status") != "accepted":
             return _channel_command(
                 runtime, result, tool_name="ResearchDirectionComplete", channel_update={}

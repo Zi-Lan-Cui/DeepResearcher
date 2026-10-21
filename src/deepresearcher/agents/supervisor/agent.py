@@ -1,8 +1,8 @@
 """动态研究 Supervisor：以工具调用循环驱动方向级研究。
 
-子 Agent 抽象为工具:模型每轮通过 ResearchDelegate 派发方向级 ResearchAgent,
-或通过 ResearchComplete 宣布现有 Evidence 足以成文;轮次预算、任务与 URL 去重、
-并发上限与异常降级由本地程序强制,不依赖模型自觉。
+子 Agent 抽象为工具：模型每轮通过 ResearchDelegate 派发方向级 ResearchAgent,
+或通过 ResearchComplete 宣布现有 Evidence 足以成文；轮次预算、任务与 URL 去重、
+并发上限与异常降级由本地程序强制，不依赖模型自觉。
 """
 
 import asyncio
@@ -57,9 +57,8 @@ from deepresearcher.state import ResearchState, SubTask, section
 
 _SUPERVISOR_SYSTEM_PROMPT = load_prompt("supervisor")
 
-# 整字段快照互覆风险的写工具必须单独一轮(ResearchComplete 的 completed_synthesis);
-# ResearchDelegate 与 UpdateWorkbench 通道互不相交,可互相混批——"先写计划再派方向"
-# 在同一回合发出。名单约束由 tests/test_supervisor.py 的静态守卫测试校验(方案 §5 分类守卫)。
+# 整字段快照互覆风险的写工具必须单独一轮，如 ResearchComplete 的 completed_synthesis。
+# ResearchDelegate 与 UpdateWorkbench 通道互不相交，可以同批发出，先写计划再派方向。
 SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
         "ReadWorkbench",
@@ -70,10 +69,9 @@ SUPERVISOR_SERIAL_TOOLS: frozenset[str] = frozenset(
 
 
 def _may_conclude(context: Any) -> bool:
-    """纯文本收尾的合法态:无在途,且桌上已有可交付的苗头。
+    """纯文本收尾的合法态：没有在途方向，且工作台已有可交付的草稿。
 
-    两手空空不算收尾:既无草稿又无任何派发时,文本多半是模型"说了要派但没发调用"的
-    协议滑漏,放行使整场以 0 证据收场(实跑 run-bb3b 实证),退回让它在"等/派/建稿"里选。
+    既无草稿也无任何派发时不算收尾，退回让模型在等待、派发、建稿之间选择。
     """
     loop_state = getattr(context, "loop_state", None)
     if loop_state is None:
@@ -89,12 +87,12 @@ def _may_conclude(context: Any) -> bool:
     return True
 
 
-# 模型调用上限消息恒在会话尾部数条内;扫描窗口多留几条冗余,防 after-hook 顺序变化漏检。
+# 模型调用上限消息恒在会话尾部数条内；扫描窗口多留几条冗余，防 after-hook 顺序变化漏检。
 _LIMIT_MESSAGE_SCAN_TAIL = 3
 
 
 def _model_call_limit_hit(messages: list[BaseMessage]) -> bool:
-    """判断本次 Agent 运行是否终止于 ModelCallLimitMiddleware 上限,而非模型正常收尾。"""
+    """判断本次 Agent 运行是否终止于 ModelCallLimitMiddleware 上限，而非模型正常收尾。"""
     return any(
         isinstance(message, AIMessage) and LIMIT_MESSAGE_MARKER in str(message.content)
         for message in messages[-_LIMIT_MESSAGE_SCAN_TAIL:]
@@ -144,24 +142,24 @@ class ResearchSupervisor:
                             agent_name="Supervisor",
                             event_slug="supervisor",
                             model=self.llm,
-                            # 主动等待与补派发都占用模型回合,余量按派发上限翻倍再留收尾空间。
+                            # 主动等待与补派发都占用模型回合，余量按派发上限翻倍再留收尾空间。
                             max_turns=2 * config.max_subtasks_per_round + 10,
                             context_window_tokens=context_window_tokens,
                             retry_tools=[["ResearchDelegate"]],
                             serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
                             tool_call_limits=[("ResearchDelegate", config.max_subtasks_per_round)],
-                            # 在途未结算、或无草稿无派发时的纯文本结束都不算合法收尾;
+                            # 在途未结算、或无草稿无派发时的纯文本结束都不算合法收尾；
                             # nudge 上限用尽后仍由 drain 结算。
                             submission_guard=SubmissionGuard(
                                 nudge_message=(
-                                    "现在还不是收尾时:在途方向未返回就调用 WaitDirection 或继续"
-                                    "派发;桌面还空着就先 ResearchDelegate 或 UpdateWorkbench 建稿。"
+                                    "现在还不是收尾时：在途方向未返回就调用 WaitDirection 或继续"
+                                    "派发；工作台还空着就先 ResearchDelegate 或 UpdateWorkbench 建稿。"
                                     "在途未清零、无草稿无派发时不要以纯文本结束本轮。"
                                 ),
                                 submitted_probe=_may_conclude,
                                 max_nudges=2,
                             ),
-                            # 收束信号读通道 completed_synthesis,与崩溃恢复共用同一事实源。
+                            # 结束信号读通道 completed_synthesis，与崩溃恢复共用同一事实源。
                             exit_probe=lambda _ctx, state: bool(
                                 state.get("completed_synthesis") is not None
                             ),
@@ -193,9 +191,7 @@ class ResearchSupervisor:
                                 "clarified_query", state.get("query", "")
                             ),
                             "澄清问答（用户选择的数据）": state.get("clarification_log", []),
-                            "Clarifier 对意图的理解摘要（参考读物，不是任务清单）": state.get(
-                                "intent_summary", ""
-                            ),
+                            "Clarifier 对意图的理解摘要": state.get("intent_summary", ""),
                             "系统采用的假设": state.get("assumptions", []),
                         },
                     )
@@ -212,8 +208,8 @@ class ResearchSupervisor:
         ResearchComplete 冻结最新综合版本进入改写，ResearchDelegate 继续补研究。
         """
         history = self._supervisor_history_from_state(state)
-        # 首次运行时 _supervisor_history_from_state 会补入初始委托消息;
-        # 快照长度必须取 State 入口处的历史长度,补入的消息才能一并持久化到上下文历史。
+        # 首次运行时 _supervisor_history_from_state 会补入初始委托消息；
+        # 快照长度必须取 State 入口处的历史长度，补入的消息才能一并持久化到上下文历史。
         history_start = len(state.get("supervisor_messages", []))
 
         review = section(state, "review", ReviewProgress)
@@ -247,9 +243,9 @@ class ResearchSupervisor:
             active_evidence_limit=self.config.supervisor_max_active_evidences,
             max_research_rounds=self.config.max_research_rounds,
         )
-        # research_query 派生一次即定;批重建循环只需它作标量,上下文不持有整份外层 State。
+        # research_query 派生一次即定；批重建循环只需它作标量，上下文不持有整份外层 State。
         research_query = loop_state.research_query
-        # 轮次预算不注入观察:由 services.dispatch_research 的执行越界硬校验以回执告知。
+        # 轮次预算不注入观察：由 services.dispatch_research 的执行越界硬校验以回执告知。
         self._append_research_observation(
             history,
             {"workbench": workbench_view(loop_state)},
@@ -275,12 +271,12 @@ class ResearchSupervisor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # 异常路径拿不到通道现值(没有返回 result),按最后一个批内对象收口;
+            # 异常路径取不到通道现值(没有返回 result)，按最后一个批内对象收尾；
             # 该对象含上一批合并后的状态与本批已完成工具的改动。
             loop_state = loop_context.loop_state
             loop_state.set_stop_reason(StopReason.AGENT_FAILED)
-            # 异常文本进 failure_details 而非 coverage_gaps:后者会被渲染为用户报告的
-            # "未闭合缺口",执行故障不应出现在那里;文本长度由截断配置控制。
+            # 异常文本进 failure_details 而非 coverage_gaps：后者会被渲染为用户报告的
+            # "未闭合缺口"，执行故障不应出现在那里；文本长度由截断配置控制。
             loop_state.failure_details.append(str(exc)[: self.config.supervisor_preview_chars])
         else:
             generated = result.get("messages", []) if isinstance(result, dict) else []
@@ -293,8 +289,8 @@ class ResearchSupervisor:
                 max_research_rounds=self.config.max_research_rounds,
             )
             if loop_state.completed_synthesis is None and _model_call_limit_hit(generated):
-                # 真实终止原因是模型调用上限;set_stop_reason 的声明式 rank 保证它强于
-                # 更弱的预算类信号,又不会盖过 COMPLETED 的显式收尾决定。
+                # 真实终止原因是模型调用上限；set_stop_reason 的声明式 rank 保证它强于
+                # 更弱的预算类信号，又不会盖过 COMPLETED 的显式收尾决定。
                 loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
             await self._drain_direction_tasks(loop_context, loop_state)
         finally:
@@ -314,13 +310,13 @@ class ResearchSupervisor:
     ) -> None:
         """节点正常退出前等齐在途方向并全部吸收。
 
-        有未收口后代即不许结算:迟到结果只落 loop_state——compose_final_update 消费
-        该对象转成外层 State 增量,晚到的证据随节点产物进档案、可被 writer 引用;
-        已冻结的 completed_synthesis 不回退。取消打断等待时异常沿调用链上抛,
+        有未完成的后代即不允许结算：迟到结果只落 loop_state——compose_final_update 消费
+        该对象转成外层 State 增量，晚到的证据随节点产物进档案、可被 writer 引用；
+        已冻结的 completed_synthesis 不回退。取消打断等待时异常沿调用链上抛，
         残余任务交 finally 终止。
         """
         registry = loop_context.direction_tasks
-        # nudge 封顶后模型仍直接结束、或崩溃恢复后循环不再进模型:欠账在收口处结算。
+        # nudge 封顶后模型仍直接结束、或崩溃恢复后循环不再进模型：未结算的在途方向在收尾处统一结算。
         for _report, _delta in services.absorb_lost_registrations(
             loop_context.deps, loop_state, set(registry)
         ):
@@ -339,7 +335,7 @@ class ResearchSupervisor:
             )
 
     async def _stop_residual_tasks(self, loop_context: SupervisorLoopContext) -> None:
-        """异常/取消退出路径的孤儿任务终止:取消并等待收梢,任务不得逃逸节点生命周期。"""
+        """异常/取消退出路径的孤儿任务终止：取消并等待结束，任务不得逃逸节点生命周期。"""
         leftovers = [item for item in loop_context.direction_tasks.values() if not item.done()]
         for item in leftovers:
             item.cancel()
@@ -348,7 +344,7 @@ class ResearchSupervisor:
         try:
             await asyncio.wait(leftovers)
         except asyncio.CancelledError:
-            # 收梢期间的再次取消:任务已收到取消请求,让它们自行结束,不再上抛打断解栈。
+            # 退出期间的再次取消：任务已收到取消请求，让它们自行结束，不再上抛打断解栈。
             pass
         loop_context.direction_tasks.clear()
 

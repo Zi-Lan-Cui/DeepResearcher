@@ -1,7 +1,7 @@
-"""方向级自主研究 Agent：在全局预算内完成一个受派方向的局部研究闭环。
+"""方向级自主研究 Agent：在全局预算内完成一个受派方向的局部研究。
 
-本模块只负责装配:稳定零件收进 ResearcherDeps,每次 run 造一个纯数据的
-ResearcherLoopContext;工具协议在 tools.py,检索、读取、校验的业务实现在 services.py。
+本模块只负责装配：稳定零件放进 ResearcherDeps，每次 run 造一个纯数据的
+ResearcherLoopContext；工具协议在 tools.py，检索、读取、校验的业务实现在 services.py。
 """
 
 import asyncio
@@ -47,12 +47,7 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 
 _RESEARCHER_SYSTEM_PROMPT = load_prompt("researcher")
 
-# 串行工具必须单独一轮:与任何其他调用同批时,SerialToolMiddleware 在模型输出后
-# 整批驳回、打回模型重规划。
-# 判据是写 replace 通道或改活跃集;其余只提交合并语义差量,可同批并发。
-# AddEvidence、ReadSources、SearchSources 只写 queries/candidates/documents 等
-# 合并通道,不在此名单,允许并发。名单与并发归类由 tests/test_researcher.py 的
-# 静态守卫测试校验(方案 §5 分类守卫)。
+# 串行工具必须单独一轮：与任何其他调用同批时，整批驳回、退回模型重规划。
 RESEARCHER_SERIAL_TOOLS: frozenset[str] = frozenset(
     {
         "ReadWorkingSet",
@@ -109,7 +104,7 @@ class ResearchAgent:
                             agent_name="ResearchAgent",
                             event_slug="researcher",
                             model=self.llm,
-                            # +1:步数预算走完后再给一次不带工具的收尾回合。
+                            # +1：步数预算走完后再给一次不带工具的收尾回合。
                             max_turns=self.config.research_agent_max_turns + 1,
                             context_window_tokens=context_window_tokens,
                             retry_tools=[["SearchSources"], ["ReadSources"]],
@@ -136,8 +131,8 @@ class ResearchAgent:
                                     "ResearchDirectionComplete 诚实提交已覆盖内容和剩余缺口。"
                                 ),
                             ),
-                            # 与 submitted_probe 同一信号:stop_reason 收成终值后下一跳直接退出
-                            # 循环;被拒回执不写 stop_reason,模型留在循环内改正。
+                            # 与 submitted_probe 同一信号：stop_reason 收成终值后下一跳直接退出
+                            # 循环；被拒回执不写 stop_reason，模型留在循环内改正。
                             exit_probe=lambda ctx, _state: (
                                 getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
                                 in {
@@ -151,7 +146,7 @@ class ResearchAgent:
                 ],
             ),
             name="researcher",
-            # 业务状态经通道持久化,崩溃重放从最后一个已提交 superstep 续跑。
+            # 业务状态经通道持久化，崩溃重放从最后一个已提交 superstep 续跑。
         )
 
     async def run(self, task: SubTask) -> ResearchAgentResult:
@@ -199,15 +194,15 @@ class ResearchAgent:
             loop_state.stop_reason = DirectionStopReason.DIRECTION_AGENT_FAILED
             loop_state.stop_detail = str(exc)
         else:
-            # 正常收尾从通道现值重建 loop_state,通道为唯一事实源。
+            # 正常收尾从通道现值重建 loop_state，通道为唯一事实源。
             loop_state = ResearcherLoopState.from_channel_values(
                 result if isinstance(result, dict) else {},
                 active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
                 evidence_archive_limit=self.config.research_agent_max_evidence_candidates_per_direction,
             )
-        # 未正常收尾的路径统一套用最小保守结果,保住已验证证据并补降级标注。
-        # 它只改写交付语义的 conclusion 与 remaining_gaps;执行真相由 status 与
-        # stop_reason 如实记录,崩溃的方向就是 failed,不能标成 completed+fallback。
+        # 未正常收尾的路径统一套用最小保守结果，保住已验证证据并补降级标注。
+        # 它只改写交付语义的 conclusion 与 remaining_gaps；执行真相由 status 与
+        # stop_reason 如实记录，崩溃的方向就是 failed，不能标成 completed+fallback。
         if status != "cancelled" and loop_state.stop_reason not in {
             DirectionStopReason.COMPLETE,
             DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
@@ -221,10 +216,10 @@ class ResearchAgent:
 
     @staticmethod
     def _apply_minimum_result(loop_state: ResearcherLoopState) -> None:
-        """不调用模型的最终兜底：保留现有证据，明确标注自动收束与缺口。
+        """不调用模型的最终降级路径：保留现有证据，明确标注自动结束与缺口。
 
-        stop_reason 只在本无收尾原因时补写,回合耗尽对应 fallback 或 blocked;
-        direction_agent_failed 是真实故障原因,保留,不能被交付层的名字覆写。
+        stop_reason 只在本无收尾原因时补写，回合耗尽对应 fallback 或 blocked;
+        direction_agent_failed 是真实故障原因，保留，不能被交付层的名字覆写。
         """
         if not loop_state.active_evidence_ids and loop_state.evidences:
             loop_state.active_evidence_ids.update(
@@ -290,7 +285,7 @@ class ResearchAgent:
                     + render_data_section("委派研究方向", {"question": task["question"]})
                 )
             ),
-            HumanMessage(content=render_data_section("系统研究观察（不是用户补充）", observation)),
+            HumanMessage(content=render_data_section("系统研究观察", observation)),
         ]
 
     def _result(

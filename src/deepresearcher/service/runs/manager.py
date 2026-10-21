@@ -1,7 +1,7 @@
-"""持久 Run 命令的 API 控制面。
+"""持久 Run 命令的 API 控制层。
 
-manager 受理、取消、恢复 run。worker 专属的调度、执行、容量闸与
-崩溃恢复在 ``WorkerRuntime``。
+manager 受理、取消、恢复 run。worker 专属的调度、执行、容量上限与
+崩溃恢复在 WorkerRuntime。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class RunManager:
         self._config = config
         self._hub = hub
         self.signal_bus = signal_bus or PostgresSignalBus()
-        # 只读句柄:cancel 即时分支要 tail 判终态;投递与 notify 归 Hub 统管。
+        # 只读句柄：cancel 即时分支要 tail 判终态；投递与 notify 归 Hub 统管。
         self.event_store = hub.store
         self._run_service = RunService(session_factory=session_factory, config=config)
 
@@ -58,9 +58,9 @@ class RunManager:
             )
 
     async def pending_clarification_payload(self, run: Run) -> dict[str, Any] | None:
-        """run 等待输入时返回最近一条 clarification_requested 的 payload;其余状态为 None。
+        """run 等待输入时返回最近一条 clarification_requested 的 payload；其余状态为 None。
 
-        事件词汇与查询形状收口在此;调用方只把它交给 project_clarification。
+        事件词汇与查询结构集中在此；调用方只把它交给 project_clarification。
         """
         if run.status != "awaiting_input":
             return None
@@ -87,7 +87,7 @@ class RunManager:
         preferences_snapshot 为创建时刻冻结的个人偏好全量值，随行持久化；
         缺省（旧调用方与测试）落 NULL，执行期回服务器默认。
 
-        返回:
+        返回：
             新 run 的 id。
         """
         run_id = await self._run_service.create(user_id, query.strip(), preferences_snapshot)
@@ -100,14 +100,14 @@ class RunManager:
     async def cancel(self, user_id: int, run_id: str) -> Run:
         """请求取消一个 run。
 
-        参数:
+        参数：
             user_id: 资源所有者。
             run_id: 目标 run。
 
-        返回:
+        返回：
             处理后的 run 行。
 
-        抛出:
+        抛出：
             LookupError: run 不存在或非本人所有。
         """
         immediate = False
@@ -135,7 +135,7 @@ class RunManager:
             return await session.get(Run, run_id)
 
     async def terminal_state(self, run_id: str) -> dict[str, Any] | None:
-        """SSE 兜底终止用：run 已终态时返回 done 帧载荷要素，否则返回 None。
+        """SSE 合成终止帧用：run 已终态时返回 done 帧载荷要素，否则返回 None。
 
         done 帧可能在失败批次中丢失：flush 对失败批次已尽力回插，close 竞态仍
         可能丢尾。事件的权威副本是行状态，查到这里即应收尾，不让客户端一直等待。
@@ -161,15 +161,15 @@ class RunManager:
     async def resume_with_input(self, user_id: int, run_id: str, answer: str) -> str:
         """提交澄清回答并把 run 重新入队。
 
-        参数:
+        参数：
             user_id: 资源所有者。
             run_id: 处于 awaiting_input 的 run。
             answer: 用户回答。
 
-        返回:
+        返回：
             入队后的当前状态。
 
-        抛出:
+        抛出：
             ValueError: 回答为空。
             LookupError: run 不存在或非本人所有。
             RuntimeError: checkpoint_missing 或 already_resumed。

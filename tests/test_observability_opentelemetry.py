@@ -72,7 +72,7 @@ async def _run_tree() -> str:
     ) as trace_id:
         with spans.span("supervisor"):
             await tool_leg()
-        # return_exceptions=True:两个分支的异常只用于给 span 定终态,不得逸出 trace 体。
+        # return_exceptions=True:两个分支的异常只用于给 span 定终态，不得逸出 trace 体。
         await asyncio.gather(failing_leg(), cancelled_leg(), return_exceptions=True)
         spans.record_output({"phase": "completed", "report_chars": 42})
     return trace_id
@@ -92,7 +92,7 @@ async def test_spans_form_single_otel_tree(otel_exporter):
     assert root.parent is None
     assert by_name["supervisor"].parent.span_id == root.context.span_id
     assert by_name["search"].parent.span_id == by_name["supervisor"].context.span_id
-    # gather 并行枝各自认根为父,不互相污染;OTel 上下文随 task 创建复制。
+    # gather 并行枝各自认根为父，不互相污染；OTel 上下文随 task 创建复制。
     assert by_name["writer"].parent.span_id == root.context.span_id
     assert by_name["reviewer"].parent.span_id == root.context.span_id
 
@@ -110,7 +110,7 @@ async def test_spans_carry_langfuse_and_correlation_attributes(otel_exporter):
     assert '"phase": "completed"' in root.attributes["langfuse.observation.output"]
     assert root.attributes["deepresearcher.run_id"] == "run-tree"
     assert by_name["search"].attributes["langfuse.observation.type"] == "tool"
-    # 工具 span 自带输入,面板上点开 fetch 或 search 能看出在读、在搜什么。
+    # 工具 span 自带输入，面板上点开 fetch 或 search 能看出在读、在搜什么。
     assert "example.org" in by_name["search"].attributes["langfuse.observation.input"]
     assert by_name["search"].kind == opentelemetry_trace.SpanKind.CLIENT
     assert by_name["supervisor"].kind == opentelemetry_trace.SpanKind.INTERNAL
@@ -170,7 +170,7 @@ async def test_ledger_records_derive_from_same_span_ids():
 
 @pytest.mark.asyncio
 async def test_unregistered_run_produces_no_ledger_records():
-    # 是否写账本由账本注册表决定:未注册 run 的 span 不产生记录。
+    # 是否写账本由账本注册表决定：未注册 run 的 span 不产生记录。
     with spans.span("ephemeral"):
         pass
 

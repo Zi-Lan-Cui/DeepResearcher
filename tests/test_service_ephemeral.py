@@ -116,7 +116,7 @@ async def test_redis_preview_publish_never_waits_for_network_and_drops_oldest():
 
     async with asyncio.timeout(0.1):
         await bus.publish("run-1", _event(text="first"))
-        await asyncio.sleep(0)  # publisher 协程取走第一条,随后阻塞在 Redis 里
+        await asyncio.sleep(0)  # publisher 协程取走第一条，随后阻塞在 Redis 里
         await bus.publish("run-1", _event(text="discarded"))
         await bus.publish("run-1", _event(text="latest"))
 
