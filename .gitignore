@@ -37,3 +37,5 @@ DESIGN.md
 
 # 本地运行日志（进程输出，不入库）
 /*.log
+
+.workbuddy/
