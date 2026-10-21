@@ -29,6 +29,7 @@ from deepresearcher.service.runs.manager import RunManager
 from deepresearcher.service.runs.service import QuotaExceededError, RunService
 from deepresearcher.service.settings import ServiceConfig
 from deepresearcher.service.signals import PostgresSignalBus
+from pg_backend import database_url_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -134,7 +135,7 @@ def _completed_result():
 
 
 class ServiceHarness:
-    """在集成风格测试中显式暴露控制面与执行面。"""
+    """在集成风格测试中显式暴露控制层与执行层。"""
 
     def __init__(
         self,
@@ -175,10 +176,10 @@ class ServiceHarness:
 
 @pytest_asyncio.fixture
 async def manager(tmp_path):
-    # 用文件库而非 :memory: + StaticPool:StaticPool 全共享一条连接,后台任务与
-    # cancel() 的并发 session 会互相干扰,一方回滚会 terminate 另一方在用的连接。
-    # 生产 asyncpg 池每 session 独立连接,无此问题;文件 SQLite 还原该语义。
-    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'runs.db'}")
+    # 文件库而非 :memory: + StaticPool：StaticPool 全共享一条连接，后台任务与
+    # cancel() 的并发 session 会互相干扰，一方回滚会 terminate 另一方在用的连接。
+    # 设置 SERVICE_TEST_DATABASE_URL 时这一层改用真实 PG。
+    engine = make_engine(database_url_for(tmp_path, "runs"))
     await init_db(engine)
     session_factory = make_session_factory(engine)
     async with session_factory() as session:
@@ -248,7 +249,7 @@ async def manager(tmp_path):
         signal_bus=signal_bus,
     )
     yield manager
-    # 先收敛所有后台任务（它们的 finally 还要写库），再拆引擎，避免
+    # 先结束所有后台任务（它们的 finally 还要写库），再拆引擎，避免
     # “closed database / no such table” 竞态。
     await manager.shutdown()
     await engine.dispose()
@@ -413,7 +414,7 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
                 select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
             )
         ).all()
-    assert len(dones) == 1  # done 恰一次,且必须落 DB 以便重连回放
+    assert len(dones) == 1  # done 恰一次，且必须落 DB 以便重连回放
 
 
 async def test_remote_manager_cancel_uses_notification_without_waiting_for_heartbeat(manager):
@@ -521,7 +522,7 @@ async def test_real_suspend_then_resume_matches_is_null_cas(manager):
     await _settle(manager, run_id)
     assert (await _row(manager, run_id)).status == "awaiting_input"
 
-    # SQL 层不变式:挂起后载荷必须是真正的 SQL NULL,而非 JSON null;
+    # SQL 层不变式：挂起后载荷必须是真正的 SQL NULL,而非 JSON null;
     # 用 Python 侧比对看不出这个差别。
     async with manager.session_factory() as session:
         is_sql_null = await session.scalar(
@@ -529,7 +530,7 @@ async def test_real_suspend_then_resume_matches_is_null_cas(manager):
         )
     assert is_sql_null is True, "挂起写入把 None 存成了 JSON null，resume 的 CAS 将永远落空"
 
-    # 换一张能收束的图，让 resume→claim 后这次执行跑到 completed，避免挂起态残留干扰收尾。
+    # 换一张能正常结束的图，让 resume→claim 后这次执行跑到 completed，避免挂起态残留干扰收尾。
     manager.holder["graph"] = FakeGraph(result=_completed_result(), resume_run_id=run_id)
     manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - resume 需要断点在
     advanced = await manager.resume_with_input(USER_ID, run_id, "成本")
@@ -787,7 +788,7 @@ async def test_reconcile_startup_converts_stale_rows(manager):
     assert len(orphans) == 2
     assert all(event.record["payload"]["status"] == "failed" for event in orphans)
     assert completed_done == []  # 非孤儿不补
-    # done 帧必须经 hub→store 正路:seq 由 runs.event_seq 指针分配而非手写 max+1,行号与指针一致。
+    # done 帧必须经 hub→store 正路：seq 由 runs.event_seq 指针分配而非手写 max+1,行号与指针一致。
     async with manager.session_factory() as session:
         for event in orphans:
             run_row = await session.get(Run, event.run_id)
@@ -809,8 +810,8 @@ async def test_headline_persists_at_clarify_exit_not_at_end(manager):
             await asyncio.sleep(0.02)
     row = await _row(manager, run_id)
     assert row.headline == "澄清出口即写"
-    assert row.status == "running"  # 还没到终态,标题已在
-    # 帧必须在 gate 打开前就落库——落库→flush→NOTIFY 一次走完,不等 2s 周期。
+    assert row.status == "running"  # 还没到终态，标题已在
+    # 帧必须在 gate 打开前就落库——落库→flush→NOTIFY 一次走完，不等 2s 周期。
     async with manager.session_factory() as session:
         frames = (
             await session.scalars(
@@ -823,7 +824,7 @@ async def test_headline_persists_at_clarify_exit_not_at_end(manager):
     assert [f.record["payload"]["headline"] for f in frames] == ["澄清出口即写"]
     gate.set()
     await _settle(manager, run_id)
-    # 终值再含 headline 也只此一次:CAS 与 headline_persisted 双重保证不重复推帧。
+    # 终值再含 headline 也只此一次：CAS 与 headline_persisted 双重保证不重复推帧。
     async with manager.session_factory() as session:
         frames_after = (
             await session.scalars(
@@ -891,7 +892,7 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
         {"channel": "supervisor", "text": "先梳理缺口，"},
         {"channel": "supervisor", "text": "旧版聚合消息也放行"},
     ]
-    assert all("seq" not in d for d in deltas)  # 临时帧,不占 seq
+    assert all("seq" not in d for d in deltas)  # 临时帧，不占 seq
     async with manager.session_factory() as session:
         persisted = (
             await session.scalars(
@@ -944,7 +945,7 @@ async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(man
 
 async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     """恢复全链路:分诊判定可续/不可续 → seq 续号 → astream(None) 续跑 → 新事件落库。"""
-    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'resume.db'}")
+    engine = make_engine(database_url_for(tmp_path, "resume"))
     await init_db(engine)
     factory = make_session_factory(engine)
     async with factory() as session:
@@ -1032,7 +1033,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
                 )
             ).all()
         )
-        # 旧 1..5 → resuming=6 → trace + engine + done:跨重启连续,无主键冲突。
+        # 旧 1..5 → resuming=6 → trace + engine + done:跨重启连续，无主键冲突。
         assert [event.seq for event in persisted] == list(range(1, 13))
         assert [event.event_type for event in persisted[6:]] == [
             "trace_started",
@@ -1154,7 +1155,7 @@ async def test_heartbeat_escalates_persistent_db_errors_to_lease_lost():
     async with asyncio.timeout(3):
         await worker._heartbeat(work, None)  # noqa: SLF001
 
-    assert executor.lease_lost == ["r1"]  # 预算耗尽必须降级,不许静默退场
+    assert executor.lease_lost == ["r1"]  # 预算耗尽必须降级，不许静默退场
 
 
 class _ScriptedClaimQueue:
@@ -1205,7 +1206,7 @@ async def test_poll_loop_survives_transient_claim_error():
         async with asyncio.timeout(3):
             while len(queue.claims) < 2:
                 await asyncio.sleep(0.01)
-        assert not poll.done()  # 瞬断没有杀死循环,第二跳已发生
+        assert not poll.done()  # 瞬断没有杀死循环，第二跳已发生
     finally:
         poll.cancel()
         await worker.shutdown()

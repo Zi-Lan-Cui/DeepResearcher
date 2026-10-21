@@ -1,4 +1,4 @@
-"""服务层测试共享件。风格对齐 tests/fakes.py:显式构造,不经 conftest 注入。"""
+"""服务层测试共享件。写法与 tests/fakes.py 一致：显式构造，不经 conftest 注入。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from deepresearcher.config import (
     Settings,
 )
 from deepresearcher.service.settings import ServiceConfig
+from pg_backend import database_url_for
 
 
 def service_settings(tmp_path) -> Settings:
@@ -28,7 +29,7 @@ def service_settings(tmp_path) -> Settings:
 
 def service_config(tmp_path, **overrides) -> ServiceConfig:
     base = dict(
-        database_url=f"sqlite+aiosqlite:///{tmp_path / 'service.db'}",
+        database_url=database_url_for(tmp_path, "service"),
         jwt_secret="s" * 40,
         service_log_dir=tmp_path,
         jsonl_events=False,

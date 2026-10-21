@@ -1,12 +1,8 @@
 """异步数据库引擎与会话工厂。
 
-支持两种 URL：``postgresql+asyncpg://...``（服务）与 ``sqlite+aiosqlite://...``
-（测试/无 Docker 过渡）。``:memory:`` 的 SQLite 每个连接是独立库，必须
-StaticPool 复用同一连接；外键（CASCADE）在 SQLite 里默认关闭，需逐连接开 pragma。
-
-应用启动用 ``migrate_database`` 以幂等的 ``create_all`` 确保 schema 存在；
-``init_db`` 是同一套 metadata 的隔离测试入口。本仓库不维护 Alembic 版本
-迁移链，schema 演进直接改 models 再重建。
+支持 postgresql+asyncpg:// 与 sqlite+aiosqlite://。SQLite 的 :memory: 每个连接
+是独立库，必须用 StaticPool 复用；外键 CASCADE 默认关闭，需逐连接开 pragma。
+启动用 migrate_database 以幂等 create_all 建表，仓库不维护 Alembic 迁移链。
 """
 
 from __future__ import annotations
@@ -18,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy.pool import StaticPool
 
 from deepresearcher.service.coordination import DATABASE_MIGRATION_LOCK_ID
 from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
@@ -28,14 +24,10 @@ from deepresearcher.service.persistence.models import Base
 def make_engine(database_url: str) -> AsyncEngine:
     kwargs: dict = {"echo": False}
     if database_url.startswith("sqlite"):
+        # 文件库用默认连接池。NullPool 每条 SQL 新建连接，并发时两个 aiosqlite
+        # 线程同时首开同一 WAL 库，Windows 上会返回 readonly。
         if ":memory:" in database_url:
             kwargs["poolclass"] = StaticPool
-        else:
-            # 文件库用 NullPool：连接随 session 归还即关（await 完成），不依赖
-            # dispose 回收池。dispose 之后 aiosqlite 工作线程的迟到回调会在
-            # 已关闭循环上 call_soon_threadsafe，测试里表现为归因到后续用例的
-            # UnhandledThreadException 竞态告警。
-            kwargs["poolclass"] = NullPool
         if "aiosqlite" in database_url:
             kwargs["connect_args"] = {"check_same_thread": False}
     engine = create_async_engine(database_url, **kwargs)
@@ -45,12 +37,10 @@ def make_engine(database_url: str) -> AsyncEngine:
 
 
 def _configure_sqlite(engine: AsyncEngine) -> None:
-    """逐连接会话层前置条件，让测试库具备生产 asyncpg 的并发语义：
+    """逐连接会话层前置条件，让测试库具备生产 asyncpg 的并发语义。
 
-    - foreign_keys：SQLite 默认关闭，不开则 ON DELETE CASCADE 静默失效；
-    - busy_timeout：读一写一并发时（RunExecutor 后台 flush vs 请求事务）默认
-      立刻抛 database is locked，5s 等待等价于 PG 的行锁排队；
-    - journal_mode=WAL：读写不互斥（仅文件库有效，:memory: 无副作用）。
+    foreign_keys 不开则 ON DELETE CASCADE 静默失效；busy_timeout 避免并发时立刻抛
+    database is locked；journal_mode=WAL 让读写不互斥（仅文件库有效）。
     """
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -79,15 +69,13 @@ async def init_db(engine: AsyncEngine) -> None:
 async def migrate_database(database_url: str) -> None:
     """幂等地确保应用 schema 存在（创建缺失的表）。
 
-    本仓库不维护 Alembic 迁移链：schema 由模型元数据经
-    ``create_all``（checkfirst）推出，重跑是空操作，加表只改模型。
-    API 与多个 Worker 可能同时启动，因此 PostgreSQL 上把 DDL 放进
-    事务级 advisory lock 串行化并发 create_all；SQLite 是单进程测试路径。
+    schema 由模型元数据经 create_all 推出，仓库不维护 Alembic 迁移链。API 与多个 Worker
+    可能同时启动，PostgreSQL 上把 DDL 放进事务级 advisory lock 串行化。
     """
     engine = make_engine(database_url)
     try:
         async with engine.begin() as connection:
-            # 事务级 advisory lock 在提交时自动释放,保护下方并发的跨进程 DDL;
+            # 事务级 advisory lock 在提交时自动释放，保护下方并发的跨进程 DDL;
             # SQLite 单进程测试路径上空操作。
             await acquire_xact_lock(connection, DATABASE_MIGRATION_LOCK_ID)
             await connection.run_sync(Base.metadata.create_all)

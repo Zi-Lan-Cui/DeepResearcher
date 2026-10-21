@@ -1,12 +1,14 @@
 """测试运行时与生产 Uvicorn 使用相同的事件循环;OTel provider 全程常驻。"""
 
 import asyncio
+import sys
 
 import pytest
 from opentelemetry import trace as opentelemetry_trace
 from opentelemetry.sdk.trace import TracerProvider
 
 from deepresearcher.observability.tracing import ledger
+from pg_backend import postgres_base
 
 try:
     import uvloop
@@ -18,6 +20,10 @@ if uvloop is not None:
     # 要在任何 pytest-asyncio fixture 或测试内 asyncio.run() 创建 loop 前设置。
     # Uvicorn[standard] 在 Linux 上也会优先选择 uvloop。
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+elif sys.platform == "win32" and postgres_base() is not None:
+    # Windows 默认的 Proactor 循环没有 add_reader，asyncpg 与 psycopg 的异步模式都拒绝在其上
+    # 运行。只有走 PG 后端时才换循环；SQLite 用例继续用默认循环，免得影响无关断言。
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -12,8 +12,7 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def session(tmp_path):
-    # 用文件库配 NullPool 而非 :memory: 配 StaticPool,与 test_service_runs
-    # 同理:规避 aiosqlite 线程在事件循环关闭后的迟到回调竞态。
+    # 用文件库而非 :memory:：后者每个连接各自一份库，跨 session 读不到同一份数据。
     engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'db.test.db'}")
     await init_db(engine)
     factory = make_session_factory(engine)
