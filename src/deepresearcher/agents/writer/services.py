@@ -142,36 +142,37 @@ def evidence_catalogue(
     evidence_by_id: dict[str, Evidence],
     report_brief: ReportBrief | None = None,
 ) -> str:
-    """暴露主题到 Evidence 的归属与去重索引；完整 quote 按需读取。"""
-    topics = list(report_brief.covered_topics) if report_brief is not None else []
-    has_assignments = any(topic.evidence_ids for topic in topics)
+    """暴露章节到 Evidence 的归属与去重索引；完整 quote 按需读取。"""
+    chapters = list(report_brief.chapters) if report_brief is not None else []
+    has_assignments = any(chapter.evidence_ids for chapter in chapters)
     if has_assignments:
         topic_plan = "\n\n".join(
             "\n".join(
                 [
-                    f"[写作主题] {topic.topic}",
-                    f"作用：{topic.role}",
-                    f"Supervisor 综合：{topic.reason}",
+                    f"[写作主题] {chapter.topic}",
+                    f"作用：{chapter.role}",
+                    *([f"本章结论：{chapter.conclusion}"] if chapter.conclusion else []),
+                    *([f"本章要点：{'；'.join(chapter.key_points)}"] if chapter.key_points else []),
                     "建议 Evidence："
                     + ", ".join(
                         evidence_id
-                        for evidence_id in topic.evidence_ids
+                        for evidence_id in chapter.evidence_ids
                         if evidence_id in evidence_by_id
                     ),
                 ]
             )
-            for topic in topics
+            for chapter in chapters
         )
         ordered_ids = list(
             dict.fromkeys(
                 evidence_id
-                for topic in topics
-                for evidence_id in topic.evidence_ids
+                for chapter in chapters
+                for evidence_id in chapter.evidence_ids
                 if evidence_id in evidence_by_id
             )
         )
     else:
-        # 旧 checkpoint 没有 CoveredTopic.evidence_ids，退化为全局索引。
+        # 章节卡未绑定 evidence_ids 时，退化为全局索引。
         topic_plan = ""
         ordered_ids = list(evidence_by_id)
 

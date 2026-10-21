@@ -47,7 +47,5 @@ async def quick_answer(state, llm, *, agent_config: AgentConfig):
         "draft_answer": answer,
         "answer_mode": "quick_answer",
         "run": RunStatus(phase="writing"),
-        "supervisor": SupervisorProgress(
-            status="completed", generation_mode="full", is_sufficient=True
-        ),
+        "supervisor": SupervisorProgress(status="completed", generation_mode="full"),
     }

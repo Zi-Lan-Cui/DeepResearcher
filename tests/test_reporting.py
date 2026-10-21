@@ -322,12 +322,12 @@ def test_render_never_leaks_machine_terminal_reason_into_report():
 
     state = {
         "query": "q",
-        "run": RunStatus(phase="rendering", terminal_reason="round_budget_exhausted"),
+        "run": RunStatus(phase="rendering", terminal_reason="ended_without_completion"),
         "supervisor": SupervisorProgress(status="incomplete"),
     }
     result = asyncio.run(render_final_report_node(state))
-    assert "round_budget_exhausted" not in result["report"]
-    assert "研究轮次预算已耗尽" in result["report"]
+    assert "ended_without_completion" not in result["report"]
+    assert "模型结束研究而未显式收尾" in result["report"]
 
 
 def test_reference_table_survives_ghost_cite():

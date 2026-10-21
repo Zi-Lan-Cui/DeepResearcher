@@ -53,8 +53,10 @@ def test_supervisor_prompt_carries_dispatch_fewshots():
     # 派发示例两字段各就各位,反面说明禁止截断复述。
     assert '"display_title":' in prompt and '"research_topic":' in prompt
     assert "merely truncates" in prompt
-    # 预算耗尽示例校验 blocked 分支的正确动作。
-    assert "round_budget_exhausted" in prompt
+    # 末轮示例校验收束动作:折叠、诚实 partial、完成或结束。
+    assert "no further pass" in prompt and "honest partial status" in prompt
+    # 不向模型描述程序侧不可达的防御分支。
+    assert "status=blocked" not in prompt
 
 
 def test_supervisor_prompt_documents_workbench_protocol():

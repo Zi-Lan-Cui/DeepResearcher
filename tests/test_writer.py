@@ -78,7 +78,7 @@ def test_writer_catalogue_preserves_topic_assignments_and_deduplicates_cards() -
     brief = ReportBrief.model_validate(
         {
             "answer_goal": "回答问题",
-            "covered_topics": [
+            "chapters": [
                 {
                     "topic": "主题 A",
                     "role": "定义",
@@ -563,7 +563,7 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
 
     from deepresearcher.evidence.models import Evidence
     from deepresearcher.observability.events import JsonlSink
-    from deepresearcher.schemas import CoveredTopic, ReportBrief, WriterDirective
+    from deepresearcher.schemas import ReportBrief, ReportChapter, WriterDirective
 
     class LoopingLLM:
         """只调用 ReadEvidence、永不提交 CompleteReport 的假模型。"""
@@ -600,7 +600,7 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
             query="测试",
             report_brief=ReportBrief(
                 answer_goal="回答",
-                covered_topics=[CoveredTopic(topic="性善", role="核心", reason="直接回答")],
+                chapters=[ReportChapter(topic="性善", role="核心", conclusion="直接回答")],
             ),
             research_status="completed",
             generation_mode="full",
@@ -630,7 +630,7 @@ def _writer_inline_test_setup(tmp_path, llm):
     """构造 Writer 内联草稿测试共用的 Evidence、指令与事件 sink。"""
     from deepresearcher.evidence.models import Evidence
     from deepresearcher.observability.events import JsonlSink
-    from deepresearcher.schemas import CoveredTopic, ReportBrief, WriterDirective
+    from deepresearcher.schemas import ReportBrief, ReportChapter, WriterDirective
 
     sink = JsonlSink(tmp_path / "events.jsonl")
     ev = Evidence(
@@ -648,7 +648,7 @@ def _writer_inline_test_setup(tmp_path, llm):
             query="测试",
             report_brief=ReportBrief(
                 answer_goal="回答",
-                covered_topics=[CoveredTopic(topic="性善", role="核心", reason="直接回答")],
+                chapters=[ReportChapter(topic="性善", role="核心", conclusion="直接回答")],
             ),
             research_status="completed",
             generation_mode="full",

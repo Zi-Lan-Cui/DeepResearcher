@@ -7,7 +7,8 @@ from deepresearcher.tools.web.documents import (
     DocumentOutlineItem,
     DocumentReadRange,
     DocumentRef,
-    GrepResult,
+    GrepPatternsResult,
+    GrepSegmentResult,
 )
 from deepresearcher.tools.web.materials.models import SearchResultSet
 from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
@@ -49,17 +50,17 @@ class ResearchMaterialStore(Protocol):
         max_chars: int,
     ) -> list[DocumentReadRange]: ...
 
-    async def grep(
+    async def grep_patterns(
         self,
         document_id: str,
-        query: str,
+        patterns: list[str],
         *,
         context_lines: int,
-        max_matches: int,
+        segments: list[tuple[int, int]],
+        max_matches_per_segment: int,
         max_chars: int,
         max_line_chars: int,
-        offset: int = 0,
-    ) -> GrepResult: ...
+    ) -> GrepPatternsResult: ...
 
     async def close(self) -> None: ...
 
@@ -135,94 +136,133 @@ def read_lines(
     return results
 
 
-def grep_lines(
+def _render_grep_window(
     lines: list[str],
-    query: str,
+    window: tuple[int, int],
+    *,
+    used_chars: int,
+    max_chars: int,
+    line_budget: int,
+) -> DocumentGrepMatch | None:
+    """按剩余页预算渲染单个命中窗口；一行都放不下时返回 None,由调用方停止发页。"""
+
+    start, end = window
+    rendered: list[str] = []
+    window_chars = 0
+    cut_line: int | None = None
+    for line_number in range(start, end + 1):
+        item = _clip_line(
+            f"L{line_number}: {lines[line_number - 1]}",
+            line_budget,
+            _GREP_LINE_OMITTED_TEMPLATE,
+        )
+        separator_chars = 1 if rendered else 0
+        if used_chars + window_chars + separator_chars + len(item) > max_chars:
+            cut_line = line_number
+            break
+        rendered.append(item)
+        window_chars += separator_chars + len(item)
+    if not rendered:
+        return None
+    emitted_line_count = len(rendered)
+    tail_omitted_lines = end - cut_line + 1 if cut_line is not None else 0
+    if tail_omitted_lines:
+        note = _GREP_WINDOW_OMITTED_TEMPLATE.format(
+            lines=tail_omitted_lines, start=cut_line, end=end
+        )
+        if used_chars + window_chars + 1 + len(note) <= max_chars:
+            rendered.append(note)
+            window_chars += 1 + len(note)
+    return DocumentGrepMatch(
+        hit_patterns=[],
+        start_line=start,
+        end_line=start + emitted_line_count - 1,
+        content="\n".join(rendered),
+        tail_omitted_lines=tail_omitted_lines,
+    )
+
+
+def grep_patterns(
+    lines: list[str],
+    patterns: list[str],
     *,
     context_lines: int,
-    max_matches: int,
+    segments: list[tuple[int, int]],
+    max_matches_per_segment: int,
     max_chars: int,
     max_line_chars: int,
-    offset: int = 0,
-) -> GrepResult:
-    """对已加载文本执行单查询词的字面检索，返回截断可见、可续读的窗口结果。
+) -> GrepPatternsResult:
+    """多关键词字面检索：命中按文档行号归并成一条流，segments 从流上切窗。
 
-    一次调用只查一个词；批量查多个词由 agent 在同一回合并行发起多个
-    GrepDocument 实现，该工具非 serial，因此不存在跨查询词相互占用窗口的情况，
-    offset 的含义就是跳过该词去重后的前 N 个窗口。
-
-    预算分三层上限：整页字符上限 max_chars、每页窗口数上限 max_matches、单行字符
-    上限 max_line_chars。超长行裁切并标注剩余字符数；窗口因页预算被裁尾时，
-    裁掉的行数记在 tail_omitted_lines 并在正文容得下时补一行标注——
-    被裁的尾部不属于下一页，offset 按窗口整体推进，补读走 ReadDocument 按行号。
-    单行先裁切再计入预算，每页至少发出一个窗口首行，翻页必定前进。
+    每词命中窗口各自去重后按文档行号合并为一条流，offset 恒指归并流位置；
+    不同词命中同一窗口时合并展示、hit_patterns 并列。字符预算在整份结果内共享，
+    预算耗尽后其馀段 returned=0 并置 has_more；单段窗口数受 max_matches_per_segment
+    钳制。超长行裁切并标注；窗口尾部被裁记入 tail_omitted_lines，被裁行不属于
+    后段，补读走 ReadDocument 按行号。空词与重复词跳过。
     """
 
-    needle = query.strip().casefold()
-    # 全文扫描得到去重后的候选窗口，按文档行号排序；total_matches 取截断前的该列表总数。
-    windows: list[tuple[int, int]] = []
-    seen: set[tuple[int, int]] = set()
-    if needle:
-        for index, line in enumerate(lines):
-            if needle not in line.casefold():
+    folded_lines = [line.casefold() for line in lines]
+    pattern_totals: dict[str, int] = {}
+    tags_by_window: dict[tuple[int, int], list[str]] = {}
+    for raw_pattern in patterns:
+        label = raw_pattern.strip()
+        needle = label.casefold()
+        if not needle or label in pattern_totals:
+            continue
+        seen: set[tuple[int, int]] = set()
+        for index, folded_line in enumerate(folded_lines):
+            if needle not in folded_line:
                 continue
             window = (
                 max(1, index + 1 - context_lines),
                 min(len(lines), index + 1 + context_lines),
             )
-            if window in seen:
-                continue
             seen.add(window)
-            windows.append(window)
+            tags_by_window.setdefault(window, []).append(label)
+        pattern_totals[label] = len(seen)
 
+    ordered_windows = sorted(tags_by_window)
     line_budget = min(max_line_chars, max_chars)
-    matches: list[DocumentGrepMatch] = []
     used_chars = 0
-    for start, end in windows[offset : offset + max_matches]:
-        rendered: list[str] = []
-        window_chars = 0
-        cut_line: int | None = None
-        for line_number in range(start, end + 1):
-            item = _clip_line(
-                f"L{line_number}: {lines[line_number - 1]}",
-                line_budget,
-                _GREP_LINE_OMITTED_TEMPLATE,
+    attempted: set[int] = set()
+    covered: set[int] = set()
+    attempted_end = 0
+    segment_results: list[GrepSegmentResult] = []
+    for offset, requested_count in segments:
+        cap = min(requested_count, max_matches_per_segment)
+        segment_end = min(offset + cap, len(ordered_windows))
+        attempted.update(range(offset, segment_end))
+        attempted_end = max(attempted_end, segment_end)
+        matches: list[DocumentGrepMatch] = []
+        for position in range(offset, segment_end):
+            window = ordered_windows[position]
+            rendered = _render_grep_window(
+                lines,
+                window,
+                used_chars=used_chars,
+                max_chars=max_chars,
+                line_budget=line_budget,
             )
-            separator_chars = 1 if rendered else 0
-            if used_chars + window_chars + separator_chars + len(item) > max_chars:
-                cut_line = line_number
+            if rendered is None:
                 break
-            rendered.append(item)
-            window_chars += separator_chars + len(item)
-        if not rendered:
-            break
-        emitted_line_count = len(rendered)
-        tail_omitted_lines = end - cut_line + 1 if cut_line is not None else 0
-        if tail_omitted_lines:
-            note = _GREP_WINDOW_OMITTED_TEMPLATE.format(
-                lines=tail_omitted_lines, start=cut_line, end=end
-            )
-            if used_chars + window_chars + 1 + len(note) <= max_chars:
-                rendered.append(note)
-                window_chars += 1 + len(note)
-        content = "\n".join(rendered)
-        matches.append(
-            DocumentGrepMatch(
-                query=query,
-                start_line=start,
-                end_line=start + emitted_line_count - 1,
-                content=content,
-                tail_omitted_lines=tail_omitted_lines,
+            rendered.hit_patterns = tags_by_window[window]
+            matches.append(rendered)
+            used_chars += len(rendered.content)
+            covered.add(position)
+        segment_results.append(
+            GrepSegmentResult(
+                offset=offset,
+                requested=requested_count,
+                returned=len(matches),
+                matches=matches,
             )
         )
-        used_chars += len(content)
-
-    consumed = offset + len(matches)
-    has_more = consumed < len(windows)
-    return GrepResult(
-        query=query,
-        matches=matches,
-        total_matches=len(windows),
+    # has_more 只报系统截断：预算没装下的被尝试窗口，或流尾超出本次尝试范围。
+    # 模型自选跳过的区间不算截断——它们不是"下一页"，是要就再发一段的显式选择。
+    has_more = bool(attempted - covered) or attempted_end < len(ordered_windows)
+    return GrepPatternsResult(
+        pattern_totals=pattern_totals,
+        total_windows=len(ordered_windows),
+        segments=segment_results,
         has_more=has_more,
-        next_offset=consumed if has_more else 0,
     )

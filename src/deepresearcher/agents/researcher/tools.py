@@ -22,9 +22,10 @@ from deepresearcher.agents.researcher.state import (
 from deepresearcher.agents.working_set import release_working_set, restore_working_set
 from deepresearcher.schemas import (
     AddEvidence,
-    DocumentLineRange,
+    DocumentReadTarget,
     EvidenceSubmission,
     GrepDocument,
+    GrepWindowSegment,
     ListSearchResults,
     ReadDocument,
     ReadSources,
@@ -141,33 +142,43 @@ def build_researcher_tools() -> list[BaseTool]:
     @tool("GrepDocument", args_schema=GrepDocument)
     async def grep_document(
         document_id: str,
-        query: str,
+        patterns: list[str],
+        segments: list[GrepWindowSegment],
         context_lines: int,
-        offset: int,
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
-        """在当前方向已登记的长文中定位单个关键词；多词请并发起多个调用，翻页用 offset。"""
+        """在当前方向已登记的长文中定位多个关键词；命中按文档行号归并，segments 一次取多段。"""
         ctx = runtime.context
         result = await services.grep_document(
-            ctx.deps, ctx.loop_state, document_id, query, context_lines, offset, reason
+            ctx.deps,
+            ctx.loop_state,
+            document_id,
+            list(patterns),
+            [(item.offset, item.count) for item in segments],
+            context_lines,
+            reason,
         )
         return format_tool_receipt(result)
 
     @tool("ReadDocument", args_schema=ReadDocument)
     async def read_document(
-        document_id: str,
-        ranges: list[DocumentLineRange],
+        documents: list[DocumentReadTarget],
         reason: str,
         runtime: ToolRuntime[ResearcherLoopContext],
     ) -> str:
-        """按行号批量读取当前方向已经登记的文档窗口。"""
+        """按行号跨多份已登记文档批量读取窗口；读多份文档在 documents 里列全，程序逐文档展开。"""
         ctx = runtime.context
-        result = await services.read_document(
+        result = await services.read_documents(
             ctx.deps,
             ctx.loop_state,
-            document_id,
-            [(item.start_line, item.end_line) for item in ranges],
+            [
+                (
+                    item.document_id,
+                    [(window.start_line, window.end_line) for window in item.ranges],
+                )
+                for item in documents
+            ],
             reason,
         )
         return format_tool_receipt(result)

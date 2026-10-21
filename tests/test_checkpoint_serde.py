@@ -66,7 +66,7 @@ def test_scalar_channels_roundtrip_with_full_fidelity():
     serde = build_checkpointer_serde()
     samples = [
         RunStatus(phase="failed", terminal_reason="node_failed"),
-        SupervisorProgress(status="incomplete", coverage_gaps=["缺来源"], is_sufficient=False),
+        SupervisorProgress(status="incomplete", coverage_gaps=["缺来源"]),
         WriterProgress(status="exhausted", attempts=2),
         ReviewProgress(status="rejected", feedback="需要补来源"),
     ]

@@ -28,9 +28,8 @@ from deepresearcher.vocab import GenerationMode, ResearchStatus, WriterAnswerMod
 class StopReason(StrEnum):
     """Supervisor 研究停止原因的唯一词汇来源。"""
 
-    SUFFICIENT = "supervisor_sufficient"
-    SUBMITTED_WITH_GAPS = "supervisor_submitted_with_gaps"
-    ROUND_BUDGET_EXHAUSTED = "round_budget_exhausted"
+    COMPLETED = "supervisor_completed"
+    ENDED_WITHOUT_COMPLETION = "ended_without_completion"
     GLOBAL_ROUND_BUDGET_EXHAUSTED = "global_round_budget_exhausted"
     MODEL_CALL_LIMIT_EXCEEDED = "supervisor_model_call_limit_exceeded"
     PROVIDER_EXHAUSTED = "supervisor_provider_exhausted"
@@ -38,12 +37,11 @@ class StopReason(StrEnum):
 
     @property
     def allows_partial_report(self) -> bool:
-        """达到材料安全线后，允许以部分报告兜底进入 Writer 的终止原因。"""
+        """研究未走到显式收尾时，允许按最新工作台兜底进入 Writer 的终止原因。"""
         return self in {
-            StopReason.ROUND_BUDGET_EXHAUSTED,
+            StopReason.ENDED_WITHOUT_COMPLETION,
             StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
             StopReason.MODEL_CALL_LIMIT_EXCEEDED,
-            StopReason.SUBMITTED_WITH_GAPS,
         }
 
     @property
@@ -63,23 +61,21 @@ class StopReason(StrEnum):
         新增写点只需选合适的 rank,与书写顺序无关。
 
         分级理由:
-        - 轮次预算 ROUND < GLOBAL:含义是没做完但轮次用尽,低于模型调用上限,
+        - ENDED_WITHOUT_COMPLETION 是最低级:它只是"未收尾即离场"的兜底记录,
           后者是在轮次用尽之前就被强制终止。
-        - MODEL_CALL_LIMIT 表示没有机会收尾。
+        - GLOBAL 含义是轮次用尽,低于模型调用上限;MODEL_CALL_LIMIT 表示没有机会收尾。
         - PROVIDER_EXHAUSTED 排在调用上限与异常之间:模型确实显式收尾,
           但动因是账户级系统性不可用;同一轮若再出现真实异常,异常优先。
         - AGENT_FAILED 高于以上各项:基础设施失败需要显式暴露。
-        - 两个模型显式决定 SUBMITTED_WITH_GAPS < SUFFICIENT 排最高:
-          模型自己决定收尾,优先于基础设施信号;无缺口优先于带缺口。
+        - COMPLETED 排最高:模型显式决定收尾,优先于基础设施信号。
         """
         return _STOP_REASON_RANKS.get(self, 0)
 
 
 _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
     # tests/test_supervisor.py 校验每个 StopReason 都登记了描述:缺描述会静默落到语义相反的兜底句。
-    StopReason.SUFFICIENT: "Supervisor 确认现有材料足以形成完整研究报告。",
-    StopReason.SUBMITTED_WITH_GAPS: "Supervisor 已提交带明确缺口的最新研究综合稿。",
-    StopReason.ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽。",
+    StopReason.COMPLETED: "Supervisor 完成研究收束并冻结综合稿；不足是否随稿披露由各板块的 disclose 决定。",
+    StopReason.ENDED_WITHOUT_COMPLETION: "模型结束研究而未显式收尾，按最新工作台交付部分报告。",
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: "研究轮次预算已耗尽，Supervisor 尚未确认材料足以成文。",
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: "Supervisor 单次运行的模型调用预算已耗尽（轮内工具调用超过天花板）。",
     StopReason.PROVIDER_EXHAUSTED: "搜索供应商已被认证账户级不可用（额度耗尽或密钥无效），无法再获取任何新 Evidence，Supervisor 无证据收束本轮研究。",
@@ -89,13 +85,12 @@ _STOP_REASON_DESCRIPTIONS: dict[StopReason, str] = {
 
 # 优先级数字，见 StopReason.rank 的 docstring；间隔取 5，便于将来插入新级别。
 _STOP_REASON_RANKS: dict[StopReason, int] = {
-    StopReason.ROUND_BUDGET_EXHAUSTED: 20,
+    StopReason.ENDED_WITHOUT_COMPLETION: 20,
     StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED: 25,
     StopReason.MODEL_CALL_LIMIT_EXCEEDED: 30,
     StopReason.PROVIDER_EXHAUSTED: 40,
     StopReason.AGENT_FAILED: 45,
-    StopReason.SUBMITTED_WITH_GAPS: 50,
-    StopReason.SUFFICIENT: 60,
+    StopReason.COMPLETED: 50,
 }
 
 
@@ -234,9 +229,9 @@ class RunStatus(BaseModel):
 class SupervisorProgress(BaseModel):
     status: ResearchStatus = "not_started"
     current_round: int = Field(default=0, ge=0)
+    # 方向结果汇总的观测缺口,供中断诊断;与板块 gaps 台账分属两路。
     coverage_gaps: list[str] = Field(default_factory=list)
     generation_mode: GenerationMode = "not_ready"
-    is_sufficient: bool = False
 
 
 class WriterProgress(BaseModel):

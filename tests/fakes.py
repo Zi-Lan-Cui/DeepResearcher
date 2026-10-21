@@ -100,10 +100,9 @@ def make_citation(source_id, claim="事实", quote="原文", url=""):
 
 REPORT_BRIEF = {
     "answer_goal": "回答测试问题",
-    "covered_topics": [
-        {"topic": "核心结论", "role": "主线", "reason": "直接回答问题", "required": True}
+    "chapters": [
+        {"topic": "核心结论", "role": "主线", "conclusion": "直接回答问题", "required": True}
     ],
-    "required_points": ["给出有来源的结论"],
     "caveats": [],
 }
 

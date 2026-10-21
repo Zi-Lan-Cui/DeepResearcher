@@ -39,7 +39,7 @@ class DocumentReadRange(BaseModel):
 
 
 class DocumentGrepMatch(BaseModel):
-    query: str
+    hit_patterns: list[str]  # 命中该窗口的词；跨词同窗时并存
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
     content: str
@@ -47,15 +47,21 @@ class DocumentGrepMatch(BaseModel):
     tail_omitted_lines: int = Field(default=0, ge=0)
 
 
-class GrepResult(BaseModel):
-    """单个查询词一次 grep 的结果：命中窗口，外加说明截断程度与续读方式的三个字段。
+class GrepSegmentResult(BaseModel):
+    offset: int = Field(ge=0)
+    requested: int = Field(ge=1)
+    returned: int = Field(ge=0)
+    matches: list[DocumentGrepMatch] = Field(default_factory=list)
 
-    截断、翻页与行级裁切的完整行为契约见实现所在 materials.store.grep_lines；
+
+class GrepPatternsResult(BaseModel):
+    """多关键词一次检索的归并结果：offset 恒指归并命中流中的窗口位置。
+
+    截断、翻页与行级裁切的完整行为契约见实现所在 materials.store.grep_patterns；
     本处只描述字段级语义。
     """
 
-    query: str
-    matches: list[DocumentGrepMatch] = Field(default_factory=list)
-    total_matches: int = Field(ge=0)  # 截断之前，去重后该词在全文的命中窗口总数
-    has_more: bool  # 受命中数上限或字符预算影响，仍有未返回的后续窗口
-    next_offset: int = Field(ge=0)  # 续读后续窗口时传入的 offset；无后续窗口时为 0
+    pattern_totals: dict[str, int]  # 每词单独去重后的命中窗口总数
+    total_windows: int = Field(ge=0)  # 跨词去重合并后的流长度
+    segments: list[GrepSegmentResult] = Field(default_factory=list)
+    has_more: bool  # 预算未容下的被试窗口仍存在，或流尾超出本次尝试范围；模型自选跳过的段不算

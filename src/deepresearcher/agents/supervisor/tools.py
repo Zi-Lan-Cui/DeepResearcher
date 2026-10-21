@@ -140,7 +140,6 @@ def build_supervisor_tools() -> list[BaseTool]:
             tool_name="ResearchComplete",
             channel_update={
                 "completed_synthesis": ctx.loop_state.completed_synthesis,
-                "sufficient": ctx.loop_state.sufficient,
                 "stop_reason": ctx.loop_state.stop_reason,
             },
         )
@@ -150,7 +149,11 @@ def build_supervisor_tools() -> list[BaseTool]:
         changes: list[Any],
         runtime: ToolRuntime[SupervisorLoopContext],
     ) -> Command:
-        """工作台唯一写入口：提交带 op 判别字段的操作列表，每个操作整值替换其目标段。"""
+        """工作台唯一写入口：提交带 op 判别字段的操作列表，每个操作整值替换其目标段。
+
+        台账是活的：方向的缺口被补齐、冲突被裁定、或某条 disclose 判定随新证据改变时，
+        重提对应 aspect 改写 gaps/conflicts；同一缺陷只登记在它所属的一个板块，不在多处复制。
+        """
         ctx = runtime.context
         result = services.apply_workbench_changes(ctx.loop_state, changes)
         delta: dict[str, Any] = {}

@@ -32,6 +32,7 @@ from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
     WORKBENCH_INTENT_ADAPTER,
+    AspectIssue,
     DirectionStopReason,
     PendingDirection,
     ResearchAgentResult,
@@ -58,7 +59,7 @@ def test_workbench_arguments_leave_selected_derivation_to_program():
                         "topic": "核心",
                         "role": "主线",
                         "status": "covered",
-                        "summary": "已有依据",
+                        "conclusion": "已有依据",
                         "evidence_ids": ["e1"],
                     },
                 },
@@ -134,8 +135,10 @@ def test_aspect_grounding_requires_evidence_or_explicit_gap() -> None:
     with pytest.raises(ValueError, match="covered 研究方面必须绑定"):
         ResearchAspect(**base, status="covered", evidence_ids=[])
     with pytest.raises(ValueError, match="uncovered 研究方面不能绑定"):
-        ResearchAspect(**base, status="uncovered", evidence_ids=["e1"], remaining_gap="缺来源")
-    with pytest.raises(ValueError, match="必须明确 remaining_gap"):
+        ResearchAspect(
+            **base, status="uncovered", evidence_ids=["e1"], gaps=[AspectIssue(text="缺来源")]
+        )
+    with pytest.raises(ValueError, match="必须登记至少一条 gap"):
         ResearchAspect(**base, status="partial", evidence_ids=["e1"])
 
 
@@ -320,9 +323,8 @@ class SupervisorLLM:
                                             "role": "主线",
                                             "required": True,
                                             "status": "covered",
-                                            "summary": "直接回答问题",
+                                            "conclusion": "直接回答问题",
                                             "evidence_ids": evidence_ids,
-                                            "remaining_gap": "",
                                         },
                                     },
                                 ]
@@ -399,7 +401,7 @@ def test_supervisor_dispatches_independent_research_agents_concurrently():
 
     assert len(result["task_results"]) == 2
     assert len(result["evidences"]) == 2
-    assert result["supervisor"].is_sufficient is True
+    assert result["supervisor"].status == "completed"
     assert result["supervisor_next"] == "writer"
     context = [str(message.content) for message in result["supervisor_messages"]]
     assert any("研究委托" in message for message in context)
@@ -508,7 +510,7 @@ def test_supervisor_reports_model_ceiling_when_loops_on_same_topic():
 
     # 重复方向每次都真实执行,说明派发层没有去重;未判充分,走部分报告。
     assert len(result["task_results"]) > 1
-    assert result["supervisor"].is_sufficient is False
+    assert result["supervisor"].status == "incomplete"
     # 终态归属真正的终止者：模型调用天花板压过轮次预算。
     assert "模型调用预算已耗尽" in result["writer"].feedback
 
@@ -556,7 +558,7 @@ def test_supervisor_rejects_completion_without_evidence():
     # 拒绝不再是终态:回执留环,模型每一回合都能重提,直到真实终止者出现。
     assert len(complete_receipts) >= 2
     assert '"status": "rejected"' in str(complete_receipts[0].content)
-    assert result["supervisor"].is_sufficient is False
+    assert result["supervisor"].status == "incomplete"
     assert result["supervisor_next"] == "render_final_report"
     # 终态归属模型调用天花板，而非"ResearchComplete 拒绝"这类协议措辞。
     assert "模型调用预算已耗尽" in result["writer"].feedback
@@ -622,7 +624,6 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                                         "op": "framing",
                                         "framing": {
                                             "thesis": "新增方向已覆盖核心结论。",
-                                            "open_gaps": [],
                                         },
                                     },
                                     {
@@ -633,9 +634,8 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                                             "role": "主线",
                                             "required": True,
                                             "status": "covered",
-                                            "summary": "直接回答问题",
+                                            "conclusion": "直接回答问题",
                                             "evidence_ids": evidence_ids[:1],
-                                            "remaining_gap": "",
                                         },
                                     },
                                 ]
@@ -679,12 +679,10 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
                             "role": "主线",
                             "required": True,
                             "status": "uncovered",
-                            "remaining_gap": "尚未研究",
+                            "gaps": [{"text": "尚未研究", "disclose": True}],
                         }
                     ],
                     "selected_evidence_ids": [],
-                    "open_gaps": ["尚未研究"],
-                    "conflicts": [],
                     "next_actions": ["新增证据方向"],
                     "decision_rationale": "等待方向结果。",
                 },
@@ -701,7 +699,7 @@ def test_supervisor_stale_complete_rejection_recovers_inside_loop():
     assert '"status": "rejected"' in str(complete_receipts[0].content)
     assert '"status": "accepted"' in str(complete_receipts[1].content)
     assert result["working_set_revision"] == 1
-    assert result["supervisor"].is_sufficient is True
+    assert result["supervisor"].status == "completed"
     assert result["supervisor"].generation_mode == "full"
     assert result["supervisor_next"] == "writer"
     assert result["writer_directive"].report_brief is not None
@@ -849,9 +847,8 @@ def test_workbench_rejects_evidence_outside_active_working_set():
                                             "role": "主线",
                                             "required": True,
                                             "status": "covered",
-                                            "summary": "仅有已释放的依据。",
+                                            "conclusion": "仅有已释放的依据。",
                                             "evidence_ids": evidence_ids[:1],
-                                            "remaining_gap": "",
                                         },
                                     },
                                 ]
@@ -934,7 +931,7 @@ def test_supervisor_allows_partial_report_after_research_budget_exhaustion():
         supervisor.run({"query": "研究问题", "clarified_query": "研究问题", "evidences": []})
     )
 
-    assert result["supervisor"].is_sufficient is False
+    assert result["supervisor"].status == "incomplete"
     assert result["supervisor"].status == "incomplete"
     assert result["supervisor"].generation_mode == "partial"
     assert result["supervisor_next"] == "writer"
@@ -968,14 +965,12 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
                     "role": "主线",
                     "required": True,
                     "status": "partial",
-                    "summary": "现有证据可部分回答。",
+                    "conclusion": "现有证据可部分回答。",
                     "evidence_ids": [item.evidence_id],
-                    "remaining_gap": "尚有缺口。",
+                    "gaps": [{"text": "尚有缺口。", "disclose": True}],
                 }
             ],
             "selected_evidence_ids": [item.evidence_id],
-            "open_gaps": ["尚有缺口"],
-            "conflicts": [],
             "next_actions": [],
             "decision_rationale": "轮次触顶前的最新状态。",
         },
@@ -985,7 +980,7 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
         current_round=0,
         active_evidence_limit=30,
     )
-    loop_state.stop_reason = StopReason.ROUND_BUDGET_EXHAUSTED
+    loop_state.stop_reason = StopReason.ENDED_WITHOUT_COMPLETION
 
     result = services.compose_final_update(state, loop_state, supervisor.config)
 
@@ -994,7 +989,7 @@ def test_supervisor_freezes_latest_fresh_synthesis_when_round_limit_is_reached()
     assert result.research_synthesis is not None
     assert result.research_synthesis.revision == 1
     assert result.writer_directive is not None
-    assert result.writer_directive.report_brief.covered_topics[0].evidence_ids == [item.evidence_id]
+    assert result.writer_directive.report_brief.chapters[0].evidence_ids == [item.evidence_id]
     assert result.writer_directive.evidence_ids == [item.evidence_id]
 
 
@@ -1043,7 +1038,7 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
         )
     )
 
-    assert result["supervisor"].is_sufficient is True
+    assert result["supervisor"].status == "completed"
     assert result["supervisor_next"] == "writer"
     assert len(result["task_results"]) == 1
     assert result["task_results"][0].question == "补充方向"
@@ -1099,13 +1094,11 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
                             "role": "主线",
                             "required": True,
                             "status": "covered",
-                            "summary": "已有事实",
+                            "conclusion": "已有事实",
                             "evidence_ids": ["e1"],
                         }
                     ],
                     "selected_evidence_ids": ["e1"],
-                    "open_gaps": [],
-                    "conflicts": [],
                     "next_actions": [],
                     "decision_rationale": "只需根据审阅意见改写。",
                 },
@@ -1119,7 +1112,7 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
         )
     )
 
-    assert result["supervisor"].is_sufficient is True
+    assert result["supervisor"].status == "completed"
     assert result["supervisor_next"] == "writer"
     assert result["task_results"] == []
     assert "审阅回流" in "\n".join(
@@ -1243,9 +1236,8 @@ class _DelegateUntilBlockedLLM:
                                         "role": "主线",
                                         "required": True,
                                         "status": "covered",
-                                        "summary": "已有直接事实",
+                                        "conclusion": "已有直接事实",
                                         "evidence_ids": evidence_ids,
-                                        "remaining_gap": "",
                                     },
                                 },
                             ]
@@ -1295,7 +1287,7 @@ def test_supervisor_round_limit_blocks_delegation_and_model_can_finish():
     assert "round_budget_exhausted" in "\n".join(
         str(message.content) for message in result["supervisor_messages"]
     )
-    assert result["supervisor"].is_sufficient is True
+    assert result["supervisor"].status == "completed"
     assert result["supervisor_next"] == "writer"
 
 
@@ -1355,19 +1347,21 @@ def test_stop_reason_vocabulary_single_source():
     for reason in StopReason:
         assert StopReason(reason.value) is reason
         assert isinstance(reason, str)  # terminal_reason/JSON 等 str 消费点兼容
-    # 描述表全覆盖:漏登记的成员会落到兜底句,而兜底句对 SUFFICIENT 语义相反。
+    # 描述表全覆盖:漏登记的成员会落到兜底句,而兜底句对显式收尾语义相反。
     assert set(_STOP_REASON_DESCRIPTIONS) == set(StopReason)
 
     # 校验 allows_partial_report 集合与 compose_final_update 里写明的清单一致:
     assert {r for r in StopReason if r.allows_partial_report} == {
-        StopReason.ROUND_BUDGET_EXHAUSTED,
+        StopReason.ENDED_WITHOUT_COMPLETION,
         StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED,
         StopReason.MODEL_CALL_LIMIT_EXCEEDED,
-        StopReason.SUBMITTED_WITH_GAPS,
     }
     # 描述文案逐字校验;改文案须同步这里:
-    assert StopReason.ROUND_BUDGET_EXHAUSTED.description == "研究轮次预算已耗尽。"
-    assert StopReason.SUFFICIENT.description == "Supervisor 确认现有材料足以形成完整研究报告。"
+    assert (
+        StopReason.ENDED_WITHOUT_COMPLETION.description
+        == "模型结束研究而未显式收尾，按最新工作台交付部分报告。"
+    )
+    assert StopReason.COMPLETED.description.startswith("Supervisor 完成研究收束")
 
 
 def test_stop_reason_rank_is_a_declared_total_order():
@@ -1377,13 +1371,12 @@ def test_stop_reason_rank_is_a_declared_total_order():
     ranks = {reason: reason.rank for reason in StopReason}
     assert len(set(ranks.values())) == len(ranks)  # 无并列，全序确定
     # 现存最弱信号是轮次预算,天花板必须强于它。
-    assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.ROUND_BUDGET_EXHAUSTED.rank
-    assert min(ranks.values()) == StopReason.ROUND_BUDGET_EXHAUSTED.rank
+    assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.ENDED_WITHOUT_COMPLETION.rank
+    assert min(ranks.values()) == StopReason.ENDED_WITHOUT_COMPLETION.rank
     # 模型的显式收尾决定是最高终态，压过基础设施失败。
-    assert StopReason.SUFFICIENT.rank > StopReason.AGENT_FAILED.rank
-    assert StopReason.SUBMITTED_WITH_GAPS.rank > StopReason.AGENT_FAILED.rank
+    assert StopReason.COMPLETED.rank > StopReason.AGENT_FAILED.rank
     # 全局轮次预算强于单轮，且都低于天花板命中。
-    assert StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank > StopReason.ROUND_BUDGET_EXHAUSTED.rank
+    assert StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank > StopReason.ENDED_WITHOUT_COMPLETION.rank
     assert StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank > StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED.rank
     # 账户级熔断认证介于天花板与真实异常之间。
     assert StopReason.PROVIDER_EXHAUSTED.rank > StopReason.MODEL_CALL_LIMIT_EXCEEDED.rank
@@ -1400,20 +1393,20 @@ def test_loop_state_set_stop_reason_adopts_by_rank():
     assert loop_state.current_round == 4
 
     assert loop_state.stop_reason is None
-    loop_state.set_stop_reason(StopReason.ROUND_BUDGET_EXHAUSTED)
-    assert loop_state.stop_reason == StopReason.ROUND_BUDGET_EXHAUSTED
+    loop_state.set_stop_reason(StopReason.ENDED_WITHOUT_COMPLETION)
+    assert loop_state.stop_reason == StopReason.ENDED_WITHOUT_COMPLETION
 
     # 先记录轮次预算、随后命中天花板 → 应升级为 MODEL_CALL_LIMIT。
     loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
     assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
     # 更弱的信号不得回退覆盖已采纳的更强终止原因。
-    loop_state.set_stop_reason(StopReason.ROUND_BUDGET_EXHAUSTED)
+    loop_state.set_stop_reason(StopReason.ENDED_WITHOUT_COMPLETION)
     assert loop_state.stop_reason == StopReason.MODEL_CALL_LIMIT_EXCEEDED
 
     # 模型的显式收尾决定压过一切基础设施信号。
-    loop_state.set_stop_reason(StopReason.SUFFICIENT)
-    assert loop_state.stop_reason == StopReason.SUFFICIENT
+    loop_state.set_stop_reason(StopReason.COMPLETED)
+    assert loop_state.stop_reason == StopReason.COMPLETED
 
 
 class _RecordingDelegateAgent:
@@ -2177,9 +2170,8 @@ def test_workbench_plan_roundtrip_and_aspect_lifecycle():
                     "topic": "核心",
                     "role": "主线",
                     "status": "covered",
-                    "summary": "s",
+                    "conclusion": "s",
                     "evidence_ids": ["e1"],
-                    "remaining_gap": "",
                 },
             },
         ],
@@ -2231,9 +2223,8 @@ def test_synthesis_draft_is_free_form_and_acceptance_deferred_to_freeze():
                     "topic": "核心",
                     "role": "主线",
                     "status": "covered",
-                    "summary": "s",
+                    "conclusion": "s",
                     "evidence_ids": ["e1"],
-                    "remaining_gap": "",
                 },
             }
         ],
@@ -2268,7 +2259,7 @@ def test_synthesis_draft_is_free_form_and_acceptance_deferred_to_freeze():
         loop_state,
         [
             {"op": "remove_aspect", "aspect_id": "core"},
-            {"op": "framing", "framing": {"open_gaps": [], "conflicts": []}},
+            {"op": "framing", "framing": {}},
         ],
     )
     assert cleared["status"] == "applied"  # 三件非空,稿子还在但再次过不了验收
@@ -2360,9 +2351,8 @@ def test_workbench_batch_resolves_cross_op_dependencies_by_final_state():
                     "topic": "核心",
                     "role": "主线",
                     "status": "covered",
-                    "summary": "s",
+                    "conclusion": "s",
                     "evidence_ids": ["e1"],
-                    "remaining_gap": "",
                 },
             },
         ],
@@ -2380,9 +2370,8 @@ def test_workbench_batch_resolves_cross_op_dependencies_by_final_state():
                     "topic": "核心",
                     "role": "主线",
                     "status": "covered",
-                    "summary": "补回 e2 后同批绑定",
+                    "conclusion": "补回 e2 后同批绑定",
                     "evidence_ids": ["e1", "e2"],
-                    "remaining_gap": "",
                 },
             },
         ],
@@ -2402,9 +2391,8 @@ def test_workbench_batch_resolves_cross_op_dependencies_by_final_state():
                     "topic": "核心",
                     "role": "主线",
                     "status": "covered",
-                    "summary": "删后重挂",
+                    "conclusion": "删后重挂",
                     "evidence_ids": ["e1"],
-                    "remaining_gap": "",
                 },
             },
         ],
@@ -2412,7 +2400,7 @@ def test_workbench_batch_resolves_cross_op_dependencies_by_final_state():
     assert churn["status"] == "applied"
     aspects = loop_state.research_synthesis.aspects
     assert [aspect.aspect_id for aspect in aspects] == ["core"]
-    assert aspects[0].summary == "删后重挂"
+    assert aspects[0].conclusion == "删后重挂"
 
 
 def test_workbench_acknowledge_restamps_without_editing_draft():
@@ -2435,9 +2423,8 @@ def test_workbench_acknowledge_restamps_without_editing_draft():
                     "topic": "核心",
                     "role": "主线",
                     "status": "covered",
-                    "summary": "s",
+                    "conclusion": "s",
                     "evidence_ids": ["e1"],
-                    "remaining_gap": "",
                 },
             },
         ],
@@ -2598,7 +2585,10 @@ def test_render_outcome_vocabulary_and_user_text_lookup():
     assert set(_RENDER_OUTCOME_DESCRIPTIONS) == set(RenderOutcome)
 
     # 第一域:StopReason 值必须映射成中文描述,裸词不得直接进用户报告。
-    assert terminal_reason_text(StopReason.ROUND_BUDGET_EXHAUSTED) == "研究轮次预算已耗尽。"
+    assert (
+        terminal_reason_text(StopReason.ENDED_WITHOUT_COMPLETION)
+        == "模型结束研究而未显式收尾，按最新工作台交付部分报告。"
+    )
     # 第二域:RenderOutcome 值。
     assert terminal_reason_text(RenderOutcome.REPORT_RENDERED) == "报告已渲染交付。"
     # 第三域:lifecycle 字符串原样透传(自有包装点)。
@@ -2652,8 +2642,6 @@ def _revise_evidenceless(loop_state: SupervisorLoopState) -> dict:
                 "framing": {
                     "answer_goal": "回答研究问题",
                     "thesis": "搜索供应商账户级不可用,无任何证据。",
-                    "open_gaps": ["无法获取材料。"],
-                    "conflicts": [],
                     "decision_rationale": "执行故障收束。",
                 },
             },
@@ -2665,7 +2653,7 @@ def _revise_evidenceless(loop_state: SupervisorLoopState) -> dict:
                     "role": "主线",
                     "required": True,
                     "status": "uncovered",
-                    "remaining_gap": "无法获取材料。",
+                    "gaps": [{"text": "无法获取材料。", "disclose": True}],
                 },
             },
         ],
@@ -2696,15 +2684,14 @@ def test_absorb_certifies_provider_exhaustion_then_freeze_accepts_evidenceless()
 
     assert receipt["status"] == "accepted"
     assert loop_state.completed_synthesis is not None
-    assert loop_state.sufficient is False
     assert loop_state.stop_reason is StopReason.PROVIDER_EXHAUSTED
 
 
 def test_compose_floor_uses_certified_execution_fault_not_round_budget():
-    """默认兜底按实际原因记录:熔断认证后记 PROVIDER_EXHAUSTED,未认证仍记 ROUND_BUDGET_EXHAUSTED。"""
+    """默认兜底按实际原因记录:熔断认证后记 PROVIDER_EXHAUSTED,未认证仍记 ENDED_WITHOUT_COMPLETION。"""
     unproven = _blank_loop_state()
     services.compose_final_update(_blank_state(), unproven, AgentConfig())
-    assert unproven.stop_reason is StopReason.ROUND_BUDGET_EXHAUSTED
+    assert unproven.stop_reason is StopReason.ENDED_WITHOUT_COMPLETION
 
     certified = _blank_loop_state()
     certified.absorb(_exhausted_direction_execution())
@@ -2805,7 +2792,7 @@ def test_loop_state_round_trips_through_channels():
             source_refs=["https://a"],
         )
     )
-    source.set_stop_reason(StopReason.SUFFICIENT)
+    source.set_stop_reason(StopReason.COMPLETED)
 
     channels = source.initial_channel_state()
     # 入口 input 在生产里经 langgraph 施加通道 reducer;测试如实模拟这一步。
@@ -2890,3 +2877,84 @@ def test_rebuild_middleware_discards_uncommitted_memory():
     asyncio.run(LoopStateRebuildMiddleware().abefore_model(committed_channels, _Runtime(context)))
     assert context.loop_state.provider_exhausted is False
     assert context.loop_state.working_set_revision == 0
+
+
+def test_report_brief_projection_filters_by_disclose():
+    """任务书投影:剥管理字段、空结论以首条 gap 顶上、caveats 只收 disclose=true 并按板块归位。"""
+    synthesis = ResearchSynthesis(
+        revision=1,
+        based_on_working_set_revision=0,
+        answer_goal="目标",
+        thesis="全文主张。",
+        aspects=[
+            ResearchAspect(
+                aspect_id="a1",
+                topic="章一",
+                role="主线",
+                required=True,
+                status="covered",
+                conclusion="章一结论。",
+                key_points=["要点甲", "要点乙"],
+                evidence_ids=["e1"],
+                gaps=[
+                    AspectIssue(text="原文锚点未补", disclose=False),
+                    AspectIssue(text="关键期数据缺失", disclose=True),
+                ],
+                conflicts=[AspectIssue(text="两来源口径不相容", disclose=True)],
+            ),
+            ResearchAspect(
+                aspect_id="a2",
+                topic="章二",
+                role="边界",
+                required=True,
+                status="uncovered",
+                gaps=[AspectIssue(text="尚未研究", disclose=True)],
+            ),
+        ],
+        decision_rationale="依据。",
+    )
+
+    brief = services.report_brief_from_synthesis(synthesis, max_caveats=6)
+
+    assert [chapter.topic for chapter in brief.chapters] == ["章一", "章二"]
+    first = brief.chapters[0]
+    assert first.key_points == ["要点甲", "要点乙"]
+    assert not hasattr(first, "aspect_id") and not hasattr(first, "status")
+    assert brief.chapters[1].conclusion == "尚未研究"
+    assert brief.caveats == [
+        "缺口|板块「章一」:关键期数据缺失",
+        "口径冲突|板块「章一」:两来源口径不相容",
+        "缺口|板块「章二」:尚未研究",
+    ]
+
+
+def test_legacy_research_synthesis_shape_migrates():
+    """旧 checkpoint 形状搬运:summary/remaining_gap 改名落地,全局 gaps/conflicts 折入首块。"""
+    legacy = ResearchSynthesis.model_validate(
+        {
+            "revision": 2,
+            "based_on_working_set_revision": 1,
+            "answer_goal": "旧目标",
+            "thesis": "旧主张",
+            "aspects": [
+                {
+                    "aspect_id": "core",
+                    "topic": "核心",
+                    "role": "主线",
+                    "status": "partial",
+                    "summary": "旧摘要",
+                    "evidence_ids": [],
+                    "remaining_gap": "旧缺口",
+                }
+            ],
+            "open_gaps": ["全局旧缺口"],
+            "conflicts": ["旧冲突"],
+            "decision_rationale": "旧依据",
+            "next_actions": ["早已退役的键"],
+        }
+    )
+
+    aspect = legacy.aspects[0]
+    assert aspect.conclusion == "旧摘要"
+    assert [issue.text for issue in aspect.gaps] == ["旧缺口", "全局旧缺口", "旧冲突"]
+    assert all(issue.disclose for issue in aspect.gaps)

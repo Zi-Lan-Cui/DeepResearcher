@@ -15,11 +15,15 @@ from deepresearcher.agents.researcher.state import (
     ResearcherAgentState,
     ResearcherLoopContext,
     ResearcherLoopState,
+    working_set_snapshot,
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.schemas import (
+    DocumentReadTarget,
+    EvidenceSubmission,
+    GrepDocument,
     ResearchDirectionDecision,
     ResearchDirectionResult,
 )
@@ -491,7 +495,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
 
     grep = asyncio.run(
         services.grep_document(
-            agent._deps, loop_state, document.document_id, "延迟", 1, 0, "定位数据"
+            agent._deps, loop_state, document.document_id, ["延迟"], [(0, 6)], 1, "定位数据"
         )
     )
     read = asyncio.run(
@@ -524,11 +528,107 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
         )
     )
 
-    assert grep["match_count"] == 1
+    assert grep["pattern_totals"] == {"延迟": 1}
+    assert grep["segments"][0]["returned"] == 1
     assert "L2:" in read["ranges"][0]["content"]
     assert len(added["accepted"]) == 1
     assert len(added["rejected"]) == 1
     assert loop_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
+
+
+def test_document_id_sanitizer_strips_injected_control_chars():
+    contaminated = "doc\r-1b41c8c5\n"
+    target = DocumentReadTarget.model_validate(
+        {"document_id": contaminated, "ranges": [{"start_line": 2, "end_line": 3}]}
+    )
+    assert target.document_id == "doc-1b41c8c5"
+    submission = EvidenceSubmission.model_validate(
+        {
+            "document_id": contaminated,
+            "claim": "主张",
+            "quote_start": "开头",
+            "support": "direct",
+            "confidence": 0.9,
+        }
+    )
+    assert submission.document_id == "doc-1b41c8c5"
+    grep_args = GrepDocument.model_validate(
+        {"document_id": contaminated, "patterns": ["词"], "reason": "定位"}
+    )
+    assert grep_args.document_id == "doc-1b41c8c5"
+    assert grep_args.segments[0].offset == 0  # segments 缺省即从流首读取
+
+
+def test_read_documents_batches_several_documents_into_one_call():
+    store = MemoryResearchMaterialStore()
+    first = asyncio.run(
+        store.put(
+            text="引言\n甲文延迟为 12ms。\n结论", title="甲报告", source_url="https://example.com/a"
+        )
+    )
+    second = asyncio.run(
+        store.put(
+            text="引言\n乙文延迟为 34ms。\n结论", title="乙报告", source_url="https://example.com/b"
+        )
+    )
+    agent = ResearchAgent(
+        DirectionLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=8)
+    loop_state.documents[first.document_id] = first
+    loop_state.documents[second.document_id] = second
+
+    batch = asyncio.run(
+        services.read_documents(
+            agent._deps,  # noqa: SLF001
+            loop_state,
+            [(first.document_id, [(2, 2)]), (second.document_id, [(2, 2)])],
+            "跨文档批读",
+        )
+    )
+    assert batch["status"] == "completed"
+    documents = batch["documents"]
+    assert isinstance(documents, list) and len(documents) == 2
+    assert [item["document_id"] for item in documents] == [first.document_id, second.document_id]
+    assert "12ms" in documents[0]["ranges"][0]["content"]
+    assert "34ms" in documents[1]["ranges"][0]["content"]
+
+    mixed_unknown = asyncio.run(
+        services.read_documents(
+            agent._deps,  # noqa: SLF001
+            loop_state,
+            [(first.document_id, [(2, 2)]), ("doc-未登记", [(1, 1)])],
+            "混入未登记文档",
+        )
+    )
+    assert mixed_unknown["status"] == "rejected"
+    assert mixed_unknown["reason"] == "unknown_document_id"
+
+
+def test_working_set_snapshot_carries_direction_and_source_identity():
+    evidence = Evidence(
+        evidence_id="ev-1",
+        subtask_id="task-0001",
+        research_direction="方向甲",
+        claim="主张",
+        quote="原文",
+        source_url="https://example.com/x",
+        source_title="来源页",
+        support="direct",
+        confidence=0.8,
+    )
+    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=8)
+    loop_state.evidences = [evidence]
+    loop_state.active_evidence_ids = {"ev-1"}
+
+    item = working_set_snapshot(loop_state)["active_evidence"][0]
+    assert item["subtask_id"] == "task-0001"
+    assert item["source_title"] == "来源页"
+    assert item["source_domain"] == "example.com"
 
 
 def test_add_evidence_validates_before_ranking_by_confidence():
@@ -1088,7 +1188,9 @@ def test_unknown_id_receipts_carry_available_lists():
     assert added["available_document_ids"] == [document.document_id]
 
     grep = asyncio.run(
-        services.grep_document(agent._deps, loop_state, "doc-hallucinated", "原文", 2, 0, "r")  # noqa: SLF001
+        services.grep_document(
+            agent._deps, loop_state, "doc-hallucinated", ["原文"], [(0, 6)], 2, "r"
+        )  # noqa: SLF001
     )
     assert grep["available_document_ids"] == [document.document_id]
     read = asyncio.run(

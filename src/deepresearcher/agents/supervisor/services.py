@@ -25,9 +25,10 @@ from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     WORKBENCH_INTENT_ADAPTER,
-    CoveredTopic,
+    AspectIssue,
     PendingDirection,
     ReportBrief,
+    ReportChapter,
     ResearchAgentResult,
     ResearchAspect,
     ResearchDirectionResult,
@@ -495,25 +496,12 @@ def _candidate_synthesis(
     payload: dict[str, object] = {
         "answer_goal": current.answer_goal if current else "",
         "thesis": current.thesis if current else "",
-        "open_gaps": list(current.open_gaps) if current else [],
-        "conflicts": list(current.conflicts) if current else [],
         "decision_rationale": current.decision_rationale if current else "",
     }
     payload.update(framing_updates)
 
-    def string_list(value: object) -> list[str]:
-        return [str(item) for item in value] if isinstance(value, list) else []
-
-    final_open_gaps = string_list(payload["open_gaps"])
-    final_conflicts = string_list(payload["conflicts"])
-    everything_empty = (
-        not aspects
-        and not any(
-            payload.get(key) not in (None, "")
-            for key in ("answer_goal", "thesis", "decision_rationale")
-        )
-        and not final_open_gaps
-        and not final_conflicts
+    everything_empty = not aspects and all(
+        payload.get(key) in (None, "") for key in ("answer_goal", "thesis", "decision_rationale")
     )
     if everything_empty:
         return None
@@ -524,8 +512,6 @@ def _candidate_synthesis(
         answer_goal=str(payload["answer_goal"] or ""),
         thesis=str(payload["thesis"] or ""),
         aspects=[aspects[aspect_id] for aspect_id in order],
-        open_gaps=final_open_gaps,
-        conflicts=final_conflicts,
         decision_rationale=str(payload["decision_rationale"] or ""),
     )
 
@@ -811,8 +797,10 @@ def freeze_synthesis(
     桌面(有未处理的方向结果/槽位变化)即拒,提示 UpdateWorkbench 修订或 acknowledge。
     草稿期不校验齐备,这里统一验收:answer_goal/thesis/decision_rationale 三件
     非空且至少一块 aspect——撤脚手架前大楼必须成形。
-    无证据的稿仅在 provider_exhausted 认证后可冻结,终态记 PROVIDER_EXHAUSTED。
-    接受时 completed_synthesis 写通道,SubmittedExitMiddleware 下一跳退出循环。
+    材料是否充分不再由程序自评:收尾即 COMPLETED,不足随各板块的 disclose
+    声明投影进任务书,交读者判别。无证据的稿仅在 provider_exhausted 认证后可
+    冻结,终态记 PROVIDER_EXHAUSTED。接受时 completed_synthesis 写通道,
+    SubmittedExitMiddleware 下一跳退出循环。
     """
     synthesis = loop_state.research_synthesis
     accepted = bool(
@@ -824,18 +812,12 @@ def freeze_synthesis(
     )
     if accepted:
         assert synthesis is not None  # accepted 已包含该条件,供静态类型收窄。
-        loop_state.sufficient = (
-            all(not aspect.required or aspect.status == "covered" for aspect in synthesis.aspects)
-            and not synthesis.open_gaps
-            and not synthesis.conflicts
-        )
         loop_state.completed_synthesis = synthesis
-        if not synthesis.selected_evidence_ids:
-            loop_state.set_stop_reason(StopReason.PROVIDER_EXHAUSTED)
-        else:
-            loop_state.set_stop_reason(
-                StopReason.SUFFICIENT if loop_state.sufficient else StopReason.SUBMITTED_WITH_GAPS
-            )
+        loop_state.set_stop_reason(
+            StopReason.PROVIDER_EXHAUSTED
+            if not synthesis.selected_evidence_ids
+            else StopReason.COMPLETED
+        )
     receipt: dict[str, object] = {
         "status": "accepted" if accepted else "rejected",
         "reason": reason,
@@ -903,18 +885,21 @@ def compose_final_update(
 ) -> SupervisorStateUpdate:
     """把工作状态转为 State 增量与路由决策,是终局合成的唯一出口。
 
-    sufficient 只在这里判定一次,research_status、generation_mode 与
-    WriterDirective 的相关字段都由它派生。
+    explicitly_completed(是否走到模型显式收尾)只在这里判定一次,research_status、
+    generation_mode 与 WriterDirective 的相关字段都由它派生;它是机制事实,
+    不是对材料充分性的自评。
     """
-    # 默认终态只在整轮没有任何信号时补写,不参与 rank 竞争:已采纳的终态即便权威度更低,
-    # 也不该被"预算耗尽"覆盖。账户级熔断已认证时终态记故障本身,不能误标成预算耗尽。
-    if not loop_state.sufficient and loop_state.stop_reason is None:
+    full_synthesis = loop_state.completed_synthesis
+    explicitly_completed = full_synthesis is not None
+    # 默认终态只在整轮没有任何信号且未显式收尾时补写,不参与 rank 竞争:已采纳的
+    # 终态即便权威度更低,也不该被"预算耗尽"覆盖。账户级熔断已认证时终态记故障
+    # 本身,不能误标成预算耗尽。
+    if not explicitly_completed and loop_state.stop_reason is None:
         loop_state.stop_reason = (
             StopReason.PROVIDER_EXHAUSTED
             if loop_state.provider_exhausted
-            else StopReason.ROUND_BUDGET_EXHAUSTED
+            else StopReason.ENDED_WITHOUT_COMPLETION
         )
-    full_synthesis = loop_state.completed_synthesis
     latest_synthesis = loop_state.research_synthesis
     partial = (
         partial_synthesis(loop_state, latest_synthesis)
@@ -923,16 +908,19 @@ def compose_final_update(
     )
     selected_synthesis = full_synthesis or partial
     can_write = selected_synthesis is not None
-    sufficient = loop_state.sufficient
     writer_directive = (
         build_writer_directive(
-            state, loop_state, selected_synthesis, sufficient=sufficient, config=config
+            state,
+            loop_state,
+            selected_synthesis,
+            explicitly_completed=explicitly_completed,
+            config=config,
         )
         if selected_synthesis is not None
         else None
     )
-    research_status = "completed" if sufficient else "incomplete"
-    generation_mode = "full" if sufficient else "partial" if can_write else "not_ready"
+    research_status = "completed" if explicitly_completed else "incomplete"
+    generation_mode = "full" if explicitly_completed else "partial" if can_write else "not_ready"
     can_continue_to_writer = can_write
     # evidences、source_refs、task_results 的 reducer 即 merge_evidences、merge_unique、
     # merge_task_results,都按 id 折重、幂等,所以直接把 SupervisorLoopState 全量副本交给
@@ -954,13 +942,12 @@ def compose_final_update(
             current_round=loop_state.current_round,
             coverage_gaps=loop_state.coverage_gaps,
             generation_mode=generation_mode,
-            is_sufficient=sufficient,
         ),
         writer=WriterProgress(
             status="not_started",
             feedback=(
                 ""
-                if sufficient
+                if explicitly_completed
                 else describe_research_stop(
                     loop_state.stop_reason,
                     loop_state.coverage_gaps,
@@ -1000,7 +987,7 @@ def partial_synthesis(
         "；".join(claims[:_FALLBACK_SUMMARY_CLAIM_LIMIT])
         or "已收集可追溯 Evidence，但未形成模型综合结论。"
     )
-    gap = "研究未达到完整标准；报告只能陈述已验证材料及其适用边界。"
+    gap = "研究未走到模型显式收尾；报告只能陈述已验证材料及其适用边界。"
     return ResearchSynthesis(
         revision=(latest.revision + 1 if latest is not None else 1),
         based_on_working_set_revision=loop_state.working_set_revision,
@@ -1011,14 +998,12 @@ def partial_synthesis(
                 topic="已验证材料",
                 role="保守回应用户问题",
                 status="partial",
-                summary=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
+                conclusion=summary[:STRUCTURED_SUMMARY_HARD_LIMIT_CHARS],
+                gaps=[AspectIssue(text=gap)],
                 evidence_ids=selected_ids[:EVIDENCE_REFERENCES_HARD_LIMIT],
-                remaining_gap=gap,
             )
         ],
         selected_evidence_ids=selected_ids,
-        open_gaps=[gap],
-        conflicts=[],
         decision_rationale="系统在研究结束时基于当前活跃 Evidence 生成最小可交付综合稿。",
     )
 
@@ -1028,13 +1013,13 @@ def build_writer_directive(
     loop_state: SupervisorLoopState,
     synthesis: ResearchSynthesis,
     *,
-    sufficient: bool,
+    explicitly_completed: bool,
     config: AgentConfig,
 ) -> WriterDirective:
     """从冻结综合版本派生 Writer 唯一可见的写作指令。
 
     ReportBrief 在指令内部构造、随指令一起交接,State 顶层不保留平行的第二副本。
-    sufficient 由调用方 compose_final_update 判定一次后传入。
+    explicitly_completed 是"研究是否走到模型显式收尾"的事实,由调用方判定一次后传入。
     """
     report_brief = report_brief_from_synthesis(synthesis, max_caveats=config.report_max_caveats)
     review = section(state, "review", ReviewProgress)
@@ -1050,46 +1035,52 @@ def build_writer_directive(
     )
     evidence_ids = list(
         dict.fromkeys(
-            evidence_id
-            for topic in report_brief.covered_topics
-            for evidence_id in topic.evidence_ids
+            evidence_id for chapter in report_brief.chapters for evidence_id in chapter.evidence_ids
         )
     )
     if not evidence_ids:
-        # 旧 checkpoint 的 CoveredTopic 没有 evidence_ids，保留冻结综合稿的选择集。
+        # 章节卡未绑定任何 evidence_ids 时，保留冻结综合稿的选择集。
         evidence_ids = list(synthesis.selected_evidence_ids)
     return WriterDirective(
         query=str(state.get("clarified_query") or state.get("query") or ""),
         report_brief=report_brief,
-        research_status="completed" if sufficient else "incomplete",
-        generation_mode="full" if sufficient else "partial",
+        research_status="completed" if explicitly_completed else "incomplete",
+        generation_mode="full" if explicitly_completed else "partial",
         evidence_ids=evidence_ids,
-        known_gaps=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[
-            : config.report_max_caveats
-        ],
+        known_gaps=list(report_brief.caveats),
         revision_instructions=revision_instructions,
         previous_draft=previous_draft,
     )
 
 
 def report_brief_from_synthesis(synthesis: ResearchSynthesis, *, max_caveats: int) -> ReportBrief:
-    """从冻结综合版本派生报告任务书,避免 ResearchComplete 再提交第二事实源。"""
-    topics = [
-        CoveredTopic(
+    """从冻结综合版本派生报告任务书,避免 ResearchComplete 再提交第二事实源。
+
+    章节卡是 aspect 的写作投影:剥离 aspect_id/status,空结论以首条 gap 替代;
+    caveats 只保留各板块 disclose=true 的条目,披露裁量留在台账。
+    """
+    chapters = [
+        ReportChapter(
             topic=aspect.topic,
             role=aspect.role,
-            reason=aspect.summary or aspect.remaining_gap,
             required=aspect.required,
+            conclusion=aspect.conclusion or next((issue.text for issue in aspect.gaps), ""),
+            key_points=list(aspect.key_points),
             evidence_ids=list(aspect.evidence_ids),
         )
         for aspect in synthesis.aspects
     ]
+    caveats: list[str] = []
+    for aspect in synthesis.aspects:
+        for label, issues in (("缺口", aspect.gaps), ("口径冲突", aspect.conflicts)):
+            caveats.extend(
+                f"{label}|板块「{aspect.topic}」:{issue.text}" for issue in issues if issue.disclose
+            )
     return ReportBrief(
         answer_goal=synthesis.answer_goal,
         thesis=synthesis.thesis,
-        covered_topics=topics,
-        required_points=[aspect.topic for aspect in synthesis.aspects if aspect.required],
-        caveats=list(dict.fromkeys([*synthesis.open_gaps, *synthesis.conflicts]))[:max_caveats],
+        chapters=chapters,
+        caveats=caveats[:max_caveats],
     )
 
 

@@ -69,24 +69,57 @@ class ListSearchResults(BaseModel):
     reason: str = Field(description="为什么需要继续查看该批搜索结果。")
 
 
-class GrepDocument(BaseModel):
-    """在已读取长文中按**单个**普通文本查询定位相关行。
+class _DocumentIdSanitizer(BaseModel):
+    """持有 document_id 入参的模型的共同底座：模型回填长 id 时偶发夹入空白与控制字符，先归一再比对。"""
 
-    需要检索多个关键词时,在同一回合**并行发起多个 GrepDocument 调用**(该工具可
-    并行)。不提供 queries 批量接口——单查询让每个词各自分页、互不抢占,也无需
-    跨词配额簿记。返回带 total_matches/has_more/next_offset,用 offset 翻页取后续。
-    超长行与窗口尾部会裁切并标注,裁掉的内容不在后续页里——按标注行号用
-    ReadDocument 补读。
+    # check_fields=False:字段由各自子类声明,基类单独建类时不校验存在性。
+    @field_validator("document_id", mode="before", check_fields=False)
+    @classmethod
+    def strip_injected_whitespace_and_control_chars(cls, value: object) -> object:
+        if isinstance(value, str):
+            return re.sub(r"[\s\x00-\x1f\x7f]", "", value)
+        return value
+
+
+class GrepWindowSegment(BaseModel):
+    """归并命中流上的一段：跳过 offset 个命中窗口，返回至多 count 个。"""
+
+    offset: int = Field(default=0, ge=0, description="从归并命中流的第 offset 个窗口起。")
+    count: int = Field(
+        default=12,
+        ge=1,
+        le=32,
+        description="本段返回的命中窗口数；超出工具每段上限的部分被截断。",
+    )
+
+
+class GrepDocument(_DocumentIdSanitizer):
+    """在已读取长文中按多个普通文本词定位相关行；命中按文档行号归并成一条流。
+
+    多个关键词一次列进 patterns，不按词拆成多次调用。segments 可在同一次调用里
+    取流上多个不相邻的段——比较首尾命中不必逐页翻。回执带每词命中窗口总数，
+    据此决定哪个词值得追加段深挖；只追一个词时把它单独列进 patterns 即可。
+    offset 恒指归并流位置，与单词检索同形。超长行与窗口尾部会裁切并标注，
+    裁掉的内容不在后续段里——按标注行号用 ReadDocument 补读。
     """
 
     document_id: str = Field(
         min_length=1,
         description="目标文档的 document_id，来自 ReadSources 登记返回；未知时先调 ReadWorkingSet 核对。",
     )
-    query: str = Field(min_length=1, max_length=200)
+    patterns: list[str] = Field(
+        min_length=1,
+        max_length=8,
+        description="普通文本关键词列表；单个词也写成一个元素的列表。",
+    )
+    segments: list[GrepWindowSegment] = Field(
+        default_factory=lambda: [GrepWindowSegment()],
+        min_length=1,
+        max_length=4,
+        description="要读的命中流窗口段；一段为常规，两段可在一轮内比较首尾。",
+    )
     context_lines: int = Field(default=2, ge=0, le=10)
-    offset: int = Field(default=0, ge=0, description="跳过该词前 N 个命中窗口以翻页。")
-    reason: str = Field(description="该关键词与当前证据缺口的关系。")
+    reason: str = Field(description="关键词与当前证据缺口的关系。")
 
 
 class DocumentLineRange(BaseModel):
@@ -94,18 +127,28 @@ class DocumentLineRange(BaseModel):
     end_line: int = Field(ge=1)
 
 
-class ReadDocument(BaseModel):
-    """按行号批量读取已登记文档的有限窗口。"""
+class DocumentReadTarget(_DocumentIdSanitizer):
+    """多文档批量读取的单位：一个文档号与其行段集合。"""
 
     document_id: str = Field(
         min_length=1,
         description="目标文档的 document_id，来自 ReadSources 登记返回。",
     )
     ranges: list[DocumentLineRange] = Field(min_length=1, max_length=32)
+
+
+class ReadDocument(BaseModel):
+    """按行号跨多份已登记文档批量读取有限窗口；程序逐文档展开执行。"""
+
+    documents: list[DocumentReadTarget] = Field(
+        min_length=1,
+        max_length=4,
+        description="要读取的文档及其行段；读多份文档时列进同一次调用，不拆成多轮。",
+    )
     reason: str = Field(description="为什么需要读取这些行段。")
 
 
-class EvidenceSubmission(BaseModel):
+class EvidenceSubmission(_DocumentIdSanitizer):
     """Researcher 从已经看到的文档原文中提出一条原子 Evidence：只交首尾片段锚，quote 由程序逐字回填。"""
 
     document_id: str = Field(
@@ -260,15 +303,6 @@ class SynthesisFraming(BaseModel):
             "各 aspect 为它服务或限定它。研究现状不需要在这里复述——工作台视图自带。"
         ),
     )
-    open_gaps: list[str] | None = Field(
-        default=None,
-        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
-        description=(
-            "影响交付诚实性的缺口声明；每条都以拉低交付成色为代价。"
-            "aspect 内可消化的注脚留在该 aspect 的 remaining_gap，不要复制到这里。"
-        ),
-    )
-    conflicts: list[str] | None = Field(default=None, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     decision_rationale: str | None = Field(
         default=None,
         max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,

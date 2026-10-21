@@ -305,34 +305,40 @@ async def grep_document(
     deps: ResearcherDeps,
     loop_state: ResearcherLoopState,
     document_id: str,
-    query: str,
+    patterns: list[str],
+    segments: list[tuple[int, int]],
     context_lines: int,
-    offset: int,
     reason: str,
 ) -> dict[str, object]:
+    """多关键词一次归并检索：命中按文档行号成流，segments 从流上切多段。
+
+    参数 segments 为 (offset, count) 列表，offset 指归并流位置；回执带每词命中
+    窗口总数（pattern_totals），供模型判断哪个词值得追加段落深挖。
+    """
     del reason
     if document_id not in loop_state.documents:
         return _unknown_document_receipt(loop_state)
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
-    result = await deps.material_store.grep(
+    cleaned_patterns = [item.strip() for item in patterns if item.strip()]
+    if not cleaned_patterns:
+        return {"status": "rejected", "reason": "empty_patterns"}
+    result = await deps.material_store.grep_patterns(
         document_id,
-        query.strip(),
+        cleaned_patterns,
         context_lines=min(context_lines, deps.config.document_grep_context_lines),
-        max_matches=deps.config.document_grep_max_matches,
+        segments=[(max(0, offset), count) for offset, count in segments],
+        max_matches_per_segment=deps.config.document_grep_max_matches,
         max_chars=deps.config.document_grep_max_chars,
         max_line_chars=deps.config.document_grep_max_line_chars,
-        offset=max(0, offset),
     )
     return {
         "status": "completed",
         "document_id": document_id,
-        "query": result.query,
-        "matches": [item.model_dump(mode="json") for item in result.matches],
-        "match_count": len(result.matches),
-        "total_matches": result.total_matches,
+        "pattern_totals": result.pattern_totals,
+        "total_windows": result.total_windows,
+        "segments": [item.model_dump(mode="json") for item in result.segments],
         "has_more": result.has_more,
-        "next_offset": result.next_offset,
     }
 
 
@@ -364,6 +370,30 @@ async def read_document(
         "ranges": [item.model_dump(mode="json") for item in windows],
         "truncated_range_count": max(0, len(ranges) - len(requested)),
     }
+
+
+async def read_documents(
+    deps: ResearcherDeps,
+    loop_state: ResearcherLoopState,
+    targets: list[tuple[str, list[tuple[int, int]]]],
+    reason: str,
+) -> dict[str, object]:
+    """跨文档批量读取：任一文档号未登记即整批驳回并附已登记清单，全部在场才逐文档并发执行。
+
+    参数 targets 为 (document_id, [(start_line, end_line), ...]) 列表。返回 documents 键
+    逐文档回执，行段与行数预算对每份文档独立生效，批次文档数上限由 ReadDocument 入参约束。
+    """
+    if deps.material_store is None:
+        return {"status": "failed", "reason": "material_store_unavailable"}
+    if any(document_id not in loop_state.documents for document_id, _ in targets):
+        return _unknown_document_receipt(loop_state)
+    per_document = await asyncio.gather(
+        *(
+            read_document(deps, loop_state, document_id, ranges, reason)
+            for document_id, ranges in targets
+        )
+    )
+    return {"status": "completed", "documents": list(per_document)}
 
 
 async def _validate_submissions(

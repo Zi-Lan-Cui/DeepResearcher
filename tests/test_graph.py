@@ -134,7 +134,9 @@ class _CompleteSupervisor:
         return {
             "run": RunStatus(phase="writing"),
             "supervisor": SupervisorProgress(
-                status="completed", current_round=1, is_sufficient=True, generation_mode="full"
+                status="completed",
+                current_round=1,
+                generation_mode="full",
             ),
             "supervisor_next": "writer",
             "evidences": [],
@@ -520,7 +522,6 @@ def test_writer_revisit_does_not_fold_add_channels(tmp_path, monkeypatch):
                 "supervisor": SupervisorProgress(
                     status="completed",
                     current_round=_TwiceSupervisor.round,
-                    is_sufficient=True,
                     generation_mode="full",
                 ),
                 "supervisor_next": "writer",

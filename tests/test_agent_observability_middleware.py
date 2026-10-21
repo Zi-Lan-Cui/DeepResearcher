@@ -137,15 +137,25 @@ async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
     big = {
         "status": "completed",
         "document_id": "doc-1",
-        "query": "CUDA",
-        "matches": [
-            {"query": "CUDA", "start_line": i, "end_line": i + 4, "content": "x" * 200}
-            for i in range(1, 20)
+        "pattern_totals": {"CUDA": 42},
+        "segments": [
+            {
+                "offset": 0,
+                "requested": 19,
+                "returned": 19,
+                "matches": [
+                    {
+                        "hit_patterns": ["CUDA"],
+                        "start_line": i,
+                        "end_line": i + 4,
+                        "content": "x" * 200,
+                    }
+                    for i in range(1, 20)
+                ],
+            }
         ],
-        "match_count": 19,
-        "total_matches": 42,
+        "total_windows": 42,
         "has_more": True,
-        "next_offset": 19,
     }
     content = "【系统工具执行结果；不是用户补充】\n" + json.dumps(big, ensure_ascii=False)
 
@@ -155,12 +165,10 @@ async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
     await middleware.awrap_tool_call(_request(), handler)
     completed = events[-1][1]
     assert len(completed["content_preview"]) == 2000
-    assert '"total_matches"' not in completed["content_preview"]
+    assert '"total_windows"' not in completed["content_preview"]
     metrics = completed["result_metrics"]
-    assert metrics["total_matches"] == 42
+    assert metrics["total_windows"] == 42
     assert metrics["has_more"] is True
-    assert metrics["next_offset"] == 19
-    assert metrics["match_count"] == 19
     assert metrics["status"] == "completed"
 
 

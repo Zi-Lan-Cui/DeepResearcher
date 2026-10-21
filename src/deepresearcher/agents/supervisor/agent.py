@@ -84,7 +84,7 @@ def _may_conclude(context: Any) -> bool:
         return bool(
             loop_state.provider_exhausted
             or loop_state.stop_reason
-            in {StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED, StopReason.ROUND_BUDGET_EXHAUSTED}
+            in {StopReason.GLOBAL_ROUND_BUDGET_EXHAUSTED, StopReason.ENDED_WITHOUT_COMPLETION}
         )
     return True
 
@@ -292,9 +292,9 @@ class ResearchSupervisor:
                 active_evidence_limit=self.config.supervisor_max_active_evidences,
                 max_research_rounds=self.config.max_research_rounds,
             )
-            if not loop_state.sufficient and _model_call_limit_hit(generated):
+            if loop_state.completed_synthesis is None and _model_call_limit_hit(generated):
                 # 真实终止原因是模型调用上限;set_stop_reason 的声明式 rank 保证它强于
-                # 更弱的预算类信号,又不会盖过模型的显式收尾决定。
+                # 更弱的预算类信号,又不会盖过 COMPLETED 的显式收尾决定。
                 loop_state.set_stop_reason(StopReason.MODEL_CALL_LIMIT_EXCEEDED)
             await self._drain_direction_tasks(loop_context, loop_state)
         finally:

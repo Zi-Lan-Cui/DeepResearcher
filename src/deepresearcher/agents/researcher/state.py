@@ -84,9 +84,12 @@ def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]
         "active_evidence": [
             {
                 "evidence_id": item.evidence_id,
+                "subtask_id": item.subtask_id,
                 "claim": item.claim,
                 "support": item.support,
                 "confidence": item.confidence,
+                "source_title": item.source_title,
+                "source_domain": source_domain(item.source_url),
             }
             for item in evidences
         ],

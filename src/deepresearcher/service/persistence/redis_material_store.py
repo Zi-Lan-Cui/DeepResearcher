@@ -11,7 +11,7 @@ from deepresearcher.tools.web.documents import (
     DocumentOutlineItem,
     DocumentReadRange,
     DocumentRef,
-    GrepResult,
+    GrepPatternsResult,
 )
 from deepresearcher.tools.web.materials import (
     MemoryResearchMaterialStore,
@@ -19,7 +19,7 @@ from deepresearcher.tools.web.materials import (
     StoredDocument,
 )
 from deepresearcher.tools.web.materials.models import build_stored_document
-from deepresearcher.tools.web.materials.store import grep_lines, read_lines
+from deepresearcher.tools.web.materials.store import grep_patterns, read_lines
 from deepresearcher.usage_runtime import record_cache_event
 from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
@@ -190,26 +190,26 @@ class RedisResearchMaterialStore:
             max_chars=max_chars,
         )
 
-    async def grep(
+    async def grep_patterns(
         self,
         document_id: str,
-        query: str,
+        patterns: list[str],
         *,
         context_lines: int,
-        max_matches: int,
+        segments: list[tuple[int, int]],
+        max_matches_per_segment: int,
         max_chars: int,
         max_line_chars: int,
-        offset: int = 0,
-    ) -> GrepResult:
+    ) -> GrepPatternsResult:
         document = await self._document(document_id)
-        return grep_lines(
+        return grep_patterns(
             document.content.splitlines(),
-            query,
+            patterns,
             context_lines=context_lines,
-            max_matches=max_matches,
+            segments=segments,
+            max_matches_per_segment=max_matches_per_segment,
             max_chars=max_chars,
             max_line_chars=max_line_chars,
-            offset=offset,
         )
 
     async def close(self) -> None:

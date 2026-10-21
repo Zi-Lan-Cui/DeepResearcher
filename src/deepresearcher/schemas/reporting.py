@@ -20,13 +20,28 @@ from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.vocab import GenerationMode, ResearchStatus, Support
 
 
-class CoveredTopic(BaseModel):
-    """报告中必须处理的研究主题及其论证角色。"""
+class AspectIssue(BaseModel):
+    """板块台账上的一条缺口或口径冲突;disclose 决定它是否进任务书告知读者。"""
+
+    text: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    disclose: bool = Field(
+        default=True,
+        description=(
+            "是否随任务书展示给读者。true 的条目原文进入报告 caveats,是公开声明;"
+            "缺口影响结论成立、或矛盾不可裁定且触及核心结论时 true;"
+            "结论已有可信次级支撑、只缺一手锚定时 false,属可优化项。"
+        ),
+    )
+
+
+class ReportChapter(BaseModel):
+    """任务书里由 aspect 投影出的章节卡:本章结论、要点清单与各自的支撑证据。"""
 
     topic: str
     role: str
-    reason: str
     required: bool = True
+    conclusion: str = ""
+    key_points: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     evidence_ids: list[str] = Field(default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT)
 
 
@@ -34,14 +49,10 @@ class ReportBrief(BaseModel):
     """Supervisor 交给 Writer 的任务书；不携带 Evidence 正文。"""
 
     answer_goal: str
-    # 全文核心主张:Writer 组织报告的脊柱;partial 兜底交接时为空串,Writer 自行归纳。
+    # 全文核心主张:Writer 组织报告的脊柱;系统回退交接时可为空串,Writer 自行归纳。
     thesis: str = ""
-    covered_topics: list[CoveredTopic] = Field(
-        min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
-    )
-    required_points: list[str] = Field(
-        default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT
-    )
+    chapters: list[ReportChapter] = Field(min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    # 投影过滤结果:各板块 gaps/conflicts 中 disclose=true 的条目。
     # 日常裁剪由 AGENT_REPORT_MAX_CAVEATS 控制；这里仅防御异常膨胀。
     caveats: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
 
@@ -56,8 +67,8 @@ class PlanItem(BaseModel):
 class ResearchAspect(BaseModel):
     """Supervisor 跨研究方向建立的证据支撑认知单元。
 
-    它用于覆盖、冲突和缺口管理；不是 Researcher 任务方向，
-    也不在概念上等于最终报告章节。
+    台账面用于覆盖管理与收尾验收；交接时逐块投影为任务书章节卡，
+    aspect_id 与 status 留在台账面不带入写作契约。
     """
 
     aspect_id: str = Field(min_length=1, max_length=STRUCTURED_IDENTIFIER_HARD_LIMIT_CHARS)
@@ -65,9 +76,38 @@ class ResearchAspect(BaseModel):
     role: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
     required: bool = True
     status: Literal["covered", "partial", "uncovered", "conflicted"]
-    summary: str = Field(default="", max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
+    conclusion: str = Field(default="", max_length=STRUCTURED_SUMMARY_HARD_LIMIT_CHARS)
+    key_points: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     evidence_ids: list[str] = Field(default_factory=list, max_length=EVIDENCE_REFERENCES_HARD_LIMIT)
-    remaining_gap: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+    gaps: list[AspectIssue] = Field(
+        default_factory=list,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
+        description="本板块尚未解决的缺口;动态更新——补齐或转可优化后重提本 aspect 改写台账,不留过期条目。",
+    )
+    conflicts: list[AspectIssue] = Field(
+        default_factory=list,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
+        description="本板块证据间的口径冲突;裁定或有新证据后同样重提改写。",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_fields(cls, data: object) -> object:
+        """旧 checkpoint 形状兼容:summary 由 conclusion 承接,remaining_gap 并入首条 gap。"""
+        if isinstance(data, dict) and ("summary" in data or "remaining_gap" in data):
+            data = dict(data)
+            if "conclusion" not in data and "summary" in data:
+                data["conclusion"] = data.pop("summary")
+            else:
+                data.pop("summary", None)
+            legacy_gap = str(data.pop("remaining_gap", "") or "").strip()
+            if legacy_gap:
+                # 综合稿级的折入先于本校验运行,可能已占用 gaps;旧缺口前置合并保序。
+                data["gaps"] = [
+                    {"text": legacy_gap, "disclose": True},
+                    *(data.get("gaps") or []),
+                ]
+        return data
 
     @field_validator("evidence_ids", mode="before")
     @classmethod
@@ -80,8 +120,8 @@ class ResearchAspect(BaseModel):
             raise ValueError("covered 研究方面必须绑定至少一条 Evidence。")
         if self.status == "uncovered" and self.evidence_ids:
             raise ValueError("uncovered 研究方面不能绑定 Evidence。")
-        if self.status in {"partial", "uncovered", "conflicted"} and not self.remaining_gap:
-            raise ValueError(f"{self.status} 研究方面必须明确 remaining_gap。")
+        if self.status in {"partial", "uncovered", "conflicted"} and not self.gaps:
+            raise ValueError(f"{self.status} 研究方面必须登记至少一条 gap。")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("同一研究方面不能重复绑定 Evidence。")
         return self
@@ -107,9 +147,27 @@ class ResearchSynthesis(BaseModel):
         max_length=EVIDENCE_REFERENCES_HARD_LIMIT,
         description="由 aspects.evidence_ids 按首次出现顺序派生，不由模型独立决定。",
     )
-    open_gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    conflicts: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     decision_rationale: str = Field(default="", max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_global_issues(cls, data: object) -> object:
+        """旧 checkpoint 形状兼容:全局 open_gaps/conflicts 折入首块 aspect 的 gaps 台账。"""
+        if isinstance(data, dict) and ("open_gaps" in data or "conflicts" in data):
+            data = dict(data)
+            orphans = [
+                {"text": str(text).strip(), "disclose": True}
+                for text in [
+                    *(data.pop("open_gaps", None) or []),
+                    *(data.pop("conflicts", None) or []),
+                ]
+                if str(text).strip()
+            ]
+            aspects = data.get("aspects") or []
+            if orphans and aspects and isinstance(aspects[0], dict):
+                aspects[0] = {**aspects[0], "gaps": [*(aspects[0].get("gaps") or []), *orphans]}
+                data["aspects"] = aspects
+        return data
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchSynthesis":

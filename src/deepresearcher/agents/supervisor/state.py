@@ -86,7 +86,6 @@ class SupervisorAgentState(AgentState):
     working_set_revision: Annotated[int, merge_monotonic]
     research_synthesis: Annotated[ResearchSynthesis | None, replace_channel]
     completed_synthesis: Annotated[ResearchSynthesis | None, retain_if_absent]
-    sufficient: Annotated[bool, merge_or]
     provider_exhausted: Annotated[bool, merge_or]
     stop_reason: Annotated[StopReason | None, _merge_stop_reason_by_rank]
     task_index_counter: Annotated[int, merge_monotonic]
@@ -145,8 +144,6 @@ def synthesis_card(synthesis: ResearchSynthesis | None) -> dict[str, object] | N
         "thesis": synthesis.thesis,
         "aspects": [aspect.model_dump(mode="json") for aspect in synthesis.aspects],
         "selected_evidence_ids": synthesis.selected_evidence_ids,
-        "open_gaps": synthesis.open_gaps,
-        "conflicts": synthesis.conflicts,
         "decision_rationale": synthesis.decision_rationale,
     }
 
@@ -284,7 +281,6 @@ class SupervisorLoopState:
         # 报告的"未闭合缺口";两者的可见面与恢复策略不同,不能混用同一个字段。
         self.failure_details: list[str] = []
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
-        self.sufficient = False
         self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
         self.completed_synthesis: ResearchSynthesis | None = None
@@ -355,8 +351,6 @@ class SupervisorLoopState:
             view.research_synthesis = cls._restore_synthesis(values["research_synthesis"])
         if "completed_synthesis" in values:
             view.completed_synthesis = cls._restore_synthesis(values["completed_synthesis"])
-        if "sufficient" in values:
-            view.sufficient = bool(values["sufficient"])
         if "provider_exhausted" in values:
             view.provider_exhausted = bool(values["provider_exhausted"])
         if values.get("stop_reason") is not None:
@@ -381,7 +375,6 @@ class SupervisorLoopState:
             "working_set_revision": self.working_set_revision,
             "research_synthesis": self.research_synthesis,
             "completed_synthesis": self.completed_synthesis,
-            "sufficient": self.sufficient,
             "provider_exhausted": self.provider_exhausted,
             "stop_reason": self.stop_reason,
             "task_index_counter": self._task_counter,

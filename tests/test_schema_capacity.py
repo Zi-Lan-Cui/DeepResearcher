@@ -16,7 +16,7 @@ def _synthesis(aspect_count: int) -> ResearchSynthesis:
             topic=f"主题 {index}",
             role="支撑结论",
             status="covered",
-            summary="已有证据支撑。",
+            conclusion="已有证据支撑。",
             evidence_ids=[f"evidence-{index}"],
         )
         for index in range(aspect_count)
