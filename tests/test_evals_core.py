@@ -16,11 +16,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # evals 非安装�
 
 from evals import aggregate, drb  # noqa: E402
 from evals.deterministic import Artifact, score_artifact  # noqa: E402
-from evals.judge import SYSTEM_PROMPT, judge_case, parse_verdict  # noqa: E402
+from evals.judge import (  # noqa: E402
+    SYSTEM_PROMPT,
+    judge_case,
+    judge_case_race,
+    parse_race_scores,
+    parse_verdict,
+)
 from evals.schemas import (  # noqa: E402
     Criterion,
     CriterionResult,
     EvalCase,
+    RaceCriterionScore,
     cases_to_jsonl,
     load_cases,
     load_results,
@@ -58,8 +65,8 @@ def test_behavior_seed_set_loads_and_validates():
     assert groups == {"B", "C", "D", "F"}
 
 
-def test_core30_profile_is_small_fixed_and_representative() -> None:
-    profile = json.loads((REPO_ROOT / "evals" / "profiles" / "core30.json").read_text("utf-8"))
+def test_dev_profile_is_small_fixed_and_representative() -> None:
+    profile = json.loads((REPO_ROOT / "evals" / "profiles" / "dev.json").read_text("utf-8"))
     external = profile["external_ids"]
     behavior = profile["behavior_ids"]
 
@@ -67,6 +74,17 @@ def test_core30_profile_is_small_fixed_and_representative() -> None:
     assert len(behavior) == 10
     assert len(set(external + behavior)) == 30
     assert {case_id.split("-")[1][0] for case_id in behavior} == {"b", "c", "d", "f"}
+
+
+def test_dev_test30_partition_zh50() -> None:
+    profiles = REPO_ROOT / "evals" / "profiles"
+    dev = json.loads((profiles / "dev.json").read_text("utf-8"))["external_ids"]
+    test30 = json.loads((profiles / "test30.json").read_text("utf-8"))["external_ids"]
+    zh50 = {f"drb-zh-{index:03d}" for index in range(1, 51)}
+    assert len(dev) == 20 and len(test30) == 30
+    # 开发集与实测集零交集,合起来恰好铺满 DRB 中文 50 题。
+    assert set(dev) & set(test30) == set()
+    assert set(dev) | set(test30) == zh50
 
 
 def test_cases_jsonl_roundtrip(tmp_path):
@@ -392,8 +410,8 @@ async def test_judge_one_call_per_criterion_with_unknown_exit():
     results = await judge_case(case, report="R", attempt=1, invoker=invoker, reference="REF")
     assert [r.verdict for r in results] == ["yes", "unknown"]
     assert len(invoker.calls) == 2
-    assert "REF" in invoker.calls[0] and "【待评报告】" in invoker.calls[0]
-    assert "报告没写到”一律判 no" in SYSTEM_PROMPT
+    assert "REF" in invoker.calls[0] and "【文章一】" in invoker.calls[0]
+    assert "文章一没写到”一律判 no" in SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
@@ -412,6 +430,117 @@ def test_parse_verdict_prefix_ordering():
     assert parse_verdict("unknown") == "unknown"
     assert parse_verdict("NO.") == "no"
     assert parse_verdict("yes, clearly") == "yes"
+
+
+def test_parse_race_scores_strict_lenient_and_clamp():
+    assert parse_race_scores(
+        '{"analysis": "对比", "article_1_score": 8, "article_2_score": 5}'
+    ) == (
+        8.0,
+        5.0,
+        "对比",
+    )
+    fenced = '```json\n{"analysis": "x", "article_1_score": 12.5, "article_2_score": -3}\n```'
+    assert parse_race_scores(fenced)[:2] == (10.0, 0.0)
+    truncated = '先写了一段分析…… "article_1_score": 6.5, "article_2_score": 4.0'
+    assert parse_race_scores(truncated)[:2] == (6.5, 4.0)
+    with pytest.raises(ValueError):
+        parse_race_scores("两篇都不错，无法给分")
+
+
+@pytest.mark.asyncio
+async def test_judge_case_race_scores_both_articles_and_degrades_on_garbage():
+    class RaceInvoker:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str:
+            self.calls.append(user)
+            if len(self.calls) == 1:
+                return '{"analysis": "甲覆盖更广", "article_1_score": 7, "article_2_score": 9}'
+            return "输出坏了"
+
+    case = _case(
+        track="external",
+        criteria=(
+            Criterion(id="a", dimension="insight", text="甲", weight=0.5),
+            Criterion(id="b", dimension="insight", text="乙", weight=0.5),
+        ),
+        dimension_weights={"insight": 1.0},
+    )
+    invoker = RaceInvoker()
+    rows = await judge_case_race(case, report="R", attempt=1, invoker=invoker, reference="REF")
+    assert (rows[0].target_score, rows[0].reference_score) == (7.0, 9.0)
+    assert (rows[1].target_score, rows[1].reference_score) == (None, None)
+    assert "解析失败" in rows[1].analysis or "judge 调用或解析失败" in rows[1].analysis
+    assert "REF" in invoker.calls[0] and "文章二" in invoker.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_judge_case_race_swap_maps_scores_back_to_target_and_reference():
+    class FixedInvoker:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str:
+            self.calls.append(user)
+            # 文章一恒得 9 分、文章二恒得 3 分，不辨内容——专门验证映射方向。
+            return '{"analysis": "x", "article_1_score": 9, "article_2_score": 3}'
+
+    case = _case(
+        track="external",
+        criteria=(Criterion(id="a", dimension="insight", text="甲", weight=1.0),),
+        dimension_weights={"insight": 1.0},
+    )
+    invoker = FixedInvoker()
+    normal = await judge_case_race(case, report="R", attempt=1, invoker=invoker, reference="REF")
+    assert (normal[0].target_score, normal[0].reference_score) == (9.0, 3.0)
+    swapped = await judge_case_race(
+        case, report="R", attempt=1, invoker=invoker, reference="REF", swap_positions=True
+    )
+    assert (swapped[0].target_score, swapped[0].reference_score) == (3.0, 9.0)
+    for prompt in invoker.calls:
+        assert "专家参考文章" not in prompt and "待评估报告" not in prompt
+        assert "**文章一**" in prompt and "**文章二**" in prompt
+    assert "REF" in invoker.calls[-1].split("**文章一**")[1].split("**文章二**")[0]
+
+
+def test_score_case_race_handles_round_without_rows() -> None:
+    case = _case(
+        track="external",
+        dimension_weights={"comprehensiveness": 1.0},
+        criteria=(Criterion(id="c1", dimension="comprehensiveness", text="丙", weight=1.0),),
+    )
+    scored = aggregate.score_case_race(case, 7, [])
+    assert scored.overall is None
+    assert scored.dimension_ratios == {}
+
+
+def test_score_case_race_official_weighting_and_ratio():
+    case = _case(
+        track="external",
+        dimension_weights={"comprehensiveness": 0.6, "readability": 0.4},
+        criteria=(
+            Criterion(id="c1", dimension="comprehensiveness", text="丙", weight=2.0),
+            Criterion(id="c2", dimension="comprehensiveness", text="丁", weight=1.0),
+            Criterion(id="r1", dimension="readability", text="戊", weight=1.0),
+        ),
+    )
+    rows = [
+        RaceCriterionScore("x-1", 1, "c1", "comprehensiveness", 8.0, 4.0),
+        RaceCriterionScore("x-1", 1, "c2", "comprehensiveness", 10.0, 10.0),
+        RaceCriterionScore("x-1", 1, "r1", "readability", None, None, "judge 调用或解析失败"),
+    ]
+    scored = aggregate.score_case_race(case, 1, rows)
+    # comprehensiveness 加权均分: target (8*2+10*1)/3≈8.667, reference (4*2+10*1)/3=6.0
+    # readability 整维无有效分→均分 0(与官方置零一致,比值项被剔除)
+    assert scored.target_total == round(26 / 3 * 0.6, 4)
+    assert scored.reference_total == round(6.0 * 0.6, 4)
+    assert scored.overall == round(
+        scored.target_total / (scored.target_total + scored.reference_total), 4
+    )
+    assert set(scored.dimension_ratios) == {"comprehensiveness"}
+    assert scored.missing_count == 1
 
 
 def test_external_weighted_score_and_threshold():
@@ -566,3 +695,129 @@ def test_judge_heterogeneous_model_needs_no_optin(monkeypatch):
     monkeypatch.setenv("EVAL_JUDGE_MODEL", "another-family-70b")
     judge = OpenAICompatJudge()
     assert judge.identity == {"model": "another-family-70b", "self_judging": False}
+
+
+def test_round_persist_resume_roundtrip_is_atomic(tmp_path, monkeypatch):
+    import asyncio
+
+    from evals.runner import RunHarness
+
+    monkeypatch.setenv("EVAL_PASSWORD", "pw")
+    monkeypatch.setenv("SERVICE_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    harness = RunHarness(out_dir=tmp_path)
+    case = _case(case_id="rt-1")
+    artifact = Artifact(case_id="rt-1", attempt=1, run_id="run-1", detail={"status": "completed"})
+    harness._persist(case, 1, [artifact])
+    loaded = harness._load_round(case, 1)
+    assert loaded is not None
+    assert loaded[0].run_id == "run-1" and loaded[0].case_id == "rt-1"
+    assert not list((tmp_path / "rt-1").glob("*.tmp")), "原子替换后不留临时文件"
+    assert harness._load_round(case, 2) is None
+    (tmp_path / "rt-1" / "round1.json").write_text("{broken", encoding="utf-8")
+    assert harness._load_round(case, 1) is None, "半截 JSON 按缺跑处理"
+    asyncio.run(harness.close())
+
+
+def test_cmd_run_from_attempt_resume_and_concurrency(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from evals import cli as evals_cli
+
+    calls: list[tuple[str, int, bool]] = []
+    inflight = 0
+    peak = 0
+
+    class FakeHarness:
+        def __init__(self, *, out_dir):
+            assert out_dir is not None
+
+        async def warmup_auth(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def run_case(self, case, attempt, *, resume=False):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            calls.append((case.case_id, attempt, resume))
+            await asyncio.sleep(0.01)
+            inflight -= 1
+            if case.case_id == "a" and attempt == 2:
+                raise RuntimeError("模拟额度耗尽")
+
+    monkeypatch.setattr(evals_cli, "RunHarness", FakeHarness)
+    monkeypatch.setattr(
+        evals_cli,
+        "collect_cases",
+        lambda args: [_case(case_id="a", repeat=3), _case(case_id="b", repeat=3)],
+    )
+    args = SimpleNamespace(
+        dry_run=False,
+        attempts=0,
+        from_attempt=2,
+        resume=True,
+        concurrency=3,
+    )
+    asyncio.run(evals_cli.cmd_run(args))
+    # from-attempt=2:每题只跑 2、3 两个 attempt;单题异常不拖垮整批。
+    assert sorted((cid, at) for cid, at, _ in calls) == [("a", 2), ("a", 3), ("b", 2), ("b", 3)]
+    assert all(resume for _, _, resume in calls)
+    assert peak >= 2, "concurrency=3 应出现并发窗口"
+
+    calls.clear()
+    peak = 0
+    args.concurrency = 1
+    args.resume = False
+    asyncio.run(evals_cli.cmd_run(args))
+    assert [cid for cid, _, _ in calls].count("a") == 2 and peak == 1, "默认串行语义不变"
+
+
+def test_await_state_execution_budget_starts_after_queue(tmp_path, monkeypatch):
+    """排队时间不计入执行超时;并发批次中排队不是 (case,attempt) 失败。"""
+    import asyncio as loop_asyncio
+
+    from evals import runner as evals_runner
+
+    monkeypatch.setenv("EVAL_PASSWORD", "pw")
+    monkeypatch.setenv("SERVICE_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr(evals_runner, "POLL_SECONDS", 0.02)
+
+    class _Detail:
+        def __init__(self, status):
+            self._status = status
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"status": self._status}
+
+    class _Client:
+        def __init__(self, statuses, default_status="completed"):
+            self.statuses = list(statuses)
+            self.default_status = default_status
+
+        async def get(self, *_args, **_kwargs):
+            status = self.statuses.pop(0) if self.statuses else self.default_status
+            return _Detail(status)
+
+    harness = evals_runner.RunHarness(out_dir=tmp_path, timeout_seconds=0.05)
+
+    async def scenario():
+        # 8 轮 queued ≈160ms,超出 50ms 执行预算:排队时段不计入执行预算。
+        client = _Client(["queued"] * 8)
+        return await harness._await_state(client, {}, "run-x")
+
+    detail = loop_asyncio.run(scenario())
+    assert detail["status"] == "completed"
+
+    async def running_forever():
+        client = _Client(["running"], default_status="running")
+        return await harness._await_state(client, {}, "run-y")
+
+    with pytest.raises(TimeoutError, match="执行超时"):
+        loop_asyncio.run(running_forever())
+    loop_asyncio.run(harness.close())

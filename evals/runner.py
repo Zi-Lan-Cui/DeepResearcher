@@ -37,6 +37,7 @@ DEFAULT_CLARIFY_ANSWER = "请以我的原问题为准，按你认为最合理的
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 POLL_SECONDS = 5.0
 DEFAULT_TIMEOUT_SECONDS = 4200.0
+DEFAULT_QUEUE_WAIT_SECONDS = 900.0
 
 
 class RunHarness:
@@ -49,6 +50,7 @@ class RunHarness:
         database_url: str | None = None,
         out_dir: Path | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        queue_wait_seconds: float = DEFAULT_QUEUE_WAIT_SECONDS,
     ) -> None:
         self.base_url = base_url or os.environ.get("EVAL_BASE_URL", DEFAULT_BASE_URL)
         self.email = email or os.environ.get("EVAL_EMAIL", "eval@local.dev")
@@ -62,8 +64,10 @@ class RunHarness:
         self._checkpoint_dsn = checkpoint_dsn(dsn)
         self._checkpoint_cm: Any = None
         self._checkpointer: Any = None
+        self._checkpoint_lock = asyncio.Lock()
         self.out_dir = out_dir
         self.timeout_seconds = timeout_seconds
+        self.queue_wait_seconds = queue_wait_seconds
         self._token = ""
 
     async def close(self) -> None:
@@ -77,12 +81,15 @@ class RunHarness:
         if self._checkpoint_dsn is None:
             return []
         if self._checkpointer is None:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            # 并发 run_case 共享本 harness:双检加锁,避免重复建连后只关得掉一个。
+            async with self._checkpoint_lock:
+                if self._checkpointer is None:
+                    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-            self._checkpoint_cm = AsyncPostgresSaver.from_conn_string(
-                self._checkpoint_dsn, serde=build_checkpointer_serde()
-            )
-            self._checkpointer = await self._checkpoint_cm.__aenter__()
+                    self._checkpoint_cm = AsyncPostgresSaver.from_conn_string(
+                        self._checkpoint_dsn, serde=build_checkpointer_serde()
+                    )
+                    self._checkpointer = await self._checkpoint_cm.__aenter__()
         tuple_ = await self._checkpointer.aget_tuple(
             {"configurable": {"thread_id": run_id, "checkpoint_ns": ""}}
         )
@@ -118,16 +125,30 @@ class RunHarness:
     async def _await_state(
         self, client: httpx.AsyncClient, headers: dict[str, str], run_id: str
     ) -> dict[str, Any]:
-        """轮询到终态或 awaiting_input 返回;等待态交由调用方做澄清回答。"""
-        deadline = asyncio.get_running_loop().time() + self.timeout_seconds
+        """轮询到终态或 awaiting_input 返回;等待态交由调用方做澄清回答。
+
+        执行预算 timeout_seconds 从 run 离开 queued 起算;并发批次里排队属于
+        容量而非(case,attempt)失败,排队另有 queue_wait_seconds 上限兜底。
+        """
+        now = asyncio.get_running_loop().time
+        queue_deadline = now() + self.queue_wait_seconds
+        execution_deadline: float | None = None
         while True:
             response = await client.get(f"{self.base_url}/api/runs/{run_id}", headers=headers)
             response.raise_for_status()
             detail = response.json()
-            if detail.get("status") in TERMINAL or detail.get("status") == "awaiting_input":
+            status = detail.get("status")
+            if status in TERMINAL or status == "awaiting_input":
                 return detail
-            if asyncio.get_running_loop().time() > deadline:
-                raise TimeoutError(f"case 超时未收敛: {run_id} status={detail.get('status')}")
+            current = now()
+            if status == "queued":
+                if current > queue_deadline:
+                    raise TimeoutError(f"case 排队超时未获领取: {run_id}")
+            else:
+                if execution_deadline is None:
+                    execution_deadline = current + self.timeout_seconds
+                if current > execution_deadline:
+                    raise TimeoutError(f"case 执行超时未收敛: {run_id} status={status}")
             await asyncio.sleep(POLL_SECONDS)
 
     async def _drive_once(self, case: EvalCase, client: httpx.AsyncClient) -> Artifact:
@@ -199,7 +220,34 @@ class RunHarness:
             )
         return [r.record for r in rows], row
 
-    async def run_case(self, case: EvalCase, attempt: int) -> list[Artifact]:
+    async def warmup_auth(self) -> None:
+        """并发执行前预热评测账号 token,避免 gather 下重复注册登录。"""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            await self._auth(client)
+
+    def _load_round(self, case: EvalCase, attempt: int) -> list[Artifact] | None:
+        """读取已落盘的 round 产物;不存在或解析失败返回 None 按缺跑处理。"""
+        if self.out_dir is None:
+            return None
+        path = self.out_dir / case.case_id / f"round{attempt}.json"
+        try:
+            payload = json.loads(path.read_text("utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        artifacts: list[Artifact] = []
+        for row in payload:
+            # metrics 由 process_metrics 现算;case_id 不落 payload,按目录名归位。
+            fields = {key: row[key] for key in row if key != "metrics"}
+            artifacts.append(Artifact(case_id=case.case_id, **fields))
+        return artifacts
+
+    async def run_case(
+        self, case: EvalCase, attempt: int, *, resume: bool = False
+    ) -> list[Artifact]:
+        if resume:
+            existing = self._load_round(case, attempt)
+            if existing is not None:
+                return existing
         if case.fault in {"kill", "stop", "stop_during_awaiting"}:
             raise NotImplementedError(
                 f"{case.case_id} 的故障注入（fault={case.fault}）需要 harness 掌控 worker "
@@ -260,6 +308,8 @@ class RunHarness:
             }
             for a in artifacts
         ]
-        (target / f"round{attempt}.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1) + "\n", "utf-8"
-        )
+        path = target / f"round{attempt}.json"
+        tmp_path = path.with_name(path.name + ".tmp")
+        # 原子替换:并发或中断都不留半截 JSON,--resume 的判定才可信赖。
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", "utf-8")
+        tmp_path.replace(path)

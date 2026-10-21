@@ -133,6 +133,47 @@ def merge_results(
     return merged
 
 
+@dataclass(frozen=True)
+class RaceCriterionScore:
+    """RACE 对齐口径的单条判定：同一调用内给被测与参考两篇文章各打 0-10 分。"""
+
+    case_id: str
+    attempt: int
+    criterion_id: str
+    dimension: str
+    target_score: float | None
+    reference_score: float | None
+    analysis: str = ""
+
+
+def race_results_to_jsonl(rows: list[RaceCriterionScore]) -> str:
+    return "".join(json.dumps(asdict(r), ensure_ascii=False) + "\n" for r in rows)
+
+
+def load_race_results(path: Path) -> list[RaceCriterionScore]:
+    return [
+        RaceCriterionScore(**json.loads(line))
+        for line in path.read_text("utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def merge_race_results(
+    path: Path,
+    replacements: list[RaceCriterionScore],
+    evaluated: set[tuple[str, int]],
+) -> list[RaceCriterionScore]:
+    """与 merge_results 同一套原子替换语义，作用于 RACE 分数文件。"""
+    existing = load_race_results(path) if path.is_file() else []
+    merged = [row for row in existing if (row.case_id, row.attempt) not in evaluated]
+    merged.extend(replacements)
+    merged.sort(key=lambda row: (row.case_id, row.attempt, row.criterion_id))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(race_results_to_jsonl(merged), "utf-8")
+    temporary.replace(path)
+    return merged
+
+
 def validate_case(case: EvalCase) -> list[str]:
     problems: list[str] = []
     if not case.prompt.strip():

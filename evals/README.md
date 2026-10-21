@@ -33,13 +33,14 @@ export SERVICE_DATABASE_URL=postgresql+asyncpg://...   # 行为断言需要 DB �
 
 ## 运行
 
-日常基线是 `core30`：20 道 dev 外轨题 + 10 道内轨题。首轮每题 1 次快速定位问题，
-定稿前对关键题升到 3 次计稳定性指标。
+DRB 中文题池共 50 题，切成两份 tracked 名单：`test30` 是实测集（三波各 10 题组齐，
+对外口径只认它），`dev` 是开发迭代集（其余 20 道外轨 + 10 道内轨关键行为题）。
+日常首轮用 dev 每题 1 次快速定位问题，收口阶段在 test30 上跑 pass@3 出成绩。
 
 ```bash
-export EVAL_RESULTS_DIR=evals/results/core30-v1   # 每轮实验独立目录，新结果避免写进历史目录
-uv run python -m evals.cli cases --profile core30
-uv run python -m evals.cli run --profile core30 --attempts 1
+export EVAL_RESULTS_DIR=evals/results/dev-v1   # 每轮实验独立目录，新结果避免写进历史目录
+uv run python -m evals.cli cases --profile dev
+uv run python -m evals.cli run --profile dev --attempts 1
 uv run python -m evals.cli score      # 确定性门 + 行为断言，零费用
 uv run python -m evals.cli judge      # 二元 rubric，LLM 调用计入成本
 uv run python -m evals.cli report     # 记分表 → summary.json

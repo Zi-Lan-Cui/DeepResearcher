@@ -184,7 +184,9 @@ def check_lease_takeover(artifact: Artifact, criterion: Criterion) -> CriterionR
     """worker 强杀接管后校验 fence_token>=2、run_done 恰一次、seq 跨接管仍连续。"""
     fence_token = int(artifact.run_row.get("fence_token") or 0)
     if fence_token < 2:
-        return _result(artifact, criterion, "unknown", f"fence_token={fence_token}，故障注入未生效？")
+        return _result(
+            artifact, criterion, "unknown", f"fence_token={fence_token}，故障注入未生效？"
+        )
     dones = len(artifact.events_of("run_done"))
     seqs = [int(e["seq"]) for e in artifact.events if "seq" in e]
     ok = dones == 1 and seqs == list(range(1, len(seqs) + 1))

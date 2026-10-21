@@ -1,8 +1,10 @@
-"""二元 rubric LLM judge：每条 criterion 独立调用，允许 unknown。
+"""rubric LLM judge 两种口径：二元 yes/no 与 RACE 对齐的 0-10 双文对比分。
 
-- 判定单位是逐条 criterion 的 yes/no,不给整篇报告 0-10 印象分:整体打分
+- 二元判定单位是逐条 criterion 的 yes/no,不给整篇报告 0-10 印象分:整体打分
   的人机一致率过低,逐条二元判并在同一张表上人工标注才可计算一致率;
-- 每条 criterion 独立调用:一次长上下文里连判多条会互相干扰;
+- 两种口径都逐条 criterion 独立调用:一次长上下文里连判多条会互相干扰;
+- RACE 口径对齐 DeepResearchBench 官方:同一调用内被测与专家参考文章各打
+  0-10 分,聚合走官方加权与 target/(target+reference) 归一(见 aggregate);
 - unknown 只表示 criterion 本身歧义、材料损坏或 judge 无法工作;
   报告未覆盖 criterion 是明确的 no,不得用 unknown 代替失分;
 - external 轨带专家参考文章做对照,behavior 轨不经 judge,全部走
@@ -12,26 +14,43 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 from typing import Protocol
 
-from evals.schemas import Criterion, CriterionResult, EvalCase
+from evals.schemas import Criterion, CriterionResult, EvalCase, RaceCriterionScore
 
-SYSTEM_PROMPT = """你是严格、保守的研究报告评审员。你将看到一份研究报告、一条二元评审标准，\
-可能还有一份专家参考文章（仅作覆盖面与深度的对照，不是唯一正确答案来源）。
+SYSTEM_PROMPT = """你是严格、保守的研究报告评审员。你将看到两篇文章与一条二元评审标准。你只按该标准评判文章一；\
+文章二是同题对照，本身不被评判，也不是唯一正确答案来源。
 
 只输出一个词：yes / no / unknown
-- yes：报告确凿满足该标准；
-- no：报告确凿不满足，包括缺失 criterion 要求的内容、内容错误或违背要求；
-- unknown：只在 criterion 本身有歧义、输入材料损坏，或该 criterion 明确要求报告与参考文章之外的事实才能裁决时使用。
-“报告没写到”一律判 no，不是 unknown。不要输出任何其他文字。"""
+- yes：文章一确凿满足该标准；
+- no：文章一确凿不满足，包括缺失 criterion 要求的内容、内容错误或违背要求；
+- unknown：只在 criterion 本身有歧义、输入材料损坏，或该 criterion 明确要求两篇文章之外的事实才能裁决时使用。
+“文章一没写到”一律判 no，不是 unknown。不要输出任何其他文字。"""
 
 MAX_REPORT_CHARS = 60_000
 MAX_REFERENCE_CHARS = 30_000
 
 
+RACE_SYSTEM_PROMPT = """你是严格、细致、客观的调研文章评估专家，擅长针对具体评审标准对比两篇同一任务下的调研文章，并分别打分。
+
+打分规则：对两篇文章各自按 0-10 连续分数打分，分数高低反映该文章在此标准上的表现：
+* 0-2分：表现很差，几乎完全不符合标准要求。
+* 2-4分：表现较差，少量符合标准要求，但有明显不足。
+* 4-6分：表现中等，基本符合标准要求。
+* 6-8分：表现较好，大部分符合标准要求，有可取之处。
+* 8-10分：表现出色，完全或超预期符合标准要求。
+
+只输出一个 JSON 对象，不要包含任何其他文字、引言或代码围栏：
+{"analysis": "逐点对比两篇文章在此标准上的表现", "article_1_score": 0, "article_2_score": 0}"""
+
+RACE_MAX_OUTPUT_TOKENS_DEFAULT = 2_048
+
+
 class JudgeInvoker(Protocol):
-    async def complete(self, system: str, user: str) -> str: ...
+    async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str: ...
 
 
 def build_user_prompt(criterion: Criterion, report: str, reference: str | None) -> str:
@@ -40,9 +59,9 @@ def build_user_prompt(criterion: Criterion, report: str, reference: str | None) 
     ]
     if criterion.explanation:
         parts.append(f"【标准说明】{criterion.explanation}")
+    parts.append(f"【文章一】\n{report[:MAX_REPORT_CHARS]}")
     if reference:
-        parts.append(f"【专家参考文章（对照用）】\n{reference[:MAX_REFERENCE_CHARS]}")
-    parts.append(f"【待评报告】\n{report[:MAX_REPORT_CHARS]}")
+        parts.append(f"【文章二】\n{reference[:MAX_REFERENCE_CHARS]}")
     return "\n\n".join(parts)
 
 
@@ -52,6 +71,63 @@ def parse_verdict(raw: str) -> str:
         if text.startswith(verdict):
             return verdict
     return "unknown"
+
+
+def build_race_user_prompt(
+    case: EvalCase,
+    criterion: Criterion,
+    report: str,
+    reference: str,
+    *,
+    swap_positions: bool = False,
+) -> str:
+    # 两篇只称文章一/文章二：judge 不应知道哪篇是被测、哪篇是参考（与官方一致），
+    # 身份披露会引入"专家"标签效应，位次校准见 swap_positions。
+    parts = [
+        f"**任务背景**\n{case.prompt}",
+        f"**评审标准**\n{criterion.text}",
+    ]
+    if criterion.explanation:
+        parts.append(f"**标准说明**\n{criterion.explanation}")
+    clipped_report = report[:MAX_REPORT_CHARS]
+    clipped_reference = reference[:MAX_REFERENCE_CHARS]
+    first_text, second_text = (
+        (clipped_reference, clipped_report)
+        if swap_positions
+        else (clipped_report, clipped_reference)
+    )
+    parts.append(f"**文章一**\n{first_text}")
+    parts.append(f"**文章二**\n{second_text}")
+    return "\n\n".join(parts)
+
+
+def parse_race_scores(raw: str) -> tuple[float, float, str]:
+    """从 judge 输出提取双文分数；解析失败由调用方记 None,不在此兜底均值。"""
+    text = raw.strip().strip("`")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            payload = json.loads(text[start : end + 1])
+            target = float(payload["article_1_score"])
+            reference = float(payload["article_2_score"])
+            analysis = str(payload.get("analysis", ""))[:800]
+            return _clamp_score(target), _clamp_score(reference), analysis
+        except (KeyError, TypeError, ValueError):
+            pass
+    target_match = re.search(r'"article_1_score"\s*:\s*([0-9.]+)', raw)
+    reference_match = re.search(r'"article_2_score"\s*:\s*([0-9.]+)', raw)
+    if target_match and reference_match:
+        return (
+            _clamp_score(float(target_match.group(1))),
+            _clamp_score(float(reference_match.group(1))),
+            "宽松解析",
+        )
+    raise ValueError(f"无法解析双文分数: {raw[:120]}")
+
+
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(10.0, value))
 
 
 async def judge_case(
@@ -88,6 +164,61 @@ async def judge_case(
         )
 
     return list(await asyncio.gather(*(judge_criterion(item) for item in case.judge_criteria())))
+
+
+async def judge_case_race(
+    case: EvalCase,
+    *,
+    report: str,
+    attempt: int,
+    invoker: JudgeInvoker,
+    reference: str,
+    swap_positions: bool = False,
+) -> list[RaceCriterionScore]:
+    """RACE 口径：每条 criterion 一次调用，被测与参考文章同台各打 0-10 分。
+
+    参数 reference 必须来自 DRB 的专家参考文章；swap_positions 为 True 时参考文章
+    放文章一位（位次校准），分数映射回 target/reference。单条调用失败或解析失败
+    记双 None，聚合端按官方口径把无分 criterion 排除出加权分母。
+    """
+    concurrency = max(1, int(os.environ.get("EVAL_JUDGE_CONCURRENCY", "5")))
+    total_timeout = float(os.environ.get("EVAL_JUDGE_TOTAL_TIMEOUT_SECONDS", "180"))
+    max_tokens = int(
+        os.environ.get("EVAL_JUDGE_RACE_MAX_TOKENS", str(RACE_MAX_OUTPUT_TOKENS_DEFAULT))
+    )
+    gate = asyncio.Semaphore(concurrency)
+
+    async def score_criterion(criterion: Criterion) -> RaceCriterionScore:
+        user = build_race_user_prompt(
+            case, criterion, report, reference, swap_positions=swap_positions
+        )
+        target_score: float | None = None
+        reference_score: float | None = None
+        analysis = ""
+        try:
+            async with gate:
+                raw = await asyncio.wait_for(
+                    invoker.complete(RACE_SYSTEM_PROMPT, user, max_tokens=max_tokens),
+                    timeout=total_timeout,
+                )
+            first_score, second_score, analysis = parse_race_scores(raw)
+            if swap_positions:
+                target_score, reference_score = second_score, first_score
+            else:
+                target_score, reference_score = first_score, second_score
+        except Exception as exc:  # noqa: BLE001 - 单条失败记 None,不拖垮整题
+            analysis = f"judge 调用或解析失败: {type(exc).__name__}: {str(exc)[:120]}"
+        return RaceCriterionScore(
+            case_id=case.case_id,
+            attempt=attempt,
+            criterion_id=criterion.id,
+            dimension=criterion.dimension,
+            target_score=target_score,
+            reference_score=reference_score,
+            analysis=analysis,
+        )
+
+    return list(await asyncio.gather(*(score_criterion(item) for item in case.judge_criteria())))
 
 
 class OpenAICompatJudge:
@@ -131,7 +262,7 @@ class OpenAICompatJudge:
         """写入 judge_meta.json 的评审身份,供报表标注是否自评。"""
         return {"model": self._model, "self_judging": self.self_judging}
 
-    async def complete(self, system: str, user: str) -> str:
+    async def complete(self, system: str, user: str, max_tokens: int | None = None) -> str:
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -139,7 +270,7 @@ class OpenAICompatJudge:
                 {"role": "user", "content": user},
             ],
             temperature=0,
-            max_tokens=self._max_tokens,
+            max_tokens=max_tokens or self._max_tokens,
             # 网关模型是思考型:不禁用思考,max_tokens 预算会全花在隐藏思考上,
             # content 返回空串、被解析成 unknown,整批评测判定失效。
             extra_body={"thinking": {"type": "disabled"}},

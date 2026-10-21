@@ -21,9 +21,18 @@ from pathlib import Path
 
 from evals import aggregate, drb
 from evals.deterministic import Artifact, score_artifact
-from evals.judge import OpenAICompatJudge, judge_case
+from evals.judge import OpenAICompatJudge, judge_case, judge_case_race
 from evals.runner import RunHarness
-from evals.schemas import CriterionResult, EvalCase, load_cases, load_results, merge_results
+from evals.schemas import (
+    CriterionResult,
+    EvalCase,
+    RaceCriterionScore,
+    load_cases,
+    load_results,
+    load_race_results,
+    merge_results,
+    merge_race_results,
+)
 
 EVALS_DIR = Path(__file__).resolve().parent
 # 每轮评测用 EVAL_RESULTS_DIR 指定独立目录,避免旧 round 产物混入新基线。
@@ -106,16 +115,28 @@ async def cmd_run(args: argparse.Namespace) -> None:
         return
     harness = RunHarness(out_dir=RESULTS_DIR)
     failures: list[str] = []
+    semaphore = asyncio.Semaphore(max(1, args.concurrency))
+
+    async def _run_one(case: EvalCase, attempt: int, repeats: int) -> None:
+        async with semaphore:
+            print(f"running {case.case_id} attempt={attempt}/{repeats} ...", flush=True)
+            try:
+                await harness.run_case(case, attempt, resume=args.resume)
+            except Exception as exc:  # noqa: BLE001 - 单题因超时、澄清环、网关抖动等失败时不拖垮整批
+                failures.append(f"{case.case_id}#{attempt}: {type(exc).__name__}: {exc}")
+                print(f"  FAILED {case.case_id} attempt={attempt}: {exc}", flush=True)
+
     try:
-        for case in cases:
-            repeats = args.attempts or case.repeat
-            for attempt in range(1, repeats + 1):
-                print(f"running {case.case_id} attempt={attempt}/{repeats} ...", flush=True)
-                try:
-                    await harness.run_case(case, attempt)
-                except Exception as exc:  # noqa: BLE001 - 单题因超时、澄清环、网关抖动等失败时不拖垮整批
-                    failures.append(f"{case.case_id}#{attempt}: {type(exc).__name__}: {exc}")
-                    print(f"  FAILED {case.case_id} attempt={attempt}: {exc}", flush=True)
+        if args.concurrency > 1:
+            await harness.warmup_auth()
+        await asyncio.gather(
+            *[
+                _run_one(case, attempt, repeats)
+                for case in cases
+                for repeats in [args.attempts or case.repeat]
+                for attempt in range(max(1, args.from_attempt), repeats + 1)
+            ]
+        )
     finally:
         await harness.close()
     if failures:
@@ -172,35 +193,64 @@ async def cmd_judge(args: argparse.Namespace) -> None:
     }
     invoker = OpenAICompatJudge()
     results: list[CriterionResult] = []
+    race_rows: list[RaceCriterionScore] = []
     evaluated: set[tuple[str, int]] = set()
+    race_mode = args.mode == "race"
     for case_id, round_path in _iter_result_rounds(args.case):
         case = external.get(case_id) or behavior.get(case_id)
         if case is None or not case.judge_criteria():
             continue
+        if race_mode and case.track != "external":
+            continue  # RACE 口径只适用于带官方 rubric 与参考文章的 external 轨
         for artifact in _artifacts_from_round(case_id, round_path):
-            evaluated.add((artifact.case_id, artifact.attempt))
+            if args.attempt is not None and artifact.attempt != args.attempt:
+                continue
             report = artifact.report
             if not report:
+                if not race_mode:
+                    evaluated.add((artifact.case_id, artifact.attempt))
                 continue
+            evaluated.add((artifact.case_id, artifact.attempt))
             reference = references.get(_drb_numeric(case_id))
-            results.extend(
-                await judge_case(
-                    case,
-                    report=report,
-                    attempt=artifact.attempt,
-                    invoker=invoker,
-                    reference=reference,
+            if race_mode:
+                if not reference:
+                    sys.exit(f"race 口径需要 DRB 专家参考文章，缺失：{case_id}")
+                race_rows.extend(
+                    await judge_case_race(
+                        case,
+                        report=report,
+                        attempt=artifact.attempt,
+                        invoker=invoker,
+                        reference=reference,
+                        swap_positions=args.swap,
+                    )
                 )
-            )
-            print(f"judged {case_id} attempt={artifact.attempt}")
-    out = RESULTS_DIR / "judge.jsonl"
-    merged = merge_results(out, results, evaluated)
+            else:
+                results.extend(
+                    await judge_case(
+                        case,
+                        report=report,
+                        attempt=artifact.attempt,
+                        invoker=invoker,
+                        reference=reference,
+                    )
+                )
+            print(f"judged[{args.mode}] {case_id} attempt={artifact.attempt}")
+    if race_mode:
+        out = RESULTS_DIR / ("judge_race_swapped.jsonl" if args.swap else "judge_race.jsonl")
+        merged_rows: list[RaceCriterionScore] | list[CriterionResult] = merge_race_results(
+            out, race_rows, evaluated
+        )
+    else:
+        out = RESULTS_DIR / "judge.jsonl"
+        merged_rows = merge_results(out, results, evaluated)
     (RESULTS_DIR / "judge_meta.json").write_text(
         json.dumps(invoker.identity, ensure_ascii=False) + "\n", "utf-8"
     )
     if invoker.self_judging:
         print("⚠ 本轮为自评（judge=被测同模型），分数仅供调试，勿对外引用")
-    print(f"本次 judge 判定 {len(results)} 条，累计 {len(merged)} 条 → {out}")
+    judged_count = len(race_rows) if race_mode else len(results)
+    print(f"本次 judge 判定 {judged_count} 条，累计 {len(merged_rows)} 条 → {out}")
 
 
 def _pairs(external: dict[str, EvalCase], root: Path):
@@ -288,6 +338,36 @@ def cmd_report(args: argparse.Namespace) -> None:
             if judge_meta_file.is_file()
             else {"model": "unknown", "self_judging": None}
         )
+    race_file = RESULTS_DIR / "judge_race.jsonl"
+    if race_file.is_file():
+        race_rows = load_race_results(race_file)
+        race_scores = [
+            aggregate.score_case_race(external[cid], attempt, race_rows)
+            for cid, attempt in sorted({(r.case_id, r.attempt) for r in race_rows})
+            if cid in external
+        ]
+        valid_overall = [item.overall for item in race_scores if item.overall is not None]
+        dimension_values: dict[str, list[float]] = {}
+        for item in race_scores:
+            for dimension, ratio in item.dimension_ratios.items():
+                dimension_values.setdefault(dimension, []).append(ratio)
+        summary["race_quality"] = {
+            "meaning": "target/(target+reference) 归一,0.5=与专家参考打平",
+            "rounds": len(race_scores),
+            "mean_overall": round(sum(valid_overall) / len(valid_overall), 4)
+            if valid_overall
+            else None,
+            "attempt1_overall": [
+                round(item.overall, 4)
+                for item in race_scores
+                if item.attempt == 1 and item.overall is not None
+            ],
+            "dimension_mean": {
+                dimension: round(sum(values) / len(values), 4)
+                for dimension, values in sorted(dimension_values.items())
+            },
+            "missing_criterion_count": sum(item.missing_count for item in race_scores),
+        }
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     (RESULTS_DIR / "summary.json").write_text(
         json.dumps({"summary": summary, "per_case": metrics}, ensure_ascii=False, indent=1) + "\n",
@@ -337,7 +417,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_filters(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--profile", default="", choices=["", "core30"])
+        p.add_argument("--profile", default="", choices=["", "dev", "test30"])
         p.add_argument("--track", default="all", choices=["all", "external", "behavior"])
         p.add_argument("--group", default="")
         p.add_argument("--ids", default="")
@@ -358,6 +438,13 @@ def main(argv: list[str] | None = None) -> None:
     add_filters(sp)
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--attempts", type=int, default=0, help="覆盖每题次数（pass^k 用）")
+    sp.add_argument("--from-attempt", type=int, default=1, help="从第几个 attempt 起跑（续跑用）")
+    sp.add_argument(
+        "--resume",
+        action="store_true",
+        help="round 产物已存在且可解析的直接复用,不重跑",
+    )
+    sp.add_argument("--concurrency", type=int, default=1, help="批内并发 (题,attempt) 任务数")
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("capture")
@@ -376,6 +463,18 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("judge")
     sp.add_argument("--case", default=None)
     sp.add_argument("--drb-root", default=None)
+    sp.add_argument(
+        "--mode",
+        choices=("binary", "race"),
+        default="binary",
+        help="binary=既有 yes/no 曲线;race=官方 0-10 双文对比口径,写 judge_race.jsonl",
+    )
+    sp.add_argument("--attempt", type=int, default=None, help="只判指定 attempt(如 1 即 pass@1)")
+    sp.add_argument(
+        "--swap",
+        action="store_true",
+        help="race 口径下把参考文章放文章一(位置偏置对照),写 judge_race_swapped.jsonl",
+    )
     sp.set_defaults(func=cmd_judge)
 
     sp = sub.add_parser("report")

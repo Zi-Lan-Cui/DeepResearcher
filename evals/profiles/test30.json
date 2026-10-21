@@ -1,0 +1,12 @@
+{
+  "description": "实测集：DRB 中文 50 题中的 30 题，由三波各 10 题组齐（2026-10-15 定稿）；对外口径只认这份，与 dev 开发集无交集",
+  "external_ids": [
+    "drb-zh-001", "drb-zh-012", "drb-zh-016", "drb-zh-024", "drb-zh-025",
+    "drb-zh-031", "drb-zh-034", "drb-zh-041", "drb-zh-042", "drb-zh-043",
+    "drb-zh-002", "drb-zh-015", "drb-zh-020", "drb-zh-021", "drb-zh-026",
+    "drb-zh-029", "drb-zh-032", "drb-zh-033", "drb-zh-040", "drb-zh-044",
+    "drb-zh-004", "drb-zh-006", "drb-zh-014", "drb-zh-019", "drb-zh-035",
+    "drb-zh-037", "drb-zh-039", "drb-zh-045", "drb-zh-048", "drb-zh-050"
+  ],
+  "behavior_ids": []
+}
