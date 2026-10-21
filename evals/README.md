@@ -1,16 +1,10 @@
 # 评测
 
-双轨设计：报告质量走外部可比基准（DeepResearch Bench 中文题、官方 criterion 与
-权重），系统行为走自研断言（澄清、口径冲突、证据不足时的保守交付、恢复与缓存）。
-两套分数并列呈现、不合成总分——总分同时掩盖"文风好但引用差"和"工程稳但内容空"
-两类失败，分开看才能归因。
-
-## 结构
-
-| 轨 | 题目来源 | 判分 | 用途 |
-|---|---|---|---|
-| 外轨 | DRB 中文 50 题（dev 20 / holdout 30，固定种子切分） | 专家二元 criterion × LLM judge（带参考文章对照）+ 确定性门 | 与外部系统可比 |
-| 内轨 | `cases/behavior.jsonl` 15 题（B 澄清 / C 口径 / D 保守交付 / F 恢复缓存） | deterministic 断言为主，judge 只承担布尔断言 | 覆盖一次性"prompt→报告"类基准测不到的行为面 |
+单轨设计：题目全部来自 DeepResearch Bench 中文 50 题，判分走官方 RACE 口径——
+逐条 criterion 让被测文章与专家参考文章同台各打 0-10 分，按官方维度权重聚合后
+以 target/(target+reference) 归一，0.5 = 与专家参考打平。正序与换序各判一次取
+均值，消掉裁判的位次偏置。确定性门（引用完整性、run_done 恰一帧、事件 seq 连续）
+对每份产物独立校验，作为通过前置，不产出质量分。
 
 ## 数据与版权
 
@@ -28,28 +22,28 @@ uv run python -m evals.cli split --dev 20     # 生成固定切分，全组共�
 
 export EVAL_BASE_URL=http://127.0.0.1:8080    # 被测服务：API + 至少 1 个 Worker
 export EVAL_EMAIL=eval@local.dev EVAL_PASSWORD=***
-export SERVICE_DATABASE_URL=postgresql+asyncpg://...   # 行为断言需要 DB 特权读
+export SERVICE_DATABASE_URL=postgresql+asyncpg://...   # 门禁判定需要 DB 直读 run_events
 ```
 
 ## 运行
 
 DRB 中文题池共 50 题，切成两份 tracked 名单：`test30` 是实测集（三波各 10 题组齐，
-对外口径只认它），`dev` 是开发迭代集（其余 20 道外轨 + 10 道内轨关键行为题）。
-日常首轮用 dev 每题 1 次快速定位问题，收口阶段在 test30 上跑 pass@3 出成绩。
+对外口径只认它），`dev` 是开发迭代集（其余 20 题）。日常首轮用 dev 每题 1 次快速
+定位问题，定稿阶段在 test30 上跑 pass@3 出成绩。
 
 ```bash
 export EVAL_RESULTS_DIR=evals/results/dev-v1   # 每轮实验独立目录，新结果避免写进历史目录
 uv run python -m evals.cli cases --profile dev
 uv run python -m evals.cli run --profile dev --attempts 1
-uv run python -m evals.cli score      # 确定性门 + 行为断言，零费用
-uv run python -m evals.cli judge      # 二元 rubric，LLM 调用计入成本
+uv run python -m evals.cli score      # 确定性门，零费用
+uv run python -m evals.cli judge      # RACE 双序判分（正序+换序），LLM 调用计入成本
 uv run python -m evals.cli report     # 记分表 → summary.json
 ```
 
-按轨/按功能运行：`run --track behavior`；`annotate` 导出 `results/annotate.csv`
-人工填写，`annotate --import-csv` 回收并计算人机一致率与 Cohen κ。
-Evidence 的 `audit_chunk` 存于 LangGraph checkpoint，runner 直读进 artifact 用于
-核对 quote 与抽取上下文；该字段不进入 Agent 消息或 SSE 事件。
+judge 每题每轮调两次：正序写 `judge_race.jsonl`，换序（参考文章放文章一）写
+`judge_race_swapped.jsonl`，report 取两序 target/(target+reference) 的均值。
+单题局部重评用 `run --ids`/`score --case`/`judge --case`；`run --attempts` 覆盖
+每题次数，`--from-attempt` 续跑，`--concurrency` 批内并发。
 
 ## judge 配置
 
@@ -57,22 +51,19 @@ judge 身份取自评测侧环境变量：`EVAL_JUDGE_MODEL`（+ 可选 `EVAL_JU
 `EVAL_JUDGE_API_KEY`，可整体指向另一提供商）。不配则回落到被测同一模型；同模型
 评审存在 self-preference 偏高的已知风险，因此需要显式 `EVAL_SELF_JUDGE=1` 认领，
 评审身份随之写入 `judge_meta.json`，report 的 `summary.judge` 原样带出——自评轮次
-适合调试与冒烟，对外引用前建议换异构 judge。当前引擎为 mimo，过渡期用
-`EVAL_SELF_JUDGE=1`；换型只需设 `EVAL_JUDGE_MODEL`。
+适合调试与冒烟，对外引用前建议换异构 judge。思考型网关需加大输出预算
+（`EVAL_JUDGE_RACE_MAX_TOKENS=6144`），普通模型默认 2048 够用。
 
 ## 判分规则
 
-- 判定发生在 criterion 级，取值 yes / no / unknown；judge 逐条独立调用（整篇
-  印象式打分容易被相邻条目带偏）。
-- 报告缺失 criterion 要求的内容记 no；unknown 只留给题目歧义、材料损坏或
-  评审器故障。unknown 视为未通过，并计入 unknown rate 供 rubric 校准。
-- 外轨 case 通过：确定性门全绿且四维加权 ≥ 75；内轨 case 通过：门全绿且
-  全部行为断言为 yes。
-- 过程指标（token/费用/时长/缓存命中）随 artifact 记录，不参与通过判定。
+- 判定发生在 criterion 级：同一调用内两篇文章各打 0-10 连续分，档位提示
+  0-2/2-4/4-6/6-8/8-10；judge 逐条独立调用（整篇印象式打分容易被相邻条目带偏）。
+- 单条调用或解析失败记双 None，聚合时排除出加权分母；整维无有效分按官方口径
+  置零。缺分数量以 `missing_criterion_count` 上报，异常升高先查 judge 侧故障。
+- case 通过：三门均通过 ∧ 双序均值 > 0.5（即稳定超过专家参考文章）。
+- 过程指标（token/时长/缓存）随 artifact 记录，不参与通过判定。
 - `pass@3`（三次至少一次过）与 `pass^3`（三次全过）并列报告；长任务服务对外
   建议以 `pass^k` 为主口径。
-- F1/F2（强杀/停机接管）需要 harness 管理 worker 进程，接线尚未完成，
-  `--with-faults` 才会列出。
 
 ## 迭代纪律
 
@@ -81,13 +72,11 @@ judge 身份取自评测侧环境变量：`EVAL_JUDGE_MODEL`（+ 可选 `EVAL_JU
 
 ## 对外指标
 
-1. **Report Quality**：DRB 四维 criterion 加权质量分；
-2. **Evidence Trustworthiness**：引用协议完整性 + claim–quote 支持度 + 来源质量
-   的聚合——目前仅引用协议完整性层已自动化，其余两项补齐前，对外表述建议限定
-   在已实现范围；
-3. **System Reliability**：内轨用例 pass rate 与 `pass^k`；
-4. **Efficiency**：成功 run 的 token / 耗时 / 费用，作成本趋势，不决定质量判定。
+1. **Report Quality**：RACE 双序均值（分布、超参考比例）；
+2. **Evidence Trustworthiness**：引用协议完整性门——正文每个 [证据N] 可溯源，
+   来源条目 url/quote 非空；
+3. **Engineering pass@3 / pass^3**：三门均通过 ∧ 双序均值 > 0.5 的轮次统计；
+4. **Efficiency**：成功 run 的 token / 耗时，作成本趋势，不决定质量判定。
 
-unknown rate 与人机一致率属于评审系统自身的健康度监控，不作为产品指标。
-DRB 题内 criterion 与内轨状态机断言是上述指标的计算与归因细节，调试时可展开，
+criterion 级分数与维度均值是上述指标的计算与归因细节，调试时可展开，
 总览报表不平铺。

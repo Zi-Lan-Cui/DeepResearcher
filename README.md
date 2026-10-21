@@ -125,7 +125,7 @@ src/deepresearcher/
 ├── prompts/              各角色的系统提示词，外置成 Markdown
 └── evidence/、reporting/、schemas/   证据模型、引用校验与渲染、数据契约
 tests/                    单元与集成测试，运行 make test
-evals/                    质量基准与行为断言两套评测，见 evals/README.md
+evals/                    基于 DRB RACE 口径的质量评测，见 evals/README.md
 docker/、docker-compose.yml         本地依赖与可选的自建观测栈
 env/.env.example          全部配置项与注释
 ```
