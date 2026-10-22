@@ -11,6 +11,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
 
+from deepresearcher.observability.events.dedup import bind_position_from_current
 from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
@@ -244,6 +245,9 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     def _log_event(self, event_type: str, payload: dict[str, object]) -> None:
         # 事件旁路的异常容错在 emit_agent_event 一层，此处不再各自设防。
         if self._emit is not None:
-            self._emit(event_type, payload)
+            # 模型与工具钩子都在节点 config 作用域内，借它绑定 ns：去重键要靠 ns
+            # 才分得开同一 Agent 的多次模型回合与同一步内的不同工具。
+            with bind_position_from_current():
+                self._emit(event_type, payload)
             return
         self._logger.info("%s payload=%s", event_type, payload)

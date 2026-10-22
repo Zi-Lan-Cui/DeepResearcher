@@ -1,6 +1,7 @@
 """LangGraph 拓扑和节点装配。"""
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -12,6 +13,7 @@ from deepresearcher.config import Settings, get_settings
 from deepresearcher.errors import clip_text
 from deepresearcher.llm import build_llm
 from deepresearcher.node_runner import execute_node
+from deepresearcher.observability.events.dedup import bind_position_from
 from deepresearcher.observability.instrumentation import instrument_node
 from deepresearcher.reporting import no_evidence_blockers, render_incomplete_report
 from deepresearcher.routing import (
@@ -119,8 +121,11 @@ def _guarded_node(name, node, *, event_sink=None, max_text_chars: int):
         summarize=lambda value: summarize_node_result(value, max_text_chars=max_text_chars),
     )
 
-    async def guarded(state):
-        return await execute_node(state, stage=name, node=observed)
+    async def guarded(state, config: RunnableConfig):
+        # 本节点内所有事件（含 instrument_node 的 started/completed）都靠这里绑定的
+        # 图空间算出重放不变的去重键，所以绑在最外层，被包裹的两层无需感知。
+        with bind_position_from(config):
+            return await execute_node(state, stage=name, node=observed)
 
     return guarded
 
@@ -141,8 +146,8 @@ def _routed_node(
         max_text_chars=max_text_chars,
     )
 
-    async def routed(state):
-        update = await guarded(state)
+    async def routed(state, config: RunnableConfig):
+        update = await guarded(state, config)
         target = route({**state, **update})
         return Command(update=update, goto=target)
 

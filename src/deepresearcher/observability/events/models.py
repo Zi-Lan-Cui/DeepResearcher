@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from deepresearcher.errors import clip_text
+from deepresearcher.observability.events.dedup import build_dedup_key
 from deepresearcher.observability.tracing.context import SpanContext, current_span_context
 
 
@@ -22,6 +23,7 @@ class NodeEvent(BaseModel):
     event_id: str
     event_type: str
     timestamp: str
+    dedup_key: str | None = None
     trace_id: str | None = None
     span_id: str | None = None
     run_id: str | None = None
@@ -79,6 +81,10 @@ def make_audit_event(
         event["component"] = component
     if payload:
         event["payload"] = payload
+    # 身份不确定就不写该字段；下游按无键处理，不参与唯一约束。
+    dedup_key = build_dedup_key(event_type, payload)
+    if dedup_key:
+        event["dedup_key"] = dedup_key
     return event
 
 
@@ -98,6 +104,7 @@ def make_tool_event(
     payload: dict | None = None,
     event_name: str | None = None,
 ) -> NodeEvent:
+    """构造工具调用事件；工具名的前缀由本层决定，不交给 make_node_event。"""
     event = make_node_event(
         tool,
         status,
@@ -111,8 +118,9 @@ def make_tool_event(
         error=error,
         payload=payload,
         component=component,
+        event_name=event_name or "tool_" + status,
     )
-    return event.model_copy(update={"event_type": event_name or "tool_" + status, "node": tool})
+    return event.model_copy(update={"node": tool})
 
 
 def make_node_event(
@@ -129,17 +137,21 @@ def make_node_event(
     duration_ms: float | None = None,
     error: str | None = None,
     payload: dict | None = None,
+    event_name: str | None = None,
 ) -> NodeEvent:
+    """构造节点生命周期事件；event_name 改写默认的 node_ 前缀。"""
     resolved = _link_or(link)
     trace_id = trace_id or resolved.trace_id
     span_id = span_id or resolved.span_id
     run_id = run_id or resolved.run_id
     session_id = session_id or resolved.session_id
     node_id = node_id or resolved.node_id
+    event_type = event_name or "node_" + status
     return NodeEvent(
         event_id=f"evt-{uuid4().hex}",
-        event_type="node_" + status,
+        event_type=event_type,
         timestamp=datetime.now(timezone.utc).isoformat(),
+        dedup_key=build_dedup_key(event_type, payload),
         trace_id=trace_id,
         span_id=span_id,
         run_id=run_id,

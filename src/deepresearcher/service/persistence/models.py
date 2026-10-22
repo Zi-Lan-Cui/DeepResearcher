@@ -18,6 +18,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -161,16 +162,22 @@ class Run(Base):
 class RunEvent(Base):
     """研究过程事件的留档，供 SSE 断线重连回放与审计。
 
-    record 存引擎写出的原始事件 dict——引擎侧已对所有 *_preview/error 做了
-    截断（≤1000 字），故单行体积天然有界。投影（面向用户的文案）不写入数据库，回放时
-    经 projector 现算。
+    record 存引擎写出的原始事件 dict——引擎侧已对所有 *_preview/error 做了截断
+    （≤1000 字），故单行体积天然有界；投影文案不写入数据库，回放时经 projector 现算。
+
+    seq 供断线续传的水位，dedup_key 重跑不变、承载唯一约束；dedup_key 为 NULL 的行
+    不参与冲突判定，等同不去重。
     """
 
     __tablename__ = "run_events"
+    __table_args__ = (UniqueConstraint("run_id", "dedup_key", name="uq_run_events_dedup"),)
 
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
     event_type: Mapped[str] = mapped_column(String(64))
+    # create_all 只覆盖新库；既有库另补本列，并加上 UNIQUE (run_id, dedup_key) 约束
+    # uq_run_events_dedup。
+    dedup_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     record: Mapped[dict] = mapped_column(JSON)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

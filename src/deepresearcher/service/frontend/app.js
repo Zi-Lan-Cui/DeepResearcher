@@ -3,6 +3,10 @@
 const tokenKey = "deepresearcher.token";
 const $ = (id) => document.getElementById(id);
 let lastSeq = 0;        // SSE 去重水位：重连/回放都只会重发旧 seq，单调消费即可
+// 逻辑事件去重：节点崩溃重跑会重新生成一条事件（新 seq、新 event_id），
+// seq 水位拦不住，靠后端下发的 dedup_key 认"同一件事"。
+const SEEN_DEDUP_KEYS_MAX = 4000;
+let seenDedupKeys = new Set();
 let streamAbort = null; // 当前 SSE 的 AbortController
 
 function authHeaders(extra) {
@@ -813,6 +817,19 @@ function handleFrame(event, data) {
     if (data.seq <= lastSeq) return; // 回放/重连去重
     lastSeq = data.seq;
   }
+  // seq 只挡"同一条记录被重发"。重跑产生的是新记录、新 seq，只有 dedup_key 不变；
+  // 不在此挡住，方向卡会被重新渲染一次。
+  if (typeof data.dedup_key === "string" && data.dedup_key) {
+    if (seenDedupKeys.has(data.dedup_key)) return;
+    seenDedupKeys.add(data.dedup_key);
+    if (seenDedupKeys.size > SEEN_DEDUP_KEYS_MAX) {
+      // Set 保持插入序，按 FIFO 淘汰最早的一批。
+      for (const key of seenDedupKeys) {
+        if (seenDedupKeys.size <= SEEN_DEDUP_KEYS_MAX) break;
+        seenDedupKeys.delete(key);
+      }
+    }
+  }
   if (event === "text_delta") deltaAppend(data.channel, data.text);
   else if (event === "tick") progressLine(data.text);
   else if (event === "stage_open") ensureStage(data.stage, data.title);
@@ -1417,6 +1434,7 @@ async function renderRun(runId) {
   currentRunId = runId;
   if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   lastSeq = 0;
+  seenDedupKeys = new Set(); // 换 run 后键空间不同，旧键不能留
   resetProgressView();
   $("report-card").classList.add("hide");
   $("run-cancel").disabled = false;

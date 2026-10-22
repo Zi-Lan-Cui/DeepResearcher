@@ -84,7 +84,21 @@ def project_clarification(payload: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def project(record: Mapping[str, Any]) -> SseFrame | None:
-    """引擎/合成事件 dict → 客户端帧；不在白名单内的一律 None。"""
+    """引擎/合成事件 dict → 客户端帧；不在白名单内的一律 None。
+
+    帧里统一附加 dedup_key 供客户端识别重放，投影分支不必各自处理。
+    """
+    frame = _project(record)
+    if frame is None:
+        return None
+    dedup_key = record.get("dedup_key")
+    if isinstance(dedup_key, str) and dedup_key:
+        frame.data["dedup_key"] = dedup_key
+    return frame
+
+
+def _project(record: Mapping[str, Any]) -> SseFrame | None:
+    """按事件类型与节点名投影为客户端帧，不处理去重键。"""
     event_type = record.get("event_type")
     if not isinstance(event_type, str):
         return None
