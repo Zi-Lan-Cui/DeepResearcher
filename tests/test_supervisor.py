@@ -1554,6 +1554,86 @@ def _delegate_context_for(agent, run_id: str = "run-g"):
     return supervisor, context
 
 
+def _direction_result_with_index(index: int) -> ResearchDirectionResult:
+    return ResearchDirectionResult(
+        task_id=f"task-{index:04d}",
+        round=1,
+        task_index=index,
+        question=f"方向{index}",
+        research_direction=f"方向{index}",
+        execution_status="completed",
+        coverage_status="sufficient",
+        evidence_count=0,
+        source_count=0,
+        stop_reason=DirectionStopReason.COMPLETE,
+    )
+
+
+def _inflight_registration(index: int) -> dict:
+    return PendingDirection(
+        task_id=f"task-{index:04d}",
+        subtask={"id": f"task-{index:04d}", "sequence": index},
+        display_title=f"在途{index}",
+        round=1,
+    ).model_dump()
+
+
+def test_task_index_continues_after_settled_directions():
+    """新一轮执行（评审打回）不得重用已结算方向的编号。
+
+    计数器若写死为 0，第二轮又发 task-0001，按 task_id 后写覆盖会顶掉第一轮结论。
+    """
+    loop_state = SupervisorLoopState(
+        {
+            "query": "问题",
+            "task_results": [_direction_result_with_index(1), _direction_result_with_index(2)],
+        },
+        current_round=2,
+        active_evidence_limit=6,
+    )
+
+    assert loop_state.task_index_counter == 2
+    assert loop_state.allocate_task_index() == 3
+
+
+def test_task_index_reserves_inflight_directions():
+    """在途登记尚未结算也占用了编号，只看已结算结果会撞上正在跑的方向。"""
+    loop_state = SupervisorLoopState(
+        {
+            "query": "问题",
+            "task_results": [_direction_result_with_index(1), _direction_result_with_index(2)],
+            "pending_directions": {"task-0005": _inflight_registration(5)},
+        },
+        current_round=2,
+        active_evidence_limit=6,
+    )
+
+    assert loop_state.task_index_counter == 5
+    assert loop_state.allocate_task_index() == 6
+
+
+def test_task_index_for_call_continues_across_rounds():
+    """正常派发路径（按调用位置派生）跨轮接续，不回落到 0 基。"""
+    loop_state = SupervisorLoopState(
+        {"query": "问题", "task_results": [_direction_result_with_index(3)]},
+        current_round=2,
+        active_evidence_limit=6,
+    )
+    runtime_state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call-next", "name": "ResearchDelegate", "args": {}, "type": "tool_call"}
+                ],
+            )
+        ],
+        "task_index_counter": loop_state.initial_channel_state()["task_index_counter"],
+    }
+
+    assert loop_state.allocate_task_index_for_call(runtime_state, "call-next") == 4
+
+
 def test_research_delegate_receipt_precedes_direction_completion():
     """派发工具在方向完成前返回受理回执;后台任务体随后才走完。"""
     import time

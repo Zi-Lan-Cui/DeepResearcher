@@ -47,6 +47,18 @@ def _merge_stop_reason_by_rank(
     return incoming if incoming.rank >= current.rank else current
 
 
+def _integer_field(record: object, field_name: str) -> int:
+    """从对象或字典取整数编号，缺失按 0 计。
+
+    通道里可能是模型对象，也可能是旧检查点留下的半结构化快照。
+    """
+    value = record.get(field_name) if isinstance(record, dict) else getattr(record, field_name, 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
     """在发起本次执行的 AIMessage 中定位该派发在 ResearchDelegate 序列里的序。
 
@@ -285,7 +297,23 @@ class SupervisorLoopState:
         # 在途方向登记 {task_id: PendingDirection dict}；通道为事实源，批内共享对象。
         self.pending_directions: dict[str, dict] = dict(state.get("pending_directions") or {})
 
-        self._task_counter: int = 0
+        # 编号由 _used_task_index 从持久化事实派生，不持有进程内副本。
+        self._task_counter: int = self._used_task_index()
+
+    def _used_task_index(self) -> int:
+        """已用最大编号：已结算结果与在途登记的并集。
+
+        编号只能从持久化事实派生：另存计数器副本会在跨轮重建时归零，与已发出的
+        task_id 重号，后写的结果按 id 覆盖前一轮结论。取最大而非取计数，才能容纳
+        恢复路径上的编号空洞。
+        """
+        used_indexes = [_integer_field(item, "task_index") for item in self.task_results]
+        for entry in self.pending_directions.values():
+            subtask = (
+                entry.get("subtask") if isinstance(entry, dict) else getattr(entry, "subtask", {})
+            )
+            used_indexes.append(_integer_field(subtask or {}, "sequence"))
+        return max(used_indexes, default=0)
 
     @staticmethod
     def _restore_synthesis(value: object) -> ResearchSynthesis | None:
@@ -398,25 +426,27 @@ class SupervisorLoopState:
         self.working_set_revision += 1
 
     def allocate_task_index(self) -> int:
-        """活视图顺次分配；仅在调用位置不可得时回退。
+        """顺次分配下一个编号；调用位置不可得时回退到本路径。
 
-        正常派发走 allocate_task_index_for_call。此路径依赖批内共享对象，崩溃重放时不同
-        生命周期会算出相同编号，merge_task_results 按 id 去重会丢弃一个方向。
+        正常派发使用 allocate_task_index_for_call。两条路径都以已用最大编号为基准。
         """
-        completed_max = max((item.task_index for item in self.task_results), default=0)
-        self._task_counter = max(self._task_counter, completed_max) + 1
+        self._task_counter = max(self._task_counter, self._used_task_index()) + 1
         return self._task_counter
 
     def allocate_task_index_for_call(self, origin_state: dict[str, Any], tool_call_id: str) -> int:
         """任务序号由发起消息内的调用位置派生，不把研究轮次编码进任务 ID。
 
         批初 task_index_counter 与 tool_calls 顺序都已持久化，同一 tool_call 在任何生命周期
-        重放到同一编号，嵌套 researcher 的 ns 因此跨重放稳定。
+        重放到同一编号，嵌套 researcher 的 ns 因此跨重放稳定。基准再与已用最大编号取大，
+        兼容通道值缺失的检查点。
         """
         position = _tool_call_position(origin_state.get("messages", []), tool_call_id)
         if position is None:
             return self.allocate_task_index()
-        base = int(origin_state.get("task_index_counter", 0) or 0)
+        base = max(
+            int(origin_state.get("task_index_counter", 0) or 0),
+            self._used_task_index(),
+        )
         index = base + position + 1
         self._task_counter = max(self._task_counter, index)
         return index
