@@ -21,10 +21,10 @@ def test_output_language_default_and_directive():
 
 
 def test_agent_config_rejects_active_evidence_limit_above_archive_limit():
-    with pytest.raises(ValueError, match="MAX_EVIDENCES_PER_DIRECTION"):
+    with pytest.raises(ValueError, match="MAX_EVIDENCES_PER_TASK"):
         AgentConfig(
-            research_agent_max_evidences_per_direction=13,
-            research_agent_max_evidence_candidates_per_direction=12,
+            research_agent_max_evidences_per_task=13,
+            research_agent_max_evidence_candidates_per_task=12,
         )
 
 
@@ -32,7 +32,7 @@ def test_agent_config_rejects_per_source_limit_above_archive_limit():
     with pytest.raises(ValueError, match="EVIDENCE_MAX_PER_SOURCE"):
         AgentConfig(
             evidence_max_per_source=13,
-            research_agent_max_evidence_candidates_per_direction=12,
+            research_agent_max_evidence_candidates_per_task=12,
         )
 
 
@@ -74,3 +74,11 @@ def test_explicit_search_provider_requires_matching_key():
     assert not SearchConfig(provider="tavily", baidu_api_key="wrong-provider-key").configured
     assert SearchConfig(provider="tavily", tavily_api_key="configured").configured
     assert SearchConfig(provider="aliyun").configured
+
+
+def test_fetch_proxy_defaults_to_empty_and_reads_configured_value(monkeypatch):
+    monkeypatch.delenv("FETCH_PROXY", raising=False)
+    assert _search_config().fetch_proxy == ""
+
+    monkeypatch.setenv("FETCH_PROXY", "http://127.0.0.1:7890")
+    assert _search_config().fetch_proxy == "http://127.0.0.1:7890"

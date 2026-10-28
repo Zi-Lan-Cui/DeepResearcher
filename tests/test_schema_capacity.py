@@ -47,8 +47,8 @@ def test_reporting_schemas_do_not_enforce_old_business_limits():
 def test_agent_config_accepts_normal_values_above_old_schema_caps():
     config = AgentConfig(
         supervisor_max_active_evidences=60,
-        research_agent_max_evidences_per_direction=32,
-        research_agent_max_evidence_candidates_per_direction=64,
+        research_agent_max_evidences_per_task=32,
+        research_agent_max_evidence_candidates_per_task=64,
         writer_max_markdown_chars=50_000,
     )
 

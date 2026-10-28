@@ -17,10 +17,10 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from deepresearcher.agents.clarifier import Clarifier
-from deepresearcher.agents.clarifier.state import ClarifierLoopContext
+from deepresearcher.agents.clarifier.state import ClarifierContext
 from deepresearcher.agents.middleware.tool_loop_guard import SubmittedExitMiddleware
 from deepresearcher.config import AgentConfig
-from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.observability.scope import AgentScope
 
 
 class ScriptedModel:
@@ -126,7 +126,7 @@ def test_rejected_receipt_stays_in_loop_until_accepted():
     )
     result = asyncio.run(agent.ainvoke({"messages": [HumanMessage("go")]}))
 
-    assert model.calls == 2  # 被拒后改正恰好多花一次，接受后不再多跑
+    assert model.calls == 2  # 被拒后改正恰好多花一次，接受后不多跑
     assert result["committed"] is True
 
 
@@ -150,9 +150,7 @@ def test_clarifier_stages_question_with_single_model_call():
 
     model = ScriptedModel([ask_call("c1"), AIMessage(content="IDLE_SPIN_MUST_NOT_HAPPEN")])
     clarifier = Clarifier(model, AgentConfig(), context_window_tokens=32_000)
-    context = ClarifierLoopContext(
-        scope=AgentExecutionScope(run_id="run-d", agent_name="Clarifier")
-    )
+    context = ClarifierContext(scope=AgentScope(run_id="run-d", agent_name="Clarifier"))
     result = asyncio.run(
         clarifier.graph.ainvoke(
             {"messages": [HumanMessage("研究一下")]},

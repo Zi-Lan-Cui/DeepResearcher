@@ -109,7 +109,7 @@ def test_classify_source_flags_primary_domains_conservatively():
     assert classify_source("https://www.stats.gov.cn/x") == "primary"
     assert classify_source("https://cs.stanford.edu/~person") == "primary"
     assert classify_source("https://nsfc.gov.cn/p1") == "primary"
-    # 商业门户、学生报纸、会议营销站归为 general,不得算作一手权威
+    # 商业门户、学生报纸、会议营销站归为 general，不得算作一手权威
     assert classify_source("https://www.thecrimson.com/article") == "general"
     assert classify_source("https://uppersideconferences.com/2024") == "general"
     assert classify_source("https://m.36kr.com/p/1") == "general"
@@ -439,7 +439,11 @@ def test_fetch_parses_html_without_network():
 
 
 def test_fetch_rejects_captcha_page_before_evidence_extraction():
-    html = b"<html><head><title>\xe9\xaa\x8c\xe8\xaf\x81\xe7\xa0\x81_\xe5\x93\x94\xe5\x93\xa9\xe5\x93\x94\xe5\x93\xa9</title></head><body>captcha</body></html>"
+    html = (
+        b"<html><head><title>"
+        b"\xe9\xaa\x8c\xe8\xaf\x81\xe7\xa0\x81_\xe5\x93\x94\xe5\x93\xa9\xe5\x93\x94\xe5\x93\xa9"
+        b"</title></head><body>captcha</body></html>"
+    )
     fake = FakeHttpClient(
         response({}, url="https://www.bilibili.com/opus/1", content=html, content_type="text/html")
     )
@@ -448,6 +452,21 @@ def test_fetch_rejects_captcha_page_before_evidence_extraction():
             DirectHttpFetchProvider(SearchConfig(), fake).afetch("https://www.bilibili.com/opus/1")
         )
     assert exc_info.value.reason_code == "access_challenge"
+
+
+def test_fetch_rejects_body_over_byte_limit():
+    """超限正文不进解析：MAXFILESIZE 只管声明了长度的响应，分块传输由这里兜住。"""
+    payload = b"x" * 4096
+    fake = FakeHttpClient(
+        response({}, url="https://example.com/big", content=payload, content_type="text/plain")
+    )
+    with pytest.raises(SourceUnavailableError) as exc_info:
+        asyncio.run(
+            DirectHttpFetchProvider(SearchConfig(max_fetch_bytes=1024), fake).afetch(
+                "https://example.com/big"
+            )
+        )
+    assert exc_info.value.reason_code == "content_too_large"
 
 
 def test_fetch_service_policy_rejection_short_circuits_provider_chain():
@@ -813,7 +832,7 @@ def _client_with_fake_provider(monkeypatch, provider):
 
 
 def test_search_client_breaker_opens_after_rate_limited_failure(monkeypatch):
-    """provider 报限流后，窗口内的后续查询直接快速失败，不再触网。"""
+    """provider 报限流后，窗口内的后续查询直接快速失败，不发起请求。"""
     import time as _time
 
     error = ToolRequestError("请求失败（重试 3 次）")

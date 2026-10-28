@@ -1,11 +1,10 @@
 import pytest
 
-import deepresearcher.service.persistence.redis_material_store as rms_module
-from deepresearcher.service.persistence.redis_material_store import (
-    RedisResearchMaterialStore,
-)
-from deepresearcher.tools.web.materials import MemoryResearchMaterialStore, SearchResultSet
-from deepresearcher.tools.web.materials.store import grep_patterns, read_lines
+import deepresearcher.tools.web.materials.store as rms_module
+from deepresearcher.tools.web.materials import SearchResultSet
+from deepresearcher.tools.web.materials.paging import grep_patterns, read_lines
+from deepresearcher.tools.web.materials.store import ResearchMaterialStore
+from fakes import MemoryResearchMaterialStore
 
 
 @pytest.mark.asyncio
@@ -104,7 +103,7 @@ async def test_grep_reports_total_has_more_and_pages_via_offset_with_whole_windo
     assert tight.segments[0].matches[0].content == "L1: L1 match\nL2: L2 match\nL3: L3 match"
     assert tight.has_more and tight.segments[0].returned == 1
 
-    # 一轮取两个不相邻段：流上 offset 0 与 18,首尾命中直接同框比较。
+    # 一轮取两个不相邻段：流上 offset 0 与 18，首尾命中直接同框比较。
     head_to_head = await store.grep_patterns(
         ref.document_id,
         ["match"],
@@ -160,7 +159,7 @@ class _Redis:
 @pytest.mark.asyncio
 async def test_redis_material_store_uses_run_scoped_search_key_and_fetch_index():
     redis = _Redis()
-    store = RedisResearchMaterialStore(
+    store = ResearchMaterialStore(
         redis,
         key_prefix="test:material",
         search_ttl_seconds=60,
@@ -200,7 +199,7 @@ async def test_search_cache_hit_records_saved_external_request(monkeypatch):
 
     monkeypatch.setattr(rms_module, "record_cache_event", fake_event)
     redis = _Redis()
-    store = RedisResearchMaterialStore(
+    store = ResearchMaterialStore(
         redis, key_prefix="t", search_ttl_seconds=60, document_ttl_seconds=60
     )
     await store.put_search_results(
@@ -240,7 +239,7 @@ def test_grep_patterns_clips_oversized_line_within_line_budget():
 
 def test_grep_patterns_window_tail_cut_is_marked_and_skipped_on_next_segment():
     """窗口尾部因页预算裁掉:行号标注 + tail_omitted_lines;下一段从下一窗口起,不回补被裁尾行。"""
-    # 命中行相隔 10,避免相邻命中窗口重叠；上下文行同样长，凑出"单窗放不进一页"的裁尾。
+    # 命中行相隔 10，避免相邻命中窗口重叠；上下文行同样长，凑出"单窗放不进一页"的裁尾。
     lines = [
         ("alpha " if index in (0, 10) else "body ") + f"{index} " + "z" * 390 for index in range(20)
     ]

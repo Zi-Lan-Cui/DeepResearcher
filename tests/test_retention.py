@@ -6,9 +6,10 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunEvent, RunUsage, User
-from deepresearcher.service.retention import sweep_run_traces
+from deepresearcher.service.runs.retention import sweep_run_traces
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, RunEvent, RunUsage, User
+from pg_backend import database_url_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -64,8 +65,7 @@ async def _seed(session_factory) -> None:
 
 @pytest_asyncio.fixture
 async def session_factory(tmp_path):
-    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'retention.db'}")
-    await init_db(engine)
+    engine = make_engine(database_url_for(tmp_path))
     factory = make_session_factory(engine)
     await _seed(factory)
     yield factory
@@ -104,7 +104,7 @@ async def test_sweep_is_idempotent_and_batched(session_factory):
     )
     assert second["runs"] == 1  # 批限分轮消化
     third = await sweep_run_traces(session_factory, checkpointer, retention_days=14, now=NOW)
-    assert third == {}  # 打标后不再入候选，重扫成本归零
+    assert third == {}  # 打标后不入候选，重扫无需再次判定
     assert len(checkpointer.deleted) == 3
 
 

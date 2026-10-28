@@ -4,8 +4,8 @@
 账本记录形状在 test_observability.py。
 """
 
+from deepresearcher.observability.span import bind_context
 from deepresearcher.observability.tracing import spans
-from deepresearcher.observability.tracing.context import bind_context
 
 
 def test_label_attributes_snapshot_business_labels():

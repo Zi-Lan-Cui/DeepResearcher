@@ -6,7 +6,7 @@ from deepresearcher.state import StateInvariantError, merge_evidences
 def _evidence(evidence_id: str, claim: str) -> Evidence:
     return Evidence(
         evidence_id=evidence_id,
-        subtask_id="task-0001",
+        task_id="task-0001",
         research_direction="测试方向",
         claim=claim,
         quote=claim,
@@ -38,6 +38,6 @@ def test_merge_evidences_rejects_conflicting_duplicate_id():
 def test_researcher_registers_completion_as_a_standard_tool():
     tools = {item.name: item for item in build_researcher_tools()}
 
-    assert "ResearchDirectionComplete" in tools
+    assert "TaskComplete" in tools
     assert "ReadSources" in tools
     assert {"GrepDocument", "ReadDocument", "AddEvidence"}.issubset(tools)

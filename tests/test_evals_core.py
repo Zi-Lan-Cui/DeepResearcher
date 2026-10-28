@@ -544,7 +544,7 @@ def test_round_persist_resume_roundtrip_is_atomic(tmp_path, monkeypatch):
     from evals.runner import RunHarness
 
     monkeypatch.setenv("EVAL_PASSWORD", "pw")
-    monkeypatch.setenv("SERVICE_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("SERVICE_DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
     harness = RunHarness(out_dir=tmp_path)
     case = _case(case_id="rt-1")
     artifact = Artifact(case_id="rt-1", attempt=1, run_id="run-1", detail={"status": "completed"})
@@ -566,7 +566,7 @@ def test_round_load_ignores_retired_payload_keys(tmp_path, monkeypatch):
     from evals.runner import RunHarness
 
     monkeypatch.setenv("EVAL_PASSWORD", "pw")
-    monkeypatch.setenv("SERVICE_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("SERVICE_DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
     harness = RunHarness(out_dir=tmp_path)
     case = _case(case_id="old-1")
     (tmp_path / "old-1").mkdir()
@@ -636,7 +636,7 @@ def test_cmd_run_from_attempt_resume_and_concurrency(tmp_path, monkeypatch):
         concurrency=3,
     )
     asyncio.run(evals_cli.cmd_run(args))
-    # from-attempt=2:每题只跑 2、3 两个 attempt;单题异常不拖垮整批。
+    # from-attempt=2：每题只跑 2、3 两个 attempt；单题异常不拖垮整批。
     assert sorted((cid, at) for cid, at, _ in calls) == [("a", 2), ("a", 3), ("b", 2), ("b", 3)]
     assert all(resume for _, _, resume in calls)
     assert peak >= 2, "concurrency=3 应出现并发窗口"
@@ -656,7 +656,7 @@ def test_await_state_execution_budget_starts_after_queue(tmp_path, monkeypatch):
     from evals import runner as evals_runner
 
     monkeypatch.setenv("EVAL_PASSWORD", "pw")
-    monkeypatch.setenv("SERVICE_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("SERVICE_DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
     monkeypatch.setattr(evals_runner, "POLL_SECONDS", 0.02)
 
     class _Detail:
@@ -681,7 +681,7 @@ def test_await_state_execution_budget_starts_after_queue(tmp_path, monkeypatch):
     harness = evals_runner.RunHarness(out_dir=tmp_path, timeout_seconds=0.05)
 
     async def scenario():
-        # 8 轮 queued ≈160ms,超出 50ms 执行预算：排队时段不计入执行预算。
+        # 8 轮 queued ≈160ms，超出 50ms 执行预算：排队时段不计入执行预算。
         client = _Client(["queued"] * 8)
         return await harness._await_state(client, {}, "run-x")
 

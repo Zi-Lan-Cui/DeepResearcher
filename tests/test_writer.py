@@ -2,14 +2,14 @@ import asyncio
 from types import SimpleNamespace
 from typing import Annotated, get_args, get_origin, get_type_hints
 
-from deepresearcher.agents.channels import replace_channel, retain_if_absent
-from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
-from deepresearcher.agents.writer import ReportWriter, services
+from deepresearcher.agents.middleware import StateRebuildMiddleware
+from deepresearcher.agents.reducers import replace_channel, retain_if_absent
+from deepresearcher.agents.writer import Writer, services
 from deepresearcher.agents.writer.agent import WRITER_SERIAL_TOOLS
 from deepresearcher.agents.writer.state import (
     ValidatedDraft,
-    WriterAgentState,
-    WriterLoopContext,
+    WriterContext,
+    WriterState,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import AgentConfig
@@ -42,7 +42,7 @@ def test_writer_directive_accepts_configured_ten_known_gaps() -> None:
 
 
 def test_evidence_has_no_audit_or_locator_surface() -> None:
-    # 输出契约不含行号定位与 audit_chunk,断言缺席以防重新引入。
+    # 输出契约不含行号定位与 audit_chunk，断言缺席以防重新引入。
     evidence = _ev(
         "e1",
         "可公开的结论",
@@ -131,7 +131,7 @@ def test_writer_filters_evidence_by_configured_minimum_support():
             markdown="## 结论\n\n搜索摘要中的事实。[[cite:e1]]",
         )
 
-    strict_writer = ReportWriter(
+    strict_writer = Writer(
         writer_llm(draft_output),
         AgentConfig(writer_minimum_support="direct"),
         render_incomplete=lambda _state: "incomplete",
@@ -140,7 +140,7 @@ def test_writer_filters_evidence_by_configured_minimum_support():
     assert strict_result["answer_mode"] == "research_incomplete"
     assert "最低支持等级 `direct`" in strict_result["report"]
 
-    partial_writer = ReportWriter(
+    partial_writer = Writer(
         writer_llm(draft_output),
         AgentConfig(writer_minimum_support="partial"),
         render_incomplete=lambda _state: "incomplete",
@@ -152,7 +152,7 @@ def test_writer_filters_evidence_by_configured_minimum_support():
 
 def test_writer_ends_without_tool_call_as_exhausted_submission():
     result = asyncio.run(
-        ReportWriter(
+        Writer(
             _WriterNoToolLLM(),
             AgentConfig(),
             render_incomplete=lambda _state: "incomplete",
@@ -184,7 +184,7 @@ def test_writer_preserves_review_attempts_when_draft_is_ready():
         )
 
     result = asyncio.run(
-        ReportWriter(
+        Writer(
             writer_llm(draft_output),
             AgentConfig(),
             render_incomplete=lambda _state: "incomplete",
@@ -266,7 +266,7 @@ def test_writer_audit_events_keep_generated_draft(tmp_path):
         )
 
     sink_path = tmp_path / "events.jsonl"
-    agent = ReportWriter(
+    agent = Writer(
         writer_llm(draft_output),
         AgentConfig(),
         render_incomplete=lambda _state: "incomplete",
@@ -566,7 +566,7 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
     from deepresearcher.schemas import ReportBrief, ReportChapter, WriterDirective
 
     class LoopingLLM:
-        """只调用 ReadEvidence、永不提交 CompleteReport 的假模型。"""
+        """只调用 ReadEvidence、永不提交 ReportComplete 的假模型。"""
 
         def bind_tools(self, _tools, **_kwargs):
             return self
@@ -587,7 +587,7 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
     sink = JsonlSink(tmp_path / "events.jsonl")
     ev = Evidence(
         evidence_id="e1",
-        subtask_id="t1",
+        task_id="t1",
         research_direction="测试方向",
         claim="孟子主张性善",
         quote="可验证原文。",
@@ -606,7 +606,7 @@ def test_writer_turn_logging_records_tool_calls_and_stop_reason(tmp_path):
             generation_mode="full",
         ),
     }
-    writer = ReportWriter(
+    writer = Writer(
         LoopingLLM(), config, render_incomplete=lambda _s: "incomplete", event_sink=sink
     )
     result = asyncio.run(writer.run(state))
@@ -635,7 +635,7 @@ def _writer_inline_test_setup(tmp_path, llm):
     sink = JsonlSink(tmp_path / "events.jsonl")
     ev = Evidence(
         evidence_id="e1",
-        subtask_id="t1",
+        task_id="t1",
         research_direction="测试方向",
         claim="孟子主张性善",
         quote="可验证原文。",
@@ -654,14 +654,12 @@ def _writer_inline_test_setup(tmp_path, llm):
             generation_mode="full",
         ),
     }
-    writer = ReportWriter(
-        llm, AgentConfig(), render_incomplete=lambda _s: "incomplete", event_sink=sink
-    )
+    writer = Writer(llm, AgentConfig(), render_incomplete=lambda _s: "incomplete", event_sink=sink)
     return writer, state, sink
 
 
 class _InlineReportLLM:
-    """先读 Evidence，再把整篇报告当收尾正文直接输出、跳过 CompleteReport。"""
+    """先读 Evidence，再把整篇报告当收尾正文直接输出、跳过 ReportComplete。"""
 
     def __init__(self, cite_id: str):
         self.cite_id = cite_id
@@ -690,7 +688,7 @@ class _InlineReportLLM:
 
 
 def test_writer_recovers_inline_draft_without_complete_report(tmp_path):
-    """模型跳过 CompleteReport 直接输出合规正文时，本地校验通过并按已提交草稿进入审阅。"""
+    """模型跳过 ReportComplete 直接输出合规正文时，本地校验通过并按已提交草稿进入审阅。"""
     writer, state, _ = _writer_inline_test_setup(tmp_path, _InlineReportLLM("e1"))
     result = asyncio.run(writer.run(state))
 
@@ -709,7 +707,7 @@ def test_writer_recovers_inline_draft_without_complete_report(tmp_path):
 
 
 def test_writer_rejects_invalid_inline_draft_but_keeps_text(tmp_path):
-    """内联正文引用了未读取的 Evidence：按失败处理，但正文不再被整篇丢弃。"""
+    """内联正文引用了未读取的 Evidence 时按失败处理，正文保留不整篇丢弃。"""
     writer, state, _ = _writer_inline_test_setup(tmp_path, _InlineReportLLM("e9"))
     result = asyncio.run(writer.run(state))
 
@@ -718,8 +716,8 @@ def test_writer_rejects_invalid_inline_draft_but_keeps_text(tmp_path):
     assert "引用校验" in result["writer"].feedback or "不存在" in result["writer"].feedback
 
 
-class _NudgeAwareLLM:
-    """先输出未提交正文;收到守卫退回提示后改用 CompleteReport 正规提交。"""
+class _RejectionAwareLLM:
+    """先输出未提交正文;收到守卫退回提示后改用 ReportComplete 正规提交。"""
 
     def __init__(self):
         self.turn = 0
@@ -745,19 +743,19 @@ class _NudgeAwareLLM:
                 ],
             )
         report = "## 一、先秦\n\n" + "孟子认为人性本善，四端说是其核心论证。[[cite:e1]]" * 12
-        nudged = any(
+        rejected = any(
             isinstance(message, HumanMessage) and "不算提交" in str(message.content)
             for message in messages
         )
         from langchain_core.messages import AIMessage
 
-        if not nudged:
+        if not rejected:
             return AIMessage(content=report)
         return AIMessage(
             content="",
             tool_calls=[
                 {
-                    "name": "CompleteReport",
+                    "name": "ReportComplete",
                     "args": {
                         "title": "测试报告标题",
                         "selected_evidence_ids": ["e1"],
@@ -778,9 +776,9 @@ def _event_types(tmp_path):
     ]
 
 
-def test_writer_guard_nudges_text_only_output_back_into_tool_submission(tmp_path):
-    """提交前输出纯文本被守卫退回,模型改用 CompleteReport 时按正规路径完成。"""
-    writer, state, _ = _writer_inline_test_setup(tmp_path, _NudgeAwareLLM())
+def test_writer_guard_rejects_text_only_output_back_into_tool_submission(tmp_path):
+    """提交前输出纯文本被守卫退回,模型改用 ReportComplete 时按正规路径完成。"""
+    writer, state, _ = _writer_inline_test_setup(tmp_path, _RejectionAwareLLM())
     result = asyncio.run(writer.run(state))
 
     assert result["writer"].status == "completed"
@@ -847,7 +845,7 @@ class _BulkReadThenWriteLLM:
             content="",
             tool_calls=[
                 {
-                    "name": "CompleteReport",
+                    "name": "ReportComplete",
                     "args": {
                         "title": "测试报告标题",
                         "selected_evidence_ids": ["e1", "e2", "e3", "e4"],
@@ -877,7 +875,7 @@ def test_read_evidence_truncation_is_explicit_and_recoverable(tmp_path):
             generation_mode="full",
         ),
     }
-    writer = ReportWriter(
+    writer = Writer(
         _BulkReadThenWriteLLM(),
         AgentConfig(writer_read_batch_size=2),
         render_incomplete=lambda _s: "incomplete",
@@ -912,13 +910,13 @@ def _non_concurrency_safe_channels(state_cls) -> set[str]:
 
 
 def test_writer_only_complete_report_is_serial():
-    """§5 分类守卫:写 replace/retain 通道的 CompleteReport 串行;ReadEvidence 走 merge_unique 可并发。"""
+    """§5 分类守卫:写 replace/retain 通道的 ReportComplete 串行;ReadEvidence 走 merge_unique 可并发。"""
     names = {item.name for item in build_writer_tools(turn_budget=8, read_batch=6)}
     assert names - set(WRITER_SERIAL_TOOLS) == {"ReadEvidence"}
 
 
 def test_writer_selection_channels_are_serial_only():
-    assert _non_concurrency_safe_channels(WriterAgentState) == {
+    assert _non_concurrency_safe_channels(WriterState) == {
         "validated_draft",
         "last_error",
         "last_markdown",
@@ -932,7 +930,7 @@ def test_writer_rebuild_discards_uncommitted_memory():
         def __init__(self, context):
             self.context = context
 
-    committed = WriterLoopContext(
+    committed = WriterContext(
         scope=SimpleNamespace(),
         evidence_by_id={},
         read_evidence_ids={"e1"},
@@ -944,7 +942,7 @@ def test_writer_rebuild_discards_uncommitted_memory():
     committed.read_evidence_ids.add("e-uncommitted")
     committed.validated_draft = ValidatedDraft("x", [], [], ["e1"])
 
-    asyncio.run(LoopStateRebuildMiddleware().abefore_model(channels, _Runtime(committed)))
+    asyncio.run(StateRebuildMiddleware().abefore_model(channels, _Runtime(committed)))
     # 通道里只有 e1、无草稿：重建后未提交的 e-uncommitted 与野草稿都应消失。
     assert committed.read_evidence_ids == {"e1"}
     assert committed.validated_draft is None

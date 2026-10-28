@@ -92,7 +92,7 @@ def test_summarization_call_is_recorded_but_bypasses_model_wrappers():
     assert model._calls >= 2  # noqa: SLF001
     # 传播成立：astream 级 callbacks 覆盖了摘要调用，RunUsageCallback 能记到它。
     assert starts.chat_model_starts == model._calls  # noqa: SLF001
-    # 预检不覆盖：摘要绕开 awrap_model_call,即 enforce_usage_budget 所在层，
+    # 预检不覆盖：摘要绕开 awrap_model_call，即 enforce_usage_budget 所在层，
     # 预算接近耗尽时仍可能多花一次摘要调用，靠事后记账、下回合拦截。
     assert _ProbeWrap.wrapped < model._calls
     assert result["messages"][-1].content == "已摘要/完成"

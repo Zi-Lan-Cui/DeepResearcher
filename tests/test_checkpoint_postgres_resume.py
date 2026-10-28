@@ -9,6 +9,7 @@ DB 不可达时整文件 skip,不回显连接串。
 """
 
 import asyncio
+import contextlib
 import uuid
 
 import pytest
@@ -20,7 +21,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from typing_extensions import Annotated, TypedDict
 
-from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
+from deepresearcher.service.execution.checkpoint_serde import build_checkpointer_serde
 
 
 class _CountedState(AgentState):
@@ -30,23 +31,25 @@ class _CountedState(AgentState):
 
 
 def _make_saver():
-    """按生产同一路径建 AsyncPostgresSaver;不可用则返回 None 触发 skip。"""
-    from deepresearcher.service.settings import checkpoint_dsn, get_service_config
+    """按生产同一路径建 AsyncPostgresSaver；测试库未配置则返回 None 触发 skip。
 
-    try:
-        database_url = get_service_config().database_url
-    except ValueError:
-        # CI 环境无 SERVICE_DATABASE_URL,与缺省非 postgresql 形态同等处理。
-        return None
-    dsn = checkpoint_dsn(database_url)
-    if dsn is None:
+    库一律取 SERVICE_TEST_DATABASE_URL：这些用例会往库里写 checkpoint 表，
+    不能落到生产配置指向的库上。
+    """
+    from deepresearcher.service.settings import checkpoint_dsn
+    from pg_backend import postgres_base
+
+    base = postgres_base()
+    if base is None:
         return None
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    return AsyncPostgresSaver.from_conn_string(dsn, serde=build_checkpointer_serde())
+    return AsyncPostgresSaver.from_conn_string(
+        checkpoint_dsn(base), serde=build_checkpointer_serde()
+    )
 
 
-async def _drive_two_directions(saver):
+async def _drive_two_tasks(saver):
     """先崩溃跑一次 outer 再重放一次,返回 (取证总执行数, 嵌套 ns 去重集合, thread)。"""
     counters = {"evidence": 0}
 
@@ -133,10 +136,8 @@ async def _drive_two_directions(saver):
     config = {"configurable": {"thread_id": thread}}
     try:
         for attempt in range(2):
-            try:
+            with contextlib.suppress(BaseException):
                 await app.ainvoke({"done": False} if attempt == 0 else None, config)
-            except BaseException:
-                pass
 
         nested_ns = set()
         async for checkpoint_tuple in saver.alist(config):
@@ -159,7 +160,7 @@ def test_two_concurrent_researchers_resume_on_postgres_checkpoint():
         try:
             async with saver_context as saver:
                 await saver.setup()
-                return await _drive_two_directions(saver)
+                return await _drive_two_tasks(saver)
         except Exception:  # noqa: BLE001 - 连接失败按部署缺依赖处理
             return None
 

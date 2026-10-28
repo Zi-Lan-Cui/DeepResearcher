@@ -1,4 +1,4 @@
-"""端到端 kill-重放:生产 channelized ResearchAgent/ResearchSupervisor 跑在真 AsyncPostgresSaver 上。
+"""端到端 kill-重放:生产 channelized Researcher/Supervisor 跑在真 AsyncPostgresSaver 上。
 
 区别于 `test_checkpoint_postgres_resume.py` 用最简 create_agent 验证框架契约,本文件驱动
 真实生产类,验证派发制的恢复合同:派发批已提交、方向后台任务在 add_evidence superstep
@@ -18,13 +18,13 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
-from deepresearcher.agents.researcher import ResearchAgent
-from deepresearcher.agents.supervisor import ResearchSupervisor
+from deepresearcher.agents.researcher import Researcher
+from deepresearcher.agents.supervisor import Supervisor
 from deepresearcher.config import AgentConfig
-from deepresearcher.state import SubTask
+from deepresearcher.schemas import Task
 from deepresearcher.tools import SearchTool
-from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 from deepresearcher.tools.web.reader import SourceReaderTool
+from fakes import MemoryResearchMaterialStore
 
 _QUOTE = "实验表明端到端延迟为 20ms。"
 _URL = "https://example.com/e2e-report"
@@ -126,19 +126,18 @@ class _ScriptedResearcherModel:
         else:
             evidence_id = re.search(r'"evidence_id"\s*:\s*"([^"]+)"', add_receipt).group(1)
             call = {
-                "name": "ResearchDirectionComplete",
+                "name": "TaskComplete",
                 "args": {
                     "reason": "已覆盖核心事实",
                     "selected_evidence_ids": [evidence_id],
                     "conclusion": "该来源给出端到端延迟 20ms。",
-                    "remaining_gaps": [],
                 },
                 "id": "c1",
             }
         return AIMessage(content="", tool_calls=[call])
 
 
-def _task() -> SubTask:
+def _task() -> Task:
     return {
         "id": "task-e2e",
         "run_id": "run-e2e",
@@ -154,31 +153,34 @@ def _task() -> SubTask:
 
 
 def _make_saver():
-    from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
-    from deepresearcher.service.settings import checkpoint_dsn, get_service_config
+    """按生产同一路径建 AsyncPostgresSaver；测试库未配置则返回 None 触发 skip。
 
-    try:
-        database_url = get_service_config().database_url
-    except ValueError:
-        # CI 环境无 SERVICE_DATABASE_URL,与缺省非 postgresql 形态同等处理。
-        return None
-    dsn = checkpoint_dsn(database_url)
-    if dsn is None:
+    库一律取 SERVICE_TEST_DATABASE_URL：这些用例会往库里写 checkpoint 表，
+    不能落到生产配置指向的库上。
+    """
+    from deepresearcher.service.execution.checkpoint_serde import build_checkpointer_serde
+    from deepresearcher.service.settings import checkpoint_dsn
+    from pg_backend import postgres_base
+
+    base = postgres_base()
+    if base is None:
         return None
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    return AsyncPostgresSaver.from_conn_string(dsn, serde=build_checkpointer_serde())
+    return AsyncPostgresSaver.from_conn_string(
+        checkpoint_dsn(base), serde=build_checkpointer_serde()
+    )
 
 
 async def _drive(saver):
     search = _FakeSearchService()
     fetcher = _FakeFetcher()
     store = MemoryResearchMaterialStore()
-    agent = ResearchAgent(
+    agent = Researcher(
         _ScriptedResearcherModel(),
         AgentConfig(
-            research_agent_max_evidences_per_direction=4,
-            research_agent_max_evidence_candidates_per_direction=8,
+            research_agent_max_evidences_per_task=4,
+            research_agent_max_evidence_candidates_per_task=8,
         ),
         search_tool=SearchTool(search),
         reader_tool=SourceReaderTool(
@@ -290,11 +292,11 @@ async def _drive_supervisor(saver):
     search = _FakeSearchService()
     fetcher = _FakeFetcher()
     store = MemoryResearchMaterialStore()
-    research_agent = ResearchAgent(
+    research_agent = Researcher(
         _ScriptedResearcherModel(),
         AgentConfig(
-            research_agent_max_evidences_per_direction=4,
-            research_agent_max_evidence_candidates_per_direction=8,
+            research_agent_max_evidences_per_task=4,
+            research_agent_max_evidence_candidates_per_task=8,
         ),
         search_tool=SearchTool(search),
         reader_tool=SourceReaderTool(
@@ -302,14 +304,14 @@ async def _drive_supervisor(saver):
         ),
         material_store=store,
     )
-    supervisor = ResearchSupervisor(
+    supervisor = Supervisor(
         _FakeSupervisorModel(),
         AgentConfig(
             max_research_rounds=1,
-            max_subtasks_per_round=1,
+            max_tasks_per_round=1,
             supervisor_max_active_evidences=6,
-            research_agent_max_evidences_per_direction=4,
-            research_agent_max_evidence_candidates_per_direction=8,
+            research_agent_max_evidences_per_task=4,
+            research_agent_max_evidence_candidates_per_task=8,
         ),
         research_agent=research_agent,
     )
@@ -338,9 +340,9 @@ async def _drive_supervisor(saver):
             await app.ainvoke({"done": False}, {"configurable": {"thread_id": thread}})
         except _ProcessKilled:
             killed = True
-        # 崩溃后、恢复前：reconcile._has_checkpoint 用的正是 aget_tuple(thread),证明确有可续检查点。
+        # 崩溃后、恢复前：reconcile._has_checkpoint 用的正是 aget_tuple(thread)，证明确有可续检查点。
         checkpoint_after_crash = await saver.aget_tuple(config)
-        # 执行器恢复经 reconcile、resume_runs、execute(resume=True),最终都走 astream(None)。
+        # 执行器恢复经 reconcile、resume_runs、execute(resume=True)，最终都走 astream(None)。
         async for _ in app.astream(None, config={"configurable": {"thread_id": thread}}):
             pass
 

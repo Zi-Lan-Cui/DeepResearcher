@@ -4,18 +4,18 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import ToolMessage
 
-from deepresearcher.agents.middleware import AgentObservabilityMiddleware
+from deepresearcher.agents.middleware import AgentEventsMiddleware
 from deepresearcher.agents.researcher.state import (
+    ResearcherContext,
     ResearcherDeps,
-    ResearcherLoopContext,
-    ResearcherLoopState,
+    ResearcherTaskState,
 )
 from deepresearcher.config import AgentConfig
-from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.observability.scope import AgentScope
 
 
-def _real_researcher_context() -> ResearcherLoopContext:
-    """生产形状的真实 ResearcherLoopContext,中间件契约字段 scope 必须在场。
+def _real_researcher_context() -> ResearcherContext:
+    """生产形状的真实 ResearcherContext,中间件契约字段 scope 必须在场。
 
     SimpleNamespace 假件测中间件如何对待有 scope 的对象,本函数测真 context
     是否提供中间件所需字段;两个方向都设守卫,删字段后测试会失败,
@@ -26,7 +26,7 @@ def _real_researcher_context() -> ResearcherLoopContext:
         "run_id": "run-1",
         "question": "Redis 恢复",
     }
-    return ResearcherLoopContext(
+    return ResearcherContext(
         deps=ResearcherDeps(
             config=AgentConfig(),
             search_tool=object(),  # 中间件不触碰业务零件
@@ -34,17 +34,17 @@ def _real_researcher_context() -> ResearcherLoopContext:
             material_store=None,
             emit=lambda *_: None,
         ),
-        scope=AgentExecutionScope.from_task(task, agent_name="ResearchAgent"),
+        scope=AgentScope.from_task(task, agent_name="Researcher"),
         task=task,  # type: ignore[typeddict-item]
-        loop_state=ResearcherLoopState(),
+        task_state=ResearcherTaskState(),
     )
 
 
 @pytest.mark.asyncio
 async def test_real_researcher_context_carries_middleware_attribution_fields():
     events: list[tuple[str, dict[str, object]]] = []
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
+    middleware = AgentEventsMiddleware(
+        "Researcher",
         event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
@@ -76,9 +76,9 @@ def _request() -> SimpleNamespace:
         state={"run_model_call_count": 2},
         runtime=SimpleNamespace(
             context=SimpleNamespace(
-                scope=AgentExecutionScope(
+                scope=AgentScope(
                     run_id="run-1",
-                    agent_name="ResearchAgent",
+                    agent_name="Researcher",
                     task_id="task-1",
                 )
             )
@@ -89,8 +89,8 @@ def _request() -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_tool_lifecycle_records_scope_and_preserves_result():
     events: list[tuple[str, dict[str, object]]] = []
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
+    middleware = AgentEventsMiddleware(
+        "Researcher",
         event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
@@ -128,8 +128,8 @@ async def test_result_metrics_hoist_scalars_beyond_truncated_preview():
     """grep 回执里排在 matches 之后的 total_matches/has_more/next_offset 常被预览截断;
     必须提取到 result_metrics 顶层才可审计。"""
     events: list[tuple[str, dict[str, object]]] = []
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
+    middleware = AgentEventsMiddleware(
+        "Researcher",
         event_slug="researcher",
         run_limit=9,
         emit=lambda event_type, payload: events.append((event_type, payload)),
@@ -186,9 +186,9 @@ def test_result_metrics_numeric_only_drops_strings():
         },
         ensure_ascii=False,
     )
-    numeric = AgentObservabilityMiddleware._result_metrics(payload, numeric_only=True)
+    numeric = AgentEventsMiddleware._result_metrics(payload, numeric_only=True)
     assert numeric == {"total_matches": 42, "has_more": True, "next_offset": 19}
-    full = AgentObservabilityMiddleware._result_metrics(payload, numeric_only=False)
+    full = AgentEventsMiddleware._result_metrics(payload, numeric_only=False)
     assert full["status"] == "completed" and full["query"] == "CUDA"
     assert "matches" not in full and "note" not in full
 
@@ -196,8 +196,8 @@ def test_result_metrics_numeric_only_drops_strings():
 @pytest.mark.asyncio
 async def test_tool_failure_is_recorded_and_reraised():
     events: list[tuple[str, dict[str, object]]] = []
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
+    middleware = AgentEventsMiddleware(
+        "Researcher",
         event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
@@ -223,8 +223,8 @@ async def test_tool_failure_is_recorded_and_reraised():
 @pytest.mark.asyncio
 async def test_document_tool_content_is_redacted_from_lifecycle_events():
     events: list[tuple[str, dict[str, object]]] = []
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
+    middleware = AgentEventsMiddleware(
+        "Researcher",
         event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
@@ -255,8 +255,8 @@ async def test_model_turn_event_carries_wall_duration():
     from langchain_core.messages import AIMessage
 
     events: list[tuple[str, dict[str, object]]] = []
-    middleware = AgentObservabilityMiddleware(
-        "ResearchAgent",
+    middleware = AgentEventsMiddleware(
+        "Researcher",
         event_slug="researcher",
         run_limit=5,
         emit=lambda event_type, payload: events.append((event_type, payload)),
@@ -266,9 +266,7 @@ async def test_model_turn_event_carries_wall_duration():
         state={"run_model_call_count": 1},
         runtime=SimpleNamespace(
             context=SimpleNamespace(
-                scope=AgentExecutionScope(
-                    run_id="run-1", agent_name="ResearchAgent", task_id="task-1"
-                )
+                scope=AgentScope(run_id="run-1", agent_name="Researcher", task_id="task-1")
             )
         ),
     )
@@ -314,7 +312,7 @@ def test_context_token_count_includes_tool_call_arguments():
     with_draft = AIMessage(
         content="短文本",
         tool_calls=[
-            {"name": "CompleteReport", "args": {"markdown": "长文内容" * 1000}, "id": "call-1"}
+            {"name": "ReportComplete", "args": {"markdown": "长文内容" * 1000}, "id": "call-1"}
         ],
     )
     assert count_message_tokens([with_draft]) > count_message_tokens([plain]) * 10
@@ -324,7 +322,7 @@ def test_limit_marker_and_receipt_prefix_are_library_string_contracts():
     """跨层字符串契约校验:上游改文案时本用例必须失败,不允许静默放过。"""
     from langchain.agents.middleware.model_call_limit import _build_limit_exceeded_message
 
-    from deepresearcher.agents.middleware.observability import LIMIT_MESSAGE_MARKER
+    from deepresearcher.agents.middleware.agent_events import LIMIT_MESSAGE_MARKER
     from deepresearcher.schemas import format_tool_receipt
 
     message = _build_limit_exceeded_message(1, 9, None, 8)

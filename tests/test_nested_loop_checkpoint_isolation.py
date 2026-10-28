@@ -1,23 +1,23 @@
-"""嵌套循环 checkpointer 的继承合同:内层从自己的回合边界续跑,而非整体重放。
+"""嵌套循环 checkpointer 的继承合同：内层从自己的回合边界续跑，而非整体重放。
 
-create_agent 的 checkpointer 默认 None,表示继承外层运行的 thread/checkpointer。
-合同内容:
-  1. 内层循环把业务状态写进自己的 state 通道后,进程崩溃重放从内层最后一个已提交
-     superstep 续跑:已完成的工具不重跑、其通道增量不重复施加。两级(外层节点直接
-     调内层)与三级(外层节点→supervisor create_agent→Delegate 工具→researcher
-     create_agent)皆然;
-  2. 内层已跑完、外层节点尚未提交时,重放再次以 seed 调用内层不会重新开场:既不重跑
-     内层模型,也不把 seed 再写一遍通道,故入口无需额外的 resume 守卫;langgraph 的
-     pending-writes WAL 已覆盖该窗口;
-  3. checkpointer=False 时内层不落检查点,重放整体重跑本节点,消息与业务状态同时重置,
-     是尚未通道化循环的过渡语义。
+create_agent 的 checkpointer 默认 None，表示继承外层运行的 thread 与 checkpointer。
+合同内容：
+  1. 内层把业务状态写进自己的 state 通道后，进程崩溃重放从内层最后一个已提交
+     superstep 续跑：已完成的工具不重跑，其通道增量不重复施加。两级（外层节点直接
+     调内层）与三级（外层节点→supervisor create_agent→Delegate 工具→researcher
+     create_agent）皆然；
+  2. 内层已跑完、外层节点尚未提交时，重放再次以 seed 调用内层不会重新开场：既不重跑
+     内层模型，也不把 seed 再写一遍通道，入口无需额外的 resume 守卫，langgraph 的
+     pending-writes WAL 已覆盖该窗口；
+  3. checkpointer=False 时内层不写检查点，重放整体重跑本节点，消息与业务状态同时重置。
 
 supervisor、researcher、writer 已将业务状态并入各自通道,使用继承(None)。调整这些循环时
-不得把 clarifier 一并改为不继承:其 interrupt 在 awaiting_input 澄清后的恢复依赖继承链,
+不得让 clarifier 也放弃继承:其 interrupt 在 awaiting_input 澄清后的恢复依赖继承链,
 文件末尾有单独校验用例。
 """
 
 import asyncio
+import contextlib
 
 import pytest
 from langchain.agents import AgentState, create_agent
@@ -30,9 +30,9 @@ from langgraph.types import Command
 from typing_extensions import Annotated, TypedDict
 
 from deepresearcher.agents.clarifier import Clarifier
-from deepresearcher.agents.researcher import ResearchAgent
-from deepresearcher.agents.supervisor import ResearchSupervisor
-from deepresearcher.agents.writer import ReportWriter
+from deepresearcher.agents.researcher import Researcher
+from deepresearcher.agents.supervisor import Supervisor
+from deepresearcher.agents.writer import Writer
 from deepresearcher.config import AgentConfig
 
 
@@ -129,12 +129,12 @@ def test_inherited_child_checkpointer_resumes_history_on_replay():
     app, saver, history_shapes, evidence_runs = _build_pair(None)
     config = {"configurable": {"thread_id": "inherit-case"}}
 
-    with pytest.raises(BaseException):
+    with pytest.raises(BaseException):  # noqa: B017 - 只断言抛过异常，类型不是本合同对象
         asyncio.run(app.ainvoke({"done": False}, config))
     assert history_shapes == [1, 3]
     assert len(evidence_runs) == 1
 
-    with pytest.raises(BaseException):
+    with pytest.raises(BaseException):  # noqa: B017 - 只断言抛过异常，类型不是本合同对象
         asyncio.run(app.ainvoke(None, config))
 
     # 续跑证据：重放的模型回合直接看到已含 ToolMessage 的旧历史(3 条起步),
@@ -155,11 +155,11 @@ def test_disabled_child_checkpointer_replays_whole_node():
     app, saver, history_shapes, evidence_runs = _build_pair(False)
     config = {"configurable": {"thread_id": "isolated-case"}}
 
-    with pytest.raises(BaseException):
+    with pytest.raises(BaseException):  # noqa: B017 - 只断言抛过异常，类型不是本合同对象
         asyncio.run(app.ainvoke({"done": False}, config))
     assert history_shapes == [1, 3]
 
-    with pytest.raises(BaseException):
+    with pytest.raises(BaseException):  # noqa: B017 - 只断言抛过异常，类型不是本合同对象
         asyncio.run(app.ainvoke(None, config))
 
     # 整体重跑证据：第二次尝试从初始消息重新开场，取证工具重新执行；
@@ -175,11 +175,11 @@ def test_disabled_child_checkpointer_replays_whole_node():
 
 
 def test_completed_child_not_reinjected_when_outer_uncommitted():
-    """内层已完整、外层未提交的窗口:重放不再跑内层模型、不再施加 seed,入口守卫因此多余。
+    """内层已完整、外层未提交时，重放不跑内层模型、不施加 seed，入口无需守卫。
 
-    把内层模型换成"派工具后正常收尾"的可完成模型,外层节点在内层返回之后、return
-    之前抛错;重放外层节点会再次调用内层,但内层在其 ns 已完成,langgraph 从 WAL 直接
-    取结果:模型不再被调用、evidence 不再增长、seeded 通道保持单元素。
+    把内层模型换成可完成模型（派工具后正常收尾），外层节点在内层返回之后、return
+    之前抛错；重放外层节点会再次调用内层，但内层在其 ns 已完成，langgraph 从 WAL 直接
+    取结果：模型不被调用，evidence 不增长，seeded 通道保持单元素。
     """
     history_shapes: list[int] = []
     evidence_runs: list[int] = []
@@ -273,10 +273,8 @@ def test_delegate_resumed_inner_researcher_keeps_evidence():
         app, counters = _build_triple(researcher_checkpointer)
         config = {"configurable": {"thread_id": f"triple-{researcher_checkpointer}"}}
         for attempt in range(2):
-            try:
+            with contextlib.suppress(BaseException):
                 asyncio.run(app.ainvoke({"done": False} if attempt == 0 else None, config))
-            except BaseException:
-                pass
         assert counters["evidence"] == expected_runs, (
             f"researcher checkpointer={researcher_checkpointer!r} 取证次数应为 {expected_runs}"
         )
@@ -366,10 +364,10 @@ def test_production_loops_compile_with_inherited_checkpointer():
     supervisor/researcher/writer 把可变状态写进各自 state_schema 通道，启用继承后，
     崩溃重放从各内层最后一个已提交 superstep 续跑,见上方继承合同用例。
     """
-    supervisor = ResearchSupervisor(object(), AgentConfig(), research_agent=object())
+    supervisor = Supervisor(object(), AgentConfig(), research_agent=object())
     assert supervisor._agent_loop.checkpointer is None
 
-    researcher = ResearchAgent(
+    researcher = Researcher(
         object(),
         AgentConfig(),
         search_tool=object(),
@@ -377,7 +375,7 @@ def test_production_loops_compile_with_inherited_checkpointer():
     )
     assert researcher._agent_loop.checkpointer is None
 
-    writer = ReportWriter(
+    writer = Writer(
         object(),
         AgentConfig(),
         render_incomplete=lambda _state: "x",

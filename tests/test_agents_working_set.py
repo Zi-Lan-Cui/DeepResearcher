@@ -4,18 +4,18 @@ from deepresearcher.agents.working_set import release_working_set, restore_worki
 from deepresearcher.evidence.models import Evidence, normalize_evidence_ids
 from deepresearcher.schemas.reporting import ResearchAspect
 from deepresearcher.schemas.tool_args import (
-    CompleteReport,
     ReadEvidence,
     ReleaseEvidence,
-    ResearchDirectionComplete,
+    ReportComplete,
     RestoreEvidence,
+    TaskComplete,
 )
 
 
 def _evidence(evidence_id: str) -> Evidence:
     return Evidence(
         evidence_id=evidence_id,
-        subtask_id="t1",
+        task_id="t1",
         research_direction="方向",
         claim="断言",
         quote="原文",
@@ -25,7 +25,7 @@ def _evidence(evidence_id: str) -> Evidence:
 
 
 class FakeWorkingSet:
-    """最小 LoopState 替身:只含档案与活跃集,提供 release/restore 两个转移方法。"""
+    """最小状态对象替身:只含档案与活跃集,提供 release/restore 两个转移方法。"""
 
     def __init__(self, archive_ids: list[str], active_ids: list[str]) -> None:
         self.evidences = [_evidence(item) for item in archive_ids]
@@ -57,13 +57,13 @@ def test_release_receipt_has_three_keys_and_post_mutation_snapshot():
 
 def test_duplicate_and_unknown_ids_classified_consistently_on_both_ops():
     release_state = FakeWorkingSet(["e1"], ["e1"])
-    receipt = release_working_set(release_state, ["e1", "e1", "ghost"], snapshot=lambda: {})
+    receipt = release_working_set(release_state, ["e1", "e1", "ghost"], snapshot=dict)
     # 请求按序去重，重复 id 不在任何键里出现两次；ghost 不在档案中，归入 unknown。
     assert receipt["released_evidence_ids"] == ["e1"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]
 
     restore_state = FakeWorkingSet(["e1"], [])
-    receipt = restore_working_set(restore_state, ["e1", "e1", "ghost"], snapshot=lambda: {})
+    receipt = restore_working_set(restore_state, ["e1", "e1", "ghost"], snapshot=dict)
     assert receipt["restored_evidence_ids"] == ["e1"]
     assert receipt["not_restored_evidence_ids"] == ["ghost"]
     assert receipt["unknown_evidence_ids"] == ["ghost"]
@@ -73,7 +73,7 @@ def test_unknown_ids_get_close_archived_candidates_in_receipt():
     archived = "task-0003-ev-d7f88304c64cb41b"
     state = FakeWorkingSet([archived], [])
     receipt = restore_working_set(
-        state, ["task-0003-ev-d7f88304c64cb14b"], snapshot=lambda: {}
+        state, ["task-0003-ev-d7f88304c64cb14b"], snapshot=dict
     )  # 手误换序
     assert receipt["unknown_evidence_ids"] == ["task-0003-ev-d7f88304c64cb14b"]
     assert receipt["did_you_mean"] == {
@@ -83,7 +83,7 @@ def test_unknown_ids_get_close_archived_candidates_in_receipt():
 
 def test_clean_receipt_has_no_did_you_mean_key():
     state = FakeWorkingSet(["e1"], [])
-    receipt = restore_working_set(state, ["e1"], snapshot=lambda: {})
+    receipt = restore_working_set(state, ["e1"], snapshot=dict)
     assert "did_you_mean" not in receipt
 
 
@@ -99,10 +99,10 @@ def test_inbound_evidence_id_fields_strip_control_noise_and_dedupe():
     assert ReadEvidence(evidence_ids=noisy, reason="r").evidence_ids == [
         "task-0005-ev-7382e2a63f32a52a"
     ]
-    assert ResearchDirectionComplete(
-        reason="r", selected_evidence_ids=noisy
-    ).selected_evidence_ids == ["task-0005-ev-7382e2a63f32a52a"]
-    assert CompleteReport(
+    assert TaskComplete(reason="r", selected_evidence_ids=noisy).selected_evidence_ids == [
+        "task-0005-ev-7382e2a63f32a52a"
+    ]
+    assert ReportComplete(
         title="测试标题", selected_evidence_ids=noisy, markdown="正文"
     ).selected_evidence_ids == ["task-0005-ev-7382e2a63f32a52a"]
     aspect = ResearchAspect(

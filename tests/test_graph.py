@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 
 from deepresearcher import graph, nodes
 from deepresearcher.agents.clarifier.state import ClarifierAgentState
-from deepresearcher.agents.writer import ReportWriter
+from deepresearcher.agents.writer import Writer
 from deepresearcher.config import (
     AgentConfig,
     AppConfig,
@@ -37,9 +37,10 @@ from deepresearcher.schemas import (
     SupervisorProgress,
     WriterProgress,
 )
-from deepresearcher.service.execution.usage import UsageBudgetExceeded
 from deepresearcher.state import validate_state_invariants
 from deepresearcher.tools.errors import ToolRequestError
+from deepresearcher.usage_runtime import UsageBudgetExceeded
+from fakes import MemoryResearchMaterialStore
 
 
 class TextLLM:
@@ -207,7 +208,7 @@ def test_quick_answer_route_produces_uncited_answer():
     state = asyncio.run(
         nodes.quick_answer({"query": "什么是向量数据库"}, TextLLM(), agent_config=AgentConfig())
     )
-    writer = ReportWriter(
+    writer = Writer(
         TextLLM(),
         AgentConfig(),
         render_incomplete=lambda _state: "incomplete",
@@ -258,18 +259,22 @@ def test_router_bubbles_fail_fast_signals_instead_of_fallback_routing():
     from deepresearcher.llm import LLMConfigurationError
     from deepresearcher.usage_runtime import UsageBudgetExceeded
 
-    for expected in (UsageBudgetExceeded("预算耗尽"), LLMConfigurationError("invalid_key")):
-
+    def _boom_llm(error):
         class _BoomLLM:
             def with_structured_output(self, _schema, **_kwargs):
                 class _Boom:
                     async def ainvoke(self, _messages, **_kw):
-                        raise expected
+                        raise error
 
                 return _Boom()
 
+        return _BoomLLM()
+
+    for expected in (UsageBudgetExceeded("预算耗尽"), LLMConfigurationError("invalid_key")):
         with pytest.raises(type(expected)):
-            asyncio.run(nodes.router({"query": "q"}, _BoomLLM(), agent_config=AgentConfig()))
+            asyncio.run(
+                nodes.router({"query": "q"}, _boom_llm(expected), agent_config=AgentConfig())
+            )
 
 
 def test_top_level_node_failure_becomes_renderable_run_error():
@@ -393,12 +398,16 @@ def test_graph_requires_llm_at_assembly(monkeypatch):
 
 def test_compiled_graph_clarify_failure_renders_failure_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
+    monkeypatch.setattr(graph, "Supervisor", _FailingSupervisor)
 
     monkeypatch.setattr(graph, "Clarifier", _FailingClarifier)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert result["run"].phase == "failed"
@@ -413,10 +422,14 @@ def test_compiled_graph_router_failure_fails_closed_to_deep_research(tmp_path, m
 
     monkeypatch.setattr(graph.nodes, "ainvoke_structured", fail_structured)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
+    monkeypatch.setattr(graph, "Supervisor", _FailingSupervisor)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert result["route"] == "deep_research"
@@ -426,10 +439,14 @@ def test_compiled_graph_router_failure_fails_closed_to_deep_research(tmp_path, m
 def test_compiled_graph_supervisor_failure_skips_writer(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
+    monkeypatch.setattr(graph, "Supervisor", _FailingSupervisor)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert result["run"].error.stage == "supervisor"
@@ -441,11 +458,15 @@ def test_compiled_graph_supervisor_failure_skips_writer(tmp_path, monkeypatch):
 def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _CompleteSupervisor)
-    monkeypatch.setattr(graph, "ReportWriter", _FailingWriter)
+    monkeypatch.setattr(graph, "Supervisor", _CompleteSupervisor)
+    monkeypatch.setattr(graph, "Writer", _FailingWriter)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert result["run"].error.stage == "writer"
@@ -456,8 +477,8 @@ def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypa
 def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _CompleteSupervisor)
-    monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
+    monkeypatch.setattr(graph, "Supervisor", _CompleteSupervisor)
+    monkeypatch.setattr(graph, "Writer", _ReadyWriter)
 
     async def fail_reviewer(_state, _llm, **_kwargs):
         raise RuntimeError("reviewer boom")
@@ -465,7 +486,11 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
     monkeypatch.setattr(graph.nodes, "reviewer", fail_reviewer)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert result["run"].error.stage == "review"
@@ -476,10 +501,14 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
 def test_compiled_graph_research_exhaustion_renders_incomplete_report(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _ExhaustedSupervisor)
+    monkeypatch.setattr(graph, "Supervisor", _ExhaustedSupervisor)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert result["run"].phase == "completed"
@@ -489,7 +518,7 @@ def test_compiled_graph_research_exhaustion_renders_incomplete_report(tmp_path, 
 
 def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _FailingSupervisor)
+    monkeypatch.setattr(graph, "Supervisor", _FailingSupervisor)
 
     monkeypatch.setattr(graph, "Clarifier", _CancellingClarifier)
 
@@ -497,7 +526,11 @@ def test_compiled_graph_preserves_cancellation(tmp_path, monkeypatch):
     # 关键契约是它不会被 node_runner 转换成 RunError 并渲染成失败报告。
     with pytest.raises(BaseException) as caught:
         asyncio.run(
-            build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+            build_graph(
+                _graph_settings(tmp_path),
+                llm=GraphLLM(),
+                material_store=MemoryResearchMaterialStore(),
+            ).ainvoke({"query": "测试"})
         )
     assert type(caught.value).__name__ != "RunError"
 
@@ -535,12 +568,16 @@ def test_writer_revisit_does_not_fold_add_channels(tmp_path, monkeypatch):
 
     monkeypatch.setattr(graph.nodes, "router", _deep_research_route)
     monkeypatch.setattr(graph, "Clarifier", _CompleteClarifier)
-    monkeypatch.setattr(graph, "ResearchSupervisor", _TwiceSupervisor)
-    monkeypatch.setattr(graph, "ReportWriter", _ReadyWriter)
+    monkeypatch.setattr(graph, "Supervisor", _TwiceSupervisor)
+    monkeypatch.setattr(graph, "Writer", _ReadyWriter)
     monkeypatch.setattr(graph.nodes, "reviewer", _reject_then_approve)
 
     result = asyncio.run(
-        build_graph(_graph_settings(tmp_path), llm=GraphLLM()).ainvoke({"query": "测试"})
+        build_graph(
+            _graph_settings(tmp_path),
+            llm=GraphLLM(),
+            material_store=MemoryResearchMaterialStore(),
+        ).ainvoke({"query": "测试"})
     )
 
     assert [message.content for message in result["supervisor_messages"]] == [
@@ -553,6 +590,11 @@ def test_writer_revisit_does_not_fold_add_channels(tmp_path, monkeypatch):
 def test_approved_reviewer_bypasses_supervisor_and_renders_final_report():
     assert route_after_reviewer({"review": {"status": "approved"}}) == NodeName.RENDER_FINAL_REPORT
     assert route_after_reviewer({"review": {"status": "rejected"}}) == NodeName.SUPERVISOR
+
+
+def test_abstained_reviewer_renders_instead_of_looping_back():
+    """弃权是没审成，回流只会让监督循环再烧一轮并可能再弃权一次。"""
+    assert route_after_reviewer({"review": {"status": "abstained"}}) == NodeName.RENDER_FINAL_REPORT
 
 
 def test_terminal_phase_trunk_overrides_every_business_handoff():

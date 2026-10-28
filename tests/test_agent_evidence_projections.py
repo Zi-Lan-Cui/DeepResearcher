@@ -12,7 +12,7 @@ from deepresearcher.schemas import Citation, SourceProfile
 def _evidence() -> Evidence:
     return Evidence(
         evidence_id="ev-1",
-        subtask_id="task-1",
+        task_id="task-1",
         research_direction="研究方向",
         claim="已核验事实",
         quote="一段足够长的可验证原文。",
@@ -47,9 +47,7 @@ def test_researcher_evidence_projection_contract() -> None:
     }
     assert card["quote"] == "一段足够长的可验"
     assert card["source_domain"] == "docs.example.com"
-    assert {"source_url", "retrieval_method", "locator", "audit_chunk", "subtask_id"}.isdisjoint(
-        card
-    )
+    assert {"source_url", "retrieval_method", "locator", "audit_chunk", "task_id"}.isdisjoint(card)
 
 
 def test_supervisor_evidence_projection_contract() -> None:
@@ -58,7 +56,7 @@ def test_supervisor_evidence_projection_contract() -> None:
     assert set(card) == {
         "evidence_id",
         "claim",
-        "direction_title",
+        "task_title",
         "support",
         "confidence",
         "source_title",
@@ -71,17 +69,15 @@ def test_supervisor_evidence_projection_contract() -> None:
     }
     assert card["source_domain"] == "docs.example.com"
     # 方向归属只带短题；无短题（老检查点）回退长契约截断。
-    assert card["direction_title"] == "研究方向"
-    assert (
-        supervisor_evidence_card(_evidence(), "服务特征梳理")["direction_title"] == "服务特征梳理"
-    )
+    assert card["task_title"] == "研究方向"
+    assert supervisor_evidence_card(_evidence(), "服务特征梳理")["task_title"] == "服务特征梳理"
     assert {
         "quote",
         "source_url",
         "retrieval_method",
         "locator",
         "audit_chunk",
-        "subtask_id",
+        "task_id",
         "research_direction",
         "source_profile",
     }.isdisjoint(card)
@@ -113,7 +109,7 @@ def test_writer_evidence_projection_contracts() -> None:
         "authority_tier",
         "published_at",
     }
-    assert {"confidence", "retrieval_method", "locator", "audit_chunk", "subtask_id"}.isdisjoint(
+    assert {"confidence", "retrieval_method", "locator", "audit_chunk", "task_id"}.isdisjoint(
         detail
     )
 

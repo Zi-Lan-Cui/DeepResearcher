@@ -172,7 +172,7 @@ def test_reviewer_exhausts_retries_and_reraises(monkeypatch):
                 invoke_structured=always_filtered,
             )
         )
-        assert False, "应当抛出"
+        raise AssertionError("应当抛出")
     except ContentFilterFinishReasonError:
         pass
     # attempts=1 → 共 2 次尝试后放弃
@@ -186,7 +186,7 @@ async def _no_sleep(_seconds):
 
 
 def test_reviewer_abstains_when_output_length_runaways(monkeypatch):
-    """全部尝试都触发输出长度上限：审阅弃权，报告按原样返回。"""
+    """全部尝试都触发输出长度上限：写成 abstained，不冒充审阅通过。"""
     from types import SimpleNamespace
 
     from openai import LengthFinishReasonError
@@ -211,5 +211,5 @@ def test_reviewer_abstains_when_output_length_runaways(monkeypatch):
     )
 
     assert len(calls) == 3  # 初次 + 2 次重试都跑飞
-    assert result["review"].status == "approved"
+    assert result["review"].status == "abstained"
     assert result["review"].issues == []

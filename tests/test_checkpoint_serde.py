@@ -1,16 +1,19 @@
-from deepresearcher.schemas import ResearchDirectionResult
-from deepresearcher.service.checkpoint_serde import build_checkpointer_serde, projected_type_keys
+from deepresearcher.schemas import TaskResult
+from deepresearcher.service.execution.checkpoint_serde import (
+    build_checkpointer_serde,
+    projected_type_keys,
+)
 
 
 def test_allowlist_covers_our_state_types():
     keys = projected_type_keys()
     # 触发过告警的类型必须在允许清单里，否则恢复在严格模式下失败。
-    assert ("deepresearcher.schemas.sections", "ResearchDirectionResult") in keys
+    assert ("deepresearcher.schemas.sections", "TaskResult") in keys
 
 
 def test_state_model_roundtrips_through_serde():
     serde = build_checkpointer_serde()
-    model = ResearchDirectionResult(
+    model = TaskResult(
         task_id="r1-1",
         round=1,
         question="q",
@@ -28,7 +31,7 @@ def test_state_model_roundtrips_through_serde():
 
 
 def test_every_state_channel_model_is_allowlisted():
-    """ResearchState 通道里的每个模型类型必须被 serde 扫描收录。
+    """RunState 通道里的每个模型类型必须被 serde 扫描收录。
 
     白名单按包扫描收集。新增通道若落在包外,或 import 方式变化使扫描漏收,
     恢复路径会在未来某次严格化时静默失败;该测试让问题今天暴露。
@@ -37,7 +40,7 @@ def test_every_state_channel_model_is_allowlisted():
 
     from pydantic import BaseModel
 
-    from deepresearcher.state import ResearchState
+    from deepresearcher.state import RunState
 
     def model_types(annotation):
         origin = get_origin(annotation)
@@ -52,7 +55,7 @@ def test_every_state_channel_model_is_allowlisted():
             yield annotation
 
     keys = projected_type_keys()
-    for name, annotation in get_type_hints(ResearchState).items():
+    for name, annotation in get_type_hints(RunState).items():
         for model_cls in model_types(annotation):
             if not model_cls.__module__.startswith("deepresearcher"):
                 continue  # langchain 消息等第三方类型由其内建序列化承载
@@ -66,7 +69,7 @@ def test_scalar_channels_roundtrip_with_full_fidelity():
     serde = build_checkpointer_serde()
     samples = [
         RunStatus(phase="failed", terminal_reason="node_failed"),
-        SupervisorProgress(status="incomplete", coverage_gaps=["缺来源"]),
+        SupervisorProgress(status="incomplete", current_round=3),
         WriterProgress(status="exhausted", attempts=2),
         ReviewProgress(status="rejected", feedback="需要补来源"),
     ]

@@ -7,20 +7,21 @@ import pytest
 import pytest_asyncio
 
 from deepresearcher.config import AgentConfig
-from deepresearcher.service.api import create_app
+from deepresearcher.service.bootstrap.api import create_app
 from deepresearcher.service.execution.runtime import worker_lifespan
-from deepresearcher.service.persistence.models import Run
 from deepresearcher.service.preferences import (
     apply_preferences,
     clamp_preferences,
     frozen_snapshot,
 )
+from deepresearcher.service.storage.tables import Run
 from fakes_service import FakeGraph, service_config, service_settings
+from messaging_stub import in_process_ports
 
 PASSWORD = "goodpassword"
 FULL = {
     "max_research_rounds": 4,
-    "max_subtasks_per_round": 8,
+    "max_tasks_per_round": 8,
     "research_agent_max_turns": 20,
     "supervisor_max_active_evidences": 50,
 }
@@ -37,7 +38,7 @@ async def _register(client, email="cfg@test.dev") -> str:
 
 
 async def _settle(client, token: str, run_id: str) -> None:
-    """取消并等待进入终态：fixture 收尾时不留进行中的 run，避开 aiosqlite 写锁竞态。"""
+    """取消并等待进入终态：fixture 收尾时不留进行中的 run，避开与下条用例的清表互锁。"""
     await client.post(f"/api/runs/{run_id}/cancel", headers=_auth(token))
     async with asyncio.timeout(5.0):
         while True:
@@ -53,9 +54,10 @@ async def client(tmp_path):
         return FakeGraph()
 
     settings = service_settings(tmp_path)
-    config = service_config(tmp_path, worker_poll_seconds=0.01)
-    async with worker_lifespan(settings, config, graph_factory=graph_factory):
-        app = create_app(settings, config)
+    config = service_config(tmp_path)
+    ports, _broker = in_process_ports()
+    async with worker_lifespan(settings, config, graph_factory=graph_factory, messaging=ports):
+        app = create_app(settings, config, messaging=ports)
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
@@ -78,7 +80,7 @@ def test_frozen_snapshot_precedence_and_dirty_fallback():
     # 未落项回服务器默认
     snapshot = frozen_snapshot({"max_research_rounds": 1}, agent)
     assert snapshot["max_research_rounds"] == 1
-    assert snapshot["max_subtasks_per_round"] == agent.max_subtasks_per_round
+    assert snapshot["max_tasks_per_round"] == agent.max_tasks_per_round
     # 脏值(枚举外)按默认，不采纳
     dirty = frozen_snapshot({"max_research_rounds": 99}, agent)
     assert dirty["max_research_rounds"] == agent.max_research_rounds
@@ -129,7 +131,7 @@ async def test_run_snapshot_frozen_and_not_retroactive(client):
         first = await session.get(Run, run_id)
         assert first is not None and first.preferences_snapshot == FULL
 
-    # 之后改用户配置不回溯已建 run:再建一场取新值，旧行仍是 FULL
+    # 之后改用户配置不回溯已建 run：再建一场取新值，旧行仍是 FULL
     changed = {**FULL, "max_research_rounds": 1}
     await client.post("/api/preferences", json={"preferences": changed}, headers=_auth(token))
     second = await client.post("/api/runs", json={"query": "第二场"}, headers=_auth(token))

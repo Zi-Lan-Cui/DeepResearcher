@@ -84,5 +84,5 @@ def test_failure_message_carries_the_guard_marker() -> None:
     _failure_message 一旦绕过该符号拼文案,一次故障会被放大成一整轮新的重试。"""
     from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
 
-    text = _failure_message("ResearchAgent")(RuntimeError("boom"))
+    text = _failure_message("Researcher")(RuntimeError("boom"))
     assert MODEL_FAILURE_MARKER in text

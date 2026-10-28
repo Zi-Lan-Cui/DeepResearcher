@@ -1,13 +1,13 @@
 """supervisor 崩溃恢复合同:真 AsyncPostgresSaver 上验证,可被子进程形态复用。
 
 形态:max_parallel_workers=2、supervisor_max_active_evidences=2,首轮一条 AIMessage 并发派
-两个 ResearchDelegate(派发批只登记 pending,不等待方向完成),模型经 WaitDirection 收
+两个 ResearchDelegate(派发批只登记 pending,不等待方向完成),模型经 WaitTask 收
 A 的到达后,后台的 B 抛 BaseException 杀死节点,再同 thread 恢复。合同边界按消费划:
-WaitDirection 正常返回的吸收已随内层 superstep 提交,恢复后保留;崩溃时刻仍未被消费的
+WaitTask 正常返回的吸收已随内层 superstep 提交,恢复后保留;崩溃时刻仍未被消费的
 在途一律判 lost 结算,恢复不重跑方向体(派发批 journal 命中)。
 本测试锁定的不变式:恢复后编号按调用位置稳定、两方向结果互不吞、无残留半吸收。
 
-模块同时导出 _build_app/_MixedResearchAgent/_TwoDirectionSupervisorModel,供 SIGKILL 形态
+模块同时导出 _build_app/_MixedResearcher/_TwoDirectionSupervisorModel,供 SIGKILL 形态
 探针以子进程模式挂起 B(不写 __error__,观察纯外部进程死亡后的 journal 消费语义)。
 DB 不可达时整文件 skip。
 """
@@ -20,10 +20,10 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
-from deepresearcher.agents.supervisor import ResearchSupervisor
+from deepresearcher.agents.supervisor import Supervisor
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.schemas.sections import ResearchAgentResult, ResearchDirectionResult
+from deepresearcher.schemas.sections import ResearcherResult, TaskResult
 
 
 class _ProcessKilled(BaseException):
@@ -31,7 +31,7 @@ class _ProcessKilled(BaseException):
 
 
 class _TwoDirectionSupervisorModel:
-    """首轮并发派两个方向;先 WaitDirection 收第一波到货(使 A 的吸收落进已提交通道),再收尾。"""
+    """首轮并发派两个方向;先 WaitTask 收第一波到货(使 A 的吸收落进已提交通道),再收尾。"""
 
     def bind_tools(self, _tools, **_kwargs):
         return self
@@ -46,13 +46,13 @@ class _TwoDirectionSupervisorModel:
         wait_receipts = [
             message
             for message in messages
-            if getattr(message, "name", None) == "WaitDirection"
+            if getattr(message, "name", None) == "WaitTask"
             and getattr(message, "type", None) == "tool"
         ]
         if delegate_receipts and not wait_receipts:
             return AIMessage(
                 content="",
-                tool_calls=[{"name": "WaitDirection", "args": {}, "id": "w1"}],
+                tool_calls=[{"name": "WaitTask", "args": {}, "id": "w1"}],
             )
         if delegate_receipts:
             return AIMessage(content="研究结束,交回。")
@@ -73,7 +73,7 @@ class _TwoDirectionSupervisorModel:
         )
 
 
-class _MixedResearchAgent:
+class _MixedResearcher:
     """方向桩。mode=exception:B 在 A 完成后抛错;mode=hang-child:B 在 A 完成后永久挂起。
 
     side_suffix 参与 conclusion 文本,让探针能分辨每个 task result 产自哪个进程。
@@ -87,11 +87,11 @@ class _MixedResearchAgent:
         self._killed_once = False
 
     @staticmethod
-    def _result(task, side: str, suffix: str) -> ResearchAgentResult:
+    def _result(task, side: str, suffix: str) -> ResearcherResult:
         evidences = [
             Evidence(
                 evidence_id=f"{task['id']}-ev-{i}",
-                subtask_id=task["id"],
+                task_id=task["id"],
                 research_direction=task["question"],
                 claim=f"{side} 结论 {i}",
                 quote=f"{side} 原文 {i}",
@@ -99,7 +99,7 @@ class _MixedResearchAgent:
             )
             for i in (1, 2)
         ]
-        task_result = ResearchDirectionResult(
+        task_result = TaskResult(
             task_id=task["id"],
             round=int(task.get("round", 1)),
             task_index=int(task.get("sequence", 0)),
@@ -112,7 +112,7 @@ class _MixedResearchAgent:
             conclusion=f"{side} 完成 ({suffix})",
             stop_reason="complete",
         )
-        return ResearchAgentResult(
+        return ResearcherResult(
             evidences=evidences,
             selected_evidence_ids=[item.evidence_id for item in evidences],
             source_refs=[item.source_url for item in evidences],
@@ -128,7 +128,7 @@ class _MixedResearchAgent:
             return result
         if self.mode == "hang-child":
             await self._a_done.wait()
-            # 不抛不返回：B 纯挂起，整步不会有 __error__,等待外部 SIGKILL。
+            # 不抛不返回：B 纯挂起，整步不会有 __error__，等待外部 SIGKILL。
             while True:
                 await asyncio.sleep(0.5)
         if self.mode == "exception" and not self._killed_once:
@@ -141,29 +141,32 @@ class _MixedResearchAgent:
 
 
 def _make_saver():
-    from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
-    from deepresearcher.service.settings import checkpoint_dsn, get_service_config
+    """按生产同一路径建 AsyncPostgresSaver；测试库未配置则返回 None 触发 skip。
 
-    try:
-        database_url = get_service_config().database_url
-    except ValueError:
-        # CI 环境无 SERVICE_DATABASE_URL,与缺省非 postgresql 形态同等处理。
-        return None
-    dsn = checkpoint_dsn(database_url)
-    if dsn is None:
+    库一律取 SERVICE_TEST_DATABASE_URL：这些用例会往库里写 checkpoint 表，
+    不能落到生产配置指向的库上。
+    """
+    from deepresearcher.service.execution.checkpoint_serde import build_checkpointer_serde
+    from deepresearcher.service.settings import checkpoint_dsn
+    from pg_backend import postgres_base
+
+    base = postgres_base()
+    if base is None:
         return None
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    return AsyncPostgresSaver.from_conn_string(dsn, serde=build_checkpointer_serde())
+    return AsyncPostgresSaver.from_conn_string(
+        checkpoint_dsn(base), serde=build_checkpointer_serde()
+    )
 
 
 def _build_app(saver, research_agent):
-    """生产 ResearchSupervisor 挂单节点外层图;探针与测试共用。"""
-    supervisor = ResearchSupervisor(
+    """生产 Supervisor 挂单节点外层图;探针与测试共用。"""
+    supervisor = Supervisor(
         _TwoDirectionSupervisorModel(),
         AgentConfig(
             max_research_rounds=1,
-            max_subtasks_per_round=2,
+            max_tasks_per_round=2,
             max_parallel_workers=2,
             supervisor_max_active_evidences=2,
         ),
@@ -188,7 +191,7 @@ def _build_app(saver, research_agent):
 
 
 async def _drive(saver):
-    research_agent = _MixedResearchAgent(mode="exception")
+    research_agent = _MixedResearcher(mode="exception")
     app, outcome = _build_app(saver, research_agent)
 
     thread = "mixed-" + uuid.uuid4().hex
@@ -237,7 +240,7 @@ async def _drive(saver):
 
 
 def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
-    """崩溃恢复:派发批 journal 命中不重跑方向体,节点内吸收(含 WaitDirection)随失败丢弃,
+    """崩溃恢复:派发批 journal 命中不重跑方向体,节点内吸收(含 WaitTask)随失败丢弃,
     未结算的派发在收尾处全部判 lost 结算；编号稳定、两方向不互吞。"""
     saver_context = _make_saver()
     if saver_context is None:
@@ -256,8 +259,8 @@ def test_mixed_replay_merges_journaled_and_rerun_writes_consistently():
         pytest.skip("Postgres checkpointer 不可达")
 
     assert facts["killed"] is True, "首次运行应因模拟进程硬杀中止"
-    # 派发制合同：WaitDirection 正常返回即完成消费，其吸收随内层 superstep 提交并在恢复后保留；
-    # 崩溃时仍欠的是"未被消费的在途"——恢复不重跑(receipts/编号有 journal),只把欠账判 lost。
+    # 派发制合同：WaitTask 正常返回即完成消费，其吸收随内层 superstep 提交并在恢复后保留；
+    # 崩溃时仍欠的是"未被消费的在途"——恢复不重跑(receipts/编号有 journal)，只把欠账判 lost。
     # B 的抛错发生在外层节点体 drain 阶段，内层图已正常结束，A 的收据不在丢弃范围内。
     assert facts["calls"] == {"A": 1, "B": 1}, facts["calls"]
     assert facts["task_count"] == 2, facts

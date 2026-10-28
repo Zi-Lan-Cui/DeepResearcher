@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 import pytest
+from curl_cffi import CurlOpt
 
 from deepresearcher.config import SearchConfig
 from deepresearcher.tools.errors import UnsafeUrlError
@@ -81,16 +82,91 @@ def test_public_url_guard_rejects_address_in_block_list(monkeypatch, address):
         asyncio.run(guard.resolve("https://attacker.example/resource"))
 
 
-def test_unconfigured_guard_blocks_no_addresses(monkeypatch):
-    """不配置 = 不拦截是明确语义：10.0.0.1 在无清单守卫下可通过（URL 检查仍在）。"""
+def test_unconfigured_guard_still_blocks_private_by_baseline(monkeypatch):
+    """清单为空也有基线：私网照样拦，公网照样过，不需要任何配置。"""
+    guard = PublicUrlGuard()
+
+    async def private(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("10.0.0.1",)
+
+    monkeypatch.setattr(guard, "_resolve_addresses", private)
+    with pytest.raises(UnsafeUrlError, match="私网"):
+        asyncio.run(guard.resolve("https://internal.example/resource"))
+
+    async def public(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(guard, "_resolve_addresses", public)
+    result = asyncio.run(guard.resolve("https://public.example/resource"))
+    assert result.addresses == ("93.184.216.34",)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "10.0.0.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "192.0.2.1",
+        "198.18.0.28",
+        "240.0.0.1",
+        "224.0.0.1",
+        "::1",
+        "fe80::1",
+        "fc00::1",
+        "2001:db8::1",
+        "ff02::1",
+    ],
+)
+def test_baseline_rejects_non_public_addresses_without_configuration(monkeypatch, address):
+    """基线覆盖私网、保留、链路本地与组播：清单没列也要拦。"""
     guard = PublicUrlGuard()
 
     async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:
-        return ("10.0.0.1",)
+        return (address,)
 
     monkeypatch.setattr(guard, "_resolve_addresses", resolve)
-    result = asyncio.run(guard.resolve("https://internal.example/resource"))
-    assert result.addresses == ("10.0.0.1",)
+    with pytest.raises(UnsafeUrlError, match="私网"):
+        asyncio.run(guard.resolve("https://attacker.example/resource"))
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "::ffff:169.254.169.254",
+        "::ffff:127.0.0.1",
+        "::ffff:0:169.254.169.254",
+        "::169.254.169.254",
+        "::127.0.0.1",
+        "2002:a9fe:a9fe::1",
+        "64:ff9b::a9fe:a9fe",
+        "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+    ],
+)
+def test_guard_unwraps_ipv4_carried_inside_ipv6(monkeypatch, address):
+    """IPv6 字面量里内嵌的 IPv4 目标按 IPv4 判据判，不因地址族不同而放行。"""
+    guard = PublicUrlGuard()
+
+    async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:
+        return (address,)
+
+    monkeypatch.setattr(guard, "_resolve_addresses", resolve)
+    with pytest.raises(UnsafeUrlError, match="私网"):
+        asyncio.run(guard.resolve("https://attacker.example/resource"))
+
+
+@pytest.mark.parametrize("address", ["::ffff:8.8.8.8", "64:ff9b::808:808", "2001:4860::1"])
+def test_guard_admits_public_ipv4_carried_inside_ipv6(monkeypatch, address):
+    """内嵌的是公网 IPv4 时照常放行：展开只影响判据，不误伤合法地址。"""
+    guard = PublicUrlGuard()
+
+    async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:
+        return (address,)
+
+    monkeypatch.setattr(guard, "_resolve_addresses", resolve)
+    result = asyncio.run(guard.resolve("https://public.example/resource"))
+    assert result.addresses == (address,)
 
 
 def test_public_url_guard_admits_dual_stack_with_one_allowed_record(monkeypatch):
@@ -108,10 +184,10 @@ def test_public_url_guard_admits_dual_stack_with_one_allowed_record(monkeypatch)
     assert result.curl_resolve == ["dual-stack.example:443:93.184.216.34"]
 
 
-def test_edited_block_list_admits_fake_ip_proxy_ranges(monkeypatch):
-    """清单删一行即放行该段：fake-IP 代理环境删 198.18.0.0/15，其余照拦。"""
+def test_allow_private_admits_fake_ip_proxy_ranges(monkeypatch):
+    """fake-IP 代理环境：关掉基线后，删掉清单里的 198.18.0.0/15 即可放行。"""
     relaxed = [item for item in BLOCK if item != "198.18.0.0/15"]
-    guard = PublicUrlGuard(relaxed)
+    guard = PublicUrlGuard(relaxed, allow_private=True)
 
     async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:
         return ("198.18.0.28",)
@@ -227,3 +303,68 @@ def test_http_client_rejects_peer_outside_pinned_dns_set():
     )
     with pytest.raises(Exception, match="DNS 地址不一致"):
         asyncio.run(client.arequest("GET", "https://public.example/", request_kind="fetch"))
+
+
+def test_fetch_curl_options_disable_ambient_proxy_and_keep_dns_pin():
+    client = HttpClient(SearchConfig(retry_attempts=1))
+    resolved = ResolvedPublicUrl(
+        "https://public.example/", "public.example", 443, ("93.184.216.34",)
+    )
+
+    direct = client._fetch_curl_options(resolved, "")
+    # 空串才是禁用：不设置 CURLOPT_PROXY 时 libcurl 自己会读 HTTPS_PROXY。
+    assert direct[CurlOpt.PROXY] == ""
+    assert direct[CurlOpt.RESOLVE] == ["public.example:443:93.184.216.34"]
+
+    proxied = client._fetch_curl_options(resolved, "http://127.0.0.1:7890")
+    assert proxied[CurlOpt.PROXY] == "http://127.0.0.1:7890"
+    # 代理按主机名自行解析，钉住地址只会让 URL 与实际连接脱节。
+    assert CurlOpt.RESOLVE not in proxied
+
+
+def test_http_client_still_blocks_loopback_peer_when_no_proxy_configured():
+    class Guard:
+        async def resolve(self, url: str) -> ResolvedPublicUrl:
+            return ResolvedPublicUrl(url, "public.example", 443, ("93.184.216.34",))
+
+        @staticmethod
+        def ensure_public_ip(address: str) -> None:
+            raise UnsafeUrlError(f"拒绝 {address}")
+
+    class LoopbackPeerClient:
+        async def request(self, method, url, **_kwargs):
+            response = httpx.Response(200, request=httpx.Request(method, url))
+            response.primary_ip = "127.0.0.1"
+            return response
+
+    client = HttpClient(
+        SearchConfig(retry_attempts=1),
+        LoopbackPeerClient(),  # type: ignore[arg-type]
+        url_guard=Guard(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(UnsafeUrlError, match="127.0.0.1"):
+        asyncio.run(client.arequest("GET", "https://public.example/", request_kind="fetch"))
+
+
+def test_http_client_skips_peer_pin_when_proxy_is_configured():
+    class Guard:
+        async def resolve(self, url: str) -> ResolvedPublicUrl:
+            return ResolvedPublicUrl(url, "public.example", 443, ("93.184.216.34",))
+
+        @staticmethod
+        def ensure_public_ip(address: str) -> None:
+            raise AssertionError(f"走代理时对端必然是代理地址，不应校验，实际校验了 {address}")
+
+    class ProxiedClient:
+        async def request(self, method, url, **_kwargs):
+            response = httpx.Response(200, request=httpx.Request(method, url))
+            response.primary_ip = "127.0.0.1"
+            return response
+
+    client = HttpClient(
+        SearchConfig(retry_attempts=1, fetch_proxy="http://127.0.0.1:7890"),
+        ProxiedClient(),  # type: ignore[arg-type]
+        url_guard=Guard(),  # type: ignore[arg-type]
+    )
+    response = asyncio.run(client.arequest("GET", "https://public.example/", request_kind="fetch"))
+    assert response.status_code == 200

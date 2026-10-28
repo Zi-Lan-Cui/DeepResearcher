@@ -17,16 +17,16 @@ from deepresearcher.observability.events.models import (
     make_tool_event,
 )
 from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, RunEvent, User
+from pg_backend import database_url_for
 
 RUN_ID = "run-dedup"
 
 
 @pytest_asyncio.fixture
 async def store(tmp_path):
-    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'dedup.db'}")
-    await init_db(engine)
+    engine = make_engine(database_url_for(tmp_path))
     factory = make_session_factory(engine)
     async with factory() as session:
         session.add(User(id=1, email="d@test.dev", password_hash="h"))
@@ -102,7 +102,7 @@ def test_tool_event_keeps_its_own_prefix():
 
 def test_project_attaches_dedup_key():
     """键必须进到 SSE 帧里，否则前端没有可用于去重的字段。"""
-    from deepresearcher.service.events.projector import project
+    from deepresearcher.service.web.projector import project
 
     frame = project(
         {
@@ -118,7 +118,7 @@ def test_project_attaches_dedup_key():
 
 def test_project_omits_missing_dedup_key():
     """没有键的帧不带该字段，前端据此跳过这一层判断。"""
-    from deepresearcher.service.events.projector import project
+    from deepresearcher.service.web.projector import project
 
     frame = project({"event_type": "node_started", "node": "writer", "seq": 3})
     assert frame is not None
@@ -142,7 +142,7 @@ async def test_append_drops_replayed_record(store):
 
 @pytest.mark.asyncio
 async def test_append_keeps_records_without_key(store):
-    """没有键的记录一律写库——这类事件本来就不该被判定为重复。"""
+    """没有键的记录一律写库，这类事件不参与重复判定。"""
     await store.append(RUN_ID, [{"event_type": "run_status"}])
     await store.append(RUN_ID, [{"event_type": "run_status"}])
     assert await _count(store) == 2

@@ -7,45 +7,46 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 import pytest
 from langchain_core.messages import AIMessage
 
-from deepresearcher.agents.channels import merge_active_set, replace_channel, retain_if_absent
-from deepresearcher.agents.middleware import LoopStateRebuildMiddleware
-from deepresearcher.agents.researcher import ResearchAgent, services
+from deepresearcher.agents.middleware import StateRebuildMiddleware
+from deepresearcher.agents.reducers import merge_active_set, replace_channel, retain_if_absent
+from deepresearcher.agents.researcher import Researcher, services
 from deepresearcher.agents.researcher.agent import RESEARCHER_SERIAL_TOOLS
 from deepresearcher.agents.researcher.state import (
-    ResearcherAgentState,
-    ResearcherLoopContext,
-    ResearcherLoopState,
+    ResearcherContext,
+    ResearcherState,
+    ResearcherTaskState,
     working_set_snapshot,
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
+from deepresearcher.evidence.validator import SourceIndex
 from deepresearcher.schemas import (
     DocumentReadTarget,
     EvidenceSubmission,
     GrepDocument,
-    ResearchDirectionDecision,
-    ResearchDirectionResult,
+    TaskResult,
 )
 from deepresearcher.schemas.limits import SEARCH_RESULTS_PREVIEW_COUNT
-from deepresearcher.service.checkpoint_serde import build_checkpointer_serde
+from deepresearcher.service.execution.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.errors import SourceUnavailableError, UnsafeUrlError
 from deepresearcher.tools.web.documents import DocumentRef, DocumentView
-from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
 from deepresearcher.tools.web.search.models import SearchCandidate
 from fakes import (
     TASK,
-    DirectionLLM,
     FakeReader,
     FakeSearchService,
+    MemoryResearchMaterialStore,
+    ResearcherDecision,
+    ResearcherLLM,
     make_evidence,
     researcher_agent,
 )
 
 
-def test_direction_result_ignores_legacy_answered_points_on_checkpoint_restore() -> None:
-    restored = ResearchDirectionResult.model_validate(
+def test_task_result_ignores_legacy_answered_points_on_checkpoint_restore() -> None:
+    restored = TaskResult.model_validate(
         {
             "task_id": "legacy-task",
             "round": 1,
@@ -76,7 +77,7 @@ def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
             return await super().arun(task, candidate)
 
     config = AgentConfig(
-        research_agent_max_evidences_per_direction=2,
+        research_agent_max_evidences_per_task=2,
         research_agent_max_turns=4,
         research_agent_max_queries=4,
         research_agent_read_concurrency=2,
@@ -85,13 +86,12 @@ def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
     agent = researcher_agent(
         config,
         [
-            ResearchDirectionDecision(
+            ResearcherDecision(
                 action="search",
                 reason="尚无证据，先检索定义与直接事实。",
                 queries=["稳定术语 定义", "稳定术语 直接证据"],
-                remaining_gaps=["需要直接来源"],
             ),
-            ResearchDirectionDecision(
+            ResearcherDecision(
                 action="read",
                 reason="读取直接来源。",
                 candidate_ids=[
@@ -99,7 +99,7 @@ def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
                     + hashlib.sha1("https://example.com/稳定术语 定义/a".encode()).hexdigest()[:10]
                 ],
             ),
-            ResearchDirectionDecision(
+            ResearcherDecision(
                 action="complete",
                 reason="已获得直接来源。",
                 conclusion="当前方向可由已获取 Evidence 谨慎回答。",
@@ -123,19 +123,19 @@ def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
 def test_research_agent_records_context_observations_and_tool_results():
     agent = researcher_agent(
         AgentConfig(
-            research_agent_max_evidences_per_direction=2,
+            research_agent_max_evidences_per_task=2,
             research_agent_max_turns=3,
         ),
         [
-            ResearchDirectionDecision(action="search", reason="先查直接事实", queries=["方向定义"]),
-            ResearchDirectionDecision(
+            ResearcherDecision(action="search", reason="先查直接事实", queries=["方向定义"]),
+            ResearcherDecision(
                 action="read",
                 reason="读取候选来源",
                 candidate_ids=[
                     "c-" + hashlib.sha1("https://example.com/方向定义/a".encode()).hexdigest()[:10]
                 ],
             ),
-            ResearchDirectionDecision(action="complete", reason="材料已足够"),
+            ResearcherDecision(action="complete", reason="材料已足够"),
         ],
     )
 
@@ -145,7 +145,7 @@ def test_research_agent_records_context_observations_and_tool_results():
     contents = [
         str(message.content) for snapshot in agent.llm.seen_messages for message in snapshot
     ]
-    assert any("委派研究方向" in content for content in contents)
+    assert any("委派研究任务" in content for content in contents)
     assert any("系统研究观察" in content for content in contents)
     assert any("系统工具执行结果" in content for content in contents)
     assert any(
@@ -175,37 +175,37 @@ def test_search_results_are_compact_and_can_be_paged_from_search_cache():
 
     client = ManySearchService()
     materials = MemoryResearchMaterialStore()
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(),
         search_tool=SearchTool(client),
         reader_tool=FakeReader(),
         material_store=materials,
     )
-    loop_state = ResearcherLoopState()
+    task_state = ResearcherTaskState()
     first = asyncio.run(
-        services.search_sources(agent._deps, TASK, loop_state, {}, ["分页测试"], "发现候选")
+        services.search_sources(agent._deps, TASK, task_state, {}, ["分页测试"], "发现候选")
     )
 
     assert first["result_count"] == 12
     assert len(first["candidates"]) == SEARCH_RESULTS_PREVIEW_COUNT
     assert first["has_more"] is True
-    # 预览与分页统一形状：首屏即带截断 snippet,模型无需再调 ListSearchResults(offset=0) 判断。
+    # 预览与分页统一形状：首屏即带截断 snippet，模型无需再调 ListSearchResults(offset=0) 判断。
     assert all(item["snippet"] and len(item["snippet"]) <= 1_200 for item in first["candidates"])
     assert first["next_offset"] == SEARCH_RESULTS_PREVIEW_COUNT  # 预览消费 0..N-1 → 下一页从 N
 
     page = asyncio.run(
         services.list_search_results(
-            agent._deps, TASK, loop_state, first["search_id"], 5, 3, "查看下一页"
+            agent._deps, TASK, task_state, first["search_id"], 5, 3, "查看下一页"
         )
     )
 
     assert page["offset"] == 5
     assert page["returned_count"] == 3
     assert page["next_offset"] == 8
-    # 同一候选在预览与分页里字段完全一致，不再按 include_snippet 分叉两种字段集。
+    # 同一候选在预览与分页里字段完全一致，不按 include_snippet 分叉。
     assert set(first["candidates"][0]) == set(page["candidates"][0])
-    # 分页重建只从 SearchTool 的进程/持久缓存取数，不再请求 Provider。
+    # 分页重建只从 SearchTool 的缓存取数，不请求 Provider。
     assert client.calls == 1
     stored = asyncio.run(
         materials.get_search_results(str(TASK.get("run_id") or TASK["id"]), first["search_id"])
@@ -245,7 +245,7 @@ def test_list_search_results_rejects_another_direction_handle():
     agent = researcher_agent(AgentConfig(), [])
     result = asyncio.run(
         services.list_search_results(
-            agent._deps, TASK, ResearcherLoopState(), "search-not-owned", 0, 5, "越权查看"
+            agent._deps, TASK, ResearcherTaskState(), "search-not-owned", 0, 5, "越权查看"
         )
     )
 
@@ -254,21 +254,21 @@ def test_list_search_results_rejects_another_direction_handle():
 
 def test_research_agent_can_inspect_and_forget_its_working_set():
     agent = researcher_agent(
-        AgentConfig(research_agent_max_evidences_per_direction=2, research_agent_max_turns=5),
+        AgentConfig(research_agent_max_evidences_per_task=2, research_agent_max_turns=5),
         [
-            ResearchDirectionDecision(action="search", reason="先找来源", queries=["方向"]),
-            ResearchDirectionDecision(
+            ResearcherDecision(action="search", reason="先找来源", queries=["方向"]),
+            ResearcherDecision(
                 action="read",
                 reason="读取来源",
                 candidate_ids=[
                     "c-" + hashlib.sha1("https://example.com/方向/a".encode()).hexdigest()[:10]
                 ],
             ),
-            ResearchDirectionDecision(action="inspect", reason="确认工作集"),
-            ResearchDirectionDecision(
+            ResearcherDecision(action="inspect", reason="确认工作集"),
+            ResearcherDecision(
                 action="release", reason="释放当前材料", evidence_ids=["r1-1-src-unknown-ev-1"]
             ),
-            ResearchDirectionDecision(action="complete", reason="停止"),
+            ResearcherDecision(action="complete", reason="停止"),
         ],
     )
     # 该测试只验证工具协议和观察回流；ID 不匹配时 ReleaseEvidence 应安全返回 unknown。
@@ -286,10 +286,9 @@ def test_research_agent_can_stop_a_direction_without_unnecessary_search():
     agent = researcher_agent(
         AgentConfig(),
         [
-            ResearchDirectionDecision(
+            ResearcherDecision(
                 action="complete",
                 reason="没有可信的可检索路径。",
-                remaining_gaps=["缺少可公开验证的来源"],
             )
         ],
     )
@@ -298,14 +297,15 @@ def test_research_agent_can_stop_a_direction_without_unnecessary_search():
 
     assert result.task_result.execution_status == "completed"
     assert result.task_result.stop_reason == "blocked_without_evidence"
-    assert result.task_result.remaining_gaps == ["缺少可公开验证的来源"]
+    # 无证据时不采纳模型自述，系统把停止原因写成对当前状态的如实说明。
+    assert "没有可信的可检索路径" in result.task_result.conclusion
 
 
 def test_research_agent_converts_completion_without_evidence_to_blocked_result():
     agent = researcher_agent(
         AgentConfig(),
         [
-            ResearchDirectionDecision(
+            ResearcherDecision(
                 action="complete",
                 reason="我认为可以结束。",
                 conclusion="不应被接收的结论。",
@@ -319,17 +319,16 @@ def test_research_agent_converts_completion_without_evidence_to_blocked_result()
     assert task_result.execution_status == "completed"
     assert task_result.stop_reason == "blocked_without_evidence"
     assert task_result.stop_detail == "我认为可以结束。"
-    assert task_result.conclusion == ""
-    assert task_result.remaining_gaps
+    assert task_result.conclusion.startswith("本任务未取得可锚定的 Evidence")
 
 
 def test_researcher_builds_minimum_result_when_finalization_never_submits():
-    loop_state = ResearcherLoopState(active_evidence_limit=2)
-    loop_state.add_evidences(
+    task_state = ResearcherTaskState(active_evidence_limit=2)
+    task_state.add_evidences(
         [
             Evidence(
                 evidence_id="e1",
-                subtask_id="t1",
+                task_id="t1",
                 research_direction="方向",
                 claim="已验证的有限事实",
                 quote="原文片段",
@@ -339,21 +338,20 @@ def test_researcher_builds_minimum_result_when_finalization_never_submits():
         ]
     )
 
-    ResearchAgent._apply_minimum_result(loop_state)
+    Researcher._apply_minimum_result(task_state)
 
-    assert loop_state.stop_reason == "fallback_complete"
-    assert loop_state.conclusion.startswith("本方向未完成模型综合")
-    assert loop_state.remaining_gaps
+    assert task_state.stop_reason == "fallback_complete"
+    assert task_state.conclusion.startswith("本任务未在回合限制内提交结构化总结")
+    assert "综合结论尚未形成" in task_state.conclusion
 
 
 def test_researcher_builds_blocked_minimum_result_without_evidence():
-    loop_state = ResearcherLoopState()
+    task_state = ResearcherTaskState()
 
-    ResearchAgent._apply_minimum_result(loop_state)
+    Researcher._apply_minimum_result(task_state)
 
-    assert loop_state.stop_reason == "blocked_without_evidence"
-    assert loop_state.conclusion == ""
-    assert "未获得可用 Evidence。" in loop_state.remaining_gaps
+    assert task_state.stop_reason == "blocked_without_evidence"
+    assert "没有取得可锚定的 Evidence" in task_state.conclusion
 
 
 def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidence():
@@ -361,11 +359,11 @@ def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidenc
         AgentConfig(
             research_agent_max_turns=1,
             finalization_attempts=1,
-            research_agent_max_evidences_per_direction=2,
+            research_agent_max_evidences_per_task=2,
         ),
         [
-            ResearchDirectionDecision(action="search", reason="先找来源", queries=["方向"]),
-            ResearchDirectionDecision(
+            ResearcherDecision(action="search", reason="先找来源", queries=["方向"]),
+            ResearcherDecision(
                 action="read",
                 reason="读取来源",
                 candidate_ids=[
@@ -380,12 +378,13 @@ def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidenc
     assert result.evidences == []
     assert result.task_result.execution_status == "completed"
     assert result.task_result.stop_reason == "blocked_without_evidence"
-    assert result.task_result.conclusion == ""
+    # 未提交的文档不得升格为证据；conclusion 只留系统的状态说明，没有研究结论。
+    assert "没有取得可锚定的 Evidence" in result.task_result.conclusion
 
 
 def test_research_direction_decision_rejects_conclusions_during_search():
     with pytest.raises(ValueError, match="只有 action=complete"):
-        ResearchDirectionDecision(
+        ResearcherDecision(
             action="search",
             reason="还要继续检索。",
             queries=["新检索式"],
@@ -397,16 +396,14 @@ def test_research_agent_replans_duplicate_queries_instead_of_mislabeling_budget_
     config = AgentConfig(
         research_agent_max_turns=3,
         research_agent_max_queries=4,
-        research_agent_max_evidences_per_direction=4,
+        research_agent_max_evidences_per_task=4,
     )
     agent = researcher_agent(
         config,
         [
-            ResearchDirectionDecision(action="search", reason="先检索", queries=["稳定术语 定义"]),
-            ResearchDirectionDecision(
-                action="search", reason="误重复旧检索式", queries=["稳定术语 定义"]
-            ),
-            ResearchDirectionDecision(action="complete", reason="现有材料足以谨慎回答。"),
+            ResearcherDecision(action="search", reason="先检索", queries=["稳定术语 定义"]),
+            ResearcherDecision(action="search", reason="误重复旧检索式", queries=["稳定术语 定义"]),
+            ResearcherDecision(action="complete", reason="现有材料足以谨慎回答。"),
         ],
     )
 
@@ -483,29 +480,29 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
             token_count=20,
         )
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(evidence_max_per_source=4),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=8)
-    loop_state.documents[document.document_id] = document
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=8)
+    task_state.documents[document.document_id] = document
 
     grep = asyncio.run(
         services.grep_document(
-            agent._deps, loop_state, document.document_id, ["延迟"], [(0, 6)], 1, "定位数据"
+            agent._deps, task_state, document.document_id, ["延迟"], [(0, 6)], 1, "定位数据"
         )
     )
     read = asyncio.run(
-        services.read_document(agent._deps, loop_state, document.document_id, [(2, 3)], "读取数据")
+        services.read_document(agent._deps, task_state, document.document_id, [(2, 3)], "读取数据")
     )
     added = asyncio.run(
         services.add_evidence(
             agent._deps,
             TASK,
-            loop_state,
+            task_state,
             {},
             [
                 {
@@ -533,7 +530,7 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
     assert "L2:" in read["ranges"][0]["content"]
     assert len(added["accepted"]) == 1
     assert len(added["rejected"]) == 1
-    assert loop_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
+    assert task_state.evidences[0].support == "partial"  # 不得突破来源支撑上限
 
 
 def test_document_id_sanitizer_strips_injected_control_chars():
@@ -571,21 +568,21 @@ def test_read_documents_batches_several_documents_into_one_call():
             text="引言\n乙文延迟为 34ms。\n结论", title="乙报告", source_url="https://example.com/b"
         )
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=8)
-    loop_state.documents[first.document_id] = first
-    loop_state.documents[second.document_id] = second
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=8)
+    task_state.documents[first.document_id] = first
+    task_state.documents[second.document_id] = second
 
     batch = asyncio.run(
         services.read_documents(
             agent._deps,  # noqa: SLF001
-            loop_state,
+            task_state,
             [(first.document_id, [(2, 2)]), (second.document_id, [(2, 2)])],
             "跨文档批读",
         )
@@ -600,7 +597,7 @@ def test_read_documents_batches_several_documents_into_one_call():
     mixed_unknown = asyncio.run(
         services.read_documents(
             agent._deps,  # noqa: SLF001
-            loop_state,
+            task_state,
             [(first.document_id, [(2, 2)]), ("doc-未登记", [(1, 1)])],
             "混入未登记文档",
         )
@@ -612,7 +609,7 @@ def test_read_documents_batches_several_documents_into_one_call():
 def test_working_set_snapshot_carries_direction_and_source_identity():
     evidence = Evidence(
         evidence_id="ev-1",
-        subtask_id="task-0001",
+        task_id="task-0001",
         research_direction="方向甲",
         claim="主张",
         quote="原文",
@@ -621,12 +618,12 @@ def test_working_set_snapshot_carries_direction_and_source_identity():
         support="direct",
         confidence=0.8,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=8)
-    loop_state.evidences = [evidence]
-    loop_state.active_evidence_ids = {"ev-1"}
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=8)
+    task_state.evidences = [evidence]
+    task_state.active_evidence_ids = {"ev-1"}
 
-    item = working_set_snapshot(loop_state)["active_evidence"][0]
-    assert item["subtask_id"] == "task-0001"
+    item = working_set_snapshot(task_state)["active_evidence"][0]
+    assert item["task_id"] == "task-0001"
     assert item["source_title"] == "来源页"
     assert item["source_domain"] == "example.com"
 
@@ -640,21 +637,21 @@ def test_add_evidence_validates_before_ranking_by_confidence():
             source_url="https://example.com/ranking",
         )
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(evidence_add_batch_size=1, evidence_max_per_source=2),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=2, evidence_archive_limit=2)
-    loop_state.documents[document.document_id] = document
+    task_state = ResearcherTaskState(active_evidence_limit=2, evidence_archive_limit=2)
+    task_state.documents[document.document_id] = document
 
     result = asyncio.run(
         services.add_evidence(
             agent._deps,
             TASK,
-            loop_state,
+            task_state,
             {},
             [
                 {
@@ -681,7 +678,7 @@ def test_add_evidence_validates_before_ranking_by_confidence():
     )
 
     assert len(result["accepted"]) == 1
-    assert loop_state.evidences[0].claim == "较高优先级"
+    assert task_state.evidences[0].claim == "较高优先级"
     assert result["truncated_submission_count"] == 1
     assert any(
         item["reason"] == "anchor_not_found" for item in result["rejected"]
@@ -698,15 +695,15 @@ def test_add_evidence_anchor_resolves_across_punctuation_style():
             source_url="https://example.com/repair",
         )
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
-    loop_state.documents[document.document_id] = document
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.documents[document.document_id] = document
     events: list[dict[str, object]] = []
 
     def capture_emit(event_type: str, payload: dict[str, object], **kwargs: object) -> None:
@@ -719,7 +716,7 @@ def test_add_evidence_anchor_resolves_across_punctuation_style():
         services.add_evidence(
             deps,
             TASK,
-            loop_state,
+            task_state,
             {},
             [
                 {
@@ -736,9 +733,61 @@ def test_add_evidence_anchor_resolves_across_punctuation_style():
     )
 
     assert len(result["accepted"]) == 1
-    assert loop_state.evidences[0].quote == "报告称“非常稳健”，通过验收"
+    assert task_state.evidences[0].quote == "报告称“非常稳健”，通过验收"
     assert events[0]["accepted_count"] == 1
     assert events[0]["rejected_count"] == 0
+
+
+def test_add_evidence_scans_each_document_once(monkeypatch):
+    """同一文档的多条锚点共用一次全文归一：那是这条路径上唯一的 CPU 热点。"""
+    scans: list[str] = []
+    original_scan = SourceIndex.scan.__func__
+
+    def counting_scan(cls, text):
+        scans.append(text)
+        return original_scan(cls, text)
+
+    monkeypatch.setattr(SourceIndex, "scan", classmethod(counting_scan))
+
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(
+            text="事实甲在此。事实乙在此。事实丙在此。",
+            title="一次归一",
+            source_url="https://example.com/once",
+        )
+    )
+    agent = Researcher(
+        ResearcherLLM([]),
+        AgentConfig(evidence_max_per_source=8),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+    )
+    task_state = ResearcherTaskState(active_evidence_limit=8, evidence_archive_limit=8)
+    task_state.documents[document.document_id] = document
+
+    result = asyncio.run(
+        services.add_evidence(
+            agent._deps,
+            TASK,
+            task_state,
+            {},
+            [
+                {
+                    "document_id": document.document_id,
+                    "claim": f"{name}成立。",
+                    "quote_start": f"事实{name}",
+                    "confidence": 0.9,
+                }
+                for name in ("甲", "乙", "丙")
+            ],
+            "同文档多锚点",
+        )
+    )
+
+    assert len(result["accepted"]) == 3
+    assert scans == ["事实甲在此。事实乙在此。事实丙在此。"]
 
 
 def test_add_evidence_anchor_miss_receipt_carries_nearest_source_sentence():
@@ -750,21 +799,21 @@ def test_add_evidence_anchor_miss_receipt_carries_nearest_source_sentence():
             source_url="https://example.com/hint",
         )
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
-    loop_state.documents[document.document_id] = document
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.documents[document.document_id] = document
 
     result = asyncio.run(
         services.add_evidence(
             agent._deps,
             TASK,
-            loop_state,
+            task_state,
             {},
             [
                 {
@@ -793,21 +842,21 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
             source_url="https://example.com/concurrent",
         )
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(evidence_add_batch_size=2, evidence_max_per_source=1),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
-    loop_state.documents[document.document_id] = document
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.documents[document.document_id] = document
 
     async def submit(claim: str, quote_start: str):
         return await services.add_evidence(
             agent._deps,
             TASK,
-            loop_state,
+            task_state,
             {},
             [
                 {
@@ -826,7 +875,7 @@ def test_concurrent_add_evidence_commits_under_one_source_limit():
     results = asyncio.run(submit_both())
 
     assert sum(len(result["accepted"]) for result in results) == 1
-    assert len(loop_state.evidences) == 1
+    assert len(task_state.evidences) == 1
     assert any(
         item["reason"] == "source_evidence_limit_reached"
         for result in results
@@ -919,11 +968,11 @@ def test_source_reader_caps_search_summary_document_at_partial_support():
 
 
 def test_direction_evidence_pool_releases_slots_without_deleting_archive():
-    pool = ResearcherLoopState(active_evidence_limit=2, evidence_archive_limit=4)
+    pool = ResearcherTaskState(active_evidence_limit=2, evidence_archive_limit=4)
     first = [
         Evidence(
             evidence_id=f"e{index}",
-            subtask_id="task-1",
+            task_id="task-1",
             research_direction="方向",
             claim=f"事实 {index}",
             quote=f"原文 {index}",
@@ -965,8 +1014,8 @@ def test_researcher_agent_crash_passes_through_as_failed_not_dressed_up():
     assert task_result.stop_detail == "graph exploded"
     assert task_result.coverage_status == "insufficient"
     assert any("direction_agent_failed" in item for item in task_result.failures)
-    # 交付层仍拿到降级说明与缺口标注，证据为零时的默认文案不变
-    assert "未获得可用 Evidence。" in task_result.remaining_gaps
+    # 交付层仍拿到降级说明，证据为零时的默认文案不变
+    assert "没有取得可锚定的 Evidence" in task_result.conclusion
 
 
 def test_search_tool_emits_query_level_progress_events():
@@ -1049,9 +1098,8 @@ def test_researcher_concurrent_tools_are_known_merge_writers():
 
 
 def test_researcher_selection_channels_are_serial_only():
-    """非并发安全通道 = 方向收尾(ResearchDirectionComplete,串行)独写集。"""
-    assert _non_concurrency_safe_channels(ResearcherAgentState) == {
-        "remaining_gaps",
+    """非并发安全通道 = 方向收尾(TaskComplete,串行)独写集。"""
+    assert _non_concurrency_safe_channels(ResearcherState) == {
         "conclusion",
         "stop_reason",
         "stop_detail",
@@ -1060,7 +1108,7 @@ def test_researcher_selection_channels_are_serial_only():
 
 def test_researcher_channel_round_trip_strips_bodies():
     """initial_channel_state → from_channel_values 等价;候选去 raw_content、文档降 DocumentRef。"""
-    state = ResearcherLoopState(active_evidence_limit=6, evidence_archive_limit=12)
+    state = ResearcherTaskState(active_evidence_limit=6, evidence_archive_limit=12)
     state.candidates["c-1"] = SearchCandidate(
         candidate_id="c-1",
         url="https://a",
@@ -1089,9 +1137,9 @@ def test_researcher_channel_round_trip_strips_bodies():
     assert "content" not in channels["documents"]["d-1"].model_dump()
     assert isinstance(channels["documents"]["d-1"], DocumentRef)
 
-    # 入口 input 在生产里经 langgraph 施加通道 reducer;测试如实模拟这一步。
+    # 入口 input 在生产里经 langgraph 施加通道 reducer；测试如实模拟这一步。
     channels["active_evidence_ids"] = merge_active_set(None, channels["active_evidence_ids"])
-    restored = ResearcherLoopState.from_channel_values(
+    restored = ResearcherTaskState.from_channel_values(
         channels, active_evidence_limit=6, evidence_archive_limit=12
     )
     assert restored.candidates["c-1"].url == "https://a"
@@ -1111,21 +1159,21 @@ def test_researcher_rebuild_discards_uncommitted_memory():
         def __init__(self, context):
             self.context = context
 
-    committed = ResearcherLoopState(active_evidence_limit=6, evidence_archive_limit=12)
+    committed = ResearcherTaskState(active_evidence_limit=6, evidence_archive_limit=12)
     committed.conclusion = "已提交结论"
     channels = committed.initial_channel_state()
-    # 入口 input 在生产里经 langgraph 施加通道 reducer;测试如实模拟这一步。
+    # 入口 input 在生产里经 langgraph 施加通道 reducer；测试如实模拟这一步。
     channels["active_evidence_ids"] = merge_active_set(None, channels["active_evidence_ids"])
-    context = ResearcherLoopContext(
+    context = ResearcherContext(
         deps=SimpleNamespace(config=AgentConfig()),
         scope=SimpleNamespace(),
         task=TASK,
-        loop_state=committed,
+        task_state=committed,
     )
-    context.loop_state.conclusion = "未提交的内存改动"
+    context.task_state.conclusion = "未提交的内存改动"
 
-    asyncio.run(LoopStateRebuildMiddleware().abefore_model(channels, _Runtime(context)))
-    assert context.loop_state.conclusion == "已提交结论"
+    asyncio.run(StateRebuildMiddleware().abefore_model(channels, _Runtime(context)))
+    assert context.task_state.conclusion == "已提交结论"
 
 
 def test_researcher_candidate_channel_survives_msgpack():
@@ -1152,26 +1200,26 @@ def test_researcher_candidate_channel_survives_msgpack():
 
 
 def test_unknown_id_receipts_carry_available_lists():
-    """三类 unknown document_id 驳回都附有效清单：模型改引用，不再拿幻觉 id 复投。"""
+    """三类 unknown document_id 驳回都附有效清单，供模型改引用。"""
     store = MemoryResearchMaterialStore()
     document = asyncio.run(
         store.put(text="原文一句。", title="文档", source_url="https://example.com/list")
     )
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState(active_evidence_limit=4, evidence_archive_limit=4)
-    loop_state.documents[document.document_id] = document
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.documents[document.document_id] = document
 
     added = asyncio.run(
         services.add_evidence(
             agent._deps,  # noqa: SLF001
             TASK,
-            loop_state,
+            task_state,
             {},
             [
                 {
@@ -1189,12 +1237,12 @@ def test_unknown_id_receipts_carry_available_lists():
 
     grep = asyncio.run(
         services.grep_document(
-            agent._deps, loop_state, "doc-hallucinated", ["原文"], [(0, 6)], 2, "r"
+            agent._deps, task_state, "doc-hallucinated", ["原文"], [(0, 6)], 2, "r"
         )  # noqa: SLF001
     )
     assert grep["available_document_ids"] == [document.document_id]
     read = asyncio.run(
-        services.read_document(agent._deps, loop_state, "doc-hallucinated", [(1, 2)], "r")  # noqa: SLF001
+        services.read_document(agent._deps, task_state, "doc-hallucinated", [(1, 2)], "r")  # noqa: SLF001
     )
     assert read["available_document_ids"] == [document.document_id]
 
@@ -1202,15 +1250,15 @@ def test_unknown_id_receipts_carry_available_lists():
 def test_read_sources_unknown_candidates_list_available_ids():
     """读取候选全不存在时，回执附可用候选 id；无候选时给空列表也如实可见。"""
     store = MemoryResearchMaterialStore()
-    agent = ResearchAgent(
-        DirectionLLM([]),
+    agent = Researcher(
+        ResearcherLLM([]),
         AgentConfig(),
         search_tool=SearchTool(FakeSearchService()),
         reader_tool=FakeReader(),
         material_store=store,
     )
-    loop_state = ResearcherLoopState()
-    loop_state.candidates["c-real"] = SearchCandidate(
+    task_state = ResearcherTaskState()
+    task_state.candidates["c-real"] = SearchCandidate(
         candidate_id="c-real", url="https://example.com/real", title="真实候选"
     )
 
@@ -1218,7 +1266,7 @@ def test_read_sources_unknown_candidates_list_available_ids():
         services.read_sources(
             agent._deps,
             TASK,
-            loop_state,
+            task_state,
             {},
             ["c-hallucinated"],
             "幻觉候选",  # noqa: SLF001

@@ -10,13 +10,13 @@ from deepresearcher.agents.middleware import ToolLoopGuardMiddleware
 async def test_submission_guard_injects_dynamic_final_turn_reminder():
     events: list[tuple[str, dict[str, object]]] = []
     middleware = ToolLoopGuardMiddleware(
-        agent_name="ResearchAgent",
+        agent_name="Researcher",
         event_slug="researcher",
-        nudge_message="请提交",
+        missing_submission_message="请提交",
         submitted_probe=lambda _context: False,
         run_limit=6,
-        reminder_turns=2,
-        reminder_message="仅剩 {remaining_turns} 回合，请提交 Evidence。",
+        warn_below_turns=2,
+        low_turn_budget_message="仅剩 {remaining_turns} 回合，请提交 Evidence。",
         emit=lambda event_type, payload: events.append((event_type, payload)),
     )
     runtime = SimpleNamespace(context=SimpleNamespace())
@@ -29,7 +29,7 @@ async def test_submission_guard_injects_dynamic_final_turn_reminder():
     assert events == [
         (
             "researcher_finalization_reminded",
-            {"agent": "ResearchAgent", "remaining_turns": 2, "run_limit": 6},
+            {"agent": "Researcher", "remaining_turns": 2, "run_limit": 6},
         )
     ]
 
@@ -37,13 +37,13 @@ async def test_submission_guard_injects_dynamic_final_turn_reminder():
 @pytest.mark.asyncio
 async def test_submission_guard_does_not_repeat_same_dynamic_reminder():
     middleware = ToolLoopGuardMiddleware(
-        agent_name="ResearchAgent",
+        agent_name="Researcher",
         event_slug="researcher",
-        nudge_message="请提交",
+        missing_submission_message="请提交",
         submitted_probe=lambda _context: False,
         run_limit=5,
-        reminder_turns=2,
-        reminder_message="仅剩 {remaining_turns} 回合。",
+        warn_below_turns=2,
+        low_turn_budget_message="仅剩 {remaining_turns} 回合。",
     )
     reminder = HumanMessage(content="仅剩 2 回合。")
 
@@ -56,39 +56,39 @@ async def test_submission_guard_does_not_repeat_same_dynamic_reminder():
 
 
 @pytest.mark.asyncio
-async def test_nudge_budget_counts_from_private_state_channel_not_message_history():
-    """压缩会整表重建历史;历史匹配的计数会被静默清零、突破 max_nudges。"""
+async def test_rejection_budget_counts_from_private_state_channel_not_message_history():
+    """压缩会整表重建历史;历史匹配的计数会被静默清零、突破 max_rejections。"""
     from langchain_core.messages import AIMessage
 
     middleware = ToolLoopGuardMiddleware(
         agent_name="Writer",
-        nudge_message="请提交",
+        missing_submission_message="请提交",
         submitted_probe=lambda _context: False,
-        max_nudges=2,
+        max_rejections=2,
     )
     runtime = SimpleNamespace(context=SimpleNamespace())
 
-    # 通道计数已达上限：即使历史里没有 nudge 消息，也不再注入。
-    state = {"messages": [AIMessage(content="草稿直接写正文")], "nudge_count": 2}
+    # 通道计数已达上限：历史里没有驳回消息时也不注入。
+    state = {"messages": [AIMessage(content="草稿直接写正文")], "rejection_count": 2}
     assert await middleware.aafter_model(state, runtime) is None
 
     update = await middleware.aafter_model({"messages": [AIMessage(content="x")]}, runtime)
     assert update is not None
-    assert update["nudge_count"] == 1
+    assert update["rejection_count"] == 1
     assert update["jump_to"] == "model"
 
 
 @pytest.mark.asyncio
-async def test_softened_model_failure_text_is_not_nudged_as_protocol_violation():
+async def test_softened_model_failure_text_is_not_rejected_as_protocol_violation():
     from langchain_core.messages import AIMessage
 
     from deepresearcher.agents.middleware.retry import MODEL_FAILURE_MARKER
 
     middleware = ToolLoopGuardMiddleware(
         agent_name="Writer",
-        nudge_message="请提交",
+        missing_submission_message="请提交",
         submitted_probe=lambda _context: False,
-        max_nudges=2,
+        max_rejections=2,
     )
     softened = AIMessage(
         content=(

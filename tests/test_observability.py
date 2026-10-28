@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,7 +11,7 @@ from deepresearcher.observability.events import (
     make_node_event,
 )
 from deepresearcher.observability.tracing import ledger, spans
-from deepresearcher.service.events.projector import project
+from deepresearcher.service.web.projector import project
 
 
 def _ledger_rows(path):
@@ -138,3 +139,97 @@ def test_node_event_carries_correlation_fields():
     assert event.session_id == "session-1"
     assert event.node_id == "writer"
     assert event.payload["report_chars"] == 5000
+
+
+def test_summary_of_empty_result_has_only_field_names():
+    assert summarize_node_result({}, max_text_chars=10) == {"updated_fields": []}
+
+
+def test_summary_keeps_only_declared_fields():
+    """白名单外的键一律不进摘要：未登记的字段是内部状态，不该出现在事件流里。"""
+    summary = summarize_node_result(
+        {"route": "deep_research", "unknown_internal": object()},
+        max_text_chars=10,
+    )
+
+    assert summary == {"updated_fields": ["route", "unknown_internal"], "route": "deep_research"}
+
+
+def test_summary_truncates_per_field_limits():
+    """固定上限与 max_text_chars 是两套判定标准，混用时短了长了一处都看不出来。"""
+    summary = summarize_node_result(
+        {
+            "route_reason": "r" * 500,
+            "clarified_query": "q" * 500,
+            "intent_summary": "i" * 500,
+        },
+        max_text_chars=50,
+    )
+
+    assert len(summary["route_reason"]) == 240
+    assert len(summary["clarified_query"]) == 300
+    assert len(summary["intent_summary"]) == 50
+
+
+def test_summary_reads_run_and_sections():
+    summary = summarize_node_result(
+        {
+            "run": SimpleNamespace(phase="writing", terminal_reason="completed"),
+            "supervisor": SimpleNamespace(status="in_progress", current_round=2),
+            "writer": SimpleNamespace(status="drafted", feedback="补一段对比"),
+            "review": SimpleNamespace(status="approved", feedback=""),
+        },
+        max_text_chars=100,
+    )
+
+    assert summary["phase"] == "writing"
+    assert summary["terminal_reason"] == "completed"
+    assert summary["supervisor_status"] == "in_progress"
+    assert summary["current_round"] == 2
+    assert "coverage_gaps" not in summary  # 缺口已并入方向结论，不进事件流
+    assert summary["writer_status"] == "drafted"
+    assert summary["writer_feedback"] == "补一段对比"
+    assert summary["review_status"] == "approved"
+    assert "review_feedback" not in summary  # 空反馈不占键
+
+
+def test_summary_counts_collections_and_truncates_issues():
+    summary = summarize_node_result(
+        {
+            "citations": [1, 2],
+            "task_results": [1],
+            "evidences": [],
+            "paragraph_bindings": [1, 2, 3],
+            "review": SimpleNamespace(
+                status="rejected",
+                issues=[SimpleNamespace(severity="high", claim="c" * 300, reason="r" * 400)],
+            ),
+        },
+        max_text_chars=10,
+    )
+
+    assert summary["citations_count"] == 2
+    assert summary["task_results_count"] == 1
+    assert summary["evidences_count"] == 0
+    assert summary["paragraph_bindings_count"] == 3
+    issue = summary["review_issues"][0]
+    assert issue["claim"] == "c" * 200
+    assert issue["reason"] == "r" * 300
+
+
+def test_summary_reports_length_and_preview_only():
+    """长正文只以长度与有界预览进摘要，正文本身不进事件流也不进普通日志。"""
+    summary = summarize_node_result(
+        {
+            "rejected_draft": "d" * 700,
+            "report": "r" * 800,
+            "writer_directive": SimpleNamespace(report_brief="b" * 600),
+        },
+        max_text_chars=20,
+    )
+
+    assert summary["rejected_draft_chars"] == 700
+    assert summary["rejected_draft_preview"] == "d" * 20
+    assert summary["report_chars"] == 800
+    assert summary["report_preview"] == "r" * 20
+    assert summary["report_brief"] == "b" * 20

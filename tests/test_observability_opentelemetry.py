@@ -34,7 +34,7 @@ def otel_exporter() -> Iterator[InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))  # type: ignore[attr-defined]
     yield exporter
-    # 本模块之后其他测试文件仍会向全局 provider 产 span,清空避免跨模块累积。
+    # 本模块之后其他测试文件仍会向全局 provider 产 span，清空避免跨模块累积。
     exporter.clear()
 
 
@@ -72,7 +72,7 @@ async def _run_tree() -> str:
     ) as trace_id:
         with spans.span("supervisor"):
             await tool_leg()
-        # return_exceptions=True:两个分支的异常只用于给 span 定终态，不得逸出 trace 体。
+        # return_exceptions=True：两个分支的异常只用于给 span 定终态，不得逸出 trace 体。
         await asyncio.gather(failing_leg(), cancelled_leg(), return_exceptions=True)
         spans.record_output({"phase": "completed", "report_chars": 42})
     return trace_id
@@ -152,7 +152,7 @@ async def test_ledger_records_derive_from_same_span_ids():
         if record.get("name") == "supervisor" and record["event_type"] == "span_started"
     )
     assert supervisor_started["span_id"] == completed["supervisor"]["span_id"]
-    # trace 根是真实 span,子级的 parent_span_id 是根的 16 位 hex span_id。
+    # trace 根是真实 span，子级的 parent_span_id 是根的 16 位 hex span_id。
     assert HEX_SPAN_ID.match(supervisor_started["parent_span_id"])
     tool = next(
         record

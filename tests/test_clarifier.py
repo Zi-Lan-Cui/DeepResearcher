@@ -9,11 +9,11 @@ from deepresearcher.agents.clarifier import Clarifier
 from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
-    ClarifierLoopContext,
+    ClarifierContext,
 )
 from deepresearcher.agents.clarifier.tools import build_clarifier_tools
 from deepresearcher.schemas import AskClarificationArgs, ClarificationCompleteArgs
-from deepresearcher.state import ResearchState
+from deepresearcher.state import RunState
 
 
 def _tool(name):
@@ -47,7 +47,7 @@ def test_clarifier_tools_explain_boundary_and_pause_contract():
     complete_schema = complete.args_schema.model_json_schema()
 
     assert "暂停当前 Run" in ask.description
-    # 边界判据由参数 schema 承载：工具描述只说做什么，不再重复何时用。
+    # 边界判据由参数 schema 承载：工具描述只说做什么，不重复何时用。
     assert "研究边界" in ask_schema["properties"]["question"]["description"]
     assert "Other" in ask_schema["properties"]["options"]["description"]
     assert "一个" in ask_schema["properties"]["question"]["description"]
@@ -70,7 +70,7 @@ def test_complete_is_the_only_submission_signal():
     assert command.update["clarification_completed"] is True
     assert command.update["run_headline"] == "两方案成本效果对比"
     assert command.update["intent_summary"] == "比较两种方案"
-    # 研究重点不再由 Clarifier 表达：方向规划归 Supervisor，工具面没有这个键。
+    # 研究重点不由 Clarifier 表达：方向规划归 Supervisor，工具面没有这个键。
     assert "research_focus" not in command.update
 
 
@@ -108,7 +108,7 @@ def test_clarifier_run_injects_serial_tool_context():
     result = asyncio.run(clarifier.run({"run_id": "run-clarify", "query": "测试"}))
 
     assert result["clarification_completed"] is True
-    assert isinstance(captured["context"], ClarifierLoopContext)
+    assert isinstance(captured["context"], ClarifierContext)
     assert captured["context"].scope.run_id == "run-clarify"
     assert captured["config"]["recursion_limit"] > 0
 
@@ -148,7 +148,7 @@ def test_clarifier_headline_propagates_to_parent_state():
             "clarification_completed": True,
         }
 
-    parent = StateGraph(ResearchState)
+    parent = StateGraph(RunState)
     parent.add_node("clarifier", build_clarifier_graph(scripted_agent))
     parent.add_edge(START, "clarifier")
     parent.add_edge("clarifier", END)
@@ -176,7 +176,7 @@ def test_clarifier_subgraph_interrupt_resumes_through_parent_checkpoint():
         }
 
     child = build_clarifier_graph(scripted_agent)
-    parent = StateGraph(ResearchState)
+    parent = StateGraph(RunState)
     parent.add_node("clarifier", child)
     parent.add_edge(START, "clarifier")
     parent.add_edge("clarifier", END)

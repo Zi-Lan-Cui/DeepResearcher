@@ -49,7 +49,7 @@ def test_render_final_report_renumbers_by_first_appearance_and_keeps_quotes():
     assert "[证据2]" in report
     assert report.index("[证据1]") < report.index("[证据2]")
     assert "## 证据来源" in report
-    # 来源表逐条保留 quote,交付报告不丢原文片段
+    # 来源表逐条保留 quote，交付报告不丢原文片段
     assert "「第二条。」" in report
     assert "「第一条。」" in report
     assert "https://example.com/two" in report
@@ -79,10 +79,9 @@ def test_render_final_report_collapses_multiline_title_and_quote():
 
 
 def test_render_final_report_strips_writer_authored_reference_section():
-    """Writer 自写来源小节时由程序剥除,参考表以管道追加的一段为准。
+    """Writer 自写来源小节时由程序剥除，参考表以管道追加的一段为准。
 
-    剥除必须发生在编号渲染之前:被剥段里的 [[cite:e1]] 不再抢占首现顺序,
-    仅出现于该段的 citation 依既有规则不进参考表。
+    剥除在编号渲染之前：被剥段里的 [[cite:e1]] 不参与首现顺序，仅出现在该段的引用不进参考表。
     """
     citations = [
         Citation(
@@ -221,6 +220,31 @@ def test_render_final_report_node_routes_failure_paths():
     assert "## 证据来源" in result["report"]
     assert "审阅修订已达上限" in result["report"]
 
+    # 审阅弃权 → 草稿齐备照常交付，但标明未经审阅
+    result = asyncio.run(
+        render_final_report_node(
+            {
+                "clarified_query": "A 的性能",
+                "run": {"phase": "reviewing"},
+                "review": {"status": "abstained", "attempts": 3},
+                "report_draft": "## 结论\n\nA 的平均延迟为 20ms。[[cite:e1]]",
+                "citations": [
+                    Citation(
+                        id="e1",
+                        url="https://example.com/a",
+                        title="来源",
+                        quote="A 的平均延迟为 20ms。",
+                        claim="A 的平均延迟为 20ms",
+                    )
+                ],
+            },
+        )
+    )
+    assert result["answer_mode"] == "review_limited"
+    assert result["run"].terminal_reason == "review_abstained"
+    assert "未经审阅" in result["report"]
+    assert "## 证据来源" in result["report"]
+
     # 正常路径：草稿 + citations → 渲染
     result = asyncio.run(
         render_final_report_node(
@@ -352,7 +376,7 @@ def test_final_report_is_article_shaped_with_model_title():
         title="A 的真相",
     )
     assert report.startswith("# A 的真相\n")
-    assert "## 研究问题" not in report  # 不再输出系统结构小节
+    assert "## 研究问题" not in report  # 不输出系统结构小节
     assert "研究问题" not in report  # 问题与统计由页面展示，不写入报告正文
     assert "## 证据来源" in report
 
@@ -367,14 +391,13 @@ def test_incomplete_report_collapses_zero_evidence_to_diagnostic_card():
     state = {
         "clarified_query": "如何克服恐惧",
         "evidences": [],
-        "supervisor": SupervisorProgress(current_round=1, coverage_gaps=["缺口一", "缺口二"]),
+        "supervisor": SupervisorProgress(current_round=1),
         "task_results": [
             {
                 "execution_status": "completed",
                 "coverage_status": "insufficient",
                 "research_direction": "梳理舒适圈概念的心理学理论基础，要求引用一手学术文献并标注出处",
                 "evidence_count": 0,
-                "remaining_gaps": ["需要查找A", "需要查找B"],
                 "provider_exhausted": True,
             }
         ],
@@ -385,33 +408,33 @@ def test_incomplete_report_collapses_zero_evidence_to_diagnostic_card():
     assert "搜索服务额度耗尽" in report
     assert "系统性故障" in report  # provider_exhausted 命中，给系统性说明
     assert "恢复方式" in report
-    assert "方向结果" not in report  # 塌缩，不再逐条罗列
+    assert "任务结果" not in report  # 塌缩为一段，不逐条罗列
     assert "未闭合缺口" not in report
 
 
-def test_partial_report_dedups_and_caps_gap_list():
-    """有证据但部分交付:方向短题化,缺口归一化去重并限量。"""
+def test_partial_report_lists_task_titles_without_direction_conclusions():
+    """有证据但部分交付:只列方向短题与状态,不复述方向结论——报告只认 Supervisor 的任务书。"""
     from types import SimpleNamespace
 
     long_direction = "研究人类面对未知时产生恐惧的神经机制" + "，覆盖杏仁核与前额叶" * 8
     state = {
         "clarified_query": "如何克服恐惧",
         "evidences": [SimpleNamespace(source_url=f"https://a/{i}") for i in range(3)],
-        "supervisor": SupervisorProgress(current_round=1, coverage_gaps=[]),
+        "supervisor": SupervisorProgress(current_round=1),
         "task_results": [
             {
                 "execution_status": "completed",
                 "coverage_status": "partial",
                 "research_direction": long_direction,
                 "evidence_count": 3,
-                "remaining_gaps": ["需要 实证 来源", "需要 实证 来源", "缺口甲", "缺口乙"],
+                "conclusion": "SECRET-方向结论",
             }
         ],
     }
 
     report = render_incomplete_report(state, ["预算耗尽"])
 
-    assert "方向结果" in report
-    assert "…" in report  # 超长课题被截断，不再逐字回声
-    assert report.count("需要 实证 来源") == 1  # 大小写/空白归一后去重
-    assert "未闭合缺口" in report
+    assert "任务结果" in report
+    assert "…" in report  # 超长课题被截断，不逐字回声
+    assert "SECRET-方向结论" not in report  # 方向结论不进报告
+    assert "未闭合缺口" not in report  # 缺口已并入方向结论，不单列
