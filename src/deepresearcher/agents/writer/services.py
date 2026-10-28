@@ -1,8 +1,4 @@
-"""Writer 业务实现：不感知 langgraph 的纯函数。
-
-装配与 loop 控制留在 agent.py，工具回执留在 tools.py；本模块所需全部经参数注入，
-包括 state、config、emit、render_incomplete，模型可见事件经 emit 回调发射。
-"""
+"""Writer 业务实现：不感知 langgraph 的纯函数。"""
 
 from collections.abc import Callable, Sequence
 
@@ -11,7 +7,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from deepresearcher.agents.writer.state import (
     PreparedEvidence,
     ValidatedDraft,
-    WriterLoopContext,
+    WriterContext,
     evidence_index_card,
 )
 from deepresearcher.config import AgentConfig
@@ -30,7 +26,7 @@ from deepresearcher.schemas import (
     WriterProgress,
     WriterResult,
 )
-from deepresearcher.state import ResearchState, section
+from deepresearcher.state import RunState, section
 from deepresearcher.vocab import SUPPORT_RANK
 
 # 模型违反协议直接输出正文时，判定其可接收为草稿的下限：短于该长度或没有 cite 标记的
@@ -50,7 +46,7 @@ class WriterGenerationError(WriterError):
     code = "writer_generation"
 
 
-def state_update_for_quick_answer(state: ResearchState) -> dict[str, object]:
+def state_update_for_quick_answer(state: RunState) -> dict[str, object]:
     """即时回答直通交付：不检索、不引用，正文只保留答案本身。"""
     return WriterResult(
         # 页面徽标已经表达“即时回答 / 未联网检索”；正文只保留答案，
@@ -67,24 +63,24 @@ def state_update_for_quick_answer(state: ResearchState) -> dict[str, object]:
 
 
 def last_submitted_markdown(messages: Sequence[BaseMessage]) -> str:
-    """取最后一次 CompleteReport 提交的正文，用于轮次耗尽时保留底稿。"""
+    """取最后一次 ReportComplete 提交的正文，用于轮次耗尽时保留底稿。"""
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             for call in message.tool_calls or []:
-                if call["name"] == "CompleteReport":
+                if call["name"] == "ReportComplete":
                     return str(call.get("args", {}).get("markdown", ""))
     return ""
 
 
 def recover_inline_draft(
-    loop_context: WriterLoopContext,
+    loop_context: WriterContext,
     messages: Sequence[BaseMessage],
     *,
     emit: AgentEmit,
 ) -> None:
-    """接收跳过 CompleteReport、把报告直接写成收尾正文的草稿。
+    """接收跳过 ReportComplete、把报告直接写成收尾正文的草稿。
 
-    只有通过与 CompleteReport 完全相同的本地引用校验才算有效提交；
+    只有通过与 ReportComplete 完全相同的本地引用校验才算有效提交；
     校验失败时至少把正文保留进 last_markdown，不再整篇丢弃。
     """
     for message in reversed(list(messages)):
@@ -207,7 +203,7 @@ def prepare_evidence(
     )
 
 
-def require_writer_directive(state: ResearchState) -> WriterDirective:
+def require_writer_directive(state: RunState) -> WriterDirective:
     """WriterDirective 是写作的唯一入口事实源；缺席即不可开始。"""
     directive = state.get("writer_directive")
     if directive is None:
@@ -257,11 +253,11 @@ def build_generation_messages(
 
 
 def state_update_for_insufficient_evidence(
-    state: ResearchState,
+    state: RunState,
     evidences: list[Evidence],
     *,
     config: AgentConfig,
-    render_incomplete: Callable[[ResearchState], str],
+    render_incomplete: Callable[[RunState], str],
 ) -> dict[str, object]:
     """无可用材料时以降级报告结束，如实说明 support 不足。"""
     support_message = ""
@@ -292,7 +288,7 @@ def state_update_for_insufficient_evidence(
 
 
 def state_update_for_exhausted_result(
-    state: ResearchState,
+    state: RunState,
     *,
     last_markdown: str,
     error: str,
@@ -327,7 +323,7 @@ def state_update_for_exhausted_result(
 
 
 def state_update_for_ready_result(
-    state: ResearchState,
+    state: RunState,
     *,
     draft: ValidatedDraft,
     evidence_count: int,

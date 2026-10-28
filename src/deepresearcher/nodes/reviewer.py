@@ -75,7 +75,6 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
         }
         for item in bindings
     ]
-    # 审阅只看问题与段落引用本身；任务书等上游环节不随附，独立评审。
     messages = [
         SystemMessage(
             content=(
@@ -124,11 +123,9 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
             )
             await asyncio.sleep(agent_config.reviewer_retry_initial_seconds * (retry_index + 1))
     if decision is None:
-        _logger.warning(
-            "reviewer_abstained runaway_attempts=%d; 审阅未给出结论，报告按原样返回",
-            runaway_attempts,
-        )
-        return {"review": ReviewProgress(status="approved", attempts=attempt)}
+        # 弃权不等于通过：写成独立状态，下游按「未经审阅」交付并在事件流里可筛。
+        _logger.warning("reviewer_abstained runaway_attempts=%d", runaway_attempts)
+        return {"review": ReviewProgress(status="abstained", attempts=attempt)}
 
     status = (
         "rejected" if any(issue.severity == "fatal" for issue in decision.issues) else "approved"

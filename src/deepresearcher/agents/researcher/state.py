@@ -1,11 +1,11 @@
-"""ResearchAgent 的方向级运行状态和工具执行上下文。"""
+"""Researcher 的任务级运行状态和工具执行上下文。"""
 
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from langchain.agents import AgentState
 
-from deepresearcher.agents.channels import (
+from deepresearcher.agents.reducers import (
     merge_active_set,
     merge_dict_by_key,
     merge_or,
@@ -15,10 +15,10 @@ from deepresearcher.agents.channels import (
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
-from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.schemas import DirectionStopReason
+from deepresearcher.observability.scope import AgentScope
+from deepresearcher.schemas import Task, TaskStopReason
 from deepresearcher.schemas.sources import source_domain
-from deepresearcher.state import SubTask, merge_evidences, merge_unique
+from deepresearcher.state import merge_evidences, merge_unique
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.web.documents import DocumentRef
 from deepresearcher.tools.web.materials import ResearchMaterialStore
@@ -35,14 +35,8 @@ def _document_channel_entry(view: DocumentRef) -> DocumentRef:
     return DocumentRef.model_validate(view.model_dump())
 
 
-class ResearcherAgentState(AgentState):
-    """ResearchAgent 内层图的 state_schema：方向业务状态的持久化载体。
-
-    AddEvidence、ReadSources 与 SearchSources 并发执行，只写合并语义通道；Release、
-    Restore、ResearchDirectionComplete 串行执行(单独一轮),conclusion、remaining_gaps、
-    stop_detail 这几个 replace 通道只由它们写。active 工作集通道存集合本身，
-    工具出口只交 {add,remove} 增量；候选与文档进通道时剥离正文，只留可重取的引用信息。
-    """
+class ResearcherState(AgentState):
+    """Researcher 内层图的 state_schema：任务业务状态的持久化载体。"""
 
     evidences: Annotated[list[Evidence], merge_evidences]
     active_evidence_ids: Annotated[list[str], merge_active_set]
@@ -55,9 +49,8 @@ class ResearcherAgentState(AgentState):
     search_batches: Annotated[dict[str, list[str]], merge_dict_by_key]
     documents: Annotated[dict[str, DocumentRef], merge_dict_by_key]
     selected_candidate_ids: Annotated[list[str], merge_unique]
-    remaining_gaps: Annotated[list[str], replace_channel]
     conclusion: Annotated[str, replace_channel]
-    stop_reason: Annotated[DirectionStopReason | None, retain_if_absent]
+    stop_reason: Annotated[TaskStopReason | None, retain_if_absent]
     stop_detail: Annotated[str, replace_channel]
     provider_exhausted: Annotated[bool, merge_or]
 
@@ -77,14 +70,14 @@ def evidence_observation_card(evidence: Evidence, *, quote_chars: int) -> dict[s
     }
 
 
-def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]:
-    """方向工作集的轻量摘要唯一构造处；与 supervisor 的 working_set_snapshot 对称。"""
-    evidences = loop_state.active_evidences()
+def working_set_snapshot(task_state: "ResearcherTaskState") -> dict[str, object]:
+    """任务工作集的轻量摘要唯一构造处；与 supervisor 的 working_set_snapshot 对称。"""
+    evidences = task_state.active_evidences()
     return {
         "active_evidence": [
             {
                 "evidence_id": item.evidence_id,
-                "subtask_id": item.subtask_id,
+                "task_id": item.task_id,
                 "claim": item.claim,
                 "support": item.support,
                 "confidence": item.confidence,
@@ -94,16 +87,16 @@ def working_set_snapshot(loop_state: "ResearcherLoopState") -> dict[str, object]
             for item in evidences
         ],
         "active_evidence_count": len(evidences),
-        "active_evidence_limit": loop_state.active_evidence_limit,
-        "reserve_evidence_count": len(loop_state.evidences) - len(evidences),
-        "archive_evidence_count": len(loop_state.evidences),
-        "archive_evidence_limit": loop_state.evidence_archive_limit,
+        "active_evidence_limit": task_state.active_evidence_limit,
+        "reserve_evidence_count": len(task_state.evidences) - len(evidences),
+        "archive_evidence_count": len(task_state.evidences),
+        "archive_evidence_limit": task_state.evidence_archive_limit,
     }
 
 
 @dataclass(frozen=True)
 class ResearcherDeps:
-    """ResearchAgent 构造期的稳定零件；跨并发 run 共享、只读，frozen 数据类保证这一点。"""
+    """Researcher 构造期的稳定零件；跨并发 run 共享、只读，frozen 数据类保证这一点。"""
 
     config: AgentConfig
     search_tool: SearchTool
@@ -113,31 +106,33 @@ class ResearcherDeps:
 
 
 @dataclass
-class ResearcherLoopContext:
-    """ResearchAgent 一次 run 的注入载荷：字段全是数据，不含行为。
+class ResearcherContext:
+    """Researcher 一次 run 的注入载荷：字段全是数据，不含行为。
 
     行为实现在 services.py，tools.py 从本对象转交参数。相对路径为相对仓库根。
     中间件 observability 用 getattr 读取 scope 做事件归因，缺席不崩溃但事件失去归属。
     """
 
     deps: ResearcherDeps
-    scope: AgentExecutionScope
-    task: SubTask
-    loop_state: "ResearcherLoopState"
+    scope: AgentScope
+    task: Task
+    task_state: "ResearcherTaskState"
     event_context: dict[str, object] = field(default_factory=dict)
 
-    def rebuild_loop_state(self, values: dict[str, Any]) -> None:
-        """每次模型回合前从通道现值重建 loop_state；两个上限按本轮 config 现取，不进通道。"""
+    def rebuild_state(self, values: dict[str, Any]) -> None:
+        """每次模型回合前从通道现值重建 task_state；两个上限按本轮 config 现取，不进通道。"""
         config = self.deps.config
-        self.loop_state = ResearcherLoopState.from_channel_values(
+        self.task_state = ResearcherTaskState.from_channel_values(
             values,
-            active_evidence_limit=config.research_agent_max_evidences_per_direction,
-            evidence_archive_limit=config.research_agent_max_evidence_candidates_per_direction,
+            active_evidence_limit=config.research_agent_max_evidences_per_task,
+            evidence_archive_limit=config.research_agent_max_evidence_candidates_per_task,
         )
 
 
 @dataclass
-class ResearcherLoopState:
+class ResearcherTaskState:
+    """Researcher 单次 task 的内存工作副本：每模型回合前从通道重建，任务结束即弃。"""
+
     # evidences 是有界完整候选档案；active_evidence_ids 才是模型当前工作集。
     evidences: list[Evidence] = field(default_factory=list)
     active_evidence_ids: set[str] = field(default_factory=set)
@@ -152,11 +147,10 @@ class ResearcherLoopState:
     selected_candidate_ids: set[str] = field(default_factory=set)
     skipped: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
-    remaining_gaps: list[str] = field(default_factory=list)
     conclusion: str = ""
-    stop_reason: DirectionStopReason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
-    stop_detail: str = "方向级探索步数预算已耗尽。"
-    # 搜索提供方账户级不可用，即额度耗尽或鉴权失败。仅作数据：本方向与 Supervisor 的
+    stop_reason: TaskStopReason = TaskStopReason.STEP_BUDGET_EXHAUSTED
+    stop_detail: str = "任务级探索步数预算已耗尽。"
+    # 搜索提供方账户级不可用，即额度耗尽或鉴权失败。仅作数据：本任务与 Supervisor 的
     # 模型读到后自然收尾、停止派发，不引入控制流分支。
     provider_exhausted: bool = False
 
@@ -202,7 +196,7 @@ class ResearcherLoopState:
         }
 
     def initial_channel_state(self) -> dict[str, Any]:
-        """把当前 loop_state 一次性写入内层通道，作 ainvoke 入口 input。"""
+        """把当前 task_state 一次性写入内层通道，作 ainvoke 入口 input。"""
         return {
             "evidences": list(self.evidences),
             "active_evidence_ids": {"add": sorted(self.active_evidence_ids), "remove": []},
@@ -219,7 +213,6 @@ class ResearcherLoopState:
                 key: _document_channel_entry(value) for key, value in self.documents.items()
             },
             "selected_candidate_ids": sorted(self.selected_candidate_ids),
-            "remaining_gaps": list(self.remaining_gaps),
             "conclusion": self.conclusion,
             "stop_reason": self.stop_reason,
             "stop_detail": self.stop_detail,
@@ -233,8 +226,8 @@ class ResearcherLoopState:
         *,
         active_evidence_limit: int,
         evidence_archive_limit: int,
-    ) -> "ResearcherLoopState":
-        """从内层通道现值重建 loop_state；缺席键回落空态默认。"""
+    ) -> "ResearcherTaskState":
+        """从内层通道现值重建 task_state；缺席键回落空态默认。"""
         view = cls(
             active_evidence_limit=active_evidence_limit,
             evidence_archive_limit=evidence_archive_limit,
@@ -246,7 +239,7 @@ class ResearcherLoopState:
             ]
         if "active_evidence_ids" in values:
             view.active_evidence_ids = set(values["active_evidence_ids"])
-        for key in ("source_refs", "queries", "read_urls", "skipped", "failures", "remaining_gaps"):
+        for key in ("source_refs", "queries", "read_urls", "skipped", "failures"):
             if key in values:
                 setattr(view, key, list(values[key] or []))
         if "candidates" in values:
@@ -272,7 +265,7 @@ class ResearcherLoopState:
         if "stop_detail" in values:
             view.stop_detail = str(values["stop_detail"] or "")
         if values.get("stop_reason") is not None:
-            view.stop_reason = DirectionStopReason(values["stop_reason"])
+            view.stop_reason = TaskStopReason(values["stop_reason"])
         if "provider_exhausted" in values:
             view.provider_exhausted = bool(values["provider_exhausted"])
         return view

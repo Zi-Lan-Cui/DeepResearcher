@@ -1,5 +1,5 @@
 """研究 Supervisor。"""
 
-from deepresearcher.agents.supervisor.agent import ResearchSupervisor
+from deepresearcher.agents.supervisor.agent import Supervisor
 
-__all__ = ["ResearchSupervisor"]
+__all__ = ["Supervisor"]

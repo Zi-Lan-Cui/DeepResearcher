@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from langchain.agents import AgentState
 
-from deepresearcher.agents.channels import (
+from deepresearcher.agents.reducers import (
     merge_active_set,
     merge_monotonic,
     merge_or,
@@ -14,26 +14,23 @@ from deepresearcher.agents.channels import (
     replace_channel,
     retain_if_absent,
 )
-from deepresearcher.agents.researcher import ResearchAgent
+from deepresearcher.agents.researcher import Researcher
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import AgentEmit
-from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.schemas import (
-    DirectionStopReason,
-    ResearchDirectionResult,
+    ResearcherResult,
     ResearchSynthesis,
     StopReason,
-    SupervisorProgress,
+    TaskResult,
 )
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import (
-    ResearchState,
-    SubTask,
+    RunState,
     merge_evidences,
     merge_task_results,
     merge_unique,
-    section,
 )
 
 
@@ -59,6 +56,13 @@ def _integer_field(record: object, field_name: str) -> int:
         return 0
 
 
+def pending_task_payload(entry: object) -> dict[str, object]:
+    """取登记项里的 Task 载荷，缺失返回空字典。"""
+    if isinstance(entry, dict):
+        return dict(entry.get("payload") or {})
+    return dict(getattr(entry, "payload", None) or {})
+
+
 def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
     """在发起本次执行的 AIMessage 中定位该派发在 ResearchDelegate 序列里的序。
 
@@ -80,20 +84,13 @@ def _tool_call_position(messages: object, tool_call_id: str) -> int | None:
     return None
 
 
-class SupervisorAgentState(AgentState):
-    """Supervisor 内层图的 state_schema：循环业务状态的持久化载体。
-
-    reducer 按工具的串行/并发身份选择，共用 reducer 见 agents/channels.py:
-    ResearchDelegate 同批并发，只写合并语义通道；UpdateWorkbench、
-    ResearchComplete 串行，可写 replace 通道。active 工作集通道存集合本身，
-    工具出口只交 {add,remove} 增量，避免并发整字段快照互相覆盖。
-    """
+class SupervisorState(AgentState):
+    """Supervisor 内层图的 state_schema：循环业务状态的持久化载体。"""
 
     evidences: Annotated[list[Evidence], merge_evidences]
     active_evidence_ids: Annotated[list[str], merge_active_set]
     source_refs: Annotated[list[str], merge_unique]
-    task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
-    coverage_gaps: Annotated[list[str], merge_unique]
+    task_results: Annotated[list[TaskResult], merge_task_results]
     failure_details: Annotated[list[str], merge_unique]
     working_set_revision: Annotated[int, merge_monotonic]
     research_synthesis: Annotated[ResearchSynthesis | None, replace_channel]
@@ -101,38 +98,31 @@ class SupervisorAgentState(AgentState):
     provider_exhausted: Annotated[bool, merge_or]
     stop_reason: Annotated[StopReason | None, _merge_stop_reason_by_rank]
     task_index_counter: Annotated[int, merge_monotonic]
-    # 在途方向登记表 {task_id: PendingDirection.model_dump()}：派发批并发 add,
-    # 到达吸收与丢失判定在独占批 remove。崩溃重放时通道值是"哪些方向未结算"的唯一事实源。
-    pending_directions: Annotated[dict[str, dict], merge_registry_by_key]
-    # 计划清单 [PlanItem.model_dump()]：UpdateWorkbench 独自写入（key="plan"），不进外层持久化。
+    pending_tasks: Annotated[dict[str, dict], merge_registry_by_key]
     plan: Annotated[list[dict], replace_channel]
 
 
-# 老检查点的方向结果没有短题时，卡片回退用长契约截断到此长度。
-_DIRECTION_FALLBACK_CHARS = 30
+# 老检查点的任务结果没有短题时，卡片回退用长契约截断到此长度。
+_TASK_FALLBACK_CHARS = 30
 
 
-def _direction_label(evidence: Evidence, direction_title: str) -> str:
-    """方向归属展示名：派发短题优先，无短题回退长契约截断。"""
-    if direction_title:
-        return direction_title
+def _task_label(evidence: Evidence, task_title: str) -> str:
+    """任务归属展示名：派发短题优先，无短题回退长契约截断。"""
+    if task_title:
+        return task_title
     topic = evidence.research_direction
-    if len(topic) > _DIRECTION_FALLBACK_CHARS:
-        return topic[: _DIRECTION_FALLBACK_CHARS - 1] + "…"
+    if len(topic) > _TASK_FALLBACK_CHARS:
+        return topic[: _TASK_FALLBACK_CHARS - 1] + "…"
     return topic
 
 
-def evidence_card(evidence: Evidence, direction_title: str = "") -> dict[str, object]:
-    """Supervisor 的唯一 Evidence 观察视图；不暴露 quote 与审计正文。
-
-    来源画像展平为顶层键（与 writer/reviewer 卡同形）；方向归属只带短题，
-    完整契约在派发记录与方向报告里本来就有，不在每张卡上重复。
-    """
+def evidence_card(evidence: Evidence, task_title: str = "") -> dict[str, object]:
+    """Supervisor 的唯一 Evidence 观察视图；不暴露 quote 与审计正文。"""
     profile = evidence.source_profile
     return {
         "evidence_id": evidence.evidence_id,
         "claim": evidence.claim,
-        "direction_title": _direction_label(evidence, direction_title),
+        "task_title": _task_label(evidence, task_title),
         "support": evidence.support,
         "confidence": evidence.confidence,
         "source_title": evidence.source_title,
@@ -170,37 +160,31 @@ def synthesis_snapshot(synthesis: ResearchSynthesis | None) -> dict[str, object]
 
 @dataclass(frozen=True)
 class SupervisorDeps:
-    """ResearchSupervisor 构造期的稳定零件；跨并发 loop 共享、只读，frozen 数据类保证这一点。"""
+    """Supervisor 构造期的稳定零件；跨并发 loop 共享、只读，frozen 数据类保证这一点。"""
 
     config: AgentConfig
-    research_agent: ResearchAgent
+    research_agent: Researcher
     worker_limit: asyncio.Semaphore
     emit: AgentEmit
 
 
 @dataclass
-class SupervisorLoopContext:
-    """Supervisor 一次工具 loop 的注入载荷。
+class SupervisorContext:
+    """Supervisor 一次 round 内跨模型回合存活的注入载荷。"""
 
-    loop_state 是当前工具批的可变状态，每回合前由 rebuild_loop_state 从通道重建，
-    不进 checkpoint，持久状态以通道为准。删改字段前先 grep agents/middleware/。
-    """
-
-    scope: AgentExecutionScope
+    scope: AgentScope
     deps: SupervisorDeps
-    loop_state: "SupervisorLoopState"
+    round_state: "SupervisorRoundState"
     research_query: str = ""
     current_round: int = 0
-    # 派发出去的在途方向后台任务 {task_id: Task[TaskExecution]}；进程级，不进通道不进 checkpoint。
-    # "哪些方向未结算"的事实源是 loop_state.pending_directions(通道)，这里只是执行载体。
-    direction_tasks: dict[str, "asyncio.Task[TaskExecution]"] = field(default_factory=dict)
+    task_handles: dict[str, "asyncio.Task[ResearcherResult]"] = field(default_factory=dict)
 
-    def rebuild_loop_state(self, values: dict[str, Any]) -> None:
+    def rebuild_state(self, values: dict[str, Any]) -> None:
         """每次模型回合前从通道现值重建状态对象，替代上一批的内存对象。
 
         两个标量派生自入口 State 且不进通道，只由本 context 承载。
         """
-        self.loop_state = SupervisorLoopState.from_channel_values(
+        self.round_state = SupervisorRoundState.from_channel_values(
             values,
             research_query=self.research_query,
             current_round=self.current_round,
@@ -209,56 +193,14 @@ class SupervisorLoopContext:
         )
 
 
-@dataclass
-class TaskExecution:
-    """一次方向研究执行的完整产物：结果模型与 absorb 所需的 Evidence/来源清单。
-
-    模型看到的方向报告由 services.absorb_arrival 在本对象产物上渲染，
-    本对象只承载数据、不承载消息。
-    """
-
-    task_result: ResearchDirectionResult
-    evidences: list[Evidence]
-    selected_evidence_ids: list[str]
-    source_refs: list[str]
-
-    @classmethod
-    def failed_for(cls, task: SubTask, round_no: int, error: str) -> "TaskExecution":
-        """构造 worker 异常降级的 failed 结果；失败经方向报告让模型可见。"""
-        task_result = ResearchDirectionResult(
-            task_id=task["id"],
-            round=round_no,
-            task_index=int(task.get("sequence", 0)),
-            question=task["question"],
-            research_direction=task["question"],
-            display_title=str(task.get("display_title") or ""),
-            execution_status="failed",
-            coverage_status="insufficient",
-            evidence_count=0,
-            source_count=0,
-            failures=[error],
-            stop_reason=DirectionStopReason.WORKER_EXCEPTION,
-            stop_detail=error,
-        )
-        return cls(
-            task_result=task_result,
-            evidences=[],
-            selected_evidence_ids=[],
-            source_refs=[],
-        )
-
-
-class SupervisorLoopState:
+class SupervisorRoundState:
     """Supervisor 工具循环的可变业务状态：证据聚合、active 工作集、task result、
     coverage/failure、research synthesis、working_set_revision、stop reason、熔断认证位、轮次。
-
-    持久化由 SupervisorAgentState 通道承担：每次模型回合前从通道重建，工具批内原地改、
-    出口经 Command 增量写回通道，loop 结束后由 SupervisorStateUpdate 转成顶层 State 增量。
     """
 
     def __init__(
         self,
-        state: ResearchState,
+        state: RunState,
         *,
         current_round: int,
         active_evidence_limit: int,
@@ -278,24 +220,20 @@ class SupervisorLoopState:
         self.source_refs = list(state.get("source_refs", []))
         self.task_results = list(state.get("task_results", []))
         # 当前轮次只来源于构造参数：由 _run_agent_loop 从持久化的 SupervisorProgress 推一次。
-        # 这里读 SupervisorProgress 只为取持久化的 coverage_gaps，不决定轮次。
-        persisted = section(state, "supervisor", SupervisorProgress)
         self.current_round: int = current_round
-        self.coverage_gaps = list(persisted.coverage_gaps)
-        # 执行失败详情，如截断后的异常文本。coverage_gaps 只装研究内容缺口，会渲染进用户
-        # 报告的"未闭合缺口"；两者的可见面与恢复策略不同，不能混用同一个字段。
+        # 执行失败详情，如截断后的异常文本。只进收尾诊断文案，不渲染成研究缺口清单。
         self.failure_details: list[str] = []
         self.research_query = str(state.get("clarified_query", state.get("query", "")))
         self.working_set_revision = int(state.get("working_set_revision", 0) or 0)
         self.research_synthesis = self._restore_synthesis(state.get("research_synthesis"))
         self.completed_synthesis: ResearchSynthesis | None = None
         self.stop_reason: StopReason | None = None
-        # 账户级熔断认证位：absorb 见到任何带该标志的方向结果即置真。这类故障是系统性
-        # 不可用而非单个方向偶发，一个方向足以为全局认证。ResearchComplete 据此允许通过
+        # 账户级熔断认证位：absorb 见到任何带该标志的任务结果即置真。这类故障是系统性
+        # 不可用而非单个任务偶发，一个任务足以为全局认证。ResearchComplete 据此允许通过
         # 无证据结束，执行故障轮不再被迫记成预算耗尽。
         self.provider_exhausted = False
-        # 在途方向登记 {task_id: PendingDirection dict}；通道为事实源，批内共享对象。
-        self.pending_directions: dict[str, dict] = dict(state.get("pending_directions") or {})
+        # 在途任务登记 {task_id: PendingTask dict}；通道为事实源，批内共享对象。
+        self.pending_tasks: dict[str, dict] = dict(state.get("pending_tasks") or {})
 
         # 编号由 _used_task_index 从持久化事实派生，不持有进程内副本。
         self._task_counter: int = self._used_task_index()
@@ -308,11 +246,8 @@ class SupervisorLoopState:
         恢复路径上的编号空洞。
         """
         used_indexes = [_integer_field(item, "task_index") for item in self.task_results]
-        for entry in self.pending_directions.values():
-            subtask = (
-                entry.get("subtask") if isinstance(entry, dict) else getattr(entry, "subtask", {})
-            )
-            used_indexes.append(_integer_field(subtask or {}, "sequence"))
+        for entry in self.pending_tasks.values():
+            used_indexes.append(_integer_field(pending_task_payload(entry), "sequence"))
         return max(used_indexes, default=0)
 
     @staticmethod
@@ -332,12 +267,12 @@ class SupervisorLoopState:
         current_round: int,
         active_evidence_limit: int,
         max_research_rounds: int = 0,
-    ) -> "SupervisorLoopState":
+    ) -> "SupervisorRoundState":
         """从内层通道现值重建状态对象：仅依赖标量参数与通道，不持有外层 State。
 
         缺席键回落到空态默认(等同尚无工具写入的新建状态)。
         """
-        # 传新建空 dict:__init__ 里的 section(...) 会就地写入入参，复用常量会被交叉污染。
+        # 传新建空 dict：__init__ 会就地写入入参，复用模块级常量会被交叉污染。
         view = cls(
             {},
             current_round=current_round,
@@ -357,13 +292,9 @@ class SupervisorLoopState:
             view.source_refs = list(values["source_refs"])
         if "task_results" in values:
             view.task_results = [
-                item
-                if isinstance(item, ResearchDirectionResult)
-                else ResearchDirectionResult.model_validate(item)
+                item if isinstance(item, TaskResult) else TaskResult.model_validate(item)
                 for item in values["task_results"]
             ]
-        if "coverage_gaps" in values:
-            view.coverage_gaps = list(values["coverage_gaps"])
         if "failure_details" in values:
             view.failure_details = list(values["failure_details"])
         if "working_set_revision" in values:
@@ -378,8 +309,8 @@ class SupervisorLoopState:
             view.stop_reason = StopReason(values["stop_reason"])
         if "task_index_counter" in values:
             view._task_counter = max(int(values["task_index_counter"] or 0), view._task_counter)
-        if "pending_directions" in values:
-            view.pending_directions = dict(values["pending_directions"] or {})
+        if "pending_tasks" in values:
+            view.pending_tasks = dict(values.get("pending_tasks") or {})
         if "plan" in values:
             view.plan = [dict(item) for item in values["plan"] or [] if isinstance(item, dict)]
         return view
@@ -391,7 +322,6 @@ class SupervisorLoopState:
             "active_evidence_ids": {"add": sorted(self.active_evidence_ids), "remove": []},
             "source_refs": list(self.source_refs),
             "task_results": list(self.task_results),
-            "coverage_gaps": list(self.coverage_gaps),
             "failure_details": list(self.failure_details),
             "working_set_revision": self.working_set_revision,
             "research_synthesis": self.research_synthesis,
@@ -434,12 +364,7 @@ class SupervisorLoopState:
         return self._task_counter
 
     def allocate_task_index_for_call(self, origin_state: dict[str, Any], tool_call_id: str) -> int:
-        """任务序号由发起消息内的调用位置派生，不把研究轮次编码进任务 ID。
-
-        批初 task_index_counter 与 tool_calls 顺序都已持久化，同一 tool_call 在任何生命周期
-        重放到同一编号，嵌套 researcher 的 ns 因此跨重放稳定。基准再与已用最大编号取大，
-        兼容通道值缺失的检查点。
-        """
+        """任务序号由发起消息内的调用位置派生，不把研究轮次编码进任务 ID。"""
         position = _tool_call_position(origin_state.get("messages", []), tool_call_id)
         if position is None:
             return self.allocate_task_index()
@@ -451,12 +376,8 @@ class SupervisorLoopState:
         self._task_counter = max(self._task_counter, index)
         return index
 
-    def absorb(self, execution: TaskExecution) -> None:
-        """把一次方向研究产物并入工作状态。
-
-        方向 Agent 的 remaining_gaps 只是 Supervisor 的观察线索，不能单独决定全局充分性；
-        但必须保留下来，避免最终状态丢失诊断信息。
-        """
+    def absorb(self, execution: ResearcherResult) -> None:
+        """把一次任务研究结果并入工作状态。"""
         self.evidences.extend(execution.evidences)
         available = {item.evidence_id for item in execution.evidences}
         selected = [item for item in execution.selected_evidence_ids if item in available]
@@ -466,8 +387,6 @@ class SupervisorLoopState:
         self.task_results.append(execution.task_result)
         if execution.task_result.provider_exhausted:
             self.provider_exhausted = True
-        self.coverage_gaps.extend(execution.task_result.remaining_gaps)
-        self.coverage_gaps = list(dict.fromkeys(gap for gap in self.coverage_gaps if gap.strip()))
         self._bump_working_set()
 
     def release_evidence(self, evidence_ids: list[str]) -> list[str]:
@@ -503,79 +422,70 @@ class SupervisorLoopState:
         return [item for item in self.evidences if item.evidence_id in self.active_evidence_ids]
 
 
-_WORKBENCH_CONCLUSION_CHARS = 120
+_WORKBENCH_CONCLUSION_CHARS = 2000
 _WORKBENCH_RESERVE_CARD_LIMIT = 20
 
 
-def workbench_view(loop_state: "SupervisorLoopState") -> dict[str, object]:
-    """Supervisor 工作台的唯一视图构造处：模型每回合、ReadWorkbench、拒绝回执都读它。
-
-    设计不变式：通道持有的运行事实都要在这里有窗，或不给模型看并说明理由
-    (failure_details 属后者)。收据会随压缩腐烂，directions 段是它的持久档案。
-    """
-    titles = _direction_titles(loop_state)
-    active = loop_state.active_evidences()
-    directions: list[dict[str, object]] = []
-    for result in loop_state.task_results:
+def workbench_view(round_state: "SupervisorRoundState") -> dict[str, object]:
+    """Supervisor 工作台的唯一视图构造处。"""
+    titles = _task_titles(round_state)
+    active = round_state.active_evidences()
+    tasks: list[dict[str, object]] = []
+    for result in round_state.task_results:
         getter = (
             result.get
             if isinstance(result, dict)
             else (lambda key, item=result: getattr(item, key, None))
         )
-        conclusion = str(getter("conclusion") or "")
-        if len(conclusion) > _WORKBENCH_CONCLUSION_CHARS:
-            conclusion = conclusion[: _WORKBENCH_CONCLUSION_CHARS - 1] + "…"
+        conclusion = _clip_conclusion(str(getter("conclusion") or ""))
         task_id = str(getter("task_id") or "")
-        directions.append(
+        tasks.append(
             {
                 "task_id": task_id,
                 "display_title": str(getter("display_title") or titles.get(task_id, "")),
                 "execution_status": str(getter("execution_status") or ""),
                 "evidence_count": int(getter("evidence_count") or 0),
                 "conclusion": conclusion,
-                "shortfalls": [str(item) for item in (getter("remaining_gaps") or [])],
             }
         )
     active_ids = {item.evidence_id for item in active}
-    reserve = [item for item in loop_state.evidences if item.evidence_id not in active_ids]
-    rounds_left = max(0, loop_state.max_research_rounds - loop_state.current_round)
+    reserve = [item for item in round_state.evidences if item.evidence_id not in active_ids]
+    rounds_left = max(0, round_state.max_research_rounds - round_state.current_round)
     return {
-        "workbench_revision": loop_state.working_set_revision,
-        "plan": [dict(item) for item in loop_state.plan],
+        "workbench_revision": round_state.working_set_revision,
+        "plan": [dict(item) for item in round_state.plan],
         "inflight": [
             {
                 "task_id": str(entry.get("task_id") or key),
                 "display_title": str(entry.get("display_title") or ""),
                 "round": int(entry.get("round", 0) or 0),
             }
-            for key, entry in sorted(loop_state.pending_directions.items())
+            for key, entry in sorted(round_state.pending_tasks.items())
         ],
-        "directions": directions,
-        "active_evidence": [
-            evidence_card(item, titles.get(item.subtask_id, "")) for item in active
-        ],
+        "tasks": tasks,
+        "active_evidence": [evidence_card(item, titles.get(item.task_id, "")) for item in active],
         "active_evidence_count": len(active),
-        "active_evidence_limit": loop_state.active_evidence_limit,
+        "active_evidence_limit": round_state.active_evidence_limit,
         "reserve_evidence": [
-            evidence_card(item, titles.get(item.subtask_id, ""))
+            evidence_card(item, titles.get(item.task_id, ""))
             for item in reserve[:_WORKBENCH_RESERVE_CARD_LIMIT]
         ],
         "reserve_evidence_count": len(reserve),
         "flags": {
-            "provider_exhausted": bool(loop_state.provider_exhausted),
+            "provider_exhausted": bool(round_state.provider_exhausted),
             "rounds_left": rounds_left,
         },
         "synthesis_revision": (
-            loop_state.research_synthesis.revision if loop_state.research_synthesis else 0
+            round_state.research_synthesis.revision if round_state.research_synthesis else 0
         ),
-        "research_synthesis": synthesis_card(loop_state.research_synthesis),
+        "research_synthesis": synthesis_card(round_state.research_synthesis),
     }
 
 
-def _direction_titles(loop_state: "SupervisorLoopState") -> dict[str, str]:
-    """task_id → 方向短题；通道恢复态的 task_results 可能是 dict 形态，双形态取值。"""
+def _task_titles(round_state: "SupervisorRoundState") -> dict[str, str]:
+    """task_id → 任务短题；通道恢复态的 task_results 可能是 dict 形态，双形态取值。"""
     titles: dict[str, str] = {}
-    for result in loop_state.task_results:
+    for result in round_state.task_results:
         if isinstance(result, dict):
             task_id = str(result.get("task_id", ""))
             title = str(result.get("display_title", ""))
@@ -585,3 +495,12 @@ def _direction_titles(loop_state: "SupervisorLoopState") -> dict[str, str]:
         if task_id and title:
             titles[task_id] = title
     return titles
+
+
+def _clip_conclusion(text: str) -> str:
+    """超长结论在句末断开；句末太靠前则退回定长截断，免得只剩半句开头。"""
+    if len(text) <= _WORKBENCH_CONCLUSION_CHARS:
+        return text
+    window = text[:_WORKBENCH_CONCLUSION_CHARS]
+    cut = max(window.rfind(mark) for mark in "。；！？")
+    return window[: cut + 1] + "…" if cut >= _WORKBENCH_CONCLUSION_CHARS // 3 else window + "…"

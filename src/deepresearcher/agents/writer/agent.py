@@ -1,9 +1,4 @@
-"""Report Writer：将 Supervisor 提供的任务书与 Evidence 写成可审阅草稿。
-
-Writer 只产出 evidence_id 键的草稿（report_draft）、段落绑定与引用元数据；
-编号渲染与证据来源表由审阅通过后的终检渲染层完成，Writer 不渲染最终报告。
-业务实现在 services.py，本模块只做装配、loop 控制与事件发射。
-"""
+"""Report Writer：将 Supervisor 提供的任务书与 Evidence 写成可审阅草稿。"""
 
 from collections.abc import Callable
 from typing import Any, cast
@@ -14,15 +9,15 @@ from langgraph.errors import GraphRecursionError
 
 from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
-    LoopStateRebuildMiddleware,
     MiddlewareProfile,
+    StateRebuildMiddleware,
     SubmissionGuard,
     build_agent_middleware,
 )
 from deepresearcher.agents.writer import services
 from deepresearcher.agents.writer.state import (
-    WriterAgentState,
-    WriterLoopContext,
+    WriterContext,
+    WriterState,
 )
 from deepresearcher.agents.writer.tools import build_writer_tools
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
@@ -30,19 +25,18 @@ from deepresearcher.evidence.models import Evidence
 from deepresearcher.observability.events import bounded_content, emit_agent_event
 from deepresearcher.observability.events.names import EventName
 from deepresearcher.observability.events.sink import JsonlSink
-from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.prompts import language_directive, load_prompt
-from deepresearcher.state import ResearchState
+from deepresearcher.state import RunState
 
 _WRITER_SYSTEM_PROMPT = load_prompt("writer")
 
-# CompleteReport 写 replace/retain 语义通道，即草稿、错误、底稿，是串行工具，必须单独
-# 一轮；与 ReadEvidence 同批调用会被 SerialToolMiddleware 整批驳回并退回模型。
-WRITER_SERIAL_TOOLS: frozenset[str] = frozenset({"CompleteReport"})
+# 定义串行通道
+WRITER_SERIAL_TOOLS: frozenset[str] = frozenset({"ReportComplete"})
 
 
-class ReportWriter:
+class Writer:
     """生成报告草稿，并只重试 Writer 自身可修复的引用协议错误。
 
     Supervisor 决定研究是否结束并交接 writer_directive（含 report_brief）；
@@ -55,7 +49,7 @@ class ReportWriter:
         llm: BaseChatModel,
         config: AgentConfig,
         *,
-        render_incomplete: Callable[[ResearchState], str],
+        render_incomplete: Callable[[RunState], str],
         event_sink: JsonlSink | None = None,
         artifact_max_text_chars: int = 1_000,
         context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -75,12 +69,12 @@ class ReportWriter:
             system_prompt=_WRITER_SYSTEM_PROMPT.replace("__LANG__", config.output_language)
             + "\n"
             + language_directive(config.output_language),
-            context_schema=WriterLoopContext,
-            state_schema=WriterAgentState,
+            context_schema=WriterContext,
+            state_schema=WriterState,
             middleware=cast(
                 Any,
                 [
-                    LoopStateRebuildMiddleware(),
+                    StateRebuildMiddleware(),
                     *build_agent_middleware(
                         MiddlewareProfile(
                             agent_name="Writer",
@@ -89,19 +83,19 @@ class ReportWriter:
                             max_turns=self.config.writer_max_turns,
                             context_window_tokens=context_window_tokens,
                             serial_tools=set(WRITER_SERIAL_TOOLS),
-                            # 提交前输出纯文本不算结束：退回重试，退回次数耗尽后由 recover_inline_draft 作回退。
+                            # 提交前输出纯文本不算结束：驳回重试，驳回次数耗尽后由 recover_inline_draft 作回退。
                             submission_guard=SubmissionGuard(
-                                nudge_message=(
-                                    "你还没有调用 CompleteReport，本任务尚未结束；直接输出正文不算提交。"
-                                    "请立即调用 CompleteReport，把完整 Markdown 正文作为参数提交，"
+                                missing_submission_message=(
+                                    "你还没有调用 ReportComplete，本任务尚未结束；直接输出正文不算提交。"
+                                    "请立即调用 ReportComplete，把完整 Markdown 正文作为参数提交，"
                                     "并在 selected_evidence_ids 填入真正支撑正文的已读 evidence_id。"
                                 ),
                                 submitted_probe=lambda ctx: (
                                     getattr(ctx, "validated_draft", None) is not None
                                 ),
-                                max_nudges=self.config.finalization_attempts,
+                                max_rejections=self.config.finalization_attempts,
                             ),
-                            # 草稿落定后下一跳退出循环：不依赖模型多调用一轮，提交后模型也没有继续调用工具的机会。
+                            # 草稿落定后下一跳退出循环
                             exit_probe=lambda ctx, _state: (
                                 getattr(ctx, "validated_draft", None) is not None
                             ),
@@ -111,10 +105,9 @@ class ReportWriter:
                 ],
             ),
             name="writer",
-            # 业务状态经通道持久化，崩溃重放从最后一个已提交 superstep 续跑。
         )
 
-    async def run(self, state: ResearchState) -> dict[str, object]:
+    async def run(self, state: RunState) -> dict[str, object]:
         """按固定路径完成模式分流、草稿生成、校验与状态汇总；编号渲染不在本层。"""
         if state.get("answer_mode") == "quick_answer":
             return services.state_update_for_quick_answer(state)
@@ -159,7 +152,7 @@ class ReportWriter:
             )
         else:
             # 从通道现值回填状态：崩溃重放时上下文未经批重建，以通道为准可避免把已提交草稿读成 None。
-            loop_context.rebuild_loop_state(result)
+            loop_context.rebuild_state(result)
         if loop_context.validated_draft is None:
             services.recover_inline_draft(loop_context, result.get("messages", []), emit=self._emit)
         if loop_context.validated_draft is None:
@@ -191,9 +184,9 @@ class ReportWriter:
         evidence_by_id: dict[str, Evidence],
         *,
         run_id: str,
-    ) -> WriterLoopContext:
-        return WriterLoopContext(
-            scope=AgentExecutionScope(run_id=run_id, agent_name="Writer"),
+    ) -> WriterContext:
+        return WriterContext(
+            scope=AgentScope(run_id=run_id, agent_name="Writer"),
             evidence_by_id=evidence_by_id,
             emit=self._emit,
             read_evidence_ids=set(),

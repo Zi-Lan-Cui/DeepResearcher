@@ -1,8 +1,4 @@
-"""强制工具提交守卫：模型未完成提交就输出纯文本时，退回要求重试。
-
-在 after_model 发现最后一条消息无 tool_calls 且提交探测未完成时，注入纠错消息并
-jump 回模型，最多 max_nudges 次；耗尽后允许通过，由业务层回退。
-"""
+"""强制工具提交守卫：模型未完成提交就输出纯文本时，退回要求重试。"""
 
 from collections.abc import Callable
 from typing import Annotated, Any
@@ -18,12 +14,12 @@ from deepresearcher.observability.logging_config import get_logger
 
 
 class ToolLoopGuardState(AgentState[Any]):
-    """本回合已退回次数走私有 state 通道。
+    """本回合已驳回次数走私有 state 通道。
 
     不放实例属性（中间件实例随编译图跨运行共享），也不从消息历史推导（摘要压缩会重建历史）。
     """
 
-    nudge_count: NotRequired[Annotated[int, UntrackedValue, PrivateStateAttr]]
+    rejection_count: NotRequired[Annotated[int, UntrackedValue, PrivateStateAttr]]
 
 
 class SubmittedExitMiddleware(AgentMiddleware):
@@ -52,39 +48,39 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
     def __init__(
         self,
         agent_name: str,
-        nudge_message: str,
+        missing_submission_message: str,
         submitted_probe: Callable[[Any], bool],
-        max_nudges: int = 2,
+        max_rejections: int = 2,
         run_limit: int = 0,
-        reminder_message: str = "",
-        reminder_turns: int = 0,
+        low_turn_budget_message: str = "",
+        warn_below_turns: int = 0,
         emit: Callable[[str, dict[str, object]], None] | None = None,
         event_slug: str | None = None,
     ):
         super().__init__()
         self.agent_name = agent_name
         self._slug = event_slug or agent_name.lower()
-        self.nudge_message = nudge_message
+        self.missing_submission_message = missing_submission_message
         self.submitted_probe = submitted_probe
-        self.max_nudges = max_nudges
+        self.max_rejections = max_rejections
         self.run_limit = run_limit
-        self.reminder_message = reminder_message
-        self.reminder_turns = reminder_turns
+        self.low_turn_budget_message = low_turn_budget_message
+        self.warn_below_turns = warn_below_turns
         self._emit = emit
         self._logger = get_logger("deepresearcher.agents.middleware.tool_loop_guard")
 
     async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         """最后几回合显式告知剩余预算，促使模型先提交已验证材料。"""
-        if not self.reminder_message or self.reminder_turns <= 0 or self.run_limit <= 0:
+        if not self.low_turn_budget_message or self.warn_below_turns <= 0 or self.run_limit <= 0:
             return None
         if self.submitted_probe(getattr(runtime, "context", None)):
             return None
         messages = state.get("messages", []) if isinstance(state, dict) else []
         calls = int(state.get("run_model_call_count", 0) or 0) if isinstance(state, dict) else 0
         remaining = self.run_limit - calls
-        if remaining <= 0 or remaining > self.reminder_turns:
+        if remaining <= 0 or remaining > self.warn_below_turns:
             return None
-        content = self.reminder_message.format(remaining_turns=remaining)
+        content = self.low_turn_budget_message.format(remaining_turns=remaining)
         if any(
             isinstance(message, HumanMessage) and message.content == content for message in messages
         ):
@@ -112,21 +108,23 @@ class ToolLoopGuardMiddleware(AgentMiddleware):
             return None
         if self.submitted_probe(getattr(runtime, "context", None)):
             return None
-        nudges = int(state.get("nudge_count", 0) or 0) if isinstance(state, dict) else 0
-        if nudges >= self.max_nudges:
+        rejected = int(state.get("rejection_count", 0) or 0) if isinstance(state, dict) else 0
+        if rejected >= self.max_rejections:
             return None
         payload = {
             "agent": self.agent_name,
-            "nudge": nudges + 1,
-            "max_nudges": self.max_nudges,
+            "rejected": rejected + 1,
+            "max_rejections": self.max_rejections,
             "content_chars": len(last.text or ""),
         }
         if self._emit is not None:
+            # 事件名保留历史值 nudged：它已写进旧 run_events，改值会让检索断掉；
+            # payload 键随字段改名，与新术语一致。
             self._emit(f"{self._slug}_tool_loop_nudged", payload)
         else:
             self._logger.info("%s_tool_loop_nudged payload=%s", self._slug, payload)
         return {
-            "messages": [HumanMessage(content=self.nudge_message)],
+            "messages": [HumanMessage(content=self.missing_submission_message)],
             "jump_to": "model",
-            "nudge_count": nudges + 1,
+            "rejection_count": rejected + 1,
         }

@@ -6,7 +6,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from langgraph.types import Command
 
-from deepresearcher.agents.clarifier.state import ClarifierAgentState, ClarifierLoopContext
+from deepresearcher.agents.clarifier.state import ClarifierAgentState, ClarifierContext
 from deepresearcher.schemas import AskClarificationArgs, ClarificationCompleteArgs
 from deepresearcher.schemas.limits import (
     CLARIFICATION_ASSUMPTION_LIMIT,
@@ -21,7 +21,7 @@ def build_clarifier_tools():
     async def ask_clarification(
         question: str,
         options: list[str],
-        runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
+        runtime: ToolRuntime[ClarifierContext, ClarifierAgentState],
     ) -> Command | str:
         """暂停当前 Run，向用户提出一个关键问题，回答后由 Clarifier 判断是否已足够。"""
         choices = list(dict.fromkeys(item.strip() for item in options if item.strip()))
@@ -59,7 +59,7 @@ def build_clarifier_tools():
         headline: str,
         intent_summary: str,
         assumptions: list[str],
-        runtime: ToolRuntime[ClarifierLoopContext, ClarifierAgentState],
+        runtime: ToolRuntime[ClarifierContext, ClarifierAgentState],
     ) -> Command:
         """确认意图与研究边界已足以开始研究，提交标题、摘要与假设；这是 Clarifier 唯一完成信号。"""
         return Command(

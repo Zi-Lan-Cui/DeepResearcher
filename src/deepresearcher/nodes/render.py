@@ -9,10 +9,10 @@ from deepresearcher.schemas import (
     WriterProgress,
     terminal_reason_text,
 )
-from deepresearcher.state import ResearchState, section
+from deepresearcher.state import RunState, section
 
 
-async def render_final_report_node(state: ResearchState):
+async def render_final_report_node(state: RunState):
     """流水线终点：统一处理成功、澄清和各类失败路径。"""
     run = section(state, "run", RunStatus)
     research = section(state, "supervisor", SupervisorProgress)
@@ -67,6 +67,30 @@ async def render_final_report_node(state: ResearchState):
                     phase="completed", terminal_reason=RenderOutcome.REVIEW_RECOVERY_EXHAUSTED
                 ),
             }
+    if review.status == "abstained":
+        # 弃权是没审成，不是没写出来：草稿齐备就照常交付，只标明未经审阅。
+        citations = list(state.get("citations", []))
+        draft = state.get("report_draft", "")
+        if not citations or not draft:
+            return {
+                "report": render_incomplete_report(
+                    state, ["审阅未给出结论，且缺少可渲染的草稿或引用元数据。"]
+                ),
+                "answer_mode": "research_incomplete",
+                "run": RunStatus(
+                    phase="completed", terminal_reason=RenderOutcome.MISSING_REPORT_DRAFT
+                ),
+            }
+        return {
+            "report": render_final_report(
+                body=draft,
+                citations=citations,
+                title=str(state.get("report_title") or ""),
+            )
+            + "\n\n> 注：审阅未给出结论，本报告未经审阅校验。",
+            "answer_mode": "review_limited",
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REVIEW_ABSTAINED),
+        }
     if review.status == "rejected":
         feedback = review.feedback or "整体审阅未通过。"
         return {

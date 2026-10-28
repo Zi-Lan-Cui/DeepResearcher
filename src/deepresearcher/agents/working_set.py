@@ -1,8 +1,4 @@
-"""supervisor 与 researcher 共享的 Evidence 工作集释放/恢复原语。
-
-三层：archive 全量档案、active 工作集、reserve 档案减工作集。请求 id 先按顺序
-去重再进回执；release 与 restore 的回执同为三键结构，取行为较严的一侧。
-"""
+"""supervisor 与 researcher 共享的 Evidence 工作集释放/恢复原语。"""
 
 from collections.abc import Callable, Mapping, Sequence
 from difflib import get_close_matches
@@ -15,7 +11,7 @@ _DID_YOU_MEAN_CUTOFF = 0.6
 
 
 class WorkingSetState(Protocol):
-    """共享原语依赖的最小工作集接口；两侧 LoopState 结构性满足，不做 isinstance 校验。"""
+    """共享原语依赖的最小工作集接口；两侧状态对象结构性满足，不做 isinstance 校验。"""
 
     evidences: list[Evidence]
     active_evidence_ids: set[str]
@@ -36,15 +32,15 @@ def _did_you_mean(unknown_ids: Sequence[str], archive_ids: set[str]) -> dict[str
 
 
 def release_working_set(
-    loop_state: WorkingSetState,
+    working_set: WorkingSetState,
     evidence_ids: Sequence[str],
     *,
     snapshot: Callable[[], Mapping[str, object]],
 ) -> dict[str, object]:
     """从工作集释放(不删档案)，返回统一三键 + 变更后快照的回执。"""
     requested = list(dict.fromkeys(evidence_ids))
-    released = loop_state.release_evidence(requested)
-    archive_ids = {item.evidence_id for item in loop_state.evidences}
+    released = working_set.release_evidence(requested)
+    archive_ids = {item.evidence_id for item in working_set.evidences}
     unknown = [item for item in requested if item not in archive_ids]
     receipt: dict[str, object] = {
         "released_evidence_ids": released,
@@ -61,15 +57,15 @@ def release_working_set(
 
 
 def restore_working_set(
-    loop_state: WorkingSetState,
+    working_set: WorkingSetState,
     evidence_ids: Sequence[str],
     *,
     snapshot: Callable[[], Mapping[str, object]],
 ) -> dict[str, object]:
     """从档案恢复进工作集(受活跃上限约束)，返回统一三键 + 变更后快照的回执。"""
     requested = list(dict.fromkeys(evidence_ids))
-    restored = loop_state.restore_evidence(requested)
-    archive_ids = {item.evidence_id for item in loop_state.evidences}
+    restored = working_set.restore_evidence(requested)
+    archive_ids = {item.evidence_id for item in working_set.evidences}
     unknown = [item for item in requested if item not in archive_ids]
     receipt: dict[str, object] = {
         "restored_evidence_ids": restored,

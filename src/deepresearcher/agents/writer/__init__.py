@@ -1,12 +1,12 @@
 """报告 Writer Agent。"""
 
-from deepresearcher.agents.writer.agent import ReportWriter
-from deepresearcher.agents.writer.state import WriterLoopContext
-from deepresearcher.schemas import CompleteReport, ReadEvidence
+from deepresearcher.agents.writer.agent import Writer
+from deepresearcher.agents.writer.state import WriterContext
+from deepresearcher.schemas import ReadEvidence, ReportComplete
 
 __all__ = [
-    "CompleteReport",
+    "ReportComplete",
     "ReadEvidence",
-    "ReportWriter",
-    "WriterLoopContext",
+    "Writer",
+    "WriterContext",
 ]

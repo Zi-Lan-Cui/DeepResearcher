@@ -6,9 +6,9 @@ from typing import Annotated, Any
 
 from langchain.agents import AgentState
 
-from deepresearcher.agents.channels import replace_channel, retain_if_absent
+from deepresearcher.agents.reducers import replace_channel, retain_if_absent
 from deepresearcher.evidence.models import Evidence
-from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.schemas import Citation, ParagraphBinding
 from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import merge_unique
@@ -50,13 +50,8 @@ def _restore_draft(value: "ValidatedDraft | dict[str, Any] | None") -> "Validate
     return ValidatedDraft(**value)
 
 
-class WriterAgentState(AgentState):
-    """ReportWriter 内层图的状态定义，承载草稿循环的业务状态。
-
-    read_evidence_ids 由并发 ReadEvidence 各写本批新增，merge_unique 去重；
-    validated_draft、last_error、last_markdown 只由串行 CompleteReport 写，
-    用 replace_channel 整体覆盖。evidence_by_id 从外层 State 派生，只读、不设通道。
-    """
+class WriterState(AgentState):
+    """Writer 内层图的状态定义，承载草稿循环的业务状态。"""
 
     read_evidence_ids: Annotated[list[str], merge_unique]
     validated_draft: Annotated["ValidatedDraft | None", retain_if_absent]
@@ -65,13 +60,13 @@ class WriterAgentState(AgentState):
 
 
 @dataclass
-class WriterLoopContext:
+class WriterContext:
     """Writer 单次草稿循环的只读依赖与可变状态载体。
 
-    可变状态经 LangGraph 通道传递，每轮模型调用前由 rebuild_loop_state 回填。
+    可变状态经 LangGraph 通道传递，每轮模型调用前由 rebuild_state 回填。
     """
 
-    scope: AgentExecutionScope
+    scope: AgentScope
     evidence_by_id: dict[str, Evidence]
     read_evidence_ids: set[str]
     read_batch_size: int
@@ -90,7 +85,7 @@ class WriterLoopContext:
             "last_markdown": self.last_markdown,
         }
 
-    def rebuild_loop_state(self, values: dict[str, Any]) -> None:
+    def rebuild_state(self, values: dict[str, Any]) -> None:
         """用通道现值更新四项可变状态，只读依赖保持不变。"""
         if "read_evidence_ids" in values:
             self.read_evidence_ids = set(values["read_evidence_ids"] or [])
@@ -115,5 +110,4 @@ class ValidatedDraft:
     citations: list[Citation]
     selected_evidence_ids: list[str]
     # 模型为整篇回答生成的文章标题。内联回退路径不产出标题，保持空串。
-    # 置于末位并带默认值，已有按位置传参的调用点无需改动。
     title: str = ""

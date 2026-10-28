@@ -1,9 +1,4 @@
-"""Writer 的标准工具注册表。
-
-写状态的工具在出口把回执写进 messages、状态增量写进 WriterAgentState 通道：ReadEvidence
-交本批新增的 read_evidence_ids;CompleteReport 串行写 validated_draft/last_error/last_markdown。
-回执文本按字节不变。
-"""
+"""Writer 的标准工具注册表。"""
 
 from typing import Any
 
@@ -14,16 +9,16 @@ from langgraph.types import Command
 
 from deepresearcher.agents.writer.state import (
     ValidatedDraft,
-    WriterLoopContext,
+    WriterContext,
     evidence_detail_card,
 )
 from deepresearcher.reporting.validation import extract_cite_ids, validate_and_bind
-from deepresearcher.schemas import CompleteReport, ReadEvidence, format_tool_receipt
+from deepresearcher.schemas import ReadEvidence, ReportComplete, format_tool_receipt
 from deepresearcher.schemas.limits import READ_EVIDENCE_REQUEST_WINDOW_IDS
 
 
 def _writer_command(
-    runtime: ToolRuntime[WriterLoopContext],
+    runtime: ToolRuntime[WriterContext],
     content: str,
     *,
     tool_name: str,
@@ -39,11 +34,7 @@ def _writer_command(
 
 
 def build_writer_tools(*, turn_budget: int, read_batch: int):
-    """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。
-
-    每轮实际交付量由 read_batch 决定，差额走 not_read_ids 显式排队。约束只有三条：
-    cite 必须已读、每轮交付 read_batch 条、正文有字符上限。
-    """
+    """组装 Writer 工具；机制写在工具描述里，随运行配置动态生成。"""
 
     @tool(
         "ReadEvidence",
@@ -61,7 +52,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
     async def read_evidence(
         evidence_ids: list[str],
         reason: str,
-        runtime: ToolRuntime[WriterLoopContext],
+        runtime: ToolRuntime[WriterContext],
     ) -> Command:
         # 模型可见契约在上方 description=(args_schema 在场时 docstring 不进 prompt)。
         del reason
@@ -124,8 +115,8 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         )
 
     @tool(
-        "CompleteReport",
-        args_schema=CompleteReport,
+        "ReportComplete",
+        args_schema=ReportComplete,
         description=(
             "唯一的结束信号：写完草稿后必须经本工具提交，提交前不要直接输出报告正文。"
             "selected_evidence_ids 数量不设上限，但必须全部来自 ReadEvidence 的返回、"
@@ -138,7 +129,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         title: str,
         selected_evidence_ids: list[str],
         markdown: str,
-        runtime: ToolRuntime[WriterLoopContext],
+        runtime: ToolRuntime[WriterContext],
     ) -> Command:
         # 模型可见契约在上方 description=；校验失败文本即下一轮修正指令。
         context = runtime.context
@@ -152,7 +143,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
             if len(markdown) > context.max_markdown_chars:
                 raise ValueError(
                     f"Markdown 共 {len(markdown)} 字符，超过上限 {context.max_markdown_chars} 字符。"
-                    "请压缩正文（保留全部 [[cite:...]] 标记与结论），立即重新调用 CompleteReport。"
+                    "请压缩正文（保留全部 [[cite:...]] 标记与结论），立即重新调用 ReportComplete。"
                 )
             cited_ids = extract_cite_ids(markdown)
             selected = list(
@@ -187,8 +178,8 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
             return _writer_command(
                 runtime,
                 f"提交校验失败：{exc}。"
-                "只能引用已经由 ReadEvidence 返回的 evidence_id；修正 Markdown 后再次调用 CompleteReport。",
-                tool_name="CompleteReport",
+                "只能引用已经由 ReadEvidence 返回的 evidence_id；修正 Markdown 后再次调用 ReportComplete。",
+                tool_name="ReportComplete",
                 channel_update={
                     "last_error": context.last_error,
                     "last_markdown": markdown,
@@ -197,7 +188,7 @@ def build_writer_tools(*, turn_budget: int, read_batch: int):
         return _writer_command(
             runtime,
             "报告草稿已通过本地引用校验。请停止调用工具并结束回复。",
-            tool_name="CompleteReport",
+            tool_name="ReportComplete",
             channel_update={
                 "validated_draft": context.validated_draft,
                 "last_error": "",

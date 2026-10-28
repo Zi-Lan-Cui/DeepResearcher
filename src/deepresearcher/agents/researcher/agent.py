@@ -1,8 +1,4 @@
-"""方向级自主研究 Agent：在全局预算内完成一个受派方向的局部研究。
-
-本模块只负责装配：稳定零件放进 ResearcherDeps，每次 run 造一个纯数据的
-ResearcherLoopContext；工具协议在 tools.py，检索、读取、校验的业务实现在 services.py。
-"""
+"""任务级自主研究 Agent：在全局预算内完成一个受派任务的局部研究"""
 
 import asyncio
 from typing import Any, Literal, cast
@@ -14,22 +10,22 @@ from langgraph.errors import GraphRecursionError
 
 from deepresearcher.agents.middleware import (
     AGENT_RECURSION_LIMIT,
-    LoopStateRebuildMiddleware,
     MiddlewareProfile,
+    StateRebuildMiddleware,
     SubmissionGuard,
     build_agent_middleware,
 )
 from deepresearcher.agents.researcher.state import (
-    ResearcherAgentState,
+    ResearcherContext,
     ResearcherDeps,
-    ResearcherLoopContext,
-    ResearcherLoopState,
+    ResearcherState,
+    ResearcherTaskState,
 )
 from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
 from deepresearcher.observability.events import JsonlSink, emit_agent_event
-from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.prompts import (
     get_runtime_environment,
     language_directive,
@@ -37,11 +33,11 @@ from deepresearcher.prompts import (
     render_data_section,
 )
 from deepresearcher.schemas import (
-    DirectionStopReason,
-    ResearchAgentResult,
-    ResearchDirectionResult,
+    ResearcherResult,
+    Task,
+    TaskResult,
+    TaskStopReason,
 )
-from deepresearcher.state import SubTask
 from deepresearcher.tools import SearchTool, SourceReaderTool
 from deepresearcher.tools.web.materials import ResearchMaterialStore
 
@@ -53,13 +49,13 @@ RESEARCHER_SERIAL_TOOLS: frozenset[str] = frozenset(
         "ReadWorkingSet",
         "ReleaseEvidence",
         "RestoreEvidence",
-        "ResearchDirectionComplete",
+        "TaskComplete",
     }
 )
 
 
-class ResearchAgent:
-    """自主完成一个研究方向，不决定整项研究是否已经充分。"""
+class Researcher:
+    """自主完成一个研究任务，不决定整项研究是否已经充分。"""
 
     def __init__(
         self,
@@ -93,15 +89,15 @@ class ResearchAgent:
             system_prompt=_RESEARCHER_SYSTEM_PROMPT
             + "\n"
             + language_directive(config.output_language),
-            context_schema=ResearcherLoopContext,
-            state_schema=ResearcherAgentState,
+            context_schema=ResearcherContext,
+            state_schema=ResearcherState,
             middleware=cast(
                 Any,
                 [
-                    LoopStateRebuildMiddleware(),
+                    StateRebuildMiddleware(),
                     *build_agent_middleware(
                         MiddlewareProfile(
-                            agent_name="ResearchAgent",
+                            agent_name="Researcher",
                             event_slug="researcher",
                             model=self.llm,
                             # +1：步数预算走完后再给一次不带工具的收尾回合。
@@ -110,34 +106,34 @@ class ResearchAgent:
                             retry_tools=[["SearchSources"], ["ReadSources"]],
                             serial_tools=set(RESEARCHER_SERIAL_TOOLS),
                             submission_guard=SubmissionGuard(
-                                nudge_message=(
-                                    "你还没有调用 ResearchDirectionComplete。"
+                                missing_submission_message=(
+                                    "你还没有调用 TaskComplete。"
                                     "普通文本不是有效收尾；请继续研究，或立即调用该工具提交。"
                                 ),
                                 submitted_probe=lambda ctx: (
-                                    getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
+                                    getattr(getattr(ctx, "task_state", None), "stop_reason", None)
                                     in {
-                                        DirectionStopReason.COMPLETE,
-                                        DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+                                        TaskStopReason.COMPLETE,
+                                        TaskStopReason.BLOCKED_WITHOUT_EVIDENCE,
                                     }
                                 ),
-                                max_nudges=self.config.finalization_attempts,
-                                reminder_turns=4,
-                                reminder_message=(
+                                max_rejections=self.config.finalization_attempts,
+                                warn_below_turns=4,
+                                low_turn_budget_message=(
                                     "【剩余回合提醒】当前仅剩 {remaining_turns} 个模型回合。"
                                     "停止扩展范围、翻页或重复搜索。请立即将已读取且可逐字定位的"
                                     "原文批量提交给 AddEvidence；如被拒绝，只修正引用，不再搜索。"
                                     "随后调用 "
-                                    "ResearchDirectionComplete 诚实提交已覆盖内容和剩余缺口。"
+                                    "TaskComplete 诚实提交已覆盖内容和剩余缺口。"
                                 ),
                             ),
                             # 与 submitted_probe 同一信号：stop_reason 收成终值后下一跳直接退出
                             # 循环；被拒回执不写 stop_reason，模型留在循环内改正。
                             exit_probe=lambda ctx, _state: (
-                                getattr(getattr(ctx, "loop_state", None), "stop_reason", None)
+                                getattr(getattr(ctx, "task_state", None), "stop_reason", None)
                                 in {
-                                    DirectionStopReason.COMPLETE,
-                                    DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+                                    TaskStopReason.COMPLETE,
+                                    TaskStopReason.BLOCKED_WITHOUT_EVIDENCE,
                                 }
                             ),
                             emit=self._emit,
@@ -149,20 +145,18 @@ class ResearchAgent:
             # 业务状态经通道持久化，崩溃重放从最后一个已提交 superstep 续跑。
         )
 
-    async def run(self, task: SubTask) -> ResearchAgentResult:
-        """运行方向级 Agent loop，返回方向级研究结论与轨迹。"""
-        loop_state = ResearcherLoopState(
-            active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
-            evidence_archive_limit=(
-                self.config.research_agent_max_evidence_candidates_per_direction
-            ),
+    async def run(self, task: Task) -> ResearcherResult:
+        """运行任务级 Agent loop，返回任务级研究结论与轨迹。"""
+        task_state = ResearcherTaskState(
+            active_evidence_limit=self.config.research_agent_max_evidences_per_task,
+            evidence_archive_limit=(self.config.research_agent_max_evidence_candidates_per_task),
         )
-        scope = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
-        loop_context = ResearcherLoopContext(
+        scope = AgentScope.from_task(task, agent_name="Researcher")
+        loop_context = ResearcherContext(
             deps=self._deps,
             scope=scope,
             task=task,
-            loop_state=loop_state,
+            task_state=task_state,
             event_context={
                 **scope.event_fields(),
                 "worker_id": task.get("worker_id", task["id"]),
@@ -173,107 +167,103 @@ class ResearchAgent:
         status: Literal["completed", "failed", "cancelled"] = "completed"
         try:
             result = await cast(Any, self._agent_loop).ainvoke(
-                cast(Any, {"messages": messages, **loop_state.initial_channel_state()}),
+                cast(Any, {"messages": messages, **task_state.initial_channel_state()}),
                 context=loop_context,
                 config={"recursion_limit": AGENT_RECURSION_LIMIT},
             )
         except GraphRecursionError:
-            loop_state = loop_context.loop_state
-            loop_state.stop_reason = DirectionStopReason.STEP_BUDGET_EXHAUSTED
-            loop_state.stop_detail = "方向级 Agent 回合预算已耗尽。"
+            task_state = loop_context.task_state
+            task_state.stop_reason = TaskStopReason.STEP_BUDGET_EXHAUSTED
+            task_state.stop_detail = "任务级 Agent 回合预算已耗尽。"
         except asyncio.CancelledError:
             status = "cancelled"
-            loop_state = loop_context.loop_state
-            loop_state.stop_reason = DirectionStopReason.CANCELLED
-            loop_state.stop_detail = "方向级 Agent 被取消。"
+            task_state = loop_context.task_state
+            task_state.stop_reason = TaskStopReason.CANCELLED
+            task_state.stop_detail = "任务级 Agent 被取消。"
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 任务级边界，异常转成 failed 状态继续收尾
             status = "failed"
-            loop_state = loop_context.loop_state
-            loop_state.failures.append(f"direction_agent_failed: {exc}")
-            loop_state.stop_reason = DirectionStopReason.DIRECTION_AGENT_FAILED
-            loop_state.stop_detail = str(exc)
+            task_state = loop_context.task_state
+            task_state.failures.append(f"direction_agent_failed: {exc}")
+            task_state.stop_reason = TaskStopReason.TASK_AGENT_FAILED
+            task_state.stop_detail = str(exc)
         else:
-            # 正常收尾从通道现值重建 loop_state，通道为唯一事实源。
-            loop_state = ResearcherLoopState.from_channel_values(
+            # 正常收尾从通道现值重建 task_state，通道为唯一事实源。
+            task_state = ResearcherTaskState.from_channel_values(
                 result if isinstance(result, dict) else {},
-                active_evidence_limit=self.config.research_agent_max_evidences_per_direction,
-                evidence_archive_limit=self.config.research_agent_max_evidence_candidates_per_direction,
+                active_evidence_limit=self.config.research_agent_max_evidences_per_task,
+                evidence_archive_limit=self.config.research_agent_max_evidence_candidates_per_task,
             )
         # 未正常收尾的路径统一套用最小保守结果，保住已验证证据并补降级标注。
-        # 它只改写交付语义的 conclusion 与 remaining_gaps；执行真相由 status 与
-        # stop_reason 如实记录，崩溃的方向就是 failed，不能标成 completed+fallback。
-        if status != "cancelled" and loop_state.stop_reason not in {
-            DirectionStopReason.COMPLETE,
-            DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE,
+        # 它只改写交付语义的 conclusion；执行真相由 status 与
+        # stop_reason 如实记录，崩溃的任务就是 failed，不能标成 completed+fallback。
+        if status != "cancelled" and task_state.stop_reason not in {
+            TaskStopReason.COMPLETE,
+            TaskStopReason.BLOCKED_WITHOUT_EVIDENCE,
         }:
-            self._apply_minimum_result(loop_state)
+            self._apply_minimum_result(task_state)
         return self._result(
             task,
             status=status,
-            loop_state=loop_state,
+            task_state=task_state,
         )
 
     @staticmethod
-    def _apply_minimum_result(loop_state: ResearcherLoopState) -> None:
+    def _apply_minimum_result(task_state: ResearcherTaskState) -> None:
         """不调用模型的最终降级路径：保留现有证据，明确标注自动结束与缺口。
 
         stop_reason 只在本无收尾原因时补写，回合耗尽对应 fallback 或 blocked;
         direction_agent_failed 是真实故障原因，保留，不能被交付层的名字覆写。
         """
-        if not loop_state.active_evidence_ids and loop_state.evidences:
-            loop_state.active_evidence_ids.update(
+        if not task_state.active_evidence_ids and task_state.evidences:
+            task_state.active_evidence_ids.update(
                 item.evidence_id
-                for item in loop_state.evidences[: loop_state.active_evidence_limit]
+                for item in task_state.evidences[: task_state.active_evidence_limit]
             )
-        evidences = loop_state.active_evidences()
-        fallback_gap = "方向研究未在回合限制内提交结构化总结，当前仅保留已验证材料。"
+        evidences = task_state.active_evidences()
+        fallback_note = "本任务未在回合限制内提交结构化总结，当前仅保留已验证材料。"
         if not evidences:
-            loop_state.conclusion = ""
-            loop_state.remaining_gaps = list(
-                dict.fromkeys([*loop_state.remaining_gaps, fallback_gap, "未获得可用 Evidence。"])
+            task_state.conclusion = (
+                f"{fallback_note}当前状态：没有取得可锚定的 Evidence，因此不给出结论；"
+                "该方向仍是缺口，需要重新派发或调整检索范围。"
             )
-            if loop_state.stop_reason != DirectionStopReason.DIRECTION_AGENT_FAILED:
-                loop_state.stop_reason = DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE
+            if task_state.stop_reason != TaskStopReason.TASK_AGENT_FAILED:
+                task_state.stop_reason = TaskStopReason.BLOCKED_WITHOUT_EVIDENCE
         else:
-            loop_state.conclusion = (
-                "本方向未完成模型综合；仅交付已选中的可验证 Evidence，"
-                "具体事实以 Evidence claim 为准，不应外推。"
+            task_state.conclusion = (
+                f"{fallback_note}当前状态：保留 {len(evidences)} 条可验证 Evidence，"
+                "具体事实以 Evidence claim 为准，不应外推；本方向的综合结论尚未形成，"
+                "仍是缺口，需要重新派发才能补齐。"
             )
-            loop_state.remaining_gaps = list(
-                dict.fromkeys([*loop_state.remaining_gaps, fallback_gap])
-            )
-            if loop_state.stop_reason != DirectionStopReason.DIRECTION_AGENT_FAILED:
-                loop_state.stop_reason = DirectionStopReason.FALLBACK_COMPLETE
-        if loop_state.stop_reason != DirectionStopReason.DIRECTION_AGENT_FAILED:
-            loop_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
+            if task_state.stop_reason != TaskStopReason.TASK_AGENT_FAILED:
+                task_state.stop_reason = TaskStopReason.FALLBACK_COMPLETE
+        if task_state.stop_reason != TaskStopReason.TASK_AGENT_FAILED:
+            task_state.stop_detail = "系统已基于现有 Evidence 生成最小保守结果。"
 
     def _emit(
         self,
         event_type: str,
         payload: dict[str, object],
         *,
-        component: str = "research_agent",
+        component: str = "researcher",
     ) -> None:
-        """写入方向级 Agent 事件；事件只包含诊断元数据，不包含完整正文。"""
+        """写入任务级 Agent 事件；事件只包含诊断元数据，不包含完整正文。"""
         emit_agent_event(
             self.event_sink,
             self.logger,
             event_type,
             payload,
             component=component,
-            node_fallback="research_agent",
+            node_fallback="researcher",
         )
 
-    def _initial_messages(self, task: SubTask) -> list[BaseMessage]:
+    def _initial_messages(self, task: Task) -> list[BaseMessage]:
         observation = {
             "research_direction": task["question"],
             "remaining_budget": {
                 "queries": self.config.research_agent_max_queries,
-                "active_evidence": self.config.research_agent_max_evidences_per_direction,
-                "evidence_archive": (
-                    self.config.research_agent_max_evidence_candidates_per_direction
-                ),
+                "active_evidence": self.config.research_agent_max_evidences_per_task,
+                "evidence_archive": (self.config.research_agent_max_evidence_candidates_per_task),
                 "turns": self.config.research_agent_max_turns,
             },
         }
@@ -282,7 +272,7 @@ class ResearchAgent:
                 content=(
                     render_data_section("运行时环境", get_runtime_environment().payload())
                     + "\n\n---\n\n"
-                    + render_data_section("委派研究方向", {"question": task["question"]})
+                    + render_data_section("委派研究任务", {"question": task["question"]})
                 )
             ),
             HumanMessage(content=render_data_section("系统研究观察", observation)),
@@ -290,16 +280,16 @@ class ResearchAgent:
 
     def _result(
         self,
-        task: SubTask,
+        task: Task,
         *,
         status: Literal["completed", "failed", "cancelled"],
-        loop_state: ResearcherLoopState,
-    ) -> ResearchAgentResult:
-        active_evidences = loop_state.active_evidences()
+        task_state: ResearcherTaskState,
+    ) -> ResearcherResult:
+        active_evidences = task_state.active_evidences()
         active_sources = list(
             dict.fromkeys(item.source_url for item in active_evidences if item.source_url)
         )
-        task_result = ResearchDirectionResult(
+        task_result = TaskResult(
             task_id=task["id"],
             round=int(task.get("round", 1)),
             task_index=int(task.get("sequence", 0)),
@@ -309,26 +299,25 @@ class ResearchAgent:
             execution_status=status,
             coverage_status=(
                 "sufficient"
-                if loop_state.stop_reason == DirectionStopReason.COMPLETE and active_evidences
+                if task_state.stop_reason == TaskStopReason.COMPLETE and active_evidences
                 else "partial"
                 if active_evidences
                 else "insufficient"
             ),
             evidence_count=len(active_evidences),
             source_count=len(active_sources),
-            conclusion=loop_state.conclusion,
-            remaining_gaps=loop_state.remaining_gaps,
-            queries=loop_state.queries,
-            read_urls=loop_state.read_urls,
-            skip_reasons=sorted(set(loop_state.skipped)),
-            failures=loop_state.failures[: self.config.research_failure_history_limit],
-            stop_reason=loop_state.stop_reason,
-            stop_detail=loop_state.stop_detail,
-            provider_exhausted=loop_state.provider_exhausted,
+            conclusion=task_state.conclusion,
+            queries=task_state.queries,
+            read_urls=task_state.read_urls,
+            skip_reasons=sorted(set(task_state.skipped)),
+            failures=task_state.failures[: self.config.research_failure_history_limit],
+            stop_reason=task_state.stop_reason,
+            stop_detail=task_state.stop_detail,
+            provider_exhausted=task_state.provider_exhausted,
         )
-        return ResearchAgentResult(
-            evidences=loop_state.evidences,
+        return ResearcherResult(
+            evidences=task_state.evidences,
             selected_evidence_ids=[item.evidence_id for item in active_evidences],
-            source_refs=list(dict.fromkeys(loop_state.source_refs)),
+            source_refs=list(dict.fromkeys(task_state.source_refs)),
             task_result=task_result,
         )

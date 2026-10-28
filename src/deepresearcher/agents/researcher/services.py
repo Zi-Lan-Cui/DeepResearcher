@@ -1,8 +1,4 @@
-"""ResearchAgent 方向级工具的业务实现：不感知 langgraph 的纯 async 函数。
-
-deps 是构造期的稳定零件，跨 run 共享只读；task、loop_state、event_context 属本轮。
-对 loop_state 的改写收在不含 await 的同步段内。
-"""
+"""Researcher 任务级工具的业务实现：不感知 langgraph 的纯 async 函数。"""
 
 import asyncio
 import hashlib
@@ -10,19 +6,18 @@ from typing import Any, cast
 
 from deepresearcher.agents.researcher.state import (
     ResearcherDeps,
-    ResearcherLoopState,
+    ResearcherTaskState,
     evidence_observation_card,
 )
 from deepresearcher.errors import clip_text
 from deepresearcher.evidence.models import Evidence, normalize_title_whitespace
-from deepresearcher.evidence.validator import anchor_resolve, collapse_whitespace
+from deepresearcher.evidence.validator import SourceIndex, collapse_whitespace
 from deepresearcher.observability.events.names import EventName
-from deepresearcher.schemas import DirectionStopReason
+from deepresearcher.schemas import Task, TaskStopReason
 from deepresearcher.schemas.limits import (
     SEARCH_RESULT_SNIPPET_PREVIEW_CHARS,
     SEARCH_RESULTS_PREVIEW_COUNT,
 )
-from deepresearcher.state import SubTask
 from deepresearcher.tools.web.documents import DocumentView
 from deepresearcher.tools.web.fetch.models import SourceReaderToolResult
 from deepresearcher.tools.web.materials import SearchResultSet
@@ -38,33 +33,33 @@ from deepresearcher.vocab import SUPPORT_ORDER
 
 async def search_sources(
     deps: ResearcherDeps,
-    task: SubTask,
-    loop_state: ResearcherLoopState,
+    task: Task,
+    task_state: ResearcherTaskState,
     event_context: dict[str, object],
     proposed_queries: list[str],
     reason: str,
 ) -> dict[str, object]:
     """搜索并返回候选目录；此函数不读取任何来源。"""
     del reason
-    remaining = deps.config.research_agent_max_queries - len(loop_state.queries)
-    new_queries = _new_queries(deps, proposed_queries, loop_state.queries)[: max(0, remaining)]
+    remaining = deps.config.research_agent_max_queries - len(task_state.queries)
+    new_queries = _new_queries(deps, proposed_queries, task_state.queries)[: max(0, remaining)]
     if not new_queries:
         error = "没有新的可执行检索式；请基于已有候选读取来源或调用 Complete。"
-        loop_state.failures.append(f"no_novel_queries: {error}")
+        task_state.failures.append(f"no_novel_queries: {error}")
         return {
             "status": "skipped",
             "reason": "no_novel_queries",
             "proposed_queries": proposed_queries,
         }
-    loop_state.queries.extend(new_queries)
+    task_state.queries.extend(new_queries)
     result = SearchToolResult.model_validate(
         await deps.search_tool.arun_queries(task, queries=new_queries)
     )
-    loop_state.failures.extend(
+    task_state.failures.extend(
         f"search query={item.query}: {item.error}" for item in result.failures
     )
     deps.emit(
-        EventName.DIRECTION_SEARCH_COMPLETED,
+        EventName.TASK_SEARCH_COMPLETED,
         {
             **event_context,
             "research_direction": task["question"],
@@ -76,11 +71,11 @@ async def search_sources(
     )
     if result.status != "completed":
         error = result.error or "search_failed"
-        loop_state.failures.append(f"search: {error}")
+        task_state.failures.append(f"search: {error}")
         if getattr(result, "provider_exhausted", False):
             # 把"原因 + 下一步"写清楚交给模型自然收尾，不加控制流分支：
             # 熔断后系统级不可用，重试/换向无意义。
-            loop_state.provider_exhausted = True
+            task_state.provider_exhausted = True
             return {
                 "status": "failed",
                 "provider_exhausted": True,
@@ -88,17 +83,17 @@ async def search_sources(
                 "queries": new_queries,
                 "error": error,
                 "instruction": (
-                    "搜索服务账户级不可用（额度耗尽或密钥无效），系统性、非本方向偶发。"
+                    "搜索服务账户级不可用（额度耗尽或密钥无效），系统性、非本任务偶发。"
                     "不要再重试、换词或扩大范围。若已读到可用原文，立即调用 "
-                    "ResearchDirectionComplete 提交已覆盖内容并把缺口写入 remaining_gaps；"
-                    "若尚无原文，也直接 Complete 并标注证据不足。"
+                    "TaskComplete 提交已覆盖内容，并在 conclusion 里用自然语言写清"
+                    "已查清什么、还差什么；若尚无原文，也直接 Complete 并标注证据不足。"
                 ),
             }
         return {"status": "failed", "queries": new_queries, "error": error}
 
     batch_key = "\0".join([task["id"], *result.queries])
     search_id = "search-" + hashlib.sha256(batch_key.encode("utf-8")).hexdigest()[:16]
-    loop_state.search_batches[search_id] = list(result.queries)
+    task_state.search_batches[search_id] = list(result.queries)
     if deps.material_store is not None:
         await deps.material_store.put_search_results(
             SearchResultSet(
@@ -114,7 +109,7 @@ async def search_sources(
         if not url:
             continue
         candidate_id = "c-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
-        loop_state.candidates[candidate_id] = SearchCandidate(
+        task_state.candidates[candidate_id] = SearchCandidate(
             candidate_id=candidate_id,
             title=str(item.get("title", "")),
             url=url,
@@ -129,7 +124,7 @@ async def search_sources(
     raw_results = [dict(item) for item in result.results]
     # 预览与 ListSearchResults 共用同一卡片结构 + 同一 raw_results 下标偏移基准。
     preview, next_offset = _candidate_cards(
-        loop_state, raw_results, start=0, count=SEARCH_RESULTS_PREVIEW_COUNT
+        task_state, raw_results, start=0, count=SEARCH_RESULTS_PREVIEW_COUNT
     )
     return {
         "status": "completed",
@@ -144,16 +139,16 @@ async def search_sources(
 
 async def list_search_results(
     deps: ResearcherDeps,
-    task: SubTask,
-    loop_state: ResearcherLoopState,
+    task: Task,
+    task_state: ResearcherTaskState,
     search_id: str,
     offset: int,
     limit: int,
     reason: str,
 ) -> dict[str, object]:
-    """只允许分页读取当前方向亲自产生的搜索结果。"""
+    """只允许分页读取当前任务亲自产生的搜索结果。"""
     del reason
-    queries = loop_state.search_batches.get(search_id)
+    queries = task_state.search_batches.get(search_id)
     if queries is None:
         return {"status": "rejected", "reason": "unknown_search_id"}
     if deps.material_store is not None:
@@ -171,7 +166,7 @@ async def list_search_results(
         if result.status != "completed":
             return {"status": "failed", "reason": result.error or "search_cache_read_failed"}
         raw_results = [dict(item) for item in result.results]
-    cards, next_offset = _candidate_cards(loop_state, raw_results, start=offset, count=limit)
+    cards, next_offset = _candidate_cards(task_state, raw_results, start=offset, count=limit)
     return {
         "status": "completed",
         "search_id": search_id,
@@ -186,8 +181,8 @@ async def list_search_results(
 
 async def read_sources(
     deps: ResearcherDeps,
-    task: SubTask,
-    loop_state: ResearcherLoopState,
+    task: Task,
+    task_state: ResearcherTaskState,
     event_context: dict[str, object],
     candidate_ids: list[str],
     reason: str,
@@ -196,17 +191,17 @@ async def read_sources(
     del reason
     selected_ids = list(dict.fromkeys(candidate_ids))
     selected = [
-        loop_state.candidates[item] for item in selected_ids if item in loop_state.candidates
+        task_state.candidates[item] for item in selected_ids if item in task_state.candidates
     ]
-    unknown_ids = [item for item in selected_ids if item not in loop_state.candidates]
+    unknown_ids = [item for item in selected_ids if item not in task_state.candidates]
     if unknown_ids:
-        loop_state.failures.append(f"unknown_candidate_ids: {', '.join(unknown_ids)}")
+        task_state.failures.append(f"unknown_candidate_ids: {', '.join(unknown_ids)}")
     candidates: list[SearchCandidate] = []
     for candidate in selected:
-        if candidate.candidate_id in loop_state.selected_candidate_ids:
+        if candidate.candidate_id in task_state.selected_candidate_ids:
             continue
-        loop_state.selected_candidate_ids.add(candidate.candidate_id)
-        loop_state.read_urls.append(candidate.url)
+        task_state.selected_candidate_ids.add(candidate.candidate_id)
+        task_state.read_urls.append(candidate.url)
         candidates.append(candidate)
 
     read_results = await _read_candidates(deps, task, candidates)
@@ -217,7 +212,7 @@ async def read_sources(
         if isinstance(read_result, asyncio.CancelledError):
             raise read_result
         if isinstance(read_result, Exception):
-            loop_state.failures.append(f"{url}: {read_result}")
+            task_state.failures.append(f"{url}: {read_result}")
             deps.emit(
                 EventName.SOURCE_READ_FAILED,
                 {
@@ -240,13 +235,13 @@ async def read_sources(
                         view = view.model_copy(update={"inline": False, "content": ""})
                     else:
                         inline_tokens += view.token_count
-                loop_state.documents[view.document_id] = view
+                task_state.documents[view.document_id] = view
                 documents.append(view)
                 if view.source_url:
-                    loop_state.source_refs.append(view.source_url)
+                    task_state.source_refs.append(view.source_url)
         elif result.status == "skipped":
             reason_code = result.reason_code or "unknown"
-            loop_state.skipped.append(reason_code)
+            task_state.skipped.append(reason_code)
             deps.emit(
                 EventName.SOURCE_READ_SKIPPED,
                 {
@@ -258,7 +253,7 @@ async def read_sources(
             )
         else:
             error = result.error or "read_failed"
-            loop_state.failures.append(f"{url}: {error}")
+            task_state.failures.append(f"{url}: {error}")
             deps.emit(
                 EventName.SOURCE_READ_FAILED,
                 {
@@ -273,16 +268,16 @@ async def read_sources(
         "read_candidate_count": len(candidates),
         "unknown_candidate_ids": unknown_ids,
         "documents": [item.model_dump(mode="json") for item in documents],
-        "archive_evidence_count": len(loop_state.evidences),
-        "active_evidence_count": len(loop_state.active_evidence_ids),
-        "active_evidence_limit": loop_state.active_evidence_limit,
-        "archive_evidence_limit": loop_state.evidence_archive_limit,
-        "skip_reasons": sorted(set(loop_state.skipped)),
-        "recent_failures": loop_state.failures[-4:],
+        "archive_evidence_count": len(task_state.evidences),
+        "active_evidence_count": len(task_state.active_evidence_ids),
+        "active_evidence_limit": task_state.active_evidence_limit,
+        "archive_evidence_limit": task_state.evidence_archive_limit,
+        "skip_reasons": sorted(set(task_state.skipped)),
+        "recent_failures": task_state.failures[-4:],
     }
     if unknown_ids:
         # 与 unknown 回执配对：给出可用的候选 id，模型无需回头重查搜索目录。
-        receipt["available_candidate_ids"] = list(loop_state.candidates)[-_AVAILABLE_IDS_WINDOW:]
+        receipt["available_candidate_ids"] = list(task_state.candidates)[-_AVAILABLE_IDS_WINDOW:]
     return receipt
 
 
@@ -290,18 +285,18 @@ async def read_sources(
 _AVAILABLE_IDS_WINDOW = 12
 
 
-def _unknown_document_receipt(loop_state: "ResearcherLoopState") -> dict[str, object]:
+def _unknown_document_receipt(task_state: "ResearcherTaskState") -> dict[str, object]:
     """未知 document_id 的驳回回执：附当前有效清单，让模型改引用而不是猜。"""
     return {
         "status": "rejected",
         "reason": "unknown_document_id",
-        "available_document_ids": list(loop_state.documents)[-_AVAILABLE_IDS_WINDOW:],
+        "available_document_ids": list(task_state.documents)[-_AVAILABLE_IDS_WINDOW:],
     }
 
 
 async def grep_document(
     deps: ResearcherDeps,
-    loop_state: ResearcherLoopState,
+    task_state: ResearcherTaskState,
     document_id: str,
     patterns: list[str],
     segments: list[tuple[int, int]],
@@ -314,8 +309,8 @@ async def grep_document(
     窗口总数（pattern_totals），供模型判断哪个词值得追加段落深挖。
     """
     del reason
-    if document_id not in loop_state.documents:
-        return _unknown_document_receipt(loop_state)
+    if document_id not in task_state.documents:
+        return _unknown_document_receipt(task_state)
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     cleaned_patterns = [item.strip() for item in patterns if item.strip()]
@@ -342,14 +337,14 @@ async def grep_document(
 
 async def read_document(
     deps: ResearcherDeps,
-    loop_state: ResearcherLoopState,
+    task_state: ResearcherTaskState,
     document_id: str,
     ranges: list[tuple[int, int]],
     reason: str,
 ) -> dict[str, object]:
     del reason
-    if document_id not in loop_state.documents:
-        return _unknown_document_receipt(loop_state)
+    if document_id not in task_state.documents:
+        return _unknown_document_receipt(task_state)
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     requested = ranges[: deps.config.document_read_max_ranges]
@@ -372,7 +367,7 @@ async def read_document(
 
 async def read_documents(
     deps: ResearcherDeps,
-    loop_state: ResearcherLoopState,
+    task_state: ResearcherTaskState,
     targets: list[tuple[str, list[tuple[int, int]]]],
     reason: str,
 ) -> dict[str, object]:
@@ -383,11 +378,11 @@ async def read_documents(
     """
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
-    if any(document_id not in loop_state.documents for document_id, _ in targets):
-        return _unknown_document_receipt(loop_state)
+    if any(document_id not in task_state.documents for document_id, _ in targets):
+        return _unknown_document_receipt(task_state)
     per_document = await asyncio.gather(
         *(
-            read_document(deps, loop_state, document_id, ranges, reason)
+            read_document(deps, task_state, document_id, ranges, reason)
             for document_id, ranges in targets
         )
     )
@@ -396,46 +391,52 @@ async def read_documents(
 
 async def _validate_submissions(
     deps: ResearcherDeps,
-    task: SubTask,
-    loop_state: ResearcherLoopState,
+    task: Task,
+    task_state: ResearcherTaskState,
     submissions: list[dict[str, object]],
 ) -> tuple[list[tuple[int, str, Evidence]], list[dict[str, object]], list[str]]:
     """锁外逐条校验提交：原文读取、锚定回填 quote、批内去重、置信度解析。
 
     返回 (candidates, rejected, duplicates)。产物只是候选 Evidence 与拒因清单，不触碰
-    loop_state——写入的并发/容量判断全部留给 add_evidence 的同步临界区。
+    task_state——写入的并发/容量判断全部留给 add_evidence 的同步临界区。
     """
     rejected: list[dict[str, object]] = []
     duplicates: list[str] = []
     pending_ids: set[str] = set()
     candidates: list[tuple[int, str, Evidence]] = []
-    # 批内缓存：同一文档的多条引用只取一次原文，Redis 后端下省去重复的全量 GET。
-    source_texts: dict[str, str] = {}
+    # 批内缓存：同一文档的多条引用共用一次原文读取与一次全文归一。
+    source_indexes: dict[str, SourceIndex] = {}
     assert deps.material_store is not None  # 调用方已守卫
     for index, raw in enumerate(submissions):
         document_id = str(raw.get("document_id", ""))
-        document = loop_state.documents.get(document_id)
+        document = task_state.documents.get(document_id)
         if document is None:
             rejected.append({"index": index, "reason": "unknown_document_id"})
             continue
         claim = str(raw.get("claim", "")).strip()
         quote_start = str(raw.get("quote_start", "")).strip()
         quote_end = str(raw.get("quote_end", "")).strip()
-        source_text = source_texts.get(document_id)
-        if source_text is None:
+        source_index = source_indexes.get(document_id)
+        if source_index is None:
             try:
                 source_text = await deps.material_store.text(document_id)
             except (FileNotFoundError, KeyError) as exc:
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
-            source_texts[document_id] = source_text
+            # 全文归一逐字符跑 NFKC，是这条路径唯一的 CPU 热点：丢线程池，别让事件
+            # 循环连同租约确认与 SSE 一起停住。
+            source_index = await asyncio.to_thread(SourceIndex.scan, source_text)
+            source_indexes[document_id] = source_index
         # quote 必须是原文严格子串——由锚定解析从原文逐字回填，模型不手抄整段。
         # 锚未命中、有歧义或跨度超限都是提交错误，回执理由码，anchor_not_found 附最接近的原文句。
-        resolution = anchor_resolve(source_text, quote_start, quote_end)
+        resolution = source_index.resolve(quote_start, quote_end)
         if resolution.reason:
             rejection: dict[str, object] = {"index": index, "reason": resolution.reason}
-            if resolution.hint:
-                rejection["nearby_original_text"] = resolution.hint
+            if resolution.reason == "anchor_not_found":
+                # 逐句比对相似度是这条路径上最重的一步，丢线程池，别卡住事件循环。
+                hint = await asyncio.to_thread(source_index.nearest_passage, quote_start)
+                if hint:
+                    rejection["nearby_original_text"] = hint
             rejected.append(rejection)
             continue
         quote = resolution.quote
@@ -462,7 +463,7 @@ async def _validate_submissions(
             continue
         evidence = Evidence(
             evidence_id=evidence_id,
-            subtask_id=task["id"],
+            task_id=task["id"],
             research_direction=task["question"],
             claim=claim,
             quote=quote,
@@ -481,41 +482,36 @@ async def _validate_submissions(
 
 async def add_evidence(
     deps: ResearcherDeps,
-    task: SubTask,
-    loop_state: ResearcherLoopState,
+    task: Task,
+    task_state: ResearcherTaskState,
     event_context: dict[str, object],
     submissions: list[dict[str, object]],
     reason: str,
 ) -> dict[str, object]:
-    """逐条校验(可含网络读) → 排序截断 → 在同步临界区内一次写入。
-
-    边界：校验不触碰 loop_state；去重、每源容量、档案容量的检查-然后-动作收在
-    同一个同步段里走完，并发提交不会重复占用槽位、不会越过每源上限——原子性由
-    单线程调度保证，段内禁引入 await，否则需恢复互斥。
-    """
+    """向当前任务证据池中批量添加证据"""
     if deps.material_store is None:
         return {"status": "failed", "reason": "material_store_unavailable"}
     accepted: list[Evidence] = []
     candidates, rejected, duplicates = await _validate_submissions(
-        deps, task, loop_state, submissions
+        deps, task, task_state, submissions
     )
     ranked = sorted(candidates, key=lambda item: item[2].confidence, reverse=True)
     selected = ranked[: deps.config.evidence_add_batch_size]
-    existing_ids = {item.evidence_id for item in loop_state.evidences}
+    existing_ids = {item.evidence_id for item in task_state.evidences}
     per_source = {
-        source_url: sum(1 for item in loop_state.evidences if item.source_url == source_url)
-        for source_url in {document.source_url for document in loop_state.documents.values()}
+        source_url: sum(1 for item in task_state.evidences if item.source_url == source_url)
+        for source_url in {document.source_url for document in task_state.documents.values()}
     }
     for index, document_id, evidence in selected:
         if evidence.evidence_id in existing_ids:
             duplicates.append(evidence.evidence_id)
             continue
-        document = loop_state.documents[document_id]
+        document = task_state.documents[document_id]
         source_count = per_source.get(document.source_url, 0)
         if source_count >= deps.config.evidence_max_per_source:
             rejected.append({"index": index, "reason": "source_evidence_limit_reached"})
             continue
-        added = loop_state.add_evidences([evidence])
+        added = task_state.add_evidences([evidence])
         if not added:
             rejected.append({"index": index, "reason": "evidence_archive_full"})
             continue
@@ -527,16 +523,13 @@ async def add_evidence(
         key = str(item.get("reason", ""))[:40]
         rejected_reasons[key] = rejected_reasons.get(key, 0) + 1
     deps.emit(
-        EventName.DIRECTION_EVIDENCE_ADDED,
+        EventName.TASK_EVIDENCE_ADDED,
         {
             **event_context,
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "duplicate_count": len(duplicates),
-            # 直方图记录证据被拒原因的分布；锚定类理由码为 empty_anchor/anchor_not_found/
-            # ambiguous_start/end_not_found/span_too_long,unknown_document_id 单列。
             "rejected_reasons": rejected_reasons,
-            # 模型提交证据时给出的理由，留作审计与归因的可解释信号。
             "reason": reason.strip()[:400],
         },
     )
@@ -551,17 +544,17 @@ async def add_evidence(
         "rejected": rejected,
         "duplicate_evidence_ids": duplicates,
         "truncated_submission_count": max(0, len(ranked) - len(selected)),
-        "archive_evidence_count": len(loop_state.evidences),
-        "active_evidence_count": len(loop_state.active_evidence_ids),
+        "archive_evidence_count": len(task_state.evidences),
+        "active_evidence_count": len(task_state.active_evidence_ids),
     }
     if any(item.get("reason") == "unknown_document_id" for item in rejected):
         # 引用错 id 的批次统一给有效清单，避免模型拿同一批幻觉 id 反复重试。
-        receipt["available_document_ids"] = list(loop_state.documents)[-_AVAILABLE_IDS_WINDOW:]
+        receipt["available_document_ids"] = list(task_state.documents)[-_AVAILABLE_IDS_WINDOW:]
     return receipt
 
 
 async def _read_candidates(
-    deps: ResearcherDeps, task: SubTask, candidates: list[SearchCandidate]
+    deps: ResearcherDeps, task: Task, candidates: list[SearchCandidate]
 ) -> list[object]:
     semaphore = asyncio.Semaphore(deps.config.research_agent_read_concurrency)
 
@@ -599,7 +592,7 @@ def _new_queries(deps: ResearcherDeps, proposed: list[str], seen: list[str]) -> 
 
 
 def _candidate_cards(
-    loop_state: ResearcherLoopState,
+    task_state: ResearcherTaskState,
     raw_results: list[dict[str, object]],
     *,
     start: int,
@@ -612,7 +605,7 @@ def _candidate_cards(
         url = str(raw.get("url", "")).strip()
         if not url:
             continue
-        candidate = loop_state.candidates.get(
+        candidate = task_state.candidates.get(
             "c-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
         )
         if candidate is not None:
@@ -641,41 +634,34 @@ def _bounded_support(requested: str, ceiling: str) -> str:
     return levels[min(requested_index, ceiling_index)]
 
 
-def complete_direction(
-    loop_state: ResearcherLoopState,
+def complete_task(
+    task_state: ResearcherTaskState,
     reason: str,
     selected_evidence_ids: list[str],
     conclusion: str,
-    remaining_gaps: list[str],
 ) -> dict[str, object]:
-    """ResearchDirectionComplete 业务：校验选定集、落定 stop_reason，返回完整回执。
-
-    只引用活跃 Evidence；选定即确定工作集。无活跃证据时按 BLOCKED_WITHOUT_EVIDENCE
-    落定，并把 reason 作为回退写入 remaining_gaps，保证缺口清单留有内容。
-    """
+    """TaskComplete 业务：校验选定集、落定 stop_reason，返回完整回执。"""
     requested = list(dict.fromkeys(selected_evidence_ids))
-    active = set(loop_state.active_evidence_ids)
+    active = set(task_state.active_evidence_ids)
     invalid = [item for item in requested if item not in active]
     if invalid:
-        loop_state.failures.append("completion_unknown_evidence_ids: " + ", ".join(invalid))
+        task_state.failures.append("completion_unknown_evidence_ids: " + ", ".join(invalid))
         return {"status": "rejected", "invalid_evidence_ids": invalid}
     if requested:
-        loop_state.active_evidence_ids = set(requested)
-    active_evidences = loop_state.active_evidences()
-    loop_state.remaining_gaps = list(
-        dict.fromkeys(gap.strip() for gap in remaining_gaps if gap.strip())
-    )
+        task_state.active_evidence_ids = set(requested)
+    active_evidences = task_state.active_evidences()
     if active_evidences:
-        loop_state.conclusion = conclusion.strip()
-        loop_state.stop_reason = DirectionStopReason.COMPLETE
+        task_state.conclusion = conclusion.strip()
+        task_state.stop_reason = TaskStopReason.COMPLETE
     else:
-        loop_state.conclusion = ""
-        loop_state.stop_reason = DirectionStopReason.BLOCKED_WITHOUT_EVIDENCE
-        if not loop_state.remaining_gaps:
-            loop_state.remaining_gaps = [reason]
-    loop_state.stop_detail = reason
+        # 无证据时的模型自述无从校验，整段换成对当前状态的如实说明。
+        task_state.conclusion = "本任务未取得可锚定的 Evidence，因此不给出研究结论。当前状态：" + (
+            reason.strip() or "未说明具体的停止原因。"
+        )
+        task_state.stop_reason = TaskStopReason.BLOCKED_WITHOUT_EVIDENCE
+    task_state.stop_detail = reason
     return {
         "status": "accepted",
-        "stop_reason": loop_state.stop_reason,
+        "stop_reason": task_state.stop_reason,
         "selected_evidence_ids": [item.evidence_id for item in active_evidences],
     }

@@ -7,8 +7,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from deepresearcher.agents.clarifier.state import (
     ClarifierAgentState,
+    ClarifierContext,
     ClarifierGraphState,
-    ClarifierLoopContext,
 )
 from deepresearcher.agents.clarifier.tools import (
     MAX_CLARIFICATION_ROUNDS,
@@ -20,7 +20,7 @@ from deepresearcher.agents.middleware import (
     build_agent_middleware,
 )
 from deepresearcher.config import DEFAULT_CONTEXT_WINDOW_TOKENS, AgentConfig
-from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.prompts import language_directive, load_prompt
 
 _SYSTEM_PROMPT = load_prompt("clarifier")
@@ -39,7 +39,7 @@ class Clarifier:
             tools=build_clarifier_tools(),
             system_prompt=_SYSTEM_PROMPT + "\n" + language_directive(config.output_language),
             state_schema=ClarifierAgentState,
-            context_schema=ClarifierLoopContext,
+            context_schema=ClarifierContext,
             middleware=cast(
                 Any,
                 build_agent_middleware(
@@ -68,8 +68,8 @@ class Clarifier:
         """构造本轮工具执行上下文(仅只读 scope)；上下文不写入 checkpoint。"""
         return await self.graph.ainvoke(
             cast(Any, state),
-            context=ClarifierLoopContext(
-                scope=AgentExecutionScope(
+            context=ClarifierContext(
+                scope=AgentScope(
                     run_id=str(state.get("run_id") or ""),
                     agent_name="Clarifier",
                 )

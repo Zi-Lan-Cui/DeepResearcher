@@ -1,4 +1,4 @@
-"""Agent 模型回合、工具调用与终止的统一可观测性中间件。"""
+"""Agent 模型回合、工具调用与终止的事件中间件：每个边界落成一条 run 事件。"""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
 
 from deepresearcher.observability.events.dedup import bind_position_from_current
-from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.schemas.limits import EVENT_CONTENT_PREVIEW_CHARS
 from deepresearcher.schemas.tool_args import TOOL_RECEIPT_PREFIX
 from deepresearcher.timing import elapsed_ms
@@ -22,7 +22,7 @@ from deepresearcher.usage_runtime import enforce_usage_budget
 LIMIT_MESSAGE_MARKER = "Model call limits exceeded"
 _ERROR_PREVIEW_CHARS = 400
 _TOOL_ARGUMENT_PREVIEW_CHARS = 2_000
-_SENSITIVE_TOOL_ARGUMENTS = {"AddEvidence", "CompleteReport"}
+_SENSITIVE_TOOL_ARGUMENTS = {"AddEvidence", "ReportComplete"}
 _SENSITIVE_TOOL_RESULTS = {
     "ListSearchResults",
     "ReadSources",
@@ -33,7 +33,7 @@ _SENSITIVE_TOOL_RESULTS = {
 }
 
 
-class AgentObservabilityMiddleware(AgentMiddleware):
+class AgentEventsMiddleware(AgentMiddleware):
     """记录 Agent 回合、工具调用边界和终止原因。"""
 
     def __init__(
@@ -45,11 +45,10 @@ class AgentObservabilityMiddleware(AgentMiddleware):
     ):
         super().__init__()
         self.agent_name = agent_name
-        # 事件名前缀走显式 slug：显示名是驼峰，lower() 之后仍得不到 snake_case 形式。
         self._slug = event_slug or agent_name.lower()
         self.run_limit = run_limit
         self._emit = emit
-        self._logger = get_logger("deepresearcher.agents.middleware.observability")
+        self._logger = get_logger("deepresearcher.agents.middleware.agent_events")
         # awrap_model_call 探到的回合耗时按 AIMessage id 挂账，aafter_model 取走。
         # 跳回/驳回丢弃的消息条目靠上限淘汰；单次请求的账在 run_usage，两处不互推。
         self._turn_durations: dict[str, int] = {}
@@ -61,12 +60,12 @@ class AgentObservabilityMiddleware(AgentMiddleware):
         return int(state.get("run_model_call_count", 0) or 0)
 
     def _event_context(self, runtime: Any) -> dict[str, object]:
-        # context 契约按 getattr 读取，删改 LoopContext 字段前先 grep 本文件。
-        # scope: AgentExecutionScope | None，所有 agent 的 LoopContext 必须携带；
+        # context 契约按 getattr 读取，删改 Context 字段前先 grep 本文件。
+        # scope: AgentScope | None，所有 agent 的 Context 必须携带；
         # 模型回合与工具事件的 run_id/task_id/operation_id 归因依赖它，缺席时不崩溃但静默失去归属。
         context = getattr(runtime, "context", None)
-        scope: AgentExecutionScope | None = getattr(context, "scope", None)
-        fields = scope.event_fields() if isinstance(scope, AgentExecutionScope) else {}
+        scope: AgentScope | None = getattr(context, "scope", None)
+        fields = scope.event_fields() if isinstance(scope, AgentScope) else {}
         fields["agent"] = self.agent_name
         return fields
 

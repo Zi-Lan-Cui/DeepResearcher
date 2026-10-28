@@ -12,19 +12,19 @@ from langgraph.graph.message import add_messages
 # 必须来自同一来源，否则多继承会因元类冲突报错。
 from typing_extensions import TypedDict
 
-from deepresearcher.observability.execution import AgentExecutionScope
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.schemas import RunStatus
 
 
 @dataclass
-class ClarifierLoopContext:
+class ClarifierContext:
     """不进入 checkpoint 的 Clarifier 工具执行上下文。
 
     消费方：observability 取 scope 做事件归因。AskClarification 与 ClarificationComplete
     是串行工具，必须单独一轮，与其他工具同批会被 SerialToolMiddleware 整批驳回。
     """
 
-    scope: AgentExecutionScope
+    scope: AgentScope
 
 
 class ClarifierDialogue(TypedDict, total=False):
@@ -40,11 +40,7 @@ class ClarifierDialogue(TypedDict, total=False):
     clarification_rounds: int
     pending_question: str
     pending_options: list[str]
-    # 逐轮澄清问答记录 {question, options, answer}；reducer 只在外层图的
-    # Annotated 通道生效，内层 Agent 不写它。
     clarification_log: list[dict[str, object]]
-    # ClarificationComplete 提交的历史浓缩标题；必须在此数据契约中声明，
-    # 未声明的键会被子图按未知通道静默丢弃，主图取不到值，headline 无法写入数据库。
     run_headline: str
 
 

@@ -21,7 +21,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
-from deepresearcher.agents.middleware.observability import AgentObservabilityMiddleware
+from deepresearcher.agents.middleware.agent_events import AgentEventsMiddleware
 from deepresearcher.agents.middleware.retry import (
     ToolErrorNormalizerMiddleware,
     model_retry,
@@ -79,15 +79,16 @@ class ObservableSummarizationMiddleware(SummarizationMiddleware):
 class SubmissionGuard:
     """工具提交守卫配置；消息与探测绑定在同一数据类里，不会只配一半。
 
-    模型在 submitted_probe 返回 False 前输出纯文本时，注入
-    nudge_message 并退回重试；退回次数耗尽后允许通过，交业务层作回退。
+    missing_submission_message 在模型未提交就输出纯文本时注入；驳回次数耗尽后
+    允许通过，交业务层作回退。low_turn_budget_message 在剩余回合低于
+    warn_below_turns 时注入，用于催模型尽快收口。
     """
 
-    nudge_message: str
+    missing_submission_message: str
     submitted_probe: Callable[[Any], bool]
-    max_nudges: int = 2
-    reminder_message: str = ""
-    reminder_turns: int = 0
+    max_rejections: int = 2
+    low_turn_budget_message: str = ""
+    warn_below_turns: int = 0
 
 
 @dataclass(frozen=True)
@@ -190,17 +191,17 @@ def build_agent_middleware(profile: MiddlewareProfile) -> list[AgentMiddleware]:
             ToolLoopGuardMiddleware(
                 agent_name=profile.agent_name,
                 event_slug=profile.event_slug,
-                nudge_message=profile.submission_guard.nudge_message,
+                missing_submission_message=profile.submission_guard.missing_submission_message,
                 submitted_probe=profile.submission_guard.submitted_probe,
-                max_nudges=profile.submission_guard.max_nudges,
+                max_rejections=profile.submission_guard.max_rejections,
                 run_limit=profile.max_turns,
-                reminder_message=profile.submission_guard.reminder_message,
-                reminder_turns=profile.submission_guard.reminder_turns,
+                low_turn_budget_message=profile.submission_guard.low_turn_budget_message,
+                warn_below_turns=profile.submission_guard.warn_below_turns,
                 emit=profile.emit,
             )
         )
     middleware.append(
-        AgentObservabilityMiddleware(
+        AgentEventsMiddleware(
             agent_name=profile.agent_name,
             run_limit=profile.max_turns,
             emit=profile.emit,
