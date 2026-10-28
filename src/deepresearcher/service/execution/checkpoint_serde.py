@@ -9,11 +9,14 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
+import logging
 import pkgutil
 from enum import Enum
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel
+
+logger = logging.getLogger("deepresearcher.service.execution.checkpoint_serde")
 
 # 可能进入 State 或内层循环通道的类型所在包。新增通道化类型必须落在下列包内，例如
 # researcher/writer 内层通道用到的 SearchCandidate、DocumentRef、ValidatedDraft。
@@ -35,7 +38,10 @@ def projected_type_keys() -> set[tuple[str, ...]]:
     for pkg_name in _PROJECT_TYPE_PACKAGES:
         try:
             pkg = importlib.import_module(pkg_name)
-        except Exception:  # pragma: no cover - 包缺失不应拖垮装配
+        except Exception:  # noqa: BLE001  # pragma: no cover - 缺项等于白名单不全
+            # 白名单少一个包，历史 run 的该类型 checkpoint 会反序列化失败，事后极难定位，
+            # 所以跳过可以，静默不行。
+            logger.warning("checkpoint_serde_package_import_failed pkg=%s", pkg_name, exc_info=True)
             continue
         modules = [pkg]
         path = getattr(pkg, "__path__", None)
@@ -43,7 +49,10 @@ def projected_type_keys() -> set[tuple[str, ...]]:
             for info in pkgutil.walk_packages(path, pkg_name + "."):
                 try:
                     modules.append(importlib.import_module(info.name))
-                except Exception:  # pragma: no cover - 子模块导入失败跳过
+                except Exception:  # noqa: BLE001  # pragma: no cover - 子模块失败跳过
+                    logger.warning(
+                        "checkpoint_serde_module_import_failed module=%s", info.name, exc_info=True
+                    )
                     continue
         for mod in modules:
             for obj in vars(mod).values():

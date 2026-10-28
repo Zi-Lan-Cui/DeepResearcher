@@ -1,10 +1,14 @@
-"""run 级并发控制与用量/成本记账。"""
+"""run 用量与成本的采集与记账。
+
+RunUsageCallback 是 LangChain 回调：调用前做预算检查与限流，调用后按回执采集，
+回执缺失时按字符数估算并标记 estimated。UsageStore 落库：写 run_usage 明细，
+并按 category 累加 runs 上的计量汇总列。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from time import monotonic
@@ -15,232 +19,16 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from sqlalchemy import case, func, select, update
 
 from deepresearcher.config import LLMConfig
-from deepresearcher.observability.tracing.context import current_span_context, new_id
+from deepresearcher.observability.span import current_span_context, new_id
 from deepresearcher.pricing import cost_cny as pricing_cost_cny
 from deepresearcher.pricing import price_for_model
-from deepresearcher.service.persistence.models import Run, RunUsage
-from deepresearcher.usage_runtime import (
-    UsageBudgetExceeded,
-    UsageRuntime,
-    bind_usage_runtime,
-    current_usage_runtime,
-    enforce_usage_budget,
-    record_cache_event,
-    record_external_request,
-    reset_usage_runtime,
-)
+from deepresearcher.service.execution.limits import CapacityGate, ProviderRateLimiter
+from deepresearcher.service.storage.tables import Run, RunUsage
+from deepresearcher.usage_runtime import UsageBudgetExceeded
 
 logger = logging.getLogger("deepresearcher.service.execution.usage")
 
-__all__ = [
-    "CapacityGate",
-    "ProviderRateLimiter",
-    "RunUsageCallback",
-    "UsageBudgetExceeded",
-    "UsageRuntime",
-    "UsageStore",
-    "bind_usage_runtime",
-    "current_usage_runtime",
-    "enforce_usage_budget",
-    "record_cache_event",
-    "record_external_request",
-    "reset_usage_runtime",
-]
-
-
-class CapacityGate:
-    def __init__(self, limit: int) -> None:
-        self._semaphore = asyncio.Semaphore(max(1, limit))
-        self._active = 0
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> int:
-        await self._semaphore.acquire()
-        async with self._lock:
-            self._active += 1
-            return self._active
-
-    async def release(self) -> None:
-        async with self._lock:
-            self._active = max(0, self._active - 1)
-        self._semaphore.release()
-
-
-class ProviderRateLimiter:
-    """每 Worker 共享的 60 秒滑动窗口 RPM/TPM 限制器。"""
-
-    def __init__(
-        self,
-        *,
-        requests_per_minute: int,
-        tokens_per_minute: int,
-        window_seconds: float = 60.0,
-    ) -> None:
-        self._rpm = max(0, requests_per_minute)
-        self._tpm = max(0, tokens_per_minute)
-        self._window_seconds = max(0.01, window_seconds)
-        self._requests: deque[float] = deque()
-        self._tokens: deque[tuple[float, int]] = deque()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self, estimated_tokens: int) -> None:
-        if not self._rpm and not self._tpm:
-            return
-        reservation = min(max(1, estimated_tokens), self._tpm) if self._tpm else 0
-        while True:
-            async with self._lock:
-                now = monotonic()
-                cutoff = now - self._window_seconds
-                while self._requests and self._requests[0] <= cutoff:
-                    self._requests.popleft()
-                while self._tokens and self._tokens[0][0] <= cutoff:
-                    self._tokens.popleft()
-                request_ok = not self._rpm or len(self._requests) < self._rpm
-                token_ok = (
-                    not self._tpm
-                    or sum(value for _, value in self._tokens) + reservation <= self._tpm
-                )
-                if request_ok and token_ok:
-                    self._requests.append(now)
-                    if self._tpm:
-                        self._tokens.append((now, reservation))
-                    return
-                deadlines: list[float] = []
-                if not request_ok and self._requests:
-                    deadlines.append(self._requests[0] + self._window_seconds)
-                if not token_ok and self._tokens:
-                    deadlines.append(self._tokens[0][0] + self._window_seconds)
-                delay = max(0.01, min(deadlines) - now) if deadlines else 0.01
-            await asyncio.sleep(delay)
-
-
-class UsageStore:
-    def __init__(self, session_factory: Any) -> None:
-        self._session_factory = session_factory
-
-    async def record(
-        self,
-        *,
-        run_id: str,
-        category: str,
-        component: str,
-        status: str,
-        provider: str | None = None,
-        model: str | None = None,
-        estimated: bool = False,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cached_input_tokens: int = 0,
-        cost_cny: Decimal = Decimal("0"),
-        duration_ms: int = 0,
-        active: int = 0,
-        detail: dict[str, Any] | None = None,
-    ) -> None:
-        async with self._session_factory() as session:
-            session.add(
-                RunUsage(
-                    id=new_id("usage"),
-                    run_id=run_id,
-                    category=category,
-                    component=component,
-                    provider=provider,
-                    model=model,
-                    status=status,
-                    usage_estimated=estimated,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cached_input_tokens=cached_input_tokens,
-                    cost_cny=cost_cny,
-                    duration_ms=duration_ms,
-                    detail_json=detail,
-                )
-            )
-            values: dict[str, Any] = {}
-            if category == "llm":
-                values = {
-                    "llm_call_count": Run.llm_call_count + 1,
-                    "input_tokens": Run.input_tokens + input_tokens,
-                    "output_tokens": Run.output_tokens + output_tokens,
-                    "cached_input_tokens": Run.cached_input_tokens + cached_input_tokens,
-                    "peak_llm_concurrency": case(
-                        (Run.peak_llm_concurrency < active, active),
-                        else_=Run.peak_llm_concurrency,
-                    ),
-                    "estimated_cost_cny": Run.estimated_cost_cny + cost_cny,
-                }
-            elif category in {"search", "fetch"}:
-                values = {"external_request_count": Run.external_request_count + 1}
-            elif category == "cache" and status == "hit":
-                metrics = detail or {}
-                values = {
-                    "cache_hit_count": Run.cache_hit_count + 1,
-                    "saved_external_request_count": (
-                        Run.saved_external_request_count
-                        + int(metrics.get("saved_external_requests", 0) or 0)
-                    ),
-                }
-            if values:
-                await session.execute(update(Run).where(Run.id == run_id).values(**values))
-            await session.commit()
-
-    async def enforce_budget(self, run_id: str, config: LLMConfig) -> None:
-        """在新的 LLM 请求前做软限额检查。
-
-        单次请求的真实 token 只能在返回后获得，因此最多会超出一次
-        已在途请求的用量。并发下的精确硬额度扣减留给后续配额服务。
-        """
-        if not any(
-            (
-                config.max_tokens_per_run,
-                config.max_cost_cny_per_run,
-                config.max_cost_cny_per_user_daily,
-                config.max_cost_cny_platform_hourly,
-                config.max_cost_cny_platform_daily,
-            )
-        ):
-            return
-        async with self._session_factory() as session:
-            run = await session.get(Run, run_id)
-            if run is None:
-                return
-            total_tokens = run.input_tokens + run.output_tokens
-            if config.max_tokens_per_run and total_tokens >= config.max_tokens_per_run:
-                raise UsageBudgetExceeded("run_token_budget_exhausted")
-            if config.max_cost_cny_per_run and run.estimated_cost_cny >= Decimal(
-                str(config.max_cost_cny_per_run)
-            ):
-                raise UsageBudgetExceeded("run_cost_budget_exhausted")
-            now = datetime.now(timezone.utc)
-            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            hour_start = now - timedelta(hours=1)
-            if config.max_cost_cny_per_user_daily:
-                user_cost = await session.scalar(
-                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0))
-                    .join(Run, Run.id == RunUsage.run_id)
-                    .where(
-                        Run.user_id == run.user_id,
-                        RunUsage.category == "llm",
-                        RunUsage.created_at >= day_start,
-                    )
-                )
-                if Decimal(user_cost or 0) >= Decimal(str(config.max_cost_cny_per_user_daily)):
-                    raise UsageBudgetExceeded("user_daily_cost_budget_exhausted")
-            if config.max_cost_cny_platform_hourly:
-                hourly_cost = await session.scalar(
-                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0)).where(
-                        RunUsage.category == "llm", RunUsage.created_at >= hour_start
-                    )
-                )
-                if Decimal(hourly_cost or 0) >= Decimal(str(config.max_cost_cny_platform_hourly)):
-                    raise UsageBudgetExceeded("platform_hourly_cost_budget_exhausted")
-            if config.max_cost_cny_platform_daily:
-                daily_cost = await session.scalar(
-                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0)).where(
-                        RunUsage.category == "llm", RunUsage.created_at >= day_start
-                    )
-                )
-                if Decimal(daily_cost or 0) >= Decimal(str(config.max_cost_cny_platform_daily)):
-                    raise UsageBudgetExceeded("platform_daily_cost_budget_exhausted")
+__all__ = ["RunUsageCallback", "UsageStore"]
 
 
 class RunUsageCallback(AsyncCallbackHandler):
@@ -388,6 +176,134 @@ class RunUsageCallback(AsyncCallbackHandler):
             )
         except Exception:  # noqa: BLE001 - 计量故障不能破坏研究交付
             logger.warning("usage_record_failed run_id=%s", self._run_id, exc_info=True)
+
+
+class UsageStore:
+    """写 run_usage 明细，并按 category 累加 runs 上的计量汇总列。"""
+
+    def __init__(self, session_factory: Any) -> None:
+        self._session_factory = session_factory
+
+    async def record(
+        self,
+        *,
+        run_id: str,
+        category: str,
+        component: str,
+        status: str,
+        provider: str | None = None,
+        model: str | None = None,
+        estimated: bool = False,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        cost_cny: Decimal = Decimal("0"),
+        duration_ms: int = 0,
+        active: int = 0,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """写一行用量明细，并按 category 累加 runs 上的汇总列。"""
+        async with self._session_factory() as session:
+            session.add(
+                RunUsage(
+                    id=new_id("usage"),
+                    run_id=run_id,
+                    category=category,
+                    component=component,
+                    provider=provider,
+                    model=model,
+                    status=status,
+                    usage_estimated=estimated,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    cost_cny=cost_cny,
+                    duration_ms=duration_ms,
+                    detail_json=detail,
+                )
+            )
+            values: dict[str, Any] = {}
+            if category == "llm":
+                values = {
+                    "llm_call_count": Run.llm_call_count + 1,
+                    "input_tokens": Run.input_tokens + input_tokens,
+                    "output_tokens": Run.output_tokens + output_tokens,
+                    "cached_input_tokens": Run.cached_input_tokens + cached_input_tokens,
+                    "peak_llm_concurrency": case(
+                        (Run.peak_llm_concurrency < active, active),
+                        else_=Run.peak_llm_concurrency,
+                    ),
+                    "estimated_cost_cny": Run.estimated_cost_cny + cost_cny,
+                }
+            elif category in {"search", "fetch"}:
+                values = {"external_request_count": Run.external_request_count + 1}
+            elif category == "cache" and status == "hit":
+                metrics = detail or {}
+                values = {
+                    "cache_hit_count": Run.cache_hit_count + 1,
+                    "saved_external_request_count": (
+                        Run.saved_external_request_count
+                        + int(metrics.get("saved_external_requests", 0) or 0)
+                    ),
+                }
+            if values:
+                await session.execute(update(Run).where(Run.id == run_id).values(**values))
+            await session.commit()
+
+    async def enforce_budget(self, run_id: str, config: LLMConfig) -> None:
+        """在新的 LLM 请求前做软限额检查。"""
+        if not any(
+            (
+                config.max_tokens_per_run,
+                config.max_cost_cny_per_run,
+                config.max_cost_cny_per_user_daily,
+                config.max_cost_cny_platform_hourly,
+                config.max_cost_cny_platform_daily,
+            )
+        ):
+            return
+        async with self._session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                return
+            total_tokens = run.input_tokens + run.output_tokens
+            if config.max_tokens_per_run and total_tokens >= config.max_tokens_per_run:
+                raise UsageBudgetExceeded("run_token_budget_exhausted")
+            if config.max_cost_cny_per_run and run.estimated_cost_cny >= Decimal(
+                str(config.max_cost_cny_per_run)
+            ):
+                raise UsageBudgetExceeded("run_cost_budget_exhausted")
+            now = datetime.now(timezone.utc)
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            hour_start = now - timedelta(hours=1)
+            if config.max_cost_cny_per_user_daily:
+                user_cost = await session.scalar(
+                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0))
+                    .join(Run, Run.id == RunUsage.run_id)
+                    .where(
+                        Run.user_id == run.user_id,
+                        RunUsage.category == "llm",
+                        RunUsage.created_at >= day_start,
+                    )
+                )
+                if Decimal(user_cost or 0) >= Decimal(str(config.max_cost_cny_per_user_daily)):
+                    raise UsageBudgetExceeded("user_daily_cost_budget_exhausted")
+            if config.max_cost_cny_platform_hourly:
+                hourly_cost = await session.scalar(
+                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0)).where(
+                        RunUsage.category == "llm", RunUsage.created_at >= hour_start
+                    )
+                )
+                if Decimal(hourly_cost or 0) >= Decimal(str(config.max_cost_cny_platform_hourly)):
+                    raise UsageBudgetExceeded("platform_hourly_cost_budget_exhausted")
+            if config.max_cost_cny_platform_daily:
+                daily_cost = await session.scalar(
+                    select(func.coalesce(func.sum(RunUsage.cost_cny), 0)).where(
+                        RunUsage.category == "llm", RunUsage.created_at >= day_start
+                    )
+                )
+                if Decimal(daily_cost or 0) >= Decimal(str(config.max_cost_cny_platform_daily)):
+                    raise UsageBudgetExceeded("platform_daily_cost_budget_exhausted")
 
 
 def _response_usage(response: Any) -> tuple[int, int, int, bool]:

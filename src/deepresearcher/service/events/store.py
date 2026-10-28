@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from deepresearcher.service.persistence.models import Run, RunEvent
+from deepresearcher.service.storage.tables import Run, RunEvent
 
 
 class RunEventStore:
@@ -17,9 +17,6 @@ class RunEventStore:
 
     async def append(self, run_id: str, records: Sequence[dict]) -> list[dict]:
         """事务内分配 seq 并写入数据库；返回带 seq 的完整记录。
-
-        本方法只负责持久化，不做投递与通知；唯一允许的调用者是 RunEventHub.flush，
-        它发 notify。直调时消费端收不到唤醒，只能等轮询追平，绕过唯一投递点。
 
         写入前按 dedup_key 过滤：批内同键留首条，库中已有的整条丢弃；无键记录一律
         写入。seq 只为实际写入的条数分配，去重不留下空洞。

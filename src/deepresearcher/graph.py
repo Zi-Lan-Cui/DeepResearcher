@@ -6,9 +6,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from deepresearcher import nodes
-from deepresearcher.agents import Clarifier, ReportWriter, ResearchAgent
+from deepresearcher.agents import Clarifier, Researcher, Writer
 from deepresearcher.agents.clarifier.graph import build_clarifier_graph
-from deepresearcher.agents.supervisor import ResearchSupervisor
+from deepresearcher.agents.supervisor import Supervisor
 from deepresearcher.config import Settings, get_settings
 from deepresearcher.errors import clip_text
 from deepresearcher.llm import build_llm
@@ -25,7 +25,7 @@ from deepresearcher.routing import (
     route_after_supervisor,
     route_after_writer,
 )
-from deepresearcher.state import ResearchState
+from deepresearcher.state import RunState
 from deepresearcher.tools import (
     AliyunFetchProvider,
     DirectHttpFetchProvider,
@@ -37,7 +37,20 @@ from deepresearcher.tools import (
     ToolConfigurationError,
 )
 from deepresearcher.tools.transport.aliyun import create_aliyun_dts_client
-from deepresearcher.tools.web.materials import MemoryResearchMaterialStore
+from deepresearcher.tools.web.materials import ResearchMaterialStore
+
+#: 有界标量直接透传：路由、回答形态与两类计数。
+_PASSTHROUGH_FIELDS = ("route", "answer_mode", "evidence_count", "source_count")
+
+#: 需要截断的文本字段到上限；None 表示跟随调用方的 max_text_chars。
+_TRUNCATED_FIELDS: dict[str, int | None] = {
+    "route_reason": 240,
+    "clarified_query": 300,
+    "intent_summary": None,
+}
+
+#: 只上报条数的集合字段。
+_COUNTED_FIELDS = ("citations", "task_results", "evidences", "paragraph_bindings")
 
 
 def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
@@ -46,69 +59,101 @@ def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
     字段名由本模块决定，instrument_node 不解读业务字段；projector 从这里登记的键取数。
     """
     summary: dict = {"updated_fields": sorted(result.keys())}
-    for key in (
-        "route",
-        "answer_mode",
-        "evidence_count",
-        "source_count",
-    ):
-        if key in result:
-            summary[key] = result[key]
-    if "route_reason" in result:
-        summary["route_reason"] = str(result["route_reason"])[:240]
-    if "clarified_query" in result:
-        summary["clarified_query"] = str(result["clarified_query"])[:300]
-    if "intent_summary" in result:
-        summary["intent_summary"] = str(result["intent_summary"])[:max_text_chars]
+    summary.update(_scalar_summary(result))
+    summary.update(_text_summary(result, max_text_chars))
+    summary.update(_run_summary(result))
+    summary.update(_section_summary(result))
+    summary.update(_draft_summary(result, max_text_chars))
+    summary.update(_review_issue_summary(result))
+    summary.update(_report_summary(result, max_text_chars))
+    summary.update(_count_summary(result))
+    return summary
+
+
+def _scalar_summary(result: dict) -> dict:
+    return {key: result[key] for key in _PASSTHROUGH_FIELDS if key in result}
+
+
+def _text_summary(result: dict, max_text_chars: int) -> dict:
+    """可透出的文本字段：固定上限的与跟随 max_text_chars 的分开登记。
+
+    上限写在同一张表里，散在各个 if 里时改一处漏一处。
+    """
+    return {
+        key: str(result[key])[: limit or max_text_chars]
+        for key, limit in _TRUNCATED_FIELDS.items()
+        if key in result
+    }
+
+
+def _run_summary(result: dict) -> dict:
+    """run 只透出阶段与终止原因，其余字段是执行期状态，不该进事件流。"""
     run = result.get("run")
-    if run is not None:
-        summary["phase"] = getattr(run, "phase", None)
-        summary["terminal_reason"] = getattr(run, "terminal_reason", "")
+    if run is None:
+        return {}
+    return {
+        "phase": getattr(run, "phase", None),
+        "terminal_reason": getattr(run, "terminal_reason", ""),
+    }
+
+
+def _section_summary(result: dict) -> dict:
+    """分节对象的 status 与其专属字段：supervisor 带轮次，writer/review 带反馈。"""
+    summary: dict = {}
     for key in ("supervisor", "writer", "review"):
-        section_value = result.get(key)
-        if section_value is not None:
-            summary[f"{key}_status"] = getattr(section_value, "status", None)
-            if key == "supervisor":
-                summary["current_round"] = getattr(section_value, "current_round", 0)
-            if key in {"writer", "review"}:
-                feedback = getattr(section_value, "feedback", "")
-                if feedback:
-                    summary[f"{key}_feedback"] = clip_text(str(feedback))
-    if "rejected_draft" in result:
-        text = str(result["rejected_draft"])
-        summary["rejected_draft_chars"] = len(text)
-        summary["rejected_draft_preview"] = text[:max_text_chars]
+        section = result.get(key)
+        if section is None:
+            continue
+        summary[f"{key}_status"] = getattr(section, "status", None)
+        if key == "supervisor":
+            summary["current_round"] = getattr(section, "current_round", 0)
+        else:
+            feedback = getattr(section, "feedback", "")
+            if feedback:
+                summary[f"{key}_feedback"] = clip_text(str(feedback))
+    return summary
+
+
+def _draft_summary(result: dict, max_text_chars: int) -> dict:
+    """被退回的草稿只留长度与有界预览，正文不进事件流。"""
+    if "rejected_draft" not in result:
+        return {}
+    text = str(result["rejected_draft"])
+    return {
+        "rejected_draft_chars": len(text),
+        "rejected_draft_preview": text[:max_text_chars],
+    }
+
+
+def _review_issue_summary(result: dict) -> dict:
+    """审阅问题逐条截断上报；claim 与 reason 的上限不同，因为前端分行展示宽度不同。"""
     review = result.get("review")
-    review_issues = getattr(review, "issues", None) if review is not None else None
-    if review_issues:
-        summary["review_issues"] = [
-            {
-                "severity": item.severity,
-                "claim": item.claim[:200],
-                "reason": item.reason[:300],
-            }
-            for item in review_issues
+    issues = getattr(review, "issues", None) if review is not None else None
+    if not issues:
+        return {}
+    return {
+        "review_issues": [
+            {"severity": item.severity, "claim": item.claim[:200], "reason": item.reason[:300]}
+            for item in issues
         ]
+    }
+
+
+def _report_summary(result: dict, max_text_chars: int) -> dict:
+    """报告与写作要点都只留长度与有界预览。"""
+    summary: dict = {}
     if "report" in result:
         text = str(result["report"])
         summary["report_chars"] = len(text)
         summary["report_preview"] = text[:max_text_chars]
-    directive_brief = getattr(result.get("writer_directive"), "report_brief", None)
-    if directive_brief is not None:
-        summary["report_brief"] = str(directive_brief)[:max_text_chars]
-    research = result.get("supervisor")
-    coverage_gaps = getattr(research, "coverage_gaps", None) if research is not None else None
-    if coverage_gaps:
-        summary["coverage_gaps"] = list(coverage_gaps)
-    for key in (
-        "citations",
-        "task_results",
-        "evidences",
-        "paragraph_bindings",
-    ):
-        if key in result:
-            summary[f"{key}_count"] = len(result[key])
+    brief = getattr(result.get("writer_directive"), "report_brief", None)
+    if brief is not None:
+        summary["report_brief"] = str(brief)[:max_text_chars]
     return summary
+
+
+def _count_summary(result: dict) -> dict:
+    return {f"{key}_count": len(result[key]) for key in _COUNTED_FIELDS if key in result}
 
 
 def _guarded_node(name, node, *, event_sink=None, max_text_chars: int):
@@ -161,7 +206,7 @@ def build_graph(
     event_sink=None,
     http_client: HttpClient | None = None,
     checkpointer=None,
-    material_store=None,
+    material_store: ResearchMaterialStore | None = None,
     provider_health=None,
 ):
     """装配完整研究应用；必需模型和联网工具缺失时立即失败。
@@ -171,8 +216,10 @@ def build_graph(
         llm: 注入的模型；省略时按 settings 构造。
         checkpointer: LangGraph BaseCheckpointSaver；省略时不做持久化。传入后配合
             config={"configurable": {"thread_id": run_id}} 获得断点重放与续跑。
+        material_store: 搜索目录与正文的存储；必传。
 
     抛出：
+        ValueError: 未传 material_store。
         LLMConfigurationError: 模型配置缺失。
         ToolConfigurationError: 搜索 Provider 缺少所需凭据。
     """
@@ -191,7 +238,9 @@ def build_graph(
         raise ToolConfigurationError(f"深度研究搜索不可用：{detail}。")
 
     shared_http = http_client or HttpClient(settings.search)
-    shared_materials = material_store or MemoryResearchMaterialStore()
+    if material_store is None:
+        raise ValueError("build_graph 需要 material_store：材料存储没有进程内实现")
+    shared_materials = material_store
     owns_http_client = http_client is None
     uses_aliyun = settings.search.provider == "aliyun" or (
         "aliyun" in settings.search.fetch_provider_order
@@ -230,7 +279,7 @@ def build_graph(
         context_window_tokens=settings.llm.context_window_tokens,
     )
     clarifier_graph = build_clarifier_graph(clarifier.run)
-    writer_agent = ReportWriter(
+    writer_agent = Writer(
         llm,
         settings.agent,
         render_incomplete=lambda state: render_incomplete_report(
@@ -241,7 +290,7 @@ def build_graph(
         artifact_max_text_chars=settings.observability.max_text_chars,
         context_window_tokens=settings.llm.context_window_tokens,
     )
-    research_agent = ResearchAgent(
+    research_agent = Researcher(
         llm,
         settings.agent,
         search_tool=search_tool,
@@ -250,14 +299,14 @@ def build_graph(
         context_window_tokens=settings.llm.context_window_tokens,
         material_store=shared_materials,
     )
-    supervisor = ResearchSupervisor(
+    supervisor = Supervisor(
         llm,
         settings.agent,
         research_agent=research_agent,
         event_sink=event_sink,
         context_window_tokens=settings.llm.context_window_tokens,
     )
-    graph = StateGraph(ResearchState)
+    graph = StateGraph(RunState)
     graph.add_node(
         NodeName.ROUTER,
         _routed_node(
@@ -282,8 +331,6 @@ def build_graph(
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
         ),
-        # terminal phase 的失败/结束会直达渲染终点；destinations 是图结构
-        # 唯一机器可读声明，必须包含 RENDER_FINAL_REPORT，漏掉会误导读者与绘图工具。
         destinations=(NodeName.SUPERVISOR, NodeName.RENDER_FINAL_REPORT),
     )
     graph.add_node(
