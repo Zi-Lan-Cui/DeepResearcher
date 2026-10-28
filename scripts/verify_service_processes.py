@@ -25,12 +25,16 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import delete, func, select, text
 
-from deepresearcher.service.persistence.database import make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.bootstrap.loop import asyncio_loop_factory
 from deepresearcher.service.settings import get_service_config
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, RunEvent, User
 
 ROOT = Path(__file__).resolve().parents[1]
 PASSWORD = "service-automation-password"
+_WINDOWS = sys.platform == "win32"
+# 三个真实进程同时冷启动要等建库、建 checkpoint 表与连 broker，本机实测 30–90 秒。
+_STARTUP_TIMEOUT_SECONDS = 180.0
 
 
 def _free_port() -> int:
@@ -45,25 +49,47 @@ class ProcessGroup:
     log_dir: Path
     processes: list[subprocess.Popen] = field(default_factory=list)
     logs: list[Any] = field(default_factory=list)
+    by_name: dict[str, subprocess.Popen] = field(default_factory=dict)
 
     def start(self, name: str, *command: str) -> subprocess.Popen:
         log = (self.log_dir / f"{name}.log").open("w", encoding="utf-8")
         process = subprocess.Popen(
             command,
             cwd=ROOT,
-            env=self.env,
+            # 子进程用名字标识自己：Windows 上 `Popen.pid` 是 venv 启动器的 pid，
+            # 写标记的是它拉起的真实解释器，两者对不上，只能按名字回查进程。
+            env={**self.env, "WORKER_INSTANCE": name},
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
+            # 独立进程组是「只给这个子进程发停止信号」的前提：Windows 没有 SIGTERM，
+            # 优雅停止靠 CTRL_BREAK_EVENT，而它只能投给一个进程组。
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if _WINDOWS else 0,
         )
         self.processes.append(process)
         self.logs.append(log)
+        self.by_name[name] = process
         return process
 
     def stop(self, process: subprocess.Popen, *, hard: bool = False) -> None:
         if process.poll() is not None:
             return
-        process.send_signal(signal.SIGKILL if hard else signal.SIGTERM)
+        if hard:
+            if _WINDOWS:
+                # 启动器与真实解释器是两个进程，只杀启动器会把执行中的 worker 留成孤儿，
+                # 它照样续租，接管永远不会发生。
+                subprocess.run(  # noqa: S603
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    check=False,
+                    capture_output=True,
+                )
+            else:
+                process.kill()
+        elif _WINDOWS:
+            # Windows 没有 SIGTERM，terminate() 就是强杀；优雅停止只能投 CTRL_BREAK。
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signal.SIGTERM)
         try:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
@@ -96,9 +122,37 @@ async def _wait_api(base_url: str) -> None:
         await _eventually(
             lambda: client.get("/"),
             lambda response: response.status_code == 200,
-            timeout=20,
+            timeout=_STARTUP_TIMEOUT_SECONDS,
             label="API readiness",
         )
+
+
+def _wait_log(
+    path: Path,
+    needle: str,
+    *,
+    process: subprocess.Popen | None = None,
+    timeout: float = _STARTUP_TIMEOUT_SECONDS,
+) -> None:
+    """等子进程把自己的就绪行写进日志再返回。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            raise AssertionError(
+                f"{path.name} exited with {process.returncode}:\n"
+                + path.read_text(encoding="utf-8", errors="replace")
+            )
+        if path.exists() and needle in path.read_text(encoding="utf-8", errors="replace"):
+            return
+        time.sleep(0.1)
+    tail = path.read_text(encoding="utf-8", errors="replace")[-2000:] if path.exists() else ""
+    raise AssertionError(f"timeout waiting for {needle!r} in {path}:\n{tail}")
+
+
+def _start_worker(group: ProcessGroup, log_dir: Path, name: str) -> None:
+    """起一个测试 Worker，等它把 worker_started 写进日志再返回。"""
+    process = group.start(name, sys.executable, "scripts/fake_service_worker.py")
+    _wait_log(log_dir / f"{name}.log", "worker_started", process=process)
 
 
 async def _run_detail(client: httpx.AsyncClient, token: str, run_id: str) -> dict:
@@ -107,8 +161,26 @@ async def _run_detail(client: httpx.AsyncClient, token: str, run_id: str) -> dic
     return response.json()
 
 
+def _entered_instances(marker_dir: Path, run_id: str) -> dict[str, set[int]]:
+    """进过图的 worker 实例 → 写标记的真实解释器 pid。
+
+    标记名形如 entered-<run_id>-<instance>-<pid>；实例名自带连字符，从右侧切。
+    """
+    prefix = f"entered-{run_id}-"
+    instances: dict[str, set[int]] = {}
+    for path in marker_dir.glob(f"{prefix}*"):
+        instance, _, pid = path.name[len(prefix) :].rpartition("-")
+        instances.setdefault(instance, set()).add(int(pid))
+    return instances
+
+
 def _entered_pids(marker_dir: Path, run_id: str) -> set[int]:
-    return {int(path.name.rsplit("-", 1)[1]) for path in marker_dir.glob(f"entered-{run_id}-*")}
+    return {pid for pids in _entered_instances(marker_dir, run_id).values() for pid in pids}
+
+
+def _only_instance(instances: dict[str, set[int]]) -> str:
+    (instance,) = instances
+    return instance
 
 
 async def _create_run(client: httpx.AsyncClient, token: str, query: str) -> str:
@@ -168,7 +240,7 @@ async def _cleanup(database_url: str, email: str, run_ids: list[str]) -> None:
     factory = make_session_factory(engine)
     try:
         async with factory() as session:
-            # LangGraph 的 checkpoint 表刻意不对 runs 建外键。
+            # LangGraph 的 checkpoint 表不对 runs 建外键，删 run 之前要自己清。
             bind = session.get_bind()
             if bind.dialect.name == "postgresql" and run_ids:
                 for run_id in run_ids:
@@ -205,9 +277,10 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
         "SERVICE_MAX_CONCURRENT_RUNS_PER_USER": "32",
         "SERVICE_WORKER_MAX_RUNNING_RUNS": "8",
         "SERVICE_MAX_GLOBAL_QUEUED_RUNS": "100",
-        "SERVICE_WORKER_LEASE_SECONDS": str(args.lease_seconds),
         "SERVICE_WORKER_HEARTBEAT_SECONDS": "1",
-        "SERVICE_WORKER_POLL_SECONDS": "0.1",
+        # 唯一租约：接管时延等于不可见时长，续期压到下限让租约确认能跑满一轮。
+        "SERVICE_ROCKETMQ_INVISIBLE_SECONDS": str(args.lease_seconds),
+        "SERVICE_ROCKETMQ_VISIBILITY_RENEW_SECONDS": "10",
         "SERVICE_JSONL_EVENTS": "false",
         "SERVICE_LOG_DIR": str(work_dir / "service"),
         "OBSERVABILITY_LOG_DIR": str(work_dir / "logs"),
@@ -216,11 +289,9 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
         "APP_ENV": "development",
     }
     group = ProcessGroup(env=env, log_dir=work_dir)
-    api = group.start("api-1", sys.executable, "-m", "deepresearcher.service.main")
-    workers = [
-        group.start(f"worker-{index}", sys.executable, "tests/fake_service_worker.py")
-        for index in (1, 2)
-    ]
+    api = group.start("api-1", sys.executable, "-m", "deepresearcher.service.bootstrap.main")
+    for index in (1, 2):
+        _start_worker(group, work_dir, f"worker-{index}")
     started = time.monotonic()
     passed = False
     try:
@@ -245,13 +316,13 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 label="first Worker claim",
             )
             pids = await _eventually(
-                lambda: asyncio.sleep(0, result=_entered_pids(marker_dir, failover_run)),
-                lambda item: len(item) == 1,
+                lambda: asyncio.sleep(0, result=_entered_instances(marker_dir, failover_run)),
+                lambda item: sum(len(pids) for pids in item.values()) == 1,
                 timeout=10,
                 label="single initial graph execution",
             )
             await asyncio.sleep(0.5)
-            assert _entered_pids(marker_dir, failover_run) == pids
+            assert _entered_instances(marker_dir, failover_run) == pids
 
             sse_stack = await _hold_sse_connections(
                 client, token, failover_run, args.sse_connections
@@ -271,7 +342,9 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
 
             # 滚动替换 API,Worker 持有的图全程阻塞。
             group.stop(api)
-            api = group.start("api-2", sys.executable, "-m", "deepresearcher.service.main")
+            api = group.start(
+                "api-2", sys.executable, "-m", "deepresearcher.service.bootstrap.main"
+            )
             await _wait_api(base_url)
             rolled = await _eventually(
                 lambda: _run_detail(client, token, failover_run),
@@ -281,9 +354,8 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             )
             assert rolled["status"] == "running"
 
-            owner_pid = next(iter(pids))
-            owner = next(process for process in workers if process.pid == owner_pid)
-            group.stop(owner, hard=True)
+            owner_pid = next(iter(_entered_pids(marker_dir, failover_run)))
+            group.stop(group.by_name[_only_instance(pids)], hard=True)
             replacement_pids = await _eventually(
                 lambda: asyncio.sleep(0, result=_entered_pids(marker_dir, failover_run)),
                 lambda item: len(item) == 2,
@@ -295,18 +367,15 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             completed = await _eventually(
                 lambda: _run_detail(client, token, failover_run),
                 lambda item: item["status"] == "completed",
-                timeout=20,
+                timeout=args.lease_seconds + 10,
                 label="takeover completion",
             )
             assert completed["report_markdown"].startswith("# Service")
             await _validate_database(database_url, failover_run)
 
-            # 优雅 SIGTERM -> interrupted -> checkpoint 续跑。
-            # Worker 优雅停止时通过干净的租约释放把运行中的 run 落为 interrupted,
-            # 与前面验证的租约过期接管是两条路径。轮询循环只领 queued、租约清扫
-            # 只处理过期的 running,都续不上这种行，只有 Worker 启动 reconcile 会
-            # 提交显式 resume=True 领取。本段在一个专用 run 上走完这条路径，该
-            # run 此时仍阻塞在 release 标记上。
+            # 优雅 SIGTERM → interrupted → checkpoint 续跑。Worker 优雅停止时把运行中的
+            # run 置为 interrupted 且不确认消息；这条消息在可见性到期后重新投递，
+            # 新启动的 Worker 以 resume=True 接管。启动时不再做任何扫描。
             graceful_run = await _create_run(client, token, "Service graceful resume")
             run_ids.append(graceful_run)
             await _eventually(
@@ -316,16 +385,14 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 label="graceful run first claim",
             )
             graceful_pids = await _eventually(
-                lambda: asyncio.sleep(0, result=_entered_pids(marker_dir, graceful_run)),
-                lambda item: len(item) == 1,
+                lambda: asyncio.sleep(0, result=_entered_instances(marker_dir, graceful_run)),
+                lambda item: sum(len(pids) for pids in item.values()) == 1,
                 timeout=10,
                 label="graceful run single initial execution",
             )
-            graceful_owner_pid = next(iter(graceful_pids))
-            graceful_owner = next(p for p in workers if p.pid == graceful_owner_pid)
 
-            # SIGTERM 而非 SIGKILL:Worker 排空并干净地释放该 run。
-            group.stop(graceful_owner, hard=False)
+            # SIGTERM（Windows 上是 CTRL_BREAK）而非强杀：Worker 排空并干净地释放该 run。
+            group.stop(group.by_name[_only_instance(graceful_pids)], hard=False)
             interrupted = await _eventually(
                 lambda: _run_detail(client, token, graceful_run),
                 lambda item: item["status"] == "interrupted",
@@ -336,17 +403,14 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 f"expected server_shutdown, got {interrupted['terminal_reason']!r}"
             )
 
-            # 新启动 Worker 的 startup reconcile 从 checkpoint 续跑该 run;
+            # 新启动的 Worker 在消息重新可见后从 checkpoint 续跑该 run，
             # 以新 PID 重入图。
-            resume_worker = group.start(
-                "worker-resume", sys.executable, "tests/fake_service_worker.py"
-            )
-            workers.append(resume_worker)
+            _start_worker(group, work_dir, "worker-resume")
             resumed = await _eventually(
                 lambda: _run_detail(client, token, graceful_run),
                 lambda item: item["status"] == "running",
                 timeout=args.lease_seconds + 15,
-                label="startup reconcile resumes the interrupted run",
+                label="redelivery resumes the interrupted run",
             )
             assert resumed["status"] == "running"
             await _eventually(
@@ -365,11 +429,10 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             assert completed_graceful["report_markdown"].startswith("# Service")
             await _validate_database(database_url, graceful_run)
 
-            # 恢复两个在跑的 Worker,再按 1/2/4/8 验证队列与容量。
-            workers.append(
-                group.start("worker-replacement", sys.executable, "tests/fake_service_worker.py")
-            )
+            # 补回一个 Worker，再按 1/2/4/8 验证队列与容量。
+            _start_worker(group, work_dir, "worker-replacement")
             concurrency_results: dict[int, float] = {}
+            accept_results: dict[int, float] = {}
             for level in args.concurrency_levels:
                 wave_started = time.monotonic()
                 wave = await asyncio.gather(
@@ -378,6 +441,9 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                         for index in range(level)
                     ]
                 )
+                # 受理耗时单独记：这一段慢说明瓶颈在事务消息写入或受理事务，
+                # 后面几段慢才是领取与执行的问题。
+                accept_results[level] = round(time.monotonic() - wave_started, 3)
                 run_ids.extend(wave)
                 await asyncio.gather(
                     *[
@@ -391,7 +457,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                     ]
                 )
                 await _eventually(
-                    lambda: asyncio.sleep(
+                    lambda wave=wave: asyncio.sleep(
                         0,
                         result={run_id: _entered_pids(marker_dir, run_id) for run_id in wave},
                     ),
@@ -423,6 +489,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
             "sse_connections": args.sse_connections,
             "http_requests": args.request_count,
             "concurrency_seconds": concurrency_results,
+            "accept_seconds": accept_results,
             "failover_fence_token": 2,
             "run_done_count": 1,
             "graceful_shutdown_recovered": True,
@@ -446,13 +513,13 @@ def _parse_args() -> argparse.Namespace:
         "--database-url", help="dedicated PostgreSQL URL; defaults to service config"
     )
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--lease-seconds", type=int, default=10)
+    parser.add_argument("--lease-seconds", type=int, default=30, help="接管窗口（秒）")
     parser.add_argument("--sse-connections", type=int, default=100)
     parser.add_argument("--request-count", type=int, default=100)
     parser.add_argument("--concurrency-levels", default="1,2,4,8")
     parser.add_argument("--keep-artifacts", action="store_true")
     args = parser.parse_args()
-    args.lease_seconds = max(10, args.lease_seconds)
+    args.lease_seconds = max(30, args.lease_seconds)
     args.sse_connections = max(0, args.sse_connections)
     args.request_count = max(0, args.request_count)
     args.concurrency_levels = tuple(
@@ -464,7 +531,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    result = asyncio.run(verify(_parse_args()))
+    result = asyncio.run(verify(_parse_args()), loop_factory=asyncio_loop_factory())
     print(result)
 
 

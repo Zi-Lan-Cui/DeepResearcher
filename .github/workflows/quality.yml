@@ -7,6 +7,35 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: deepsearch
+          POSTGRES_USER: deepsearch
+          POSTGRES_PASSWORD: deepsearch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U deepsearch -d deepsearch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      # 服务层用例会进 worker 的 lifespan，材料存储启动即 ping，不可用即启动失败，
+      # 所以 redis 不是可选项：缺了会有一批用例报连接被拒而不是给出可读的跳过原因。
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      SERVICE_TEST_DATABASE_URL: postgresql+asyncpg://deepsearch:deepsearch@localhost:5432/deepsearch
+      # 同时用作真 Redis 冒烟用例的判据：不设则那条用例静默跳过。
+      SERVICE_TEST_REDIS_URL: redis://127.0.0.1:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -16,8 +45,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked --group dev
-      - run: uv run ruff check src tests
-      - run: uv run ruff format --check src tests
+      - run: uv run ruff check src tests scripts
+      - run: uv run ruff format --check src tests scripts
       - run: uv run pyright
       # 禁用环境中的偶然插件，同时显式加载项目异步测试所需插件。
       - run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run coverage run -m pytest -q -p pytest_asyncio.plugin

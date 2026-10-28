@@ -1,10 +1,9 @@
-"""仅供测试的 Worker 进程:图带 checkpoint,由外部文件信号放行。"""
+"""仅供测试的 Worker 进程，仅被 `verify_service_processes.py` 调用。"""
 
 from __future__ import annotations
 
 import asyncio
 import os
-import signal
 from pathlib import Path
 from typing import TypedDict
 
@@ -12,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 
 from deepresearcher.config import get_settings
 from deepresearcher.observability import configure_logging
+from deepresearcher.service.bootstrap.loop import asyncio_loop_factory, install_stop_handlers
 from deepresearcher.service.execution.runtime import worker_lifespan
 
 
@@ -37,7 +37,11 @@ def build_harness_graph(*, event_sink, checkpointer=None, **_kwargs):
     async def controlled_work(state: HarnessState) -> dict:
         run_id = state["run_id"]
         marker_dir.mkdir(parents=True, exist_ok=True)
-        (marker_dir / f"entered-{run_id}-{os.getpid()}").touch()
+        # 标记名里带 `WORKER_INSTANCE`：Windows 的 venv `python.exe` 是启动器，
+        # 它再起真实解释器，于是 `Popen.pid` 与写标记的 pid 不是同一个进程。
+        # 验收脚本要按「哪个 worker 进了图」去杀/停进程，只能靠名字回查。
+        instance = os.environ.get("WORKER_INSTANCE", "worker")
+        (marker_dir / f"entered-{run_id}-{instance}-{os.getpid()}").touch()
         event_sink.write(
             {
                 "run_id": run_id,
@@ -68,9 +72,7 @@ def build_harness_graph(*, event_sink, checkpointer=None, **_kwargs):
 
 async def run() -> None:
     stopped = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stopped.set)
+    install_stop_handlers(stopped)
     async with worker_lifespan(graph_factory=build_harness_graph):
         await stopped.wait()
 
@@ -81,7 +83,7 @@ def main() -> None:
         settings.app.log_level,
         log_path=settings.observability.log_dir / settings.observability.log_file,
     )
-    asyncio.run(run())
+    asyncio.run(run(), loop_factory=asyncio_loop_factory())
 
 
 if __name__ == "__main__":
