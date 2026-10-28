@@ -3,11 +3,12 @@ import asyncio
 import httpx
 import pytest
 
-from deepresearcher.service.api import create_app
+from deepresearcher.service.bootstrap.api import create_app
 from deepresearcher.service.execution.runtime import worker_lifespan
-from deepresearcher.service.persistence.database import make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, User
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, User
 from fakes_service import FakeGraph, service_config, service_settings
+from messaging_stub import in_process_ports
 
 pytestmark = pytest.mark.asyncio
 
@@ -20,7 +21,6 @@ async def test_langfuse_unreachable_still_completes_run(tmp_path):
     settings = service_settings(tmp_path)
     config = service_config(
         tmp_path,
-        worker_poll_seconds=0.01,
         langfuse_public_key="pk-lf-test",
         langfuse_secret_key="sk-lf-test",
         langfuse_base_url="http://127.0.0.1:9",
@@ -28,15 +28,18 @@ async def test_langfuse_unreachable_still_completes_run(tmp_path):
     engine = make_engine(config.database_url)
     session_factory = make_session_factory(engine)
     try:
+        ports, broker = in_process_ports()
         async with worker_lifespan(
-            settings, config, graph_factory=lambda **_kwargs: FakeGraph()
+            settings, config, graph_factory=lambda **_kwargs: FakeGraph(), messaging=ports
         ) as runtime:
-            assert runtime.executor.langfuse_enabled()  # 已装 extra 且三键齐备
+            # 已装 extra 且三键齐备，客户端才被造出来；否则这条用例测不到导出路径。
+            assert runtime.executor._langfuse_client is not None  # noqa: SLF001
             async with session_factory() as session:
                 session.add(User(id=77, email="lf@test.dev", password_hash="h"))
                 session.add(Run(id="run-lf", user_id=77, query="观测出口可用性", status="queued"))
                 await session.commit()
-            await runtime.wake()
+            # 行直接插库不会自己产生消息：补一条分派，等价于 API 受理后的投递。
+            await broker.redispatch("run-lf")
             async with asyncio.timeout(15):
                 while True:
                     async with session_factory() as session:
@@ -52,19 +55,20 @@ async def test_langfuse_unreachable_still_completes_run(tmp_path):
 async def test_otel_console_exporter_completes_run(tmp_path, capsys):
     """无 langfuse、console 导出:span 打到 stdout,run 照常完成。"""
     settings = service_settings(tmp_path)
-    config = service_config(tmp_path, worker_poll_seconds=0.01, otel_exporter="console")
+    config = service_config(tmp_path, otel_exporter="console")
     engine = make_engine(config.database_url)
     session_factory = make_session_factory(engine)
     try:
+        ports, broker = in_process_ports()
         async with worker_lifespan(
-            settings, config, graph_factory=lambda **_kwargs: FakeGraph()
+            settings, config, graph_factory=lambda **_kwargs: FakeGraph(), messaging=ports
         ) as runtime:
-            assert not runtime.executor.langfuse_enabled()
+            assert runtime.executor._langfuse_client is None  # noqa: SLF001
             async with session_factory() as session:
                 session.add(User(id=78, email="otel@test.dev", password_hash="h"))
                 session.add(Run(id="run-otel", user_id=78, query="OTel 导出自检", status="queued"))
                 await session.commit()
-            await runtime.wake()
+            await broker.redispatch("run-otel")
             async with asyncio.timeout(15):
                 while True:
                     async with session_factory() as session:
@@ -100,7 +104,7 @@ async def _wait_graph_count(graphs, expected):
 async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path):
     """在一个共享持久数据库上验证服务进程的接管边界。"""
     settings = service_settings(tmp_path)
-    config = service_config(tmp_path, worker_poll_seconds=0.01)
+    config = service_config(tmp_path)
     gate = asyncio.Event()
     built_graphs: list[FakeGraph] = []
 
@@ -110,9 +114,15 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
         built_graphs.append(graph)
         return graph
 
-    async with worker_lifespan(settings, config, graph_factory=worker_graph_factory):
-        async with worker_lifespan(settings, config, graph_factory=worker_graph_factory):
-            first_app = create_app(settings, config)
+    # 两个 worker 共用一套通道：等价于同一消费者组内的竞争消费。
+    ports, _broker = in_process_ports()
+    async with worker_lifespan(
+        settings, config, graph_factory=worker_graph_factory, messaging=ports
+    ):
+        async with worker_lifespan(
+            settings, config, graph_factory=worker_graph_factory, messaging=ports
+        ):
+            first_app = create_app(settings, config, messaging=ports)
             assert not hasattr(first_app.state, "execution")
             async with first_app.router.lifespan_context(first_app):
                 transport = httpx.ASGITransport(app=first_app)
@@ -136,7 +146,7 @@ async def test_two_workers_execute_once_and_api_restart_does_not_cancel(tmp_path
 
             # 第一个 API 已退出，被 Worker 独立持有的图仍在运行。
             gate.set()
-            second_app = create_app(settings, config)
+            second_app = create_app(settings, config, messaging=ports)
             async with second_app.router.lifespan_context(second_app):
                 transport = httpx.ASGITransport(app=second_app)
                 async with httpx.AsyncClient(

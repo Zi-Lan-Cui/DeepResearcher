@@ -149,8 +149,8 @@ def test_preview_event_rejects_business_events_and_unknown_channels():
 def test_preview_channel_whitelist_single_source_across_gates():
     """总线闸与投影闸同读 PREVIEW_CHANNELS;若某一边私设通道集合发生漂移,
     本用例按同一通道在两闸结论不一致时抓出。"""
-    from deepresearcher.service.events.projector import project
     from deepresearcher.service.preview.protocol import PREVIEW_CHANNELS
+    from deepresearcher.service.web.projector import project
 
     for channel in ("router", "clarify", "writer", "secret"):
         record = {

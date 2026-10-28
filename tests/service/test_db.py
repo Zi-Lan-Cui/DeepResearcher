@@ -4,8 +4,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunEvent, User
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, RunEvent, User
+from pg_backend import database_url_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -13,8 +14,7 @@ pytestmark = pytest.mark.asyncio
 @pytest_asyncio.fixture
 async def session(tmp_path):
     # 用文件库而非 :memory:：后者每个连接各自一份库，跨 session 读不到同一份数据。
-    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'db.test.db'}")
-    await init_db(engine)
+    engine = make_engine(database_url_for(tmp_path))
     factory = make_session_factory(engine)
     async with factory() as s:
         yield s
@@ -44,7 +44,7 @@ async def test_run_json_roundtrip_and_defaults(session: AsyncSession):
 
 
 async def test_deleting_run_cascades_events(session: AsyncSession):
-    """验证 DB 级 ON DELETE CASCADE 生效;SQLite 下依赖 make_engine 打开 FK pragma。"""
+    """验证 DB 级 ON DELETE CASCADE 生效。"""
     user = User(email="c@test", password_hash="h")
     session.add(user)
     await session.flush()

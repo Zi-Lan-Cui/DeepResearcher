@@ -2,12 +2,12 @@ import asyncio
 import re
 import time
 import traceback
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from langgraph.types import Command
 from sqlalchemy import select
 
 from deepresearcher.config import (
@@ -18,17 +18,18 @@ from deepresearcher.config import (
     SearchConfig,
     Settings,
 )
-from deepresearcher.service.events.hub import RunEventHub
+from deepresearcher.service.coordination.signals import PostgresSignalBus
+from deepresearcher.service.events.buffer import RunEventBuffer
 from deepresearcher.service.events.store import RunEventStore
-from deepresearcher.service.execution.queue import PostgresRunQueue
 from deepresearcher.service.execution.runtime import WorkerRuntime
-from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunEvent, User
 from deepresearcher.service.preview.local import LocalPreviewBus
+from deepresearcher.service.runs.admission import QuotaExceededError, RunAdmission
 from deepresearcher.service.runs.manager import RunManager
-from deepresearcher.service.runs.service import QuotaExceededError, RunService
+from deepresearcher.service.runs.store import RunStore
 from deepresearcher.service.settings import ServiceConfig
-from deepresearcher.service.signals import PostgresSignalBus
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, RunEvent, User
+from messaging_stub import InProcessDispatchBus
 from pg_backend import database_url_for
 
 pytestmark = pytest.mark.asyncio
@@ -145,20 +146,22 @@ class ServiceHarness:
         config,
         engine,
         session_factory,
-        hub,
+        buffer,
         preview,
         holder,
         signal_bus,
+        bus,
     ):
         self.controller = controller
         self.execution = execution
         self.config = config
         self.engine = engine
         self.session_factory = session_factory
-        self.hub = hub
+        self.buffer = buffer
         self.preview = preview
         self.holder = holder
         self.signal_bus = signal_bus
+        self.bus = bus
 
     async def start(self, user_id, query):
         return await self.controller.start(user_id, query)
@@ -175,25 +178,27 @@ class ServiceHarness:
 
 
 @pytest_asyncio.fixture
-async def manager(tmp_path):
+async def manager(tmp_path, request):
     # 文件库而非 :memory: + StaticPool：StaticPool 全共享一条连接，后台任务与
     # cancel() 的并发 session 会互相干扰，一方回滚会 terminate 另一方在用的连接。
     # 设置 SERVICE_TEST_DATABASE_URL 时这一层改用真实 PG。
-    engine = make_engine(database_url_for(tmp_path, "runs"))
-    await init_db(engine)
+    engine = make_engine(database_url_for(tmp_path))
     session_factory = make_session_factory(engine)
     async with session_factory() as session:
-        from deepresearcher.service.persistence.models import User
+        from deepresearcher.service.storage.tables import User
 
         session.add(User(id=USER_ID, email="u@test", password_hash="h"))
         await session.commit()
     preview = LocalPreviewBus()
+    # 槽位是唯一的执行容量闸门：用例要单槽时按参数收紧，而不是事后改消费者字段。
+    max_running = getattr(request, "param", 3)
     config = ServiceConfig(
         database_url="unused",
         jwt_secret="s" * 40,
         service_log_dir=tmp_path,
         jsonl_events=False,
         max_concurrent_runs_per_user=2,
+        worker_max_running_runs=max_running,
     )
     holder: dict = {}
 
@@ -215,38 +220,40 @@ async def manager(tmp_path):
 
     signal_bus = PostgresSignalBus()
     event_store = RunEventStore(session_factory)
-    hub = RunEventHub(
-        session_factory=session_factory,
-        store=event_store,
-        signal_bus=signal_bus,
-    )
+    buffer = RunEventBuffer(store=event_store, signal_bus=signal_bus)
+    bus = InProcessDispatchBus()
     execution = WorkerRuntime(
         settings=_settings(tmp_path),
         session_factory=session_factory,
         config=config,
-        hub=hub,
+        buffer=buffer,
         http_client=SimpleNamespace(),
+        publisher=bus,
+        receiver=bus,
         graph_factory=graph_factory,
         ephemeral_bus=preview,
     )
     controller = RunManager(
         session_factory=session_factory,
         config=config,
-        hub=hub,
+        buffer=buffer,
+        publisher=bus,
         signal_bus=signal_bus,
     )
-    signal_bus.subscribe("run_available", lambda _payload: execution.wake())
     signal_bus.subscribe("run_cancel_requested", execution.handle_cancel_notification)
+    # 消息驱动：必须先让拉取循环跑起来，受理后的分派消息才会被取走执行。
+    await execution.start()
     manager = ServiceHarness(
         controller=controller,
         execution=execution,
         config=config,
         engine=engine,
         session_factory=session_factory,
-        hub=hub,
+        buffer=buffer,
         preview=preview,
         holder=holder,
         signal_bus=signal_bus,
+        bus=bus,
     )
     yield manager
     # 先结束所有后台任务（它们的 finally 还要写库），再拆引擎，避免
@@ -256,7 +263,16 @@ async def manager(tmp_path):
 
 
 async def _settle(manager, run_id):
-    task = manager.execution.tasks.get(run_id)
+    async def _await_task():
+        # 消息驱动下任务不是立刻存在的：受理后要等拉取循环取走消息、acquire 成功。
+        while run_id not in manager.execution.tasks:
+            await asyncio.sleep(0.01)
+        return manager.execution.tasks[run_id]
+
+    try:
+        task = await asyncio.wait_for(_await_task(), timeout=5)
+    except TimeoutError:
+        return
     if task is not None:
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=5)
@@ -274,65 +290,79 @@ async def _row(manager, run_id):
         return await session.get(Run, run_id)
 
 
+async def _status_frames(manager, run_id):
+    """该 run 已落库的 run_status 帧里的状态序列。"""
+    async with manager.session_factory() as session:
+        records = (
+            await session.scalars(
+                select(RunEvent.record)
+                .where(RunEvent.run_id == run_id, RunEvent.event_type == "run_status")
+                .order_by(RunEvent.seq)
+            )
+        ).all()
+    return [record["payload"]["status"] for record in records]
+
+
+async def _done_frames(manager, run_id):
+    async with manager.session_factory() as session:
+        return (
+            await session.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
+            )
+        ).all()
+
+
 async def test_manager_delegates_execution_without_building_graph_itself(manager):
     captured = {}
     original_execute = manager.execution.executor.execute
 
-    async def execute(run_id, user_id, query, **kwargs):
-        captured.update(
-            run_id=run_id,
-            user_id=user_id,
-            query=query,
-            kwargs=kwargs,
-        )
-        await original_execute(run_id, user_id, query, **kwargs)
+    async def execute(work, **kwargs):
+        captured.update(work=work, kwargs=kwargs)
+        await original_execute(work, **kwargs)
 
     manager.execution.executor.execute = execute
     run_id = await manager.start(USER_ID, "  委托执行  ")
     await _settle(manager, run_id)
 
-    assert captured["run_id"] == run_id
-    assert captured["user_id"] == USER_ID
-    assert captured["query"] == "委托执行"
-    assert captured["kwargs"]["resume"] is False
+    assert captured["work"].run_id == run_id
+    assert captured["work"].user_id == USER_ID
+    assert captured["work"].query == "委托执行"
+    assert captured["work"].claimed is True
     assert captured["kwargs"]["resume_input"] is None
-    assert captured["kwargs"]["claim"].run_id == run_id
-    assert captured["kwargs"]["claim"].claimed is True
 
 
 async def test_running_status_is_announced_only_for_user_visible_claim(manager):
     """人工回答恢复要播 running 帧;重启恢复的续跑不播。"""
-
-    silent_id = "run-system-resume"
-    announced_id = "run-human-resume"
+    manager.holder["graph"] = FakeGraph(result=_completed_result())
     async with manager.session_factory() as session:
         session.add_all(
             [
-                Run(id=silent_id, user_id=USER_ID, query="system", status="interrupted"),
-                Run(id=announced_id, user_id=USER_ID, query="human", status="queued"),
+                Run(id="run-system-resume", user_id=USER_ID, query="system", status="interrupted"),
+                Run(
+                    id="run-human-resume",
+                    user_id=USER_ID,
+                    query="human",
+                    status="queued",
+                    resume_payload={"answer": "成本"},
+                ),
             ]
         )
         await session.commit()
-    manager.hub.open(silent_id)
-    manager.hub.open(announced_id)
 
-    assert await manager.execution.executor._confirm_running(  # noqa: SLF001
-        silent_id,
-        announce_running=False,
-    )
-    assert manager.hub._pending.get(silent_id, []) == []  # noqa: SLF001 - 只读 pending 缓冲
+    store = manager.execution.store
+    executor = manager.execution.executor
 
-    assert await manager.execution.executor._confirm_running(  # noqa: SLF001
-        announced_id,
-        announce_running=True,
-    )
-    assert list(manager.hub._pending.get(announced_id, [])) == [  # noqa: SLF001
-        {
-            "run_id": announced_id,
-            "event_type": "run_status",
-            "payload": {"status": "running"},
-        }
-    ]
+    system_work = await store.acquire("run-system-resume", worker_id="w-test")
+    assert system_work is not None and system_work.resume is True
+    await executor.execute(system_work)
+    assert await _status_frames(manager, "run-system-resume") == []
+
+    # 人工回答恢复：answer_resume 已把行退回 queued 并带上载荷，领取后必须补一帧
+    # running，否则前端停在 queued 直到第一个阶段事件。
+    human_work = await store.acquire("run-human-resume", worker_id="w-test")
+    assert human_work is not None and human_work.resume is True
+    await executor.execute(human_work, resume_input=Command(resume={"answer": "成本"}))
+    assert await _status_frames(manager, "run-human-resume") == ["running"]
 
 
 async def test_success_persists_terminal_and_injects_run_id(manager):
@@ -417,9 +447,9 @@ async def test_cancel_mid_run_persists_cancelled_once(manager):
     assert len(dones) == 1  # done 恰一次，且必须落 DB 以便重连回放
 
 
-async def test_remote_manager_cancel_uses_notification_without_waiting_for_heartbeat(manager):
+async def test_remote_manager_cancel_uses_notification_without_waiting_for_lease_check(manager):
     gate = asyncio.Event()
-    manager.execution.worker._heartbeat_seconds = 20  # noqa: SLF001 - 验证快路径不依赖心跳
+    manager.execution.consumer._lease_check_seconds = 20  # noqa: SLF001 - 验证快路径不依赖租约确认
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     run_id = await manager.start(USER_ID, "remote cancel")
     while (await _row(manager, run_id)).status != "running":
@@ -433,11 +463,11 @@ async def test_remote_manager_cancel_uses_notification_without_waiting_for_heart
         controller = RunManager(
             session_factory=manager.session_factory,
             config=manager.config,
-            hub=RunEventHub(
-                session_factory=manager.session_factory,
+            buffer=RunEventBuffer(
                 store=RunEventStore(manager.session_factory),
                 signal_bus=signal_bus,
             ),
+            publisher=manager.bus,
             signal_bus=signal_bus,
         )
         started = time.monotonic()
@@ -522,7 +552,7 @@ async def test_real_suspend_then_resume_matches_is_null_cas(manager):
     await _settle(manager, run_id)
     assert (await _row(manager, run_id)).status == "awaiting_input"
 
-    # SQL 层不变式：挂起后载荷必须是真正的 SQL NULL,而非 JSON null;
+    # SQL 层不变式：挂起后载荷必须是真正的 SQL NULL，而非 JSON null;
     # 用 Python 侧比对看不出这个差别。
     async with manager.session_factory() as session:
         is_sql_null = await session.scalar(
@@ -530,7 +560,7 @@ async def test_real_suspend_then_resume_matches_is_null_cas(manager):
         )
     assert is_sql_null is True, "挂起写入把 None 存成了 JSON null，resume 的 CAS 将永远落空"
 
-    # 换一张能正常结束的图，让 resume→claim 后这次执行跑到 completed，避免挂起态残留干扰收尾。
+    # 换一张能正常结束的图，让 resume→claim 后本次执行跑到 completed，避免挂起态残留。
     manager.holder["graph"] = FakeGraph(result=_completed_result(), resume_run_id=run_id)
     manager.controller._checkpointer = FakeSaver({run_id})  # noqa: SLF001 - resume 需要断点在
     advanced = await manager.resume_with_input(USER_ID, run_id, "成本")
@@ -562,7 +592,7 @@ async def test_quota_blocks_third_concurrent_run(manager):
 
 
 async def test_global_queue_quota_rejects_new_admission(manager):
-    service = RunService(
+    service = RunAdmission(
         session_factory=manager.session_factory,
         config=ServiceConfig(
             database_url="unused",
@@ -570,35 +600,43 @@ async def test_global_queue_quota_rejects_new_admission(manager):
             max_concurrent_runs_per_user=10,
             max_global_queued_runs=1,
         ),
+        publisher=manager.bus,
     )
     await service.create(USER_ID, "q1")
     with pytest.raises(QuotaExceededError, match="等待队列已满"):
         await service.create(USER_ID, "q2")
 
 
-async def test_two_queue_instances_claim_a_run_only_once(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager.config)
-    run_id = await service.create(USER_ID, "atomic claim")
-    first_queue = PostgresRunQueue(manager.session_factory)
-    second_queue = PostgresRunQueue(manager.session_factory)
+async def test_two_store_instances_serialize_claims_on_the_same_row(manager):
+    # 直接插行而不走受理：受理会顺带发一条分派消息，后台消费者会先一步领走，
+    # 这条用例要验的是两个领取者对同一行的条件 UPDATE，不该被分派扰乱。
+    run_id = "run-atomic-claim"
+    async with manager.session_factory() as session:
+        session.add(Run(id=run_id, user_id=USER_ID, query="atomic claim", status="queued"))
+        await session.commit()
+    first_store = RunStore(manager.session_factory)
+    second_store = RunStore(manager.session_factory)
 
     claims = await asyncio.gather(
-        first_queue.claim(worker_id="worker-a", lease_seconds=60),
-        second_queue.claim(worker_id="worker-b", lease_seconds=60),
+        first_store.acquire(run_id, worker_id="worker-a"),
+        second_store.acquire(run_id, worker_id="worker-b"),
     )
 
-    winners = [claim for claim in claims if claim is not None]
-    assert len(winners) == 1
-    assert winners[0].run_id == run_id
-    assert winners[0].fence_token == 1
+    # 两次领取都被行锁串行化：世代严格递增，只有一个能写。
+    assert all(claim is not None for claim in claims)
+    assert sorted(claim.fence_token for claim in claims) == [1, 2]
+    owners = [claim for claim in claims if await first_store.verify_lease(claim) == "held"]
+    assert len(owners) == 1
+    assert owners[0].fence_token == 2
 
 
-async def test_worker_polling_claims_run_created_by_another_process(manager):
-    """独立 Worker 不依赖 API 进程调用 wake(),靠自身轮询领取。"""
-    manager.execution.worker._poll_seconds = 0.01  # noqa: SLF001 - 测试提速轮询
+async def test_worker_runs_admission_from_another_process(manager):
+    """独立 Worker 不依赖调用方唤醒，受理落库后的消息由它自己拉取。"""
     graph = FakeGraph(result=_completed_result(), emit_events=1)
     manager.holder["graph"] = graph
-    service = RunService(session_factory=manager.session_factory, config=manager.config)
+    service = RunAdmission(
+        session_factory=manager.session_factory, config=manager.config, publisher=manager.bus
+    )
     run_id = await service.create(USER_ID, "external admission")
 
     await manager.execution.start()
@@ -621,48 +659,31 @@ async def test_worker_polling_claims_run_created_by_another_process(manager):
     assert "engine_0" in event_types
 
 
-async def test_stale_owner_cannot_renew_or_write_terminal_state(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager.config)
-    run_id = await service.create(USER_ID, "owner CAS")
-    queue = PostgresRunQueue(manager.session_factory)
-    claim = await queue.claim(worker_id="worker-a", lease_seconds=60)
-    assert claim is not None
-    stale = replace(claim, lease_owner="worker-stale")
-
-    assert await queue.renew(stale, lease_seconds=60) is False
-    assert (
-        await manager.execution.executor.persist_status(run_id, status="completed", claim=stale)
-        is False
-    )
-    assert (await _row(manager, run_id)).status == "running"
-    assert (
-        await manager.execution.executor.persist_status(run_id, status="completed", claim=claim)
-        is True
-    )
-
-
-async def test_expired_lease_is_reaped_for_resume(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager.config)
-    run_id = await service.create(USER_ID, "expired")
-    queue = PostgresRunQueue(manager.session_factory)
-    claim = await queue.claim(worker_id="worker-a", lease_seconds=60)
-    assert claim is not None
+async def test_takeover_retires_the_previous_fence(manager):
+    """接管之后旧世代只剩读权：它的写库一律打空，行状态由新持有者决定。"""
+    run_id = "run-owner-cas"
     async with manager.session_factory() as session:
-        run = await session.get(Run, run_id)
-        run.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.add(Run(id=run_id, user_id=USER_ID, query="owner CAS", status="queued"))
         await session.commit()
+    store = RunStore(manager.session_factory)
+    stale = await store.acquire(run_id, worker_id="worker-a")
+    assert stale is not None
 
-    reaped = await queue.reap_expired()
-    assert [work.run_id for work in reaped] == [run_id]
-    run = await _row(manager, run_id)
-    assert run.status == "interrupted"
-    assert run.terminal_reason == "lease_expired"
-    assert run.lease_owner is None
+    fresh = await store.acquire(run_id, worker_id="worker-b")
+    assert fresh is not None
+    assert await store.verify_lease(stale) == "lost"
+
+    assert await manager.execution.executor.persist_status(stale, status="completed") is None
+    assert (await _row(manager, run_id)).status == "running"
+    assert await manager.execution.executor.persist_status(fresh, status="completed") is not None
 
 
 async def test_two_event_stores_allocate_non_overlapping_sequences(manager):
-    service = RunService(session_factory=manager.session_factory, config=manager.config)
-    run_id = await service.create(USER_ID, "event sequence")
+    # 同上：直接插行保证事件表是空的，序号分配才从 1 开始可断言。
+    run_id = "run-event-sequence"
+    async with manager.session_factory() as session:
+        session.add(Run(id=run_id, user_id=USER_ID, query="event sequence", status="queued"))
+        await session.commit()
     first_store = RunEventStore(manager.session_factory)
     second_store = RunEventStore(manager.session_factory)
 
@@ -683,9 +704,9 @@ async def test_two_event_stores_allocate_non_overlapping_sequences(manager):
     assert seqs == [1, 2]
 
 
+@pytest.mark.parametrize("manager", [1], indirect=True)
 async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - 测试容量口子
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
 
     first = await manager.start(USER_ID, "q1")
@@ -706,9 +727,9 @@ async def test_global_capacity_keeps_excess_run_queued_then_dispatches(manager):
     assert (await _row(manager, second)).status == "completed"
 
 
+@pytest.mark.parametrize("manager", [1], indirect=True)
 async def test_cancel_queued_run_never_executes_graph(manager):
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - 测试容量口子
     graph = FakeGraph(gate=gate, result=_completed_result())
     manager.holder["graph"] = graph
 
@@ -746,55 +767,6 @@ async def test_events_are_persisted_in_seq_order_with_done_last(manager):
     assert types.count("run_done") == 1
 
 
-async def test_reconcile_startup_converts_stale_rows(manager):
-    async with manager.session_factory() as session:
-        session.add_all(
-            [
-                Run(id="run-stale-a", user_id=USER_ID, query="q", status="running"),
-                Run(id="run-stale-b", user_id=USER_ID, query="q", status="queued"),
-                Run(id="run-stale-c", user_id=USER_ID, query="q", status="interrupted"),
-                Run(id="run-done", user_id=USER_ID, query="q", status="completed"),
-            ]
-        )
-        await session.commit()
-    killed, resumable = await manager.execution.reconcile_startup()
-    assert (killed, resumable) == (2, [])
-    for run_id, expected in (
-        ("run-stale-a", "failed"),
-        ("run-stale-b", "queued"),  # 未领取任务在重启后仍可从头执行
-        ("run-stale-c", "failed"),
-        ("run-done", "completed"),
-    ):
-        run = await _row(manager, run_id)
-        assert run.status == expected
-    assert (await _row(manager, "run-stale-a")).terminal_reason == "server_restart"
-    # 孤儿 run 的事件流必须有合成 done 收尾，否则历史详情页 SSE 无限重连。
-    async with manager.session_factory() as session:
-        orphans = (
-            await session.scalars(
-                select(RunEvent).where(
-                    RunEvent.run_id.in_(("run-stale-a", "run-stale-b", "run-stale-c")),
-                    RunEvent.event_type == "run_done",
-                )
-            )
-        ).all()
-        completed_done = (
-            await session.scalars(
-                select(RunEvent).where(
-                    RunEvent.run_id == "run-done", RunEvent.event_type == "run_done"
-                )
-            )
-        ).all()
-    assert len(orphans) == 2
-    assert all(event.record["payload"]["status"] == "failed" for event in orphans)
-    assert completed_done == []  # 非孤儿不补
-    # done 帧必须经 hub→store 正路：seq 由 runs.event_seq 指针分配而非手写 max+1,行号与指针一致。
-    async with manager.session_factory() as session:
-        for event in orphans:
-            run_row = await session.get(Run, event.run_id)
-            assert event.seq == run_row.event_seq
-
-
 async def test_headline_persists_at_clarify_exit_not_at_end(manager):
     """headline 落库时机:携带 run_headline 的根 values 在 clarify 超步出口一到
     就落库推帧,不等 run 终态;终值再含 headline 时由 CAS 挡住,只落一次。"""
@@ -811,16 +783,29 @@ async def test_headline_persists_at_clarify_exit_not_at_end(manager):
     row = await _row(manager, run_id)
     assert row.headline == "澄清出口即写"
     assert row.status == "running"  # 还没到终态，标题已在
-    # 帧必须在 gate 打开前就落库——落库→flush→NOTIFY 一次走完，不等 2s 周期。
-    async with manager.session_factory() as session:
-        frames = (
-            await session.scalars(
-                select(RunEvent).where(
-                    RunEvent.run_id == run_id,
-                    RunEvent.event_type == "run_headline_updated",
-                )
+
+    # 帧必须在 gate 打开前落库——落库→flush→NOTIFY 一次走完，不等周期。
+    # 写行与写帧是两笔事务（前者是 CAS 成功的前置条件），因此这里等到帧出现为止，
+    # 而不是刚看到行就断言：真正要证的是「澄清出口就发帧」，不是「同一瞬间已落库」。
+    async def _headline_frames() -> list[RunEvent]:
+        async with manager.session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(RunEvent).where(
+                            RunEvent.run_id == run_id,
+                            RunEvent.event_type == "run_headline_updated",
+                        )
+                    )
+                ).all()
             )
-        ).all()
+
+    async with asyncio.timeout(5):
+        frames = await _headline_frames()
+        while not frames:
+            await asyncio.sleep(0.02)
+            frames = await _headline_frames()
+    assert not gate.is_set()  # 帧到得比终态早：图还卡在 gate 上
     assert [f.record["payload"]["headline"] for f in frames] == ["澄清出口即写"]
     gate.set()
     await _settle(manager, run_id)
@@ -857,7 +842,6 @@ async def test_streaming_preview_routing_and_ephemerality(manager):
     预览只有一条路径:执行器直发注入的总线。测试里 manager 与 executor
     共享同一个 LocalPreviewBus 实例。"""
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - 控制派发时机的口子
     manager.holder["graph"] = FakeGraph(
         result=_completed_result(),
         gate=gate,
@@ -920,7 +904,6 @@ class FakeSaver:
 
 async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(manager):
     gate = asyncio.Event()
-    manager.execution.worker._max_running = 1  # noqa: SLF001 - 让恢复任务留在队列不派发
     manager.holder["graph"] = FakeGraph(gate=gate, result=_completed_result())
     active = await manager.start(USER_ID, "occupy slot")
     while (await _row(manager, active)).status != "running":
@@ -943,10 +926,9 @@ async def test_resume_answer_is_durable_and_duplicate_submission_is_rejected(man
     await _settle(manager, active)
 
 
-async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
-    """恢复全链路:分诊判定可续/不可续 → seq 续号 → astream(None) 续跑 → 新事件落库。"""
-    engine = make_engine(database_url_for(tmp_path, "resume"))
-    await init_db(engine)
+async def test_crash_takeover_resumes_from_checkpoint(tmp_path):
+    """崩溃接管全链路：重投到达 → fence 前进 → astream(None) 续跑 → seq 续号。"""
+    engine = make_engine(database_url_for(tmp_path))
     factory = make_session_factory(engine)
     async with factory() as session:
         session.add(User(id=USER_ID, email="r@test", password_hash="h"))
@@ -955,12 +937,12 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
                 id="run-orphan",
                 user_id=USER_ID,
                 query="孤而可活",
-                status="interrupted",
-                terminal_reason="server_shutdown",
+                status="running",
+                lease_owner="dead-worker",
+                fence_token=1,
                 event_seq=5,
             )
         )
-        session.add(Run(id="run-dead", user_id=USER_ID, query="无据可活", status="running"))
         for i in range(1, 6):  # 上一个进程已写入的 seq 1..5
             session.add(
                 RunEvent(run_id="run-orphan", seq=i, event_type=f"engine_{i}", record={"seq": i})
@@ -997,30 +979,26 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
         jsonl_events=False,
     )
     event_store = RunEventStore(factory)
-    hub = RunEventHub(
-        session_factory=factory,
-        store=event_store,
-        signal_bus=PostgresSignalBus(),
-    )
+    buffer = RunEventBuffer(store=event_store, signal_bus=PostgresSignalBus())
+    bus = InProcessDispatchBus()
     execution = WorkerRuntime(
         settings=_settings(tmp_path),
         session_factory=factory,
         config=config,
-        hub=hub,
+        buffer=buffer,
         http_client=SimpleNamespace(),
+        publisher=bus,
+        receiver=bus,
         graph_factory=graph_factory,
         checkpointer=FakeSaver({"run-orphan"}),
     )
-    killed, resumable = await execution.reconcile_startup()
-    assert killed == 1
-    assert resumable == [("run-orphan", USER_ID, "孤而可活")]
-    async with factory() as session:
-        assert (await session.get(Run, "run-dead")).status == "failed"
-        assert (await session.get(Run, "run-orphan")).status == "interrupted"
-
-    assert await execution.resume_runs(resumable) == 1
-    task = execution.tasks.get("run-orphan")
-    assert task is not None
+    await execution.start()
+    # 崩溃的进程不会再确认那条消息：可见性到期后 Broker 重投，这里就是那次重投。
+    await bus.redispatch("run-orphan")
+    async with asyncio.timeout(5):
+        while "run-orphan" not in execution.tasks:
+            await asyncio.sleep(0.01)
+    task = execution.tasks["run-orphan"]
     gate.set()
     await task
 
@@ -1033,7 +1011,7 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
                 )
             ).all()
         )
-        # 旧 1..5 → resuming=6 → trace + engine + done:跨重启连续，无主键冲突。
+        # 旧 1..5 → resuming=6 → trace + engine + done：跨进程连续，无主键冲突。
         assert [event.seq for event in persisted] == list(range(1, 13))
         assert [event.event_type for event in persisted[6:]] == [
             "trace_started",
@@ -1053,8 +1031,43 @@ async def test_resume_triage_continues_seq_and_revives_checkpoint_run(tmp_path):
     await asyncio.sleep(0.1)
 
 
-async def test_settle_cancellations_terminates_abandoned_cancel_intent(manager):
-    """worker 退出在"取消意图已写、终态未落"窗口:清理逻辑补写 cancelled+done 帧。"""
+async def test_takeover_without_checkpoint_restarts_from_scratch(manager):
+    """接管一个没有断点的行：降级为从头跑。
+
+    传 None 给 astream 会抛 EmptyInputError，把一个重跑成本≈0 的任务
+    变成必然 failed——那种结局比从头跑差得多。
+    """
+    run_id = "run-no-checkpoint"
+    async with manager.session_factory() as session:
+        session.add(
+            Run(
+                id=run_id,
+                user_id=USER_ID,
+                query="无据可活",
+                status="running",
+                lease_owner="dead-worker",
+                fence_token=1,
+            )
+        )
+        await session.commit()
+    manager.holder["graph"] = FakeGraph(result=_completed_result(), emit_events=1)
+
+    await manager.bus.redispatch(run_id)
+    async with asyncio.timeout(3):
+        while (await _row(manager, run_id)).status != "completed":
+            await asyncio.sleep(0.01)
+    await _settle(manager, run_id)
+
+    assert manager.holder["graph"].ainvoke_inputs  # 走的是 {"query": ...}，不是 None
+    assert manager.holder["graph"].none_inputs == 0
+
+
+async def test_cancel_intent_on_running_row_settles_on_redelivery(manager):
+    """运行中点取消、持有者又已死：重投到达时就地结算，并补 done 帧。
+
+    这条路径不能等执行器自己收尾（它已经不在了），也不能等扫描器
+    （单租约下没有扫描器）。
+    """
     run_id = "run-cancel-sunk"
     async with manager.session_factory() as session:
         session.add(
@@ -1062,80 +1075,102 @@ async def test_settle_cancellations_terminates_abandoned_cancel_intent(manager):
                 id=run_id,
                 user_id=USER_ID,
                 query="q",
-                status="interrupted",
+                status="running",
+                lease_owner="dead-worker",
+                fence_token=1,
                 cancellation_requested_at=datetime.now(timezone.utc),
             )
         )
         await session.commit()
 
-    await manager.execution._settle_cancellations()  # noqa: SLF001
+    await manager.bus.redispatch(run_id)
+    async with asyncio.timeout(3):
+        # 终态先落库、done 帧随后补发，因此等到 done 出现才算这条路径走完。
+        while not await _done_frames(manager, run_id):
+            await asyncio.sleep(0.01)
 
-    async with manager.session_factory() as session:
-        run = await session.get(Run, run_id)
-        assert run.status == "cancelled"
-        assert run.terminal_reason == "user_cancelled"
-        assert run.finished_at is not None
-        assert run.lease_owner is None
-        done = (
-            await session.scalars(
-                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.event_type == "run_done")
-            )
-        ).all()
-        assert len(done) == 1
+    run = await _row(manager, run_id)
+    assert run.terminal_reason == "user_cancelled"
+    assert run.finished_at is not None
+    assert run.lease_owner is None
+    assert len(await _done_frames(manager, run_id)) == 1
 
 
-class _FlakyRenewQueue:
+class _FlakyOwnershipStore:
+    """前 fail_rounds 拍探针抛错，之后一直答 ok。"""
+
     def __init__(self, *, fail_rounds: int) -> None:
         self._fail_rounds = fail_rounds
-        self.renew_calls = 0
+        self.poll_calls = 0
 
-    async def renew(self, _work, *, lease_seconds):
-        self.renew_calls += 1
-        if self.renew_calls <= self._fail_rounds:
+    async def verify_lease(self, _work):
+        self.poll_calls += 1
+        if self.poll_calls <= self._fail_rounds:
             raise ConnectionError("connection pool hiccup")
-        return True
-
-    async def cancellation_requested(self, _work):
-        return False
+        return "held"
 
 
 class _RecordingLeaseExecutor:
     def __init__(self) -> None:
         self.lease_lost: list[str] = []
-        self.cancel_requested: list[str] = []
 
     def mark_lease_lost(self, run_id):
         self.lease_lost.append(run_id)
 
-    def mark_cancellation_requested(self, run_id):
-        self.cancel_requested.append(run_id)
+
+class _NullReceiver:
+    """不投递任何消息的入站桩：这些用例只关心拉取循环与租约确认。"""
+
+    async def receive(self):
+        return None
+
+    async def ack(self, _dispatch):
+        return None
+
+    async def extend_visibility(self, _dispatch, _seconds):
+        return None
+
+    async def close(self):
+        return None
 
 
-def _heartbeat_worker(queue, executor):
-    from deepresearcher.service.execution.worker import RunWorker
+def _inbound(run_id: str):
+    from deepresearcher.service.messaging.dispatch import new_dispatch
+    from deepresearcher.service.messaging.receiver import DispatchDelivery
 
-    worker = RunWorker(
-        queue=queue,
+    return DispatchDelivery(message=new_dispatch(run_id), receipt=object(), delivery_attempt=0)
+
+
+def _watch_worker(store, executor):
+    from deepresearcher.service.execution.consumer import RunConsumer
+
+    worker = RunConsumer(
+        store=store,
         executor=executor,
+        buffer=object(),  # type: ignore[arg-type] - 租约确认与拉取路径不写事件
+        receiver=_NullReceiver(),
         max_running=1,
-        lease_seconds=600,
-        heartbeat_seconds=600,
+        lease_check_seconds=600,
+        invisible_seconds=600,
+        visibility_renew_seconds=600,
     )
-    worker._heartbeat_seconds = 0.01  # noqa: SLF001 - 测试提速
+    worker._lease_check_seconds = 0.01  # noqa: SLF001 - 测试提速
     return worker
 
 
-async def test_heartbeat_survives_transient_db_errors():
-    from deepresearcher.service.execution.queue import RunWork
+async def test_lease_hold_survives_transient_db_errors():
+    from deepresearcher.service.runs.store import RunWork
 
     work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", fence_token=1)
-    queue = _FlakyRenewQueue(fail_rounds=2)
+    store = _FlakyOwnershipStore(fail_rounds=2)
     executor = _RecordingLeaseExecutor()
-    worker = _heartbeat_worker(queue, executor)
+    worker = _watch_worker(store, executor)
 
-    task = asyncio.create_task(worker._heartbeat(work, None))  # noqa: SLF001
+    task = asyncio.create_task(  # noqa: SLF001 - 直接驱动租约确认循环
+        worker._hold_lease(work, None, _inbound("r1"))
+    )
     async with asyncio.timeout(3):
-        while queue.renew_calls < 3:
+        while store.poll_calls < 3:
             await asyncio.sleep(0.01)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
@@ -1143,30 +1178,30 @@ async def test_heartbeat_survives_transient_db_errors():
     assert executor.lease_lost == []  # 瞬断不误杀健康执行
 
 
-async def test_heartbeat_escalates_persistent_db_errors_to_lease_lost():
-    from deepresearcher.service.execution.queue import RunWork
+async def test_lease_hold_escalates_persistent_db_errors_to_lease_lost():
+    from deepresearcher.service.runs.store import RunWork
 
     work = RunWork(run_id="r1", user_id=1, query="q", lease_owner="w", fence_token=1)
-    queue = _FlakyRenewQueue(fail_rounds=99)
+    store = _FlakyOwnershipStore(fail_rounds=99)
     executor = _RecordingLeaseExecutor()
-    worker = _heartbeat_worker(queue, executor)
-    worker._heartbeat_failure_budget = 2  # noqa: SLF001
+    worker = _watch_worker(store, executor)
+    worker._lease_check_failure_budget = 2  # noqa: SLF001
 
     async with asyncio.timeout(3):
-        await worker._heartbeat(work, None)  # noqa: SLF001
+        await worker._hold_lease(work, None, _inbound("r1"))  # noqa: SLF001
 
     assert executor.lease_lost == ["r1"]  # 预算耗尽必须降级，不许静默退场
 
 
-class _ScriptedClaimQueue:
-    """claim 按剧本逐次抛错/返回的最小桩;剧本耗尽后恒返回 None。"""
+class _ScriptedReceiver:
+    """receive 按剧本逐次抛错/返回;剧本耗尽后恒返回 None（长轮询空转）。"""
 
     def __init__(self, outcomes: list[object]) -> None:
         self._outcomes = list(outcomes)
-        self.claims: list[object] = []
+        self.calls = 0
 
-    async def claim(self, **kwargs):
-        self.claims.append(kwargs.get("preferred"))
+    async def receive(self):
+        self.calls += 1
         if not self._outcomes:
             return None
         outcome = self._outcomes.pop(0)
@@ -1174,12 +1209,18 @@ class _ScriptedClaimQueue:
             raise outcome
         return outcome
 
-    async def reap_expired(self):
-        return []
+    async def ack(self, _dispatch):
+        return None
+
+    async def extend_visibility(self, _dispatch, _seconds):
+        return None
+
+    async def close(self):
+        return None
 
 
-def _scripted_worker(queue, *, poll_seconds: float, heartbeat_seconds: float = 600):
-    from deepresearcher.service.execution.worker import RunWorker
+def _scripted_worker(receiver, *, lease_check_seconds: float = 600):
+    from deepresearcher.service.execution.consumer import RunConsumer
 
     class _NoDispatchExecutor:
         """桩路径不派发任何 run;shutdown 只用到 mark_shutdown 空集合上报。"""
@@ -1187,26 +1228,34 @@ def _scripted_worker(queue, *, poll_seconds: float, heartbeat_seconds: float = 6
         def mark_shutdown(self, _run_ids):
             return None
 
-    return RunWorker(
-        queue=queue,
+    return RunConsumer(
+        store=object(),
         executor=_NoDispatchExecutor(),
+        buffer=object(),  # type: ignore[arg-type] - 拉取循环不写事件
+        receiver=receiver,
         max_running=1,
-        lease_seconds=600,
-        heartbeat_seconds=heartbeat_seconds,
-        poll_seconds=poll_seconds,
+        lease_check_seconds=lease_check_seconds,
+        invisible_seconds=600,
+        visibility_renew_seconds=600,
     )
 
 
-async def test_poll_loop_survives_transient_claim_error():
-    """恢复路径自身不能再有单点:claim 瞬断后 poll 必须继续起跳,否则过期租约永无人收。"""
-    queue = _ScriptedClaimQueue([ConnectionError("pool hiccup"), None])
-    worker = _scripted_worker(queue, poll_seconds=0.01)
-    poll = asyncio.create_task(worker._poll_loop())  # noqa: SLF001
+async def test_receive_loop_survives_transient_pull_error(monkeypatch):
+    """消息队列瞬断后拉取循环继续下一跳。
+
+    这条循环是唯一的执行入口，退出等于整个 Worker 停止消费，瞬断只退化成重试。
+    """
+    from deepresearcher.service.execution import consumer as consumer_module
+
+    monkeypatch.setattr(consumer_module, "_RECEIVE_RETRY_BACKOFF_SECONDS", 0.01)
+    receiver = _ScriptedReceiver([ConnectionError("messaging hiccup")])
+    worker = _scripted_worker(receiver)
+    receive = asyncio.create_task(worker._receive_loop())  # noqa: SLF001
     try:
         async with asyncio.timeout(3):
-            while len(queue.claims) < 2:
+            while receiver.calls < 2:
                 await asyncio.sleep(0.01)
-        assert not poll.done()  # 瞬断没有杀死循环，第二跳已发生
+        assert not receive.done()  # 瞬断没有杀死循环，第二跳已发生
     finally:
-        poll.cancel()
-        await worker.shutdown()
+        receive.cancel()
+        await asyncio.gather(receive, return_exceptions=True)

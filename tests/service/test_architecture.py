@@ -12,11 +12,11 @@ KERNEL_ROOT = SRC_ROOT / "deepresearcher"
 SERVICE_PREFIX = "deepresearcher.service"
 EXECUTION_PREFIX = "deepresearcher.service.execution"
 
-# worker.py 是执行平面进程入口 python -m deepresearcher.worker,属外壳；
+# worker.py 是执行平面进程入口 python -m deepresearcher.service.bootstrap.worker，属外壳；
 # 放在包根只是为了模块路径短，不改变归属。
 SHELL_ENTRYPOINTS = frozenset({Path("src/deepresearcher/worker.py")})
 
-# 棘轮白名单：service 现存的每一条跨界 import,模块名与属性名都登记，按前缀
+# 棘轮白名单：service 现存的每一条跨界 import，模块名与属性名都登记，按前缀
 # 匹配。新增跨界 import 必须显式加名单并说明它为何是内核对外端口；名单只收
 # 不放，收窄方向是 graph 与 protocol 类端口。
 ALLOWED_KERNEL_IMPORTS = frozenset(
@@ -29,10 +29,10 @@ ALLOWED_KERNEL_IMPORTS = frozenset(
         "deepresearcher.observability",  # JsonlSink（包口导出）
         "deepresearcher.observability.logging_config",  # get_logger
         "deepresearcher.observability.tracing",  # spans / ledger
-        "deepresearcher.observability.tracing.context",  # current_span_context / new_id
+        "deepresearcher.observability.span",  # current_span_context / new_id
         "deepresearcher.usage_runtime",  # bind/current/enforce/record/reset + 异常与类型
         # 契约与词汇
-        "deepresearcher.env",  # env_str/int/float/bool:两套配置的解析语义单源
+        "deepresearcher.env",  # env_str/int/float/bool：两套配置的解析语义单源
         "deepresearcher.routing",  # NodeName
         "deepresearcher.schemas",  # StopReason 等
         "deepresearcher.schemas.limits",  # EVENT_CONTENT_PREVIEW_CHARS
@@ -41,7 +41,7 @@ ALLOWED_KERNEL_IMPORTS = frozenset(
         # 资料与传输端口（tools 侧 protocol/store 抽象，外壳注入实现）
         "deepresearcher.tools.transport",  # HttpClient
         "deepresearcher.tools.web.documents",  # DocumentRef / DocumentReadRange / 大纲与 Grep 结果
-        "deepresearcher.tools.web.materials",  # ResearchMaterialStore / Memory 实现 / StoredDocument 等
+        "deepresearcher.tools.web.materials",  # ResearchMaterialStore 等
         "deepresearcher.tools.web.materials.models",  # build_stored_document
         "deepresearcher.tools.web.materials.store",  # grep_lines / read_lines
     }
@@ -120,16 +120,15 @@ def test_service_only_touches_kernel_through_declared_ports():
     )
 
 
-def test_run_control_plane_does_not_import_execution_plane():
+def test_run_lifecycle_does_not_import_execution_plane():
+    """runs 定义并改写 Run 的生命周期，不含执行；依赖方向只能是 execution → runs。"""
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT / "service" / "runs"):
         for lineno, resolved in _resolved_imports(path):
             if _under(EXECUTION_PREFIX, resolved):
                 violations.append(f"{path}:{lineno} imports {resolved}")
 
-    assert violations == [], "run control plane must not import execution modules:\n" + "\n".join(
-        violations
-    )
+    assert violations == [], "runs must not import execution modules:\n" + "\n".join(violations)
 
 
 def test_event_and_preview_planes_do_not_import_each_other():
@@ -157,24 +156,24 @@ def test_asyncpg_raw_connections_live_only_in_signals():
     再开一处 raw 连接必须先有书面理由,见 signals.py 文件头;否则 NullPool、
     方言、池策略这些集中决定会被各模块陆续绕过。
     """
-    allowed = Path("src/deepresearcher/service/signals.py")
+    allowed = Path("src/deepresearcher/service/coordination/signals.py")
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT):
         for lineno, resolved in _resolved_imports(path):
             if _under("asyncpg", resolved) and path != allowed:
                 violations.append(f"{path}:{lineno} imports {resolved}")
 
-    assert violations == [], "asyncpg may only be imported by service.signals:\n" + "\n".join(
-        violations
+    assert violations == [], (
+        "asyncpg may only be imported by service.coordination.signals:\n" + "\n".join(violations)
     )
 
 
-def test_advisory_lock_sql_lives_in_persistence_helper():
-    """pg_advisory_* 只许出现在 persistence/advisory_lock.py。
+def test_advisory_lock_sql_lives_in_coordination_helper():
+    """pg_advisory_* 只许出现在 coordination/locks.py。
 
     锁的释放时机、是否跨 yield 等语义散写到各平面后,容易出现互不一致的副本。
     """
-    allowed = Path("src/deepresearcher/service/persistence/advisory_lock.py")
+    allowed = Path("src/deepresearcher/service/coordination/locks.py")
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT):
         if path == allowed:
@@ -183,17 +182,17 @@ def test_advisory_lock_sql_lives_in_persistence_helper():
             if "pg_advisory" in line:
                 violations.append(f"{path}:{lineno} contains pg_advisory")
 
-    assert violations == [], (
-        "advisory lock SQL must stay inside persistence.advisory_lock:\n" + "\n".join(violations)
+    assert violations == [], "advisory lock SQL must stay inside coordination.locks:\n" + "\n".join(
+        violations
     )
 
 
 def test_store_append_has_single_caller():
-    """生产内唯一合法的 RunEventStore.append 调用点是 RunEventHub.flush。
+    """生产内唯一合法的 RunEventStore.append 调用点是 RunEventBuffer.flush。
 
-    绕过 hub 直接写事件表,消费端收不到唤醒,seq 编排与 _requeue 契约随之失效。
+    绕过 buffer 直接写事件表,消费端收不到唤醒,seq 编排与 _requeue 契约随之失效。
     """
-    allowed = Path("src/deepresearcher/service/events/hub.py")
+    allowed = Path("src/deepresearcher/service/events/buffer.py")
     violations: list[str] = []
     for path in _walk(KERNEL_ROOT):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -208,8 +207,8 @@ def test_store_append_has_single_caller():
                 if receiver in {"store", "event_store"} and path != allowed:
                     violations.append(f"{path}:{node.lineno} calls {receiver}.append")
 
-    assert violations == [], "only RunEventHub.flush may append to the event store:\n" + "\n".join(
-        violations
+    assert violations == [], (
+        "only RunEventBuffer.flush may append to the event store:\n" + "\n".join(violations)
     )
 
 
@@ -253,3 +252,67 @@ def test_execution_runtime_can_be_imported_before_run_manager():
         "assert worker_lifespan and RunManager"
     )
     subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603
+
+
+def test_adapters_do_not_import_orchestration_layer():
+    """tools/ 是出站适配层：只接收数据类型，不得反向依赖编排状态、图装配与 agent 包。
+
+    Task 曾住在 state.py，fetch/search/reader 为了一个入参类型反向依赖 LangGraph
+    顶层状态；迁移到 schemas.tasks 后由本测试守住这条边，避免再长回去。
+    """
+    forbidden = (
+        "deepresearcher.state",
+        "deepresearcher.graph",
+        "deepresearcher.nodes",
+        "deepresearcher.agents",
+    )
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT / "tools"):
+        for lineno, resolved in _resolved_imports(path):
+            if any(_under(prefix, resolved) for prefix in forbidden):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], (
+        "outbound adapters must not depend on the orchestration layer:\n" + "\n".join(violations)
+    )
+
+
+def test_shared_middleware_does_not_import_concrete_agents():
+    """agents/middleware 是被多个 agent 共用的横切层，不得反向依赖某个 agent 的实现。
+
+    绑定单一 agent 且需读它 context 槽的中间件（方向结果接收）住在其 agent 包内；
+    放进共用包会让每个 agent 都随那一个 agent 的业务层一起加载。
+    """
+    agents = (
+        "deepresearcher.agents.supervisor",
+        "deepresearcher.agents.researcher",
+        "deepresearcher.agents.writer",
+        "deepresearcher.agents.clarifier",
+    )
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT / "agents" / "middleware"):
+        for lineno, resolved in _resolved_imports(path):
+            if any(_under(prefix, resolved) for prefix in agents):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], "shared middleware must not depend on a concrete agent:\n" + "\n".join(
+        violations
+    )
+
+
+def test_event_layer_does_not_depend_on_tracing():
+    """事件层只依赖 observability.span 的业务标签，不得反向依赖 tracing 包。
+
+    tracing.ledger 把 span 写成事件（tracing → events.sink）是合理方向；反过来
+    events 为了 SpanContext 去 import tracing 会形成包级循环，两者将无法单独加载。
+    """
+    violations: list[str] = []
+    for path in _walk(KERNEL_ROOT / "observability" / "events"):
+        for lineno, resolved in _resolved_imports(path):
+            if _under("deepresearcher.observability.tracing", resolved):
+                violations.append(f"{path}:{lineno} imports {resolved}")
+
+    assert violations == [], (
+        "event layer must not depend on the tracing package (use observability.span):\n"
+        + "\n".join(violations)
+    )

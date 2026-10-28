@@ -4,7 +4,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from deepresearcher.service.api import create_app
+from deepresearcher.service.bootstrap.api import create_app
 from deepresearcher.service.execution.runtime import worker_lifespan
 from deepresearcher.service.preview.protocol import EphemeralSubscription
 from fakes_service import (
@@ -13,6 +13,7 @@ from fakes_service import (
     service_config,
     service_settings,
 )
+from messaging_stub import in_process_ports
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,8 +26,8 @@ def _auth(token: str) -> dict[str, str]:
 
 @pytest_asyncio.fixture
 async def client(tmp_path, monkeypatch):
-    # 已提交帧的推送节奏在 sqlite 下只靠 SSE_DB_POLL_SECONDS 轮询，没有 NOTIFY 可用；
-    # 压到 0.1s 以免 tail 轮询吃掉用例超时。生产常量由 verify_service 在 PG 上验证。
+    # 已提交帧的兜底节奏是 SSE 的 DB tail；压到 0.1s 以免等待吃掉用例超时。
+    # 生产常量由 verify_service 在 PG 上验证。
     from deepresearcher.service.web.routes import events as events_route
 
     monkeypatch.setattr(events_route, "SSE_DB_POLL_SECONDS", 0.1)
@@ -48,19 +49,21 @@ async def client(tmp_path, monkeypatch):
         return graph
 
     settings = service_settings(tmp_path)
-    config = service_config(tmp_path, worker_poll_seconds=0.01)
-    # API 与 Worker 是各自独立的 lifespan,共享同一 sqlite 文件。
-    # httpx ASGITransport 不执行 lifespan:两个上下文都在当前循环内手动进出，
-    # engine/hub/manager/worker 与测试共享同一事件循环。
-    async with worker_lifespan(settings, config, graph_factory=graph_factory) as worker:
-        app = create_app(settings, config)
+    config = service_config(tmp_path)
+    # API 与 Worker 是各自独立的 lifespan，共享同一个测试库。
+    # httpx ASGITransport 不执行 lifespan：两个上下文都在当前循环内手动进出，
+    # engine/buffer/manager/worker 与测试共享同一事件循环。
+    ports, _broker = in_process_ports()
+    async with worker_lifespan(
+        settings, config, graph_factory=graph_factory, messaging=ports
+    ) as worker:
+        app = create_app(settings, config, messaging=ports)
         async with app.router.lifespan_context(app):
-            # sqlite 上没有跨 host NOTIFY:API 发出的 run_available / cancel
-            # 通知只唤 API 自己的订阅者，故在同进程桥给 worker。
-            # event_committed 刻意不桥：已提交帧必须走 SSE 的 DB tail,
+            # 两者同进程，额外把 API 收到的 cancel 直接桥给 worker：
+            # PG NOTIFY 链路可用，但 LISTEN 建立时序会让首次投递偶发迟到，桥接消除这段等待。
+            # event_committed 不桥接：已提交帧由 SSE 的 DB tail 送达，
             # 这正是分进程世界的真实路径。
             api_bus = app.state.manager.signal_bus
-            api_bus.subscribe("run_available", lambda _payload: worker.wake())
             api_bus.subscribe("run_cancel_requested", worker.handle_cancel_notification)
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://svc") as c:
@@ -145,7 +148,7 @@ async def test_successful_login_clears_only_the_account_budget(client):
     success = await client.post("/api/login", json={"email": "a@test.dev", "password": PASSWORD})
     assert success.status_code == 200
 
-    # 此前的账号失败计数已清零，预算完整可用。
+    # 账号失败计数已清零，预算完整可用。
     for _ in range(5):
         assert (await client.post("/api/login", json=wrong)).status_code == 401
     assert (await client.post("/api/login", json=wrong)).status_code == 429
@@ -187,7 +190,8 @@ async def test_api_control_plane_does_not_execute_queued_run(tmp_path):
 
     校验的是结构:create_app 没有 graph 注入口,app.state 上也不存在执行层属性。
     """
-    app = create_app(service_settings(tmp_path), service_config(tmp_path))
+    ports, _broker = in_process_ports()
+    app = create_app(service_settings(tmp_path), service_config(tmp_path), messaging=ports)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://svc") as isolated:
@@ -219,7 +223,7 @@ async def test_me_account_view_aggregates_own_runs_and_usage(client):
     assert fresh["quotas"]["max_concurrent_runs_per_user"] == 2
     assert fresh["quotas"]["max_cost_cny_per_user_daily"] == 0.0
 
-    from deepresearcher.service.persistence.models import Run, RunUsage
+    from deepresearcher.service.storage.tables import Run, RunUsage
 
     bob = await register(client, "bob@test.dev")
     bob_id = (await client.get("/api/me", headers=_auth(bob))).json()["id"]
@@ -301,13 +305,13 @@ async def test_quota_blocks_third_concurrent_run(client):
 
 
 async def test_awaiting_input_runs_occupy_user_quota(client):
-    """answer_resume 把 awaiting_input 直接 CAS 回 queued、不再过准入闸:
-    待澄清行必须计入 per-user 并发配额,否则可先攒一批待澄清再逐一回答绕过上限。"""
+    """answer_resume 把 awaiting_input 直接 CAS 回 queued，不经过准入闸：
+    待澄清行必须计入 per-user 并发配额，否则可攒一批待澄清再逐一回答绕过上限。"""
     token = await register(client)
     me = await client.get("/api/me", headers=_auth(token))
     user_id = me.json()["id"]
 
-    from deepresearcher.service.persistence.models import Run
+    from deepresearcher.service.storage.tables import Run
 
     async with client.app.state.session_factory() as session:
         for seed_index in range(2):  # 测试配置 per-user 上限为 2
@@ -399,7 +403,7 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
 
 
 async def test_sse_last_event_id_resumes_from_watermark(client):
-    """静默断线后重连带 Last-Event-ID：水位及以下的帧不再重发，续放到 done。"""
+    """静默断线后重连时带 Last-Event-ID：水位及以下的帧不重发，续放到 done。"""
     token = await register(client)
     client.graphs.append(
         FakeGraph(
@@ -566,8 +570,8 @@ async def test_sse_synthesizes_done_when_persisted_done_frame_missing(client):
 
     from sqlalchemy import delete
 
-    from deepresearcher.service.events.projector import project
-    from deepresearcher.service.persistence.models import RunEvent
+    from deepresearcher.service.storage.tables import RunEvent
+    from deepresearcher.service.web.projector import project
 
     async with client.app.state.session_factory() as session:
         await session.execute(

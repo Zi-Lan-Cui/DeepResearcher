@@ -1,4 +1,4 @@
-"""服务层测试共享件。写法与 tests/fakes.py 一致：显式构造，不经 conftest 注入。"""
+"""服务层测试共享件，写法与 tests/fakes.py 一致：显式构造，不经 conftest 注入。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def service_settings(tmp_path) -> Settings:
 
 def service_config(tmp_path, **overrides) -> ServiceConfig:
     base = dict(
-        database_url=database_url_for(tmp_path, "service"),
+        database_url=database_url_for(tmp_path),
         jwt_secret="s" * 40,
         service_log_dir=tmp_path,
         jsonl_events=False,
@@ -40,7 +40,7 @@ def service_config(tmp_path, **overrides) -> ServiceConfig:
 
 
 class FakeGraph:
-    """假研究图:先发若干真实形态的引擎事件并注入 run_id,可选等待 gate,再返回结果或抛错。"""
+    """假研究图：先发若干真实形态的引擎事件并注入 run_id，可选等待 gate，再返回结果或抛错。"""
 
     def __init__(self, *, result=None, error=None, gate=None, emit=()):
         self.result = result if result is not None else completed_result()
@@ -84,8 +84,8 @@ def completed_result() -> dict:
 def parse_sse(text: str) -> list[tuple[str, dict]]:
     """把 SSE 响应文本解析成 (event, data) 序列；忽略 : ping 注释帧。"""
     frames: list[tuple[str, dict]] = []
-    for block in text.split("\n\n"):
-        block = block.strip("\n")
+    for raw_block in text.split("\n\n"):
+        block = raw_block.strip("\n")
         if not block or block.startswith(":"):
             continue
         event, data = "", "{}"

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from deepresearcher.service.events.projector import project
+from deepresearcher.service.web.projector import project
 
 # 每个用例都会把 SECRET 塞进这些被禁字段，任何一帧的输出 JSON 里都不许出现。
 DENIED_FIELDS = {
@@ -13,7 +13,7 @@ DENIED_FIELDS = {
     "report": "SECRET-report",
     "queries": ["SECRET-query"],
     "review_issues": "SECRET-review",
-    "coverage_gaps": "SECRET-gaps",
+    "failure_details": ["SECRET-failures"],
 }
 
 
@@ -66,7 +66,7 @@ def test_node_completed_closes_stage_with_conclusion():
     assert clarify_fallback.data["text"] == "Redis 有什么作用？"
     writer = project(_record("node_completed", {"writer_status": "completed"}, node="writer"))
     assert writer.data["text"] == "草稿通过校验"
-    # 读取的是增量键 evidences_count;误读累计键 evidence_count 会让数字恒为 0
+    # 读取的是增量键 evidences_count；误读累计键 evidence_count 会让数字恒为 0
     sup = project(
         _record("node_completed", {"current_round": 2, "evidences_count": 49}, node="supervisor")
     )
@@ -107,7 +107,7 @@ def test_unmapped_model_turn_agent_returns_none():
 
 def test_node_failed_uses_safe_text_only():
     frame = project(_record("node_failed", node="review"))
-    # 已知节点失败也要关框，状态标 failed,不能停留在 running
+    # 已知节点失败也要关框，状态标 failed，不能停留在 running
     assert (frame.event, frame.data["stage"], frame.data["status"]) == (
         "stage_done",
         "review",
@@ -116,13 +116,8 @@ def test_node_failed_uses_safe_text_only():
     assert "Reviewer" in frame.data["text"] and "执行失败" in frame.data["text"]
 
 
-def test_legacy_reflection_node_replays_as_review():
-    # 枚举改值前的存量 DB 行 node="reflection":必须归一到当前审阅节点、投出同样的关框帧。
-    frame = project(_record("node_completed", {"review_status": "approved"}, node="reflection"))
-    assert frame.data["stage"] == "review"
-    assert frame.data["text"] == "审阅通过"
-    assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
-    # 未知节点退回全局错误行
+def test_unknown_node_failure_falls_back_to_global_error():
+    # 未知节点没有阶段标题，只能退回全局错误行，不能停在「运行中」。
     assert project(_record("node_failed", node="mystery")).event == "error"
 
 
@@ -160,7 +155,7 @@ def test_direction_arrival_merged_maps_to_plan_line():
     )
     assert frame is not None and frame.event == "plan"
     assert frame.data["stage"] == "supervisor"
-    assert frame.data["text"] == ("方向「复利数学原理」已回到工作台（证据 5），还有 2 个方向在途")
+    assert frame.data["text"] == ("任务「复利数学原理」已回到工作台（证据 5），还有 2 个任务在途")
 
 
 def test_direction_arrival_lost_variant_maps_to_plan_line():
@@ -283,6 +278,26 @@ def test_node_started_supervisor_opens_stage():
     assert "Supervisor" in frame.data["title"]
 
 
+def test_queued_task_opens_card_before_concurrency_slot():
+    """受理即建卡：排队帧与开始帧同形，只多一个 state，前端据此显示"排队中"。"""
+    queued = project(
+        _record(
+            "research_task_queued",
+            {"task_id": "task-0003", "title": "持久化取舍"},
+        )
+    )
+    assert (queued.event, queued.data["task"], queued.data["state"]) == (
+        "task_open",
+        "task-0003",
+        "queued",
+    )
+    started = project(
+        _record("research_task_started", {"task_id": "task-0003", "title": "持久化取舍"})
+    )
+    assert started.event == "task_open"
+    assert "state" not in started.data  # 开始帧不带 state，缺省即进行中
+
+
 def test_research_task_card_lifecycle():
     opened = project(
         _record(
@@ -382,6 +397,7 @@ def test_research_task_card_lifecycle():
                 "execution_status": "completed",
                 "evidence_count": 7,
                 "source_count": 3,
+                "conclusion": "两条官方文档互证 Redis 的复制是异步的。",
             },
         )
     )
@@ -390,6 +406,12 @@ def test_research_task_card_lifecycle():
         "completed",
         "证据 7 · 来源 3",
     )
+    # 方向结论是用户唯一读得到的研究内容，计数之外必须随帧到达。
+    assert done.data["conclusion"] == "两条官方文档互证 Redis 的复制是异步的。"
+    failed = project(
+        _record("research_task_completed", {"task_id": "task-0001", "execution_status": "failed"})
+    )
+    assert failed.data["conclusion"] == ""  # 无结论的任务不编占位文本
 
 
 def test_writer_stage_lifecycle():
@@ -498,7 +520,7 @@ def test_search_query_progress_becomes_task_update():
             "本批检索完成：3 条候选来源，其中 1 个查询失败",
         ),
         ({"candidate_count": 0, "failure_count": 0}, "本批检索完成：未找到相关来源"),
-        # 全部查询失败：逐查询行已逐条说明，批次行不再重复下结论。
+        # 全部查询失败：逐查询行已逐条说明，批次行不重复下结论。
         ({"candidate_count": 0, "failure_count": 2}, None),
         ({"candidate_count": 0, "failure_count": 2, "status": "failed"}, None),
         # 没有逐查询行可依托的批次失败必须留一行，否则用户看不到失败。
@@ -506,7 +528,7 @@ def test_search_query_progress_becomes_task_update():
     ],
 )
 def test_direction_search_completed_distinguishes_empty_from_failed(payload, expected):
-    """区分度:0 候选不再一律报"完成",批次行只补充逐查询行给不出的信息。"""
+    """0 候选不报完成，批次行只补充逐查询行给不出的信息。"""
     frame = project(_record("direction_search_completed", {"task_id": "t1", **payload}))
     if expected is None:
         assert frame is None

@@ -10,29 +10,27 @@ from sqlalchemy import select
 
 from deepresearcher import pricing
 from deepresearcher.config import LLMConfig
+from deepresearcher.observability.span import bind_context, current_span_context
 from deepresearcher.observability.tracing import spans
-from deepresearcher.observability.tracing.context import bind_context, current_span_context
-from deepresearcher.service.execution.usage import (
-    CapacityGate,
-    ProviderRateLimiter,
-    RunUsageCallback,
+from deepresearcher.service.execution.limits import CapacityGate, ProviderRateLimiter
+from deepresearcher.service.execution.usage import RunUsageCallback, UsageStore
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import Run, RunUsage, User
+from deepresearcher.usage_runtime import (
     UsageBudgetExceeded,
     UsageRuntime,
-    UsageStore,
     bind_usage_runtime,
     record_external_request,
     reset_usage_runtime,
 )
-from deepresearcher.service.persistence.database import init_db, make_engine, make_session_factory
-from deepresearcher.service.persistence.models import Run, RunUsage, User
+from pg_backend import database_url_for
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
 async def usage_db(tmp_path):
-    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'usage.db'}")
-    await init_db(engine)
+    engine = make_engine(database_url_for(tmp_path))
     sessions = make_session_factory(engine)
     async with sessions() as session:
         user = User(email="usage@example.com", password_hash="x")
