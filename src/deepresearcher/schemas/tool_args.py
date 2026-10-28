@@ -14,7 +14,6 @@ from deepresearcher.schemas.limits import (
     CLARIFICATION_INTENT_MAX_CHARS,
     CLARIFICATION_OPTION_COUNT,
     CLARIFICATION_QUESTION_MAX_CHARS,
-    DIRECTION_TITLE_MAX_CHARS,
     EVIDENCE_REFERENCES_HARD_LIMIT,
     READ_EVIDENCE_REQUEST_WINDOW_IDS,
     REPORT_TITLE_MAX_CHARS,
@@ -25,34 +24,35 @@ from deepresearcher.schemas.limits import (
     SOURCE_CANDIDATES_PER_READ,
     STRUCTURED_COLLECTION_HARD_LIMIT,
     STRUCTURED_TEXT_HARD_LIMIT_CHARS,
+    TASK_TITLE_MAX_CHARS,
 )
 from deepresearcher.schemas.reporting import PlanItem, ResearchAspect
 from deepresearcher.vocab import Support
 
 
 class SearchSources(BaseModel):
-    """ResearchAgent 请求发现当前方向的候选来源。"""
+    """Researcher 请求发现当前任务的候选来源。"""
 
-    reason: str = Field(description="为什么这些检索式能补足当前方向的证据。")
+    reason: str = Field(description="为什么这些检索式能补足当前任务的证据。")
     queries: list[str] = Field(
         min_length=1,
         max_length=SEARCH_QUERIES_PER_CALL,
         description=(
-            "一到两条针对当前方向缺口的短检索式；写成自然关键词串，"
+            "一到两条针对当前任务缺口的短检索式；写成自然关键词串，"
             "不要加英文引号包裹短语，也不要 AND/OR/NOT、+/-、括号等布尔语法。"
         ),
     )
 
 
 class ReadSources(BaseModel):
-    """ResearchAgent 从候选目录中选择实际读取的来源。"""
+    """Researcher 从候选目录中选择实际读取的来源。"""
 
     candidate_ids: list[str] = Field(
         min_length=1,
         max_length=SOURCE_CANDIDATES_PER_READ,
         description="要读取的候选来源 ID；只能使用 SearchSources 返回的 ID。",
     )
-    reason: str = Field(description="说明这些来源与当前方向缺口的关系。")
+    reason: str = Field(description="说明这些来源与当前任务缺口的关系。")
 
 
 class ListSearchResults(BaseModel):
@@ -172,11 +172,11 @@ class AddEvidence(BaseModel):
     """批量提交 Evidence 候选；系统逐字验证后才会写入。"""
 
     evidences: list[EvidenceSubmission] = Field(min_length=1, max_length=32)
-    reason: str = Field(description="这些 Evidence 如何回答当前方向。")
+    reason: str = Field(description="这些 Evidence 如何回答当前任务。")
 
 
 class ReadWorkingSet(BaseModel):
-    """查看当前 Agent 工作集的轻量摘要（ResearchAgent 侧）。"""
+    """查看当前 Agent 工作集的轻量摘要（Researcher 侧）。"""
 
     reason: str = Field(default="", description="说明需要重新检查工作集的原因。")
 
@@ -211,10 +211,10 @@ class RestoreEvidence(BaseModel):
         return normalize_evidence_ids(value)
 
 
-class ResearchDirectionComplete(BaseModel):
-    """ResearchAgent 提交方向结果并结束当前工具循环。"""
+class TaskComplete(BaseModel):
+    """Researcher 提交任务结果并结束当前工具循环。"""
 
-    reason: str = Field(description="为什么当前方向可以停止探索。")
+    reason: str = Field(description="为什么当前任务可以停止探索。")
     selected_evidence_ids: list[str] = Field(
         default_factory=list,
         max_length=EVIDENCE_REFERENCES_HARD_LIMIT,
@@ -228,46 +228,45 @@ class ResearchDirectionComplete(BaseModel):
 
     conclusion: str = Field(
         default="",
-        description="基于最终选中 Evidence 的方向级简短综合；不得引入未取证事实。",
-    )
-    remaining_gaps: list[str] = Field(
-        default_factory=list,
-        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
-        description="局部未解问题；不代表整项研究的全局缺口。",
+        description=(
+            "任务级自然语言汇报，用连续文字一次说清当前状态：基于最终选中 Evidence "
+            "综合出的事实、哪些局部问题已经查清、哪些仍未解决及原因、为什么在此停止。"
+            "缺口写进这段叙述本身，不另开条目；不得引入未取证事实。"
+        ),
     )
 
 
 class ResearchDelegate(BaseModel):
-    """派发方向级研究任务的工具调用 Schema；task_id 由本地程序分配，不信任模型。"""
+    """派发单个研究任务的工具调用 Schema；task_id 由本地程序分配，不信任模型。"""
 
     display_title: str = Field(
         min_length=2,
-        max_length=DIRECTION_TITLE_MAX_CHARS,
+        max_length=TASK_TITLE_MAX_CHARS,
         description=(
-            "方向卡上给人看的短标题：一个名词短语点明本方向要回答什么，"
+            "任务卡上给人看的短标题：一个名词短语点明本任务要回答什么，"
             "不超过约 30 字；research_topic 的截断或复述不算标题。"
         ),
     )
     research_topic: str = Field(
         description=(
-            "要研究的具体方向。必须包含研究对象、范围、待回答的局部问题、"
-            "与已有方向的区别和完成标准；补缺时必须缩小到明确缺口，不能重述原问题。"
+            "要研究的具体任务。必须包含研究对象、范围、待回答的局部问题、"
+            "与已有任务的区别和完成标准；补缺时必须缩小到明确缺口，不能重述原问题。"
         )
     )
 
 
-class WaitDirection(BaseModel):
-    """等待在途方向完成并收取方向报告；无在途时返回提示，不会卡死。"""
+class WaitTask(BaseModel):
+    """等待在途任务完成并收取任务报告；无在途时返回提示，不会卡死。"""
 
     task_ids: list[str] = Field(
         default_factory=list,
-        description="要等待的方向 task_id 列表；留空表示等待任意一个在途方向完成。",
+        description="要等待的任务 task_id 列表；留空表示等待任意一个在途任务完成。",
     )
     timeout: float | None = Field(
         default=None,
         ge=0.5,
         le=600,
-        description="最长等待秒数；到期仍无方向完成返回 timed_out 回执。留空等到至少一个完成为止。",
+        description="最长等待秒数；到期仍无任务完成返回 timed_out 回执。留空等到至少一个完成为止。",
     )
 
     @field_validator("task_ids", mode="before")
@@ -475,7 +474,7 @@ class ReadEvidence(BaseModel):
         return normalize_evidence_ids(value)
 
 
-class CompleteReport(BaseModel):
+class ReportComplete(BaseModel):
     """提交一篇带 Evidence 引用标记的 Markdown 草稿。"""
 
     title: str = Field(
@@ -500,7 +499,7 @@ class AskClarificationArgs(BaseModel):
         min_length=1,
         max_length=CLARIFICATION_QUESTION_MAX_CHARS,
         description=(
-            "向用户提出的一个简短、具体问题，只解决一个会改变研究方向或研究边界的关键决策。"
+            "向用户提出的一个简短、具体问题，只解决一个会改变研究任务或研究边界的关键决策。"
             "不得询问能够通过检索自行回答的问题。"
         ),
     )
@@ -533,7 +532,7 @@ class ClarificationCompleteArgs(BaseModel):
         max_length=CLARIFICATION_INTENT_MAX_CHARS,
         description=(
             "对已确认用户意图和研究边界的准确摘要；不得改变或缩窄用户已经明确的要求。"
-            "只写用户要什么、边界在哪，不规划研究重点——方向归 Supervisor。"
+            "只写用户要什么、边界在哪，不规划研究重点——任务归 Supervisor。"
         ),
     )
     assumptions: list[str] = Field(

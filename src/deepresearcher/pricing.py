@@ -1,9 +1,4 @@
-"""LLM 单价表：计价币种人民币，单位 元/百万 token。
-
-价格按厂商公开价目登记，未登记价目的模型不估算：成本记 0，并在
-price_version 列写 unpriced，让缺价在数据中可见，而不是混进总额。
-价目变动时同步更新 PRICE_TABLE_VERSION，重算入口按版本戳回填历史行。
-"""
+"""LLM 单价表：计价币种人民币，单位 元/百万 token。"""
 
 from dataclasses import dataclass
 from decimal import Decimal
@@ -19,8 +14,6 @@ class ModelPrice:
     output_cny_per_million: float
 
 
-# 键为 provider 回执中的模型名（对应 run_usage.model 列）。
-# V2.6 与 V2.5 定价相同；V2.5 系列已于 2026-10-21 下线，条目保留供重算历史用量。
 MODEL_PRICES: dict[str, ModelPrice] = {
     # 小米 MiMo 国内价目。缓存命中按 99% 折扣计价；海外平台另按美元标价，本表不采。
     "mimo-v2.6-flash": ModelPrice(

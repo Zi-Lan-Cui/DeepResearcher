@@ -1,4 +1,4 @@
-"""服务无关的 run 用量上下文：agent 与工具经 ContextVar 读取记账与预算。"""
+"""服务无关的 run 用量上下文"""
 
 from __future__ import annotations
 

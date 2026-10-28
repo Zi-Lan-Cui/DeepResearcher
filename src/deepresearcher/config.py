@@ -1,8 +1,4 @@
-"""统一配置入口。
-
-只有本模块负责读取环境变量和 env/.env。业务模块通过
-get_settings() 获取只读配置，或在测试/依赖注入时显式传入 Settings。
-"""
+"""统一配置入口"""
 
 import re
 from dataclasses import dataclass
@@ -69,18 +65,15 @@ class LLMConfig:
     provider_requests_per_minute: int = 0
     provider_tokens_per_minute: int = 0
     provider_output_token_reserve: int = 1_024
-    # 单次请求输出上限；不设时供应商默认上限高至 131k，一次异常生成就能占满整次调用的输出。
+    # 单次请求输出上限
     max_completion_tokens: int = 32_768
     max_tokens_per_run: int = 0
     max_cost_cny_per_run: float = 0.0
     max_cost_cny_per_user_daily: float = 0.0
     max_cost_cny_platform_hourly: float = 0.0
     max_cost_cny_platform_daily: float = 0.0
-    # 单价不落这里：按行模型查 pricing 价表（人民币），全局标量无法支撑多模型价差。
     price_version: str = PRICE_TABLE_VERSION
-    # 内容级修复预算：结构化输出不合规时重新提交给模型修复的次数。传输级重试
-    # 由 openai SDK 内建机制处理，循环级重试由 ModelRetryMiddleware 用自带参数
-    # 处理，本字段只管内容级这一层。
+    # 结构化输出不合规时重新提交给模型修复的次数。
     structured_repair_attempts: int = 1
 
     @property
@@ -99,23 +92,23 @@ class AgentConfig:
     # Writer 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     writer_max_turns: int = 8
     writer_feedback_chars: int = 800
-    writer_minimum_support: Support = "direct"
+    # 低于该等级的 Evidence 不进写作材料
+    writer_minimum_support: Support = "partial"
     writer_max_markdown_chars: int = 24_000
-    # 单次 ReadEvidence 每轮交付量；一次至多请求 50 条，差额经 not_read_ids 排队。
-    # 引用总条数不设上限：聚焦度由"只能引用已读"与审阅把关保证，与条数无关。
+    # 单次 ReadEvidence 每轮交付量；
     writer_read_batch_size: int = 30
-    # reviewer 对内容审查抖动与坏 JSON 的额外重试次数；传输级重试由 openai SDK 内建机制处理。
+    # reviewer 对内容审查抖动与坏 JSON 的额外重试次数
     reviewer_retry_attempts: int = 1
     reviewer_retry_initial_seconds: float = 2.0
-    max_subtasks_per_round: int = 12
+    max_tasks_per_round: int = 12
     max_parallel_workers: int = 3
     # Supervisor 当前可激活并交给研究综合稿选择的 Evidence 上限。
     supervisor_max_active_evidences: int = 30
     supervisor_preview_chars: int = 300
     # Supervisor 交给 Writer 的报告任务书输出限制。
     report_max_caveats: int = 6
-    # 单一网页可贡献的 Evidence 上限，避免某篇来源主导整个研究方向。
-    evidence_max_per_source: int = 2
+    # 单一网页可贡献的 Evidence 上限，避免某篇来源主导整个研究任务。
+    evidence_max_per_source: int = 4
     # 抓取正文统一写入 ResearchMaterialStore；短文内联，长文按行读取。
     document_inline_max_tokens: int = 6_000
     document_inline_total_max_tokens: int = 12_000
@@ -129,14 +122,13 @@ class AgentConfig:
     document_grep_max_chars: int = 12_000
     document_grep_max_line_chars: int = 2_000
     evidence_add_batch_size: int = 8
-    # ResearchAgent 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
+    # Researcher 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     research_agent_max_turns: int = 12
     research_agent_max_queries: int = 6
-    # 一个方向级 ResearchAgent 最多带回的 Evidence 数；限制上下文与成本，
-    # 但不等同于单网页抽取上限。
-    research_agent_max_evidences_per_direction: int = 6
-    # 单方向发现过的完整候选档案上限；活跃工作集仍由上一项限制。
-    research_agent_max_evidence_candidates_per_direction: int = 12
+    # 一个任务级 Researcher 最多带回的 Evidence 数
+    research_agent_max_evidences_per_task: int = 6
+    # 单任务发现过的完整候选档案上限；活跃工作集仍由上一项限制。
+    research_agent_max_evidence_candidates_per_task: int = 12
     research_agent_read_concurrency: int = 3
     # 来源抓取与解析的分层 deadline。
     source_fetch_timeout: float = 30.0
@@ -145,24 +137,23 @@ class AgentConfig:
     research_query_chars: int = 180
     research_observation_quote_chars: int = 500
     research_failure_history_limit: int = 5
-    # 面向用户的自然语言输出的统一语言：理由、旁白、任务描述、正文。
-    # 由注入各 system prompt 的 language_directive() 使用；quote 保持原文。
+    # 面向用户的自然语言输出的统一语言
     output_language: str = "中文"
 
     def __post_init__(self) -> None:
         """校验跨层容量契约，避免配置突破下游 schema 边界。"""
         if (
-            self.research_agent_max_evidences_per_direction
-            > self.research_agent_max_evidence_candidates_per_direction
+            self.research_agent_max_evidences_per_task
+            > self.research_agent_max_evidence_candidates_per_task
         ):
             raise ValueError(
-                "AGENT_RESEARCH_MAX_EVIDENCES_PER_DIRECTION 不能大于 "
-                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION"
+                "AGENT_RESEARCH_MAX_EVIDENCES_PER_TASK 不能大于 "
+                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_TASK"
             )
-        if self.evidence_max_per_source > self.research_agent_max_evidence_candidates_per_direction:
+        if self.evidence_max_per_source > self.research_agent_max_evidence_candidates_per_task:
             raise ValueError(
                 "AGENT_EVIDENCE_MAX_PER_SOURCE 不能大于 "
-                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION"
+                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_TASK"
             )
         if self.report_max_caveats > REPORT_CAVEATS_HARD_LIMIT:
             raise ValueError(
@@ -174,11 +165,9 @@ class AgentConfig:
                 "AGENT_SUPERVISOR_MAX_ACTIVE_EVIDENCES 不能大于 Evidence 引用的"
                 f"安全上限 {EVIDENCE_REFERENCES_HARD_LIMIT}"
             )
-        if self.research_agent_max_evidence_candidates_per_direction > (
-            EVIDENCE_REFERENCES_HARD_LIMIT
-        ):
+        if self.research_agent_max_evidence_candidates_per_task > (EVIDENCE_REFERENCES_HARD_LIMIT):
             raise ValueError(
-                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION 不能大于 "
+                "AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_TASK 不能大于 "
                 f"Evidence 引用的安全上限 {EVIDENCE_REFERENCES_HARD_LIMIT}"
             )
         if self.writer_max_markdown_chars > REPORT_MARKDOWN_HARD_LIMIT_CHARS:
@@ -208,10 +197,19 @@ class SearchConfig:
     # 同一供应商同时允许的搜索请求数，跨 worker 全局生效；限流窗口下降低并发比快速重试更有效。
     max_concurrent_requests: int = 2
     max_concurrent_fetches: int = 6
+    # 单份来源正文的字节上限：超限判内容不可用，不进解析，也不让 BeautifulSoup 建 DOM。
+    max_fetch_bytes: int = 24 * 1024 * 1024
+    # 抓取出口代理。留空即直连，并把代理显式置空 —— libcurl 在 CURLOPT_PROXY
+    # 未设置时会自己读 HTTPS_PROXY，进程被外部注入代理时 primary_ip 变成代理
+    # 地址，逐跳校验必然误判成内网。填了地址才走代理，此时不再校验连接对端。
+    fetch_proxy: str = ""
     tavily_include_raw_content: bool = True
-    # SSRF 守卫拦截清单的唯一来源；未配置 = 不拦截地址段（URL 语法与凭据检查仍在）。
-    # 支持逐行或逗号分隔两种写法；网段合法性由 PublicUrlGuard 构造时校验。
+    # 追加拦截清单：私网与保留段由 PublicUrlGuard 的可达性基线直接拦下，这里只封堵
+    # 需要额外拒绝的公网段。支持逐行或逗号分隔两种写法，网段合法性在构造时校验。
     ssrf_block_cidrs: tuple[str, ...] = ()
+    # fake-IP 代理会把公网域名解析到 198.18.0.0/15 之类的私网段，这类环境需整体
+    # 关掉基线判据，只留上面那份清单。生产环境不要打开。
+    ssrf_allow_private_addresses: bool = False
 
     @property
     def configured(self) -> bool:
@@ -303,7 +301,7 @@ def _agent_config() -> AgentConfig:
             Support,
             _choice_env(
                 "AGENT_WRITER_MINIMUM_SUPPORT",
-                "direct",
+                "partial",
                 set(SUPPORT_ORDER),
             ),
         ),
@@ -313,7 +311,7 @@ def _agent_config() -> AgentConfig:
         reviewer_retry_initial_seconds=max(
             0.0, _float_env("AGENT_REVIEWER_RETRY_INITIAL_SECONDS", 2.0)
         ),
-        max_subtasks_per_round=max(1, _int_env("AGENT_MAX_SUBTASKS_PER_ROUND", 12)),
+        max_tasks_per_round=max(1, _int_env("AGENT_MAX_TASKS_PER_ROUND", 12)),
         max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),
         supervisor_max_active_evidences=max(
             1, _int_env("AGENT_SUPERVISOR_MAX_ACTIVE_EVIDENCES", 30)
@@ -337,11 +335,11 @@ def _agent_config() -> AgentConfig:
         evidence_add_batch_size=max(1, _int_env("AGENT_EVIDENCE_ADD_BATCH_SIZE", 8)),
         research_agent_max_turns=max(1, _int_env("AGENT_RESEARCH_MAX_TURNS", 12)),
         research_agent_max_queries=max(1, _int_env("AGENT_RESEARCH_MAX_QUERIES", 6)),
-        research_agent_max_evidences_per_direction=max(
-            1, _int_env("AGENT_RESEARCH_MAX_EVIDENCES_PER_DIRECTION", 6)
+        research_agent_max_evidences_per_task=max(
+            1, _int_env("AGENT_RESEARCH_MAX_EVIDENCES_PER_TASK", 6)
         ),
-        research_agent_max_evidence_candidates_per_direction=max(
-            1, _int_env("AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_DIRECTION", 12)
+        research_agent_max_evidence_candidates_per_task=max(
+            1, _int_env("AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_TASK", 12)
         ),
         research_agent_read_concurrency=max(1, _int_env("AGENT_RESEARCH_READ_CONCURRENCY", 3)),
         source_fetch_timeout=max(1.0, _float_env("AGENT_SOURCE_FETCH_TIMEOUT", 30.0)),
@@ -386,8 +384,11 @@ def _search_config() -> SearchConfig:
         retry_after_max_seconds=max(0.0, _float_env("SEARCH_RETRY_AFTER_MAX_SECONDS", 60.0)),
         max_concurrent_requests=max(1, _int_env("SEARCH_MAX_CONCURRENT_REQUESTS", 2)),
         max_concurrent_fetches=max(1, _int_env("FETCH_MAX_CONCURRENT_REQUESTS", 6)),
+        max_fetch_bytes=max(1, _int_env("FETCH_MAX_BYTES", 24 * 1024 * 1024)),
+        fetch_proxy=_env("FETCH_PROXY"),
         tavily_include_raw_content=_bool_env("TAVILY_INCLUDE_RAW_CONTENT", True),
         ssrf_block_cidrs=_cidr_list_env("SSRF_BLOCK_CIDRS"),
+        ssrf_allow_private_addresses=_bool_env("SSRF_ALLOW_PRIVATE_ADDRESSES", False),
     )
 
 

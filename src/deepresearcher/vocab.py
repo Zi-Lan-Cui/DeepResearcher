@@ -1,12 +1,4 @@
-"""跨模块共享的字面量词汇表，不改变序列化后的 wire 值。
-
-放在根级而非 schemas/ 内，避免 evidence 与 schemas 循环导入；本模块只依赖 typing。
-
-同一个「研究方向」有三个名字，不再新增别名：
-topic       ResearchDelegate 的入参
-task        状态与事件字段，含 SubTask、ResearchDirectionResult
-direction   对外与模型可见，含 direction_* 事件名、方向卡、提示词与报告用词
-"""
+"""跨模块共享的字面量词汇表，不改变序列化后的 wire 值。"""
 
 from typing import Literal
 
@@ -30,14 +22,12 @@ AnswerMode = Literal[
     "review_limited",
 ]
 
-# retrieval_method 词表：默认与回退共用 origin_fetch，每种来源路径各一个常量。
-# 该字段是自由字符串：fetch 编排在没有已知来源路径时会用 f"{provider.name}_fetch"
-# 作回退值，因此不做枚举校验。provider 原名不写入 Evidence。
+# 研究材料来源的四种类型：原始抓取、阿里云网页抓取、Tavily 原始内容、搜索摘要。
 RETRIEVAL_ORIGIN_FETCH = "origin_fetch"
 RETRIEVAL_ALIYUN_WEB_FETCH = "aliyun_web_fetch"
 RETRIEVAL_TAVILY_RAW_CONTENT = "tavily_raw_content"
 RETRIEVAL_SEARCH_SUMMARY = "search_summary"
 
-# support 强度从低到高的排序：writer 打分与 researcher 分档共用，各处不要再抄一份。
+# 证据支持强度的顺序与排名，便于比较大小。
 SUPPORT_ORDER: tuple[str, ...] = ("insufficient", "partial", "direct")
 SUPPORT_RANK: dict[str, int] = {value: index for index, value in enumerate(SUPPORT_ORDER)}

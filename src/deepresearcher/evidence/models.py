@@ -2,13 +2,13 @@
 
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from deepresearcher.schemas.sources import SourceProfile
 from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH, Support
 
 # 系统生成的 evidence_id 形如 {task_id}-ev-{hex16}，合法字符集里没有空白与控制符；
-# 模型转写长 ID 时会混入 \r 之类干扰，入站移除这些字符是无损归一化。
+# 模型转写长 ID 时会混入 \r 之类干扰，进行归一化后再存储
 _EVIDENCE_ID_NOISE_RE = re.compile(r"[\s\x00-\x1f\x7f\u200b\u2060\ufeff]+")
 
 
@@ -40,7 +40,8 @@ def normalize_title_whitespace(value: str) -> str:
 
 class Evidence(BaseModel):
     evidence_id: str
-    subtask_id: str
+    # 来源Task的 task id
+    task_id: str = Field(validation_alias=AliasChoices("task_id", "task_id"))
     research_direction: str
     claim: str
     quote: str
@@ -49,8 +50,7 @@ class Evidence(BaseModel):
     # 搜索提供方给出的发布时间，用于时效性判断；不属于 quote 原文。
     published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
-    # 来源方法是自由字符串，当前词表在 vocab.RETRIEVAL_*；新 provider 经 fetch
-    # 上游拼接出的新值必须原样保留，词表外的值不应导致 Evidence 构造报错。
+    # 使用的检索方法
     retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
     support: Support = "direct"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)

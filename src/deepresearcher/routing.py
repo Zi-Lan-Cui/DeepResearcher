@@ -1,9 +1,4 @@
-"""图节点命名与路由决策的单一来源。
-
-节点名是跨模块契约，常量必须放在 nodes/ 与 graph.py 之外的中性模块，避免叶子
-Agent 反向 import graph.py。主干 route_after：节点声明 terminal phase 则转渲染终点，
-否则跟随该节点写下的业务交接。
-"""
+"""图节点命名与路由决策的单一来源"""
 
 from collections.abc import Mapping
 from enum import StrEnum
@@ -23,9 +18,7 @@ class NodeName(StrEnum):
 # 即时回答、证据不足、写作失败）；completed：防御性结束。
 TERMINAL_PHASES = frozenset({"failed", "rendering", "completed"})
 
-# 可丢弃预览通道白名单的唯一事实源，值是产出方节点名，即 astream 的 ns 头。生成端
-# executor、preview 总线、消费端 projector 三处同读这一份，放开新通道只改这里。
-# 持久事件层与预览通道互不 import，常量只能放在这里的中性词表模块。
+# 允许产出预览的节点；其他节点产出不对外可见，SSE 只发终态。
 PREVIEW_CHANNELS = frozenset({NodeName.SUPERVISOR})
 
 
@@ -79,6 +72,6 @@ def route_after_reviewer(state: Mapping[str, object]) -> str:
     return route_after(
         state,
         NodeName.RENDER_FINAL_REPORT
-        if _field(state, "review", "status", "pending") == "approved"
+        if _field(state, "review", "status", "pending") in {"approved", "abstained"}
         else NodeName.SUPERVISOR,
     )

@@ -1,8 +1,4 @@
-"""模型装配与单次调用的统一入口：build 出未经包装的 ChatOpenAI。
-
-重试分三层：超时与断连归 openai SDK 内建，循环级归 ModelRetryMiddleware，
-JSON 不合规归本文件的 repair 循环。本模块不包装模型，不在 runnable 层再加重试。
-"""
+"""模型装配与单次调用的统一入口"""
 
 from __future__ import annotations
 
@@ -34,9 +30,6 @@ class LLMConfigurationError(LLMError):
     code = "llm_configuration"
 
 
-# 账户级不可用（key 无效、无余额、硬限流）刻意不包装成自定义异常：模型调用失败时抛的是
-# SDK 原始异常，executor 用本函数归类出 invalid_key、forbidden、insufficient_credit、
-# rate_limited 四种稳定 user_code 交给前端。
 _LLM_FATAL_STATUS = {401: "invalid_key", 402: "insufficient_credit", 403: "forbidden"}
 
 

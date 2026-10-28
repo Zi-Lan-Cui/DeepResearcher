@@ -27,9 +27,9 @@ class AspectIssue(BaseModel):
     disclose: bool = Field(
         default=True,
         description=(
-            "是否随任务书展示给读者。为 true 的条目原文进入报告 caveats 字段，是公开声明；"
+            "是否随任务书展示给读者。为 true 的条目原文进入报告声明给读者；"
             "缺口影响结论成立，或矛盾不可裁定且触及核心结论时为 true；"
-            "结论已有可信次级支撑、只缺一手锚定时为 false，属可优化项。"
+            "结论已有可信次级支撑，属可优化项时为 false。"
         ),
     )
 
@@ -52,8 +52,7 @@ class ReportBrief(BaseModel):
     # 全文核心主张：Writer 组织报告的主线；系统回退交接时可为空串，Writer 自行归纳。
     thesis: str = ""
     chapters: list[ReportChapter] = Field(min_length=1, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    # 投影过滤结果：各板块 gaps/conflicts 中 disclose=true 的条目。
-    # 日常裁剪由 AGENT_REPORT_MAX_CAVEATS 控制；这里仅防御异常膨胀。
+    # 报告声明：公开声明，告知读者报告中的已知限制和假设。
     caveats: list[str] = Field(default_factory=list, max_length=REPORT_CAVEATS_HARD_LIMIT)
 
 
@@ -65,11 +64,7 @@ class PlanItem(BaseModel):
 
 
 class ResearchAspect(BaseModel):
-    """Supervisor 跨研究方向建立的证据支撑认知单元。
-
-    登记表面用于覆盖管理与收尾校验；交接时逐块投影为任务书章节卡，
-    aspect_id 与 status 留在登记表面不带入写作契约。
-    """
+    """Supervisor 跨研究任务建立的证据支撑认知单元。"""
 
     aspect_id: str = Field(min_length=1, max_length=STRUCTURED_IDENTIFIER_HARD_LIMIT_CHARS)
     topic: str = Field(min_length=1, max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS)
@@ -131,7 +126,7 @@ class ResearchSynthesis(BaseModel):
     """Supervisor 的结构化研究综合状态。
 
     记录当前工作集下各研究方面的覆盖、证据绑定、缺口与冲突。它不是最终报告，
-    也不是某个 ResearchAgent 的方向结果；只有经 ResearchComplete 校验并冻结后，
+    也不是某个 Researcher 的任务结果；只有经 ResearchComplete 校验并冻结后，
     才成为交给 Writer 的交接版本。
     """
 
@@ -233,7 +228,7 @@ class ParagraphBinding(BaseModel):
 
 
 class MarkdownReportDraft(BaseModel):
-    """Writer Markdown 草稿的容量上限；测试替身按本结构造草稿，生产提交走 writer 工具的 CompleteReport。"""
+    """Writer Markdown 草稿的容量上限；测试替身按本结构造草稿，生产提交走 writer 工具的 ReportComplete。"""
 
     markdown: str = Field(default="", max_length=REPORT_MARKDOWN_HARD_LIMIT_CHARS)
     selected_evidence_ids: list[str] = Field(

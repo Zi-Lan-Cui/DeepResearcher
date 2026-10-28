@@ -1,9 +1,4 @@
-"""State 分区、运行生命周期与节点结果契约。
-
-StopReason 是本模块的词汇单一来源：赋值端，即 Supervisor 及其工具，与
-消费端，即终止判定和面向用户的描述文案，都引用枚举成员，避免两处
-各自维护字符串清单造成不一致。
-"""
+"""State 分区、运行生命周期与节点结果契约。"""
 
 from __future__ import annotations
 
@@ -22,6 +17,7 @@ from deepresearcher.schemas.reporting import (
     ResearchSynthesis,
     WriterDirective,
 )
+from deepresearcher.schemas.tasks import Task
 from deepresearcher.vocab import GenerationMode, ResearchStatus, WriterAnswerMode
 
 
@@ -54,7 +50,7 @@ class StopReason(StrEnum):
     def rank(self) -> int:
         """终止原因的优先级数字，数值大的覆盖数值小的。
 
-        多个写点都可能给 stop_reason 赋值，SupervisorLoopState.set_stop_reason 按 rank 采纳，
+        多个写点都可能给 stop_reason 赋值，SupervisorRoundState.set_stop_reason 按 rank 采纳，
         新增写点只需选定合适的 rank，与代码书写顺序无关。
         """
         return _STOP_REASON_RANKS.get(self, 0)
@@ -82,12 +78,13 @@ _STOP_REASON_RANKS: dict[StopReason, int] = {
 }
 
 
-class DirectionStopReason(StrEnum):
-    """方向级 ResearchAgent 的终止原因；与 StopReason 分属两域，成员值就是序列化 wire 值。"""
+class TaskStopReason(StrEnum):
+    """任务级 Researcher 的终止原因；与 StopReason 分属两域，成员值就是序列化 wire 值。"""
 
     COMPLETE = "complete"
     STEP_BUDGET_EXHAUSTED = "step_budget_exhausted"
-    DIRECTION_AGENT_FAILED = "direction_agent_failed"
+    # 字面值保留历史写法：stop_reason 已进检查点与事件，改值会让存量 run 反序列化失败。
+    TASK_AGENT_FAILED = "direction_agent_failed"
     FALLBACK_COMPLETE = "fallback_complete"
     BLOCKED_WITHOUT_EVIDENCE = "blocked_without_evidence"
     WORKER_EXCEPTION = "worker_exception"
@@ -147,18 +144,14 @@ def failure_event_fields(stage: str, exc: Exception) -> tuple[RunError, dict[str
 
 
 class RenderOutcome(StrEnum):
-    """渲染终点节点写下的交付结局；terminal_reason 词汇的第二域，第一域是 StopReason。
-
-    成员值已被 checkpoint 与前端冻结，本枚举不改变 wire，只作枚举成员与用户可读
-    文案的单一来源；跨进程持久化的 lifecycle 终态，如 user_cancelled、
-    server_shutdown，是第三域，仅登记于 DB 侧，不经此枚举。
-    """
+    """渲染终点节点写下的交付结局"""
 
     QUICK_ANSWER = "quick_answer"
     WRITER_EXHAUSTED = "writer_exhausted"
     RESEARCH_INCOMPLETE = "research_incomplete"
     REVIEW_RECOVERY_EXHAUSTED = "review_recovery_exhausted"
     REVIEW_REJECTED = "review_rejected"
+    REVIEW_ABSTAINED = "review_abstained"
     MISSING_REPORT_DRAFT = "missing_report_draft"
     REPORT_RENDERED = "report_rendered"
 
@@ -173,6 +166,7 @@ _RENDER_OUTCOME_DESCRIPTIONS: dict[RenderOutcome, str] = {
     RenderOutcome.RESEARCH_INCOMPLETE: "研究未完成。",
     RenderOutcome.REVIEW_RECOVERY_EXHAUSTED: "审阅修订次数已耗尽。",
     RenderOutcome.REVIEW_REJECTED: "整体审阅未通过。",
+    RenderOutcome.REVIEW_ABSTAINED: "审阅未给出结论，报告未经审阅校验。",
     RenderOutcome.MISSING_REPORT_DRAFT: "缺少可渲染的草稿或引用元数据。",
     RenderOutcome.REPORT_RENDERED: "报告已渲染交付。",
 }
@@ -217,8 +211,6 @@ class RunStatus(BaseModel):
 class SupervisorProgress(BaseModel):
     status: ResearchStatus = "not_started"
     current_round: int = Field(default=0, ge=0)
-    # 方向结果汇总的观测缺口，供中断诊断；与板块 gaps 登记表分属两路。
-    coverage_gaps: list[str] = Field(default_factory=list)
     generation_mode: GenerationMode = "not_ready"
 
 
@@ -240,71 +232,100 @@ class ReviewIssue(BaseModel):
 
 
 class ReviewProgress(BaseModel):
-    status: Literal["pending", "approved", "rejected"] = "pending"
+    status: Literal["pending", "approved", "rejected", "abstained"] = "pending"
     attempts: int = Field(default=0, ge=0)
     feedback: str = ""
     gaps: list[str] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
 
 
-class ResearchDirectionResult(BaseModel):
-    """一个方向级研究任务的可审计最终结果。"""
+class TaskResult(BaseModel):
+    """一个研究任务的可审计最终结果。"""
 
     task_id: str
     round: int = Field(ge=1)
     task_index: int = Field(default=0, ge=0)
     question: str
     research_direction: str
-    # 方向卡短题，供 Supervisor 证据视图回查方向归属；老检查点缺省为空，
+    # 任务卡短题，供 Supervisor 证据视图回查任务归属；老检查点缺省为空，
     # 卡片渲染回退长契约截断。
     display_title: str = ""
-    # 执行生命周期与研究覆盖度分离，避免 completed 被误读为方向已解决。
+    # 执行生命周期与研究覆盖度分离，避免 completed 被误读为任务已解决。
     execution_status: Literal["completed", "failed", "cancelled"]
     coverage_status: Literal["sufficient", "partial", "insufficient"]
     evidence_count: int = Field(ge=0)
     source_count: int = Field(ge=0)
+    # 方向落定时对当前状态的唯一叙述：发现、已查清与未查清、停止原因都在这一段里。
+    # 不拆结构化缺口清单——缺口脱离上下文后只剩短语，下游无法据此判断。
     conclusion: str = ""
-    remaining_gaps: list[str] = Field(default_factory=list)
     queries: list[str] = Field(default_factory=list)
     read_urls: list[str] = Field(default_factory=list)
     skip_reasons: list[str] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
-    stop_reason: DirectionStopReason
+    stop_reason: TaskStopReason
     stop_detail: str = ""
     # 数据信号，不是控制流：搜索服务账户级不可用时置真，Supervisor 模型读到后自然停止派发或收尾。
     provider_exhausted: bool = False
 
 
-class PendingDirection(BaseModel):
-    """在途方向的登记项：派发批随回执提交进通道，到达吸收时移除。
+class PendingTask(BaseModel):
+    """在途任务的登记项：派发批随回执提交进通道，到达吸收时移除。
 
-    subtask 存 SubTask 全量载荷，崩溃恢复后凭它把该方向判为丢失并如实报告。
+    payload 存 Task 全量载荷，崩溃恢复后凭它把该任务判为丢失并如实报告。
     """
 
     task_id: str
-    subtask: dict[str, object]
+    payload: dict[str, object]
     display_title: str = ""
     round: int = Field(ge=1)
 
 
-class ResearchAgentResult(BaseModel):
-    """ResearchAgent 完成一个方向后的完整返回契约。"""
+class ResearcherResult(BaseModel):
+    """Researcher 完成一个任务后的完整返回契约。
+
+    成功、worker 异常、崩溃恢复丢失三条路径都返回本对象，`asyncio.Task` 的 await
+    方因此总能直接取值：失败不是异常，是一个 execution_status 为 failed 的正常结果。
+    """
 
     evidences: list[Evidence] = Field(default_factory=list)
     selected_evidence_ids: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
-    task_result: ResearchDirectionResult
+    task_result: TaskResult
+
+    @classmethod
+    def failed_for(cls, task: Task, round_no: int, error: str) -> "ResearcherResult":
+        """构造 worker 异常或丢失的降级结果；失败经任务报告让 Supervisor 模型可见。"""
+        return cls(
+            task_result=TaskResult(
+                task_id=task["id"],
+                round=round_no,
+                task_index=int(task.get("sequence", 0)),
+                question=task["question"],
+                research_direction=task["question"],
+                display_title=str(task.get("display_title") or ""),
+                execution_status="failed",
+                coverage_status="insufficient",
+                evidence_count=0,
+                source_count=0,
+                failures=[error],
+                # 失败路径也要给 Supervisor 一段可读的状态说明：tasks 归档只带 conclusion，
+                # failures 不在其中，空结论会让这条失败在上下文压缩后彻底消失。
+                conclusion=f"本任务未产出研究结论：{error}。该方向仍是缺口，需要重新派发。",
+                stop_reason=TaskStopReason.WORKER_EXCEPTION,
+                stop_detail=error,
+            ),
+        )
 
     @model_validator(mode="after")
-    def validate_selection(self) -> "ResearchAgentResult":
+    def validate_selection(self) -> "ResearcherResult":
         archived = {item.evidence_id for item in self.evidences}
         selected = set(self.selected_evidence_ids)
         if len(selected) != len(self.selected_evidence_ids):
-            raise ValueError("方向结果不能重复选择同一 Evidence。")
+            raise ValueError("任务结果不能重复选择同一 Evidence。")
         if not selected.issubset(archived):
-            raise ValueError("方向选择的 Evidence 必须存在于方向候选档案。")
+            raise ValueError("任务选择的 Evidence 必须存在于任务候选档案。")
         if self.task_result.evidence_count != len(selected):
-            raise ValueError("方向结果 evidence_count 必须等于选中的 Evidence 数量。")
+            raise ValueError("任务结果 evidence_count 必须等于选中的 Evidence 数量。")
         return self
 
 
@@ -313,7 +334,7 @@ class SupervisorStateUpdate(BaseModel):
 
     evidences: list[Evidence] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
-    task_results: list[ResearchDirectionResult] = Field(default_factory=list)
+    task_results: list[TaskResult] = Field(default_factory=list)
     active_evidence_ids: list[str] = Field(default_factory=list)
     working_set_revision: int = Field(default=0, ge=0)
     research_synthesis: ResearchSynthesis | None = None

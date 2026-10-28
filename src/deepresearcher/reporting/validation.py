@@ -108,8 +108,8 @@ def _extract_bindings(markdown: str) -> list[ParagraphBinding]:
         bindings.append(ParagraphBinding(text=text, kind=kind, evidence_ids=source_ids))
 
     def add_prose(prose: str) -> None:
-        for paragraph in re.split(r"\n\s*\n", prose):
-            paragraph = paragraph.strip()
+        for raw_paragraph in re.split(r"\n\s*\n", prose):
+            paragraph = raw_paragraph.strip()
             if not paragraph:
                 continue
             lines = paragraph.splitlines()

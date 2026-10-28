@@ -1,15 +1,9 @@
-"""LangGraph 顶层状态：跨节点交接物的类型与合并语义。
-
-同 run 内保持 Pydantic 模型对象；跨进程 checkpoint 恢复时 incoming 可能是 dict，
-由三个入口恢复：list 通道的幂等 reducer、node_runner 每节点入口的
-restore_state_models、读侧的 section()。
-"""
+"""LangGraph 顶层状态"""
 
 from collections.abc import MutableMapping
 from operator import add
 from typing import (
     Annotated,
-    NotRequired,
     TypedDict,
     TypeVar,
     cast,
@@ -26,11 +20,11 @@ from deepresearcher.routing import NodeName
 from deepresearcher.schemas import (
     Citation,
     ParagraphBinding,
-    ResearchDirectionResult,
     ResearchSynthesis,
     ReviewProgress,
     RunStatus,
     SupervisorProgress,
+    TaskResult,
     WriterDirective,
     WriterProgress,
 )
@@ -41,22 +35,6 @@ class StateInvariantError(AgentError):
     """节点产生了互相矛盾的运行状态。"""
 
     code = "invalid_state"
-
-
-class SubTask(TypedDict):
-    id: str
-    run_id: NotRequired[str]
-    question: str
-    # 方向卡展示短题，由 Supervisor 派发时给出；question 是完整研究契约，两者分离。
-    display_title: NotRequired[str]
-    # Evidence 召回可选的内部细分；缺失时以 question 作为唯一检索查询。
-    research_direction: NotRequired[str]
-    round: NotRequired[int]
-    sequence: NotRequired[int]
-    worker_id: NotRequired[str]
-    worker_index: NotRequired[int]
-    parent_task_id: NotRequired[str]
-    operation_id: NotRequired[str]
 
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -82,12 +60,12 @@ def merge_evidences(current: list[Evidence], incoming: list[Evidence]) -> list[E
 
 
 def merge_task_results(
-    current: list[ResearchDirectionResult],
-    incoming: list[ResearchDirectionResult],
-) -> list[ResearchDirectionResult]:
+    current: list[TaskResult],
+    incoming: list[TaskResult],
+) -> list[TaskResult]:
     """按 task_id 去重合并；同一 task 因恢复而重试时，以新结果覆盖旧结果。"""
-    restored = [_coerce(ResearchDirectionResult, item) for item in [*current, *incoming]]
-    by_id: dict[str, ResearchDirectionResult] = {}
+    restored = [_coerce(TaskResult, item) for item in [*current, *incoming]]
+    by_id: dict[str, TaskResult] = {}
     for item in restored:
         by_id[item.task_id] = item
     return list(by_id.values())
@@ -98,7 +76,9 @@ def merge_unique(current: list[str], incoming: list[str]) -> list[str]:
     return list(dict.fromkeys([*current, *incoming]))
 
 
-class ResearchState(TypedDict, total=False):
+class RunState(TypedDict, total=False):
+    """一次 run 的跨节点状态容器：图编译时的 state_schema，thread_id 即 run_id。"""
+
     # State 只保存数据快照；Agent、LLM、工具和锁由 graph.py 装配时创建并持有。
     run: RunStatus
     supervisor: SupervisorProgress
@@ -113,8 +93,7 @@ class ResearchState(TypedDict, total=False):
     route: str
     route_reason: str
     answer_mode: AnswerMode
-    # Clarifier 的输出：逐字原话之外，意图摘要、系统假设与逐轮问答记录分键存放，
-    # supervisor 委托段按身份分小节消费。
+    # 记录用户意图的摘要，供后续节点参考；不作为报告正文内容使用。
     intent_summary: str
     assumptions: list[str]
     clarification_log: Annotated[list[dict[str, object]], add]
@@ -128,9 +107,8 @@ class ResearchState(TypedDict, total=False):
     active_evidence_ids: list[str]
     working_set_revision: int
     research_synthesis: ResearchSynthesis | None
-    # 报告任务书唯一事实源是 writer_directive.report_brief，不要再加平行的顶层字段。
     writer_directive: WriterDirective | None
-    task_results: Annotated[list[ResearchDirectionResult], merge_task_results]
+    task_results: Annotated[list[TaskResult], merge_task_results]
     supervisor_next: NodeName
 
     # Writer 未通过校验时的备用草稿，exhausted 或 citation_protocol 失败时写入；
@@ -139,9 +117,9 @@ class ResearchState(TypedDict, total=False):
     # Writer 产出的草稿，以 [[cite:evidence_id]] 标记引用；
     # 审阅通过后由终检渲染层编号并渲染为 report。
     report_draft: str
-    # 两个标题分工不同：run_headline 是 Clarifier 对问题的一句话浓缩，用于历史列表；
-    # report_title 是 Writer 为回答拟的文章标题，用作报告 H1。
+    # run_headline 是对问题的一句话压缩
     run_headline: str
+    # report_title 是 Writer 为回答拟的文章标题
     report_title: str
     paragraph_bindings: list[ParagraphBinding]
     citations: list[Citation]
@@ -152,10 +130,8 @@ class ResearchState(TypedDict, total=False):
     source_count: int
 
 
-# 允许为 None 的标量通道由类型注解派生，避免手工维护第二份名单：名单若漏了
-# 新增的 Optional 通道，恢复会对 None 调用带必填字段的 model_cls() 而当场报错。
 _OPTIONAL_SCALAR_KEYS = frozenset(
-    key for key, hint in get_type_hints(ResearchState).items() if type(None) in get_args(hint)
+    key for key, hint in get_type_hints(RunState).items() if type(None) in get_args(hint)
 )
 
 
@@ -180,7 +156,7 @@ def restore_state_models(state: dict[str, object]) -> None:
 
     list_models = (
         ("evidences", Evidence),
-        ("task_results", ResearchDirectionResult),
+        ("task_results", TaskResult),
         ("citations", Citation),
         ("paragraph_bindings", ParagraphBinding),
     )
