@@ -1,9 +1,4 @@
-"""保留期清理：终态 run 过期后清除过程数据，报告本体永存。
-
-清除三类：run_events/run_usage 行、checkpoint 线程（无外键，删 run 行不会级联，
-删除职责只在本处）、jsonl 事件文件。多 worker 以非阻塞 advisory lock 互斥，
-抢不到的一方跳过本轮；sweep 幂等。
-"""
+"""保留期清理：终态 run 过期后清除过程数据，报告本体保存。"""
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -12,9 +7,9 @@ from typing import Any, Callable
 
 from sqlalchemy import delete, select, update
 
-from deepresearcher.service.coordination import RUN_RETENTION_SWEEP_LOCK_ID
-from deepresearcher.service.persistence.advisory_lock import try_acquire_xact_lock
-from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run, RunEvent, RunUsage
+from deepresearcher.service.coordination.keys import RUN_RETENTION_SWEEP_LOCK_ID
+from deepresearcher.service.coordination.locks import try_acquire_xact_lock
+from deepresearcher.service.storage.tables import TERMINAL_STATUSES, Run, RunEvent, RunUsage
 
 
 def prune_event_jsonl(events_dir: Path, retention_days: int) -> int:
@@ -45,19 +40,7 @@ async def sweep_run_traces(
     now: datetime | None = None,
     batch_size: int = 200,
 ) -> dict[str, int]:
-    """清除超过保留期的终态 run 的过程数据并打标。
-
-    参数：
-        session_factory: 服务层 DB 会话工厂。
-        checkpointer: langgraph saver；None 时跳过线程清除。
-        retention_days: 保留天数；<=0 关闭。
-        now: 测试注入的时间基准。
-        batch_size: 单轮清扫的 run 上限。
-
-    返回：
-        {"runs","events","usage","threads"} 本轮计数；未抢到锁或无候选时为空 dict。
-        runs 行与 report_markdown 不动。
-    """
+    """清除超过保留期的终态 run 的过程数据并标记"""
     if retention_days <= 0:
         return {}
     reference = now or datetime.now(timezone.utc)

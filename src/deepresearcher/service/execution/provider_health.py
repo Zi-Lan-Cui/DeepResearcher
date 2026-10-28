@@ -1,8 +1,4 @@
-"""跨 worker 共享的搜索提供方健康位（Postgres 实现）。
-
-内存版只在单进程生效；多 worker 部署下一个 worker 撞到额度耗尽，其余仍会各自重试。
-本实现把熔断位落到 PostgreSQL，熔断不停止进程。
-"""
+"""记录搜索提供方健康状态"""
 
 from __future__ import annotations
 
@@ -13,11 +9,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from deepresearcher.service.persistence.models import ProviderHealthRecord, as_utc
-from deepresearcher.service.persistence.models import utcnow as _utcnow
+from deepresearcher.service.storage.tables import ProviderHealthRecord
+from deepresearcher.service.storage.tables import utcnow as _utcnow
 
 
-class PostgresProviderHealth:
+class ProviderHealthStore:
     def __init__(self, session_factory: Callable[[], Any]) -> None:
         self._session_factory = session_factory
 
@@ -28,13 +24,9 @@ class PostgresProviderHealth:
             )
         if row is None:
             return None
-        # SQLite 回读 naive、asyncpg aware：as_utc 统一时区再比较。
-        return row.reason if as_utc(row.open_until) > _utcnow() else None
+        return row.reason if row.open_until > _utcnow() else None
 
     async def trip(self, provider: str, reason: str, seconds: float) -> None:
-        # select-then-insert 在多 worker 并发首次写入同一 key 时，后提交方会收到
-        # IntegrityError；调用点处于 except ProviderExhaustedError 分支内，
-        # 任何熔断写入都会当场替换原始业务异常类型。冲突即重走 update 分支重试。
         for attempt in range(2):
             async with self._session_factory() as session:
                 now = _utcnow()
@@ -50,7 +42,7 @@ class PostgresProviderHealth:
                     )
                 else:
                     # 只延后、不缩短：并发多 worker 撞同一 key 时保留最大恢复窗口。
-                    if until > as_utc(row.open_until):
+                    if until > row.open_until:
                         row.reason = reason
                         row.open_until = until
                         row.updated_at = now

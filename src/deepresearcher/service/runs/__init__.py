@@ -1,2 +1,4 @@
-"""Run 控制层与共享领域规则：受理/取消/续答(manager)、准入(service)、
-状态迁移表(transitions)。执行层（领取、租约、执行、恢复）在 service.execution。"""
+"""Run 的生命周期：状态机定义（transitions），以及所有按状态机改写生命周期字段的
+代码——受理（admission）、用户命令（manager）、写权仲裁与结算（store）、数据清理
+（retention）。
+"""

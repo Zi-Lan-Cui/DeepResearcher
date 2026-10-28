@@ -1,9 +1,4 @@
-"""API 与 Worker 进程之间由 PostgreSQL 承载的尽力而为信号。
-
-本模块是全仓唯一允许绕开 sqlalchemy 引擎、直接 `asyncpg.connect` 的地方：
-LISTEN 订阅连接随进程存活、不能放入请求式 session 池。该约束由守卫
-test_asyncpg_raw_connections_live_only_in_signals 校验。
-"""
+"""PostgreSQL 通知信号"""
 
 from __future__ import annotations
 
@@ -15,26 +10,21 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-SignalKind = Literal["event_committed", "run_cancel_requested", "run_available"]
+SignalKind = Literal["event_committed", "run_cancel_requested"]
 SignalHandler = Callable[[str], Awaitable[None] | None]
 
 _CHANNEL = "deepresearcher_service_signals"
-logger = logging.getLogger("deepresearcher.service.signals")
+logger = logging.getLogger("deepresearcher.service.coordination.signals")
 
 
 class PostgresSignalBus:
-    """在 PostgreSQL 表保持权威的同时提供低延迟提示。
-
-    信号可能在断连或启动窗口丢失。消费方必须保留持久化的对账路径；
-    本总线只消除常规轮询延迟。
-    """
+    """在表保持权威的前提下提供低延迟提示；信号可丢失，订阅方须能从表重建状态。"""
 
     def __init__(self) -> None:
         self._keys = itertools.count(1)
         self._handlers: dict[SignalKind, dict[int, SignalHandler]] = {
             "event_committed": {},
             "run_cancel_requested": {},
-            "run_available": {},
         }
         self._listen_connection: Any = None
         self._send_connection: Any = None
@@ -42,8 +32,6 @@ class PostgresSignalBus:
         self._callback_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, database_url: str) -> None:
-        if not database_url.startswith("postgresql"):
-            return
         import asyncpg
 
         dsn = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
@@ -88,9 +76,6 @@ class PostgresSignalBus:
 
     async def notify_cancel(self, run_id: str) -> None:
         await self._notify("run_cancel_requested", run_id)
-
-    async def notify_work_available(self) -> None:
-        await self._notify("run_available", "")
 
     async def _notify(self, kind: SignalKind, payload: str) -> None:
         await self._dispatch(kind, payload)

@@ -1,8 +1,4 @@
-"""持久 Run 命令的 API 控制层。
-
-manager 受理、取消、恢复 run。worker 专属的调度、执行、容量上限与
-崩溃恢复在 WorkerRuntime。
-"""
+"""持久 Run 命令的 API 控制层。manager 受理、取消、恢复 run。"""
 
 from __future__ import annotations
 
@@ -12,14 +8,16 @@ from typing import Any
 from sqlalchemy import select, update
 
 from deepresearcher.observability.events.names import EventName
-from deepresearcher.service.events.hub import RunEventHub
-from deepresearcher.service.persistence.models import TERMINAL_STATUSES, Run, RunEvent
-from deepresearcher.service.persistence.models import utcnow as _utcnow
-from deepresearcher.service.runs.service import QuotaExceededError as QuotaExceededError
-from deepresearcher.service.runs.service import RunService
+from deepresearcher.service.coordination.signals import PostgresSignalBus
+from deepresearcher.service.events.buffer import RunEventBuffer
+from deepresearcher.service.messaging.publisher import DispatchPublisher
+from deepresearcher.service.runs.admission import QuotaExceededError as QuotaExceededError
+from deepresearcher.service.runs.admission import RunAdmission
+from deepresearcher.service.runs.store import TerminalState
 from deepresearcher.service.runs.transitions import apply_transition, transition_for
 from deepresearcher.service.settings import ServiceConfig
-from deepresearcher.service.signals import PostgresSignalBus
+from deepresearcher.service.storage.tables import TERMINAL_STATUSES, Run, RunEvent
+from deepresearcher.service.storage.tables import utcnow as _utcnow
 
 
 class RunManager:
@@ -30,18 +28,22 @@ class RunManager:
         *,
         session_factory: Callable[[], Any],
         config: ServiceConfig,
-        hub: RunEventHub,
+        buffer: RunEventBuffer,
+        publisher: DispatchPublisher,
         checkpointer: Any = None,
         signal_bus: PostgresSignalBus | None = None,
     ) -> None:
         self._checkpointer = checkpointer
         self._session_factory = session_factory
         self._config = config
-        self._hub = hub
+        self._buffer = buffer
+        self._publisher = publisher
         self.signal_bus = signal_bus or PostgresSignalBus()
-        # 只读句柄：cancel 即时分支要 tail 判终态；投递与 notify 归 Hub 统管。
-        self.event_store = hub.store
-        self._run_service = RunService(session_factory=session_factory, config=config)
+        # 只读句柄：cancel 即时分支要 tail 判终态；写库与 notify 归 Buffer 统管。
+        self.event_store = buffer.store
+        self._admission = RunAdmission(
+            session_factory=session_factory, config=config, publisher=publisher
+        )
 
     async def recent_runs(self, user_id: int, limit: int = 50) -> list[Run]:
         """用户历史列表(倒序):web 层读取 Run 的唯一路径。"""
@@ -80,37 +82,35 @@ class RunManager:
         return payload if isinstance(payload, dict) else None
 
     async def start(
-        self, user_id: int, query: str, preferences_snapshot: dict[str, int] | None = None
+        self,
+        user_id: int,
+        query: str,
+        preferences_snapshot: dict[str, int] | None = None,
+        *,
+        request_id: str | None = None,
     ) -> str:
-        """受理新研究问题，创建 queued 行并通知 worker。
+        """受理新研究问题：创建 queued 行并发一条分派消息。
 
         preferences_snapshot 为创建时刻冻结的个人偏好全量值，随行持久化；
-        缺省（旧调用方与测试）落 NULL，执行期回服务器默认。
+        缺省为 NULL，执行期回服务器默认。
+
+        request_id 是客户端幂等键：同一键在未终态范围内只受理一次，重复提交
+        返回既有 run 的 id，也不重复分派。
 
         返回：
-            新 run 的 id。
+            run 的 id。
         """
-        run_id = await self._run_service.create(user_id, query.strip(), preferences_snapshot)
-        self._hub.open(run_id)
-        await self._hub.publish_status(run_id, "queued")
-        await self._hub.flush(run_id)
-        await self.signal_bus.notify_work_available()
+        run_id = await self._admission.create(
+            user_id, query.strip(), preferences_snapshot, request_id=request_id
+        )
+        self._buffer.open(run_id)
+        self._buffer.write_status(run_id, "queued")
+        await self._buffer.flush(run_id)
         return run_id
 
     async def cancel(self, user_id: int, run_id: str) -> Run:
-        """请求取消一个 run。
-
-        参数：
-            user_id: 资源所有者。
-            run_id: 目标 run。
-
-        返回：
-            处理后的 run 行。
-
-        抛出：
-            LookupError: run 不存在或非本人所有。
-        """
-        immediate = False
+        """请求取消一个 run。"""
+        done: TerminalState | None = None
         async with self._session_factory() as session:
             run = await session.scalar(
                 select(Run).where(Run.id == run_id, Run.user_id == user_id).with_for_update()
@@ -121,25 +121,32 @@ class RunManager:
                 return run
             run.cancellation_requested_at = _utcnow()
             if run.status in transition_for("cancel_pending").sources:
-                immediate = True
                 apply_transition(run, "cancel_pending", now=_utcnow())
+                # commit 会让属性过期，之后读 run.status 会隐式再查一次库；
+                # done 帧要的三个值在这里取走。
+                done = TerminalState(
+                    status=run.status,
+                    answer_mode=run.answer_mode or "",
+                    report_available=bool(run.report_markdown),
+                )
             await session.commit()
-        if immediate:
-            self._hub.open(run_id)
-            await self._hub.publish_done(run_id)
-            await self._hub.flush(run_id)
-            self._hub.close(run_id)
+        if done is not None:
+            self._buffer.open(run_id)
+            self._buffer.write_done(
+                run_id,
+                status=done.status,
+                answer_mode=done.answer_mode,
+                report_available=done.report_available,
+            )
+            await self._buffer.flush(run_id)
+            self._buffer.close(run_id)
         else:
             await self.signal_bus.notify_cancel(run_id)
         async with self._session_factory() as session:
             return await session.get(Run, run_id)
 
     async def terminal_state(self, run_id: str) -> dict[str, Any] | None:
-        """SSE 合成终止帧用：run 已终态时返回 done 帧载荷要素，否则返回 None。
-
-        done 帧可能在失败批次中丢失：flush 对失败批次已尽力回插，close 竞态仍
-        可能丢尾。事件的权威副本是行状态，查到这里即应收尾，不让客户端一直等待。
-        """
+        """SSE 合成终止帧用：run 已终态时返回 done 帧载荷要素，否则返回 None。"""
         async with self._session_factory() as session:
             run = await session.get(Run, run_id)
         if run is None or run.status not in TERMINAL_STATUSES:
@@ -159,21 +166,7 @@ class RunManager:
         return tuple_ is not None
 
     async def resume_with_input(self, user_id: int, run_id: str, answer: str) -> str:
-        """提交澄清回答并把 run 重新入队。
-
-        参数：
-            user_id: 资源所有者。
-            run_id: 处于 awaiting_input 的 run。
-            answer: 用户回答。
-
-        返回：
-            入队后的当前状态。
-
-        抛出：
-            ValueError: 回答为空。
-            LookupError: run 不存在或非本人所有。
-            RuntimeError: checkpoint_missing 或 already_resumed。
-        """
+        """提交澄清回答并把 run 重新入队。"""
         answer = answer.strip()
         if not answer:
             raise ValueError("澄清回答不能为空。")
@@ -186,24 +179,27 @@ class RunManager:
                 raise RuntimeError(run.status)
         if not await self._has_checkpoint(run_id):
             raise RuntimeError("checkpoint_missing")
-        async with self._session_factory() as session:
-            result = await session.execute(
-                update(Run)
-                .where(
-                    Run.id == run_id,
-                    Run.user_id == user_id,
-                    Run.status.in_(resume_transition.sources),
-                    Run.resume_payload.is_(None),
+
+        async def local_transaction() -> None:
+            """把回答写进 resume_payload 并把状态改回 queued。"""
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    update(Run)
+                    .where(
+                        Run.id == run_id,
+                        Run.user_id == user_id,
+                        Run.status.in_(resume_transition.sources),
+                        Run.resume_payload.is_(None),
+                    )
+                    .values(status=resume_transition.target, resume_payload={"answer": answer})
                 )
-                .values(status=resume_transition.target, resume_payload={"answer": answer})
-            )
-            await session.commit()
-            if result.rowcount != 1:
-                raise RuntimeError("already_resumed")
-        self._hub.open(run_id)
-        await self._hub.publish_status(run_id, "queued")
-        await self._hub.flush(run_id)
-        await self.signal_bus.notify_work_available()
-        async with self._session_factory() as session:
-            current = await session.get(Run, run_id)
-        return current.status if current is not None else "queued"
+                await session.commit()
+                if result.rowcount != 1:
+                    # 已被取消或已被别人回答：确定拒绝，消息随回滚一起丢弃。
+                    raise RuntimeError("already_resumed")
+
+        await self._publisher.dispatch(run_id, local_transaction)
+        self._buffer.open(run_id)
+        self._buffer.write_status(run_id, "queued")
+        await self._buffer.flush(run_id)
+        return resume_transition.target

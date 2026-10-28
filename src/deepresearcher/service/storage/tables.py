@@ -1,8 +1,4 @@
-"""SQLAlchemy ORM 模型：users / runs / run_events。
-
-字段类型保持方言中立，只用通用 JSON，使 SQLite 测试库与 PG 生产复用同一套模型。
-不要引入 JSONB、server_default 等只属于单一方言的构造。
-"""
+"""SQLAlchemy ORM 模型。users / runs / run_events。"""
 
 from __future__ import annotations
 
@@ -33,18 +29,15 @@ _RETENTION_SWEEP_PREDICATE = text(
     + "') AND finished_at IS NOT NULL AND retention_pruned_at IS NULL"
 )
 
+# 请求幂等键只在未终态范围内唯一：取消后带同一 request_id 重试时，旧行已是终态、
+# 不占该键，新行可以正常受理。约束写进部分索引而不是列上，否则终态行会永久占键。
+_ACTIVE_REQUEST_PREDICATE = text(
+    "request_id IS NOT NULL AND status NOT IN ('" + "', '".join(TERMINAL_STATUSES) + "')"
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def as_utc(value: datetime) -> datetime:
-    """SQLite 回读 naive、asyncpg 回读 aware:naive 一律按 UTC 补齐再比较。
-
-    方言中立模型层(迁移不加时区约束)的固有易错点，单源在此；
-    散落各处的重复转换漏一处就是静默的过期判断错误。
-    """
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -73,7 +66,6 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    # 个人研究偏好整份集(账户页"研究偏好"保存)；生效值 = 服务器默认 ⊕ 此列 ⊕ 创建时冻结。
     preferences: Mapped[dict | None] = mapped_column(JSON)
 
     runs: Mapped[list["Run"]] = relationship(back_populates="user")
@@ -94,12 +86,20 @@ class LoginThrottle(Base):
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
-        # retention sweep 只需"终态、已到期、未清理"这一窄集；两侧方言都支持部分索引。
+        # retention sweep 只需"终态、已到期、未清理"这一窄集。
         Index(
             "ix_runs_retention_sweep",
             "finished_at",
             postgresql_where=_RETENTION_SWEEP_PREDICATE,
-            sqlite_where=_RETENTION_SWEEP_PREDICATE,
+        ),
+        # 请求幂等的依据：同一用户未终态的行里 request_id 不重复，
+        # 网络重试与双击提交都靠它查回既有 run。
+        Index(
+            "uq_runs_request_active",
+            "user_id",
+            "request_id",
+            unique=True,
+            postgresql_where=_ACTIVE_REQUEST_PREDICATE,
         ),
     )
 
@@ -107,6 +107,8 @@ class Run(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     query: Mapped[str] = mapped_column(Text)
+    # 客户端生成的幂等键；缺省为空表示调用方不要求去重（旧客户端）。
+    request_id: Mapped[str | None] = mapped_column(String(64))
     # 两个标题：headline 由 Clarifier 浓缩问题(历史列表展示),
     # title 由 Writer 命名回答(报告 H1 与 PDF 文件名)。
     # create_all 只覆盖新库；既有库各补一次 ALTER TABLE runs ADD COLUMN。
@@ -127,15 +129,13 @@ class Run(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # retention sweep 打标：终态且过期的 run 清完过程数据后置此，报告本体与行不删。
-    # 部分索引 ix_runs_retention_sweep 靠它把"待清理"候选集压成窄集，重扫成本 O(1)。
     retention_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 当前执行者身份：只作写权谓词，不带时效。存活由 MQ 可见性证明，不看数据库。
     lease_owner: Mapped[str | None] = mapped_column(String(96), index=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    # 领取世代：fence token，仅在 claim 成功时 +1，所有权谓词的一部分。
+    # 领取世代：fence token，每次领取或接管 +1，写权判定的权威字段。
     fence_token: Mapped[int] = mapped_column(Integer, default=0)
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # none_as_null=True：清空载荷必须写 SQL NULL，才能被 resume 的 `is_(None)` CAS 命中；
-    # 默认 False 会把 None 序列化成 JSON 字面量 null，令"单次消费"守卫永远落空（真实澄清后无法恢复）。
+    # none_as_null=True：清空载荷必须写 SQL NULL，才能被 resume 的 is_(None) CAS 命中；
     resume_payload: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     event_seq: Mapped[int] = mapped_column(Integer, default=0)
     llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -144,10 +144,8 @@ class Run(Base):
     cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     external_request_count: Mapped[int] = mapped_column(Integer, default=0)
     peak_llm_concurrency: Mapped[int] = mapped_column(Integer, default=0)
-    # 成本一律人民币元，价表见 deepresearcher.pricing。
     estimated_cost_cny: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
     cache_hit_count: Mapped[int] = mapped_column(Integer, default=0)
-    # 缓存节省只计"少发起外部请求的外部请求"这一条判定标准；评测不得拿恒零的估计字段下结论。
     saved_external_request_count: Mapped[int] = mapped_column(Integer, default=0)
 
     user: Mapped["User"] = relationship(back_populates="runs")
@@ -160,14 +158,7 @@ class Run(Base):
 
 
 class RunEvent(Base):
-    """研究过程事件的留档，供 SSE 断线重连回放与审计。
-
-    record 存引擎写出的原始事件 dict——引擎侧已对所有 *_preview/error 做了截断
-    （≤1000 字），故单行体积天然有界；投影文案不写入数据库，回放时经 projector 现算。
-
-    seq 供断线续传的水位，dedup_key 重跑不变、承载唯一约束；dedup_key 为 NULL 的行
-    不参与冲突判定，等同不去重。
-    """
+    """研究过程事件的留档，供 SSE 断线重连回放与审计。"""
 
     __tablename__ = "run_events"
     __table_args__ = (UniqueConstraint("run_id", "dedup_key", name="uq_run_events_dedup"),)
@@ -188,12 +179,7 @@ class RunUsage(Base):
     """一次计费或占用外部配额的操作。"""
 
     __tablename__ = "run_usage"
-    __table_args__ = (
-        # 预算检查每次模型调用都按 (category='llm', created_at>=窗口) 求 SUM,
-        # 复合索引服务这条热路径。create_all 只在新库生效；既有库补一次
-        # CREATE INDEX 即可(项目不维护迁移链，与加表同一约定)。
-        Index("ix_run_usage_category_created_at", "category", "created_at"),
-    )
+    __table_args__ = (Index("ix_run_usage_category_created_at", "category", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
