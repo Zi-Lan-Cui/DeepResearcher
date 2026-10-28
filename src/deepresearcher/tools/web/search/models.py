@@ -6,8 +6,8 @@ from typing import Literal, NotRequired, TypedDict
 from pydantic import BaseModel, Field
 
 from deepresearcher.errors import clip_text
+from deepresearcher.schemas import Task
 from deepresearcher.schemas.sources import SourceProfile, source_domain
-from deepresearcher.state import SubTask
 
 
 class SearchResult(TypedDict, total=False):
@@ -24,7 +24,7 @@ class SearchResult(TypedDict, total=False):
 
 
 class SearchCandidate(BaseModel):
-    """ResearchAgent 可选择读取的稳定候选来源。"""
+    """Researcher 可选择读取的稳定候选来源。"""
 
     candidate_id: str
     title: str = ""
@@ -197,7 +197,7 @@ class SearchToolResult(BaseModel):
 
 
 def failed_search(
-    task: SubTask,
+    task: Task,
     error: Exception,
     *,
     queries: list[str] | None = None,

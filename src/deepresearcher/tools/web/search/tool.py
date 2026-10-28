@@ -6,15 +6,15 @@ import time
 from deepresearcher.errors import clip_text
 from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.events.names import EventName
-from deepresearcher.observability.execution import AgentExecutionScope
 from deepresearcher.observability.logging_config import get_logger
-from deepresearcher.observability.tracing.context import SpanContext, current_span_context
+from deepresearcher.observability.scope import AgentScope
+from deepresearcher.observability.span import SpanContext, current_span_context
 from deepresearcher.observability.tracing.spans import span
+from deepresearcher.schemas import Task
 from deepresearcher.schemas.limits import (
     SEARCH_RESULT_TITLE_PREVIEW_CHARS,
     SEARCH_RESULTS_AUDIT_PREVIEW_COUNT,
 )
-from deepresearcher.state import SubTask
 from deepresearcher.tools.cache_keys import canonical_url, normalize_text, semantic_cache_key
 from deepresearcher.tools.errors import ProviderExhaustedError, ToolConfigurationError
 from deepresearcher.tools.web.search.models import (
@@ -27,7 +27,7 @@ from deepresearcher.tools.web.search.service import SearchService
 
 
 class SearchTool:
-    """执行确定性的候选来源检索，不负责研究方向或结论判断。"""
+    """执行确定性的候选来源检索，不负责研究任务或结论判断。"""
 
     def __init__(
         self,
@@ -44,10 +44,10 @@ class SearchTool:
         self._query_cache: dict[str, list[SearchResult]] = {}
         self._query_cache_lock = asyncio.Lock()
 
-    async def arun(self, task: SubTask) -> SearchToolResult:
+    async def arun(self, task: Task) -> SearchToolResult:
         return await self.arun_queries(task, queries=[task["question"]])
 
-    async def arun_queries(self, task: SubTask, *, queries: list[str]) -> SearchToolResult:
+    async def arun_queries(self, task: Task, *, queries: list[str]) -> SearchToolResult:
         started = time.perf_counter()
         link: SpanContext | None = None
         # 提前绑定空列表：早期异常路径进入 except 时也要能引用它。
@@ -55,7 +55,7 @@ class SearchTool:
         search_queries = list(
             dict.fromkeys(query.strip() for query in queries if query.strip())
         ) or [task["question"]]
-        execution = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
+        execution = AgentScope.from_task(task, agent_name="Researcher")
         task_context = {
             **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),
@@ -211,7 +211,7 @@ class SearchTool:
                 queries=search_queries,
                 failures=failures,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 搜索失败写 failed 事件后继续
             self.logger.warning("search_failed task=%s error=%s", task["id"], exc)
             if self.event_sink is not None:
                 self.event_sink.write(

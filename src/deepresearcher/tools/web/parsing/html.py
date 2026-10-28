@@ -20,8 +20,6 @@ def parse_html_blocks(data: bytes) -> tuple[str, str, list[DocumentBlock]]:
     for element in soup.select('[role="complementary"], [role="navigation"]'):
         element.decompose()
 
-    # 优先解析语义化主体。页面同时存在多个候选时取正文文本最长者；
-    # 找不到 article/main 才回退整个文档，兼容旧页面与简单 HTML。
     candidates = soup.find_all(["article", "main"])
     root = (
         max(candidates, key=lambda item: len(item.get_text(" ", strip=True)))

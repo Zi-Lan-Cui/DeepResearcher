@@ -17,7 +17,7 @@ from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFA
 from deepresearcher.config import SearchConfig
 from deepresearcher.timing import elapsed_ms
 from deepresearcher.tools.errors import ProviderExhaustedError, ToolRequestError
-from deepresearcher.tools.transport.url_guard import PublicUrlGuard
+from deepresearcher.tools.transport.url_guard import PublicUrlGuard, ResolvedPublicUrl
 from deepresearcher.usage_runtime import record_external_request
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -76,7 +76,9 @@ class HttpClient:
         # search/generic 走共享连接池、对端是自家 API，进程级固定一档即可；
         # fetch 每跳独立短会话，逐请求轮换不构成连接复用问题，保持随机。
         self._pinned_impersonate = random.choice(_IMPERSONATE_TARGETS)
-        self._url_guard = url_guard or PublicUrlGuard(config.ssrf_block_cidrs)
+        self._url_guard = url_guard or PublicUrlGuard(
+            config.ssrf_block_cidrs, allow_private=config.ssrf_allow_private_addresses
+        )
         self._capacity = {
             "search": asyncio.Semaphore(config.max_concurrent_requests),
             "fetch": asyncio.Semaphore(config.max_concurrent_fetches),
@@ -199,16 +201,18 @@ class HttpClient:
         current_method = method
         current_params = params
         current_json = json
+        # 空串是禁用而非"不设置"：libcurl 在 CURLOPT_PROXY 缺失时会自己读
+        # HTTPS_PROXY，进程被宿主注入代理后 primary_ip 会变成代理地址。
+        proxy = self.config.fetch_proxy
         for redirect_count in range(_MAX_PUBLIC_REDIRECTS + 1):
             resolved = await self._url_guard.resolve(current_url)
             if self._owns_client:
-                # 专用 handle 让 CURLOPT_RESOLVE 把这一跳固定在上方
-                # 校验过的地址上；trust_env=False 同时阻止环境代理绕过目标策略。
+                curl_options = self._fetch_curl_options(resolved, proxy)
                 async with AsyncSession(
                     timeout=self.config.timeout,
                     trust_env=False,
                     allow_redirects=False,
-                    curl_options={CurlOpt.RESOLVE: resolved.curl_resolve},
+                    curl_options=curl_options,
                 ) as guarded_client:
                     response = await self._request_once(
                         guarded_client,
@@ -236,11 +240,14 @@ class HttpClient:
                     impersonate=random.choice(_IMPERSONATE_TARGETS),
                 )
 
-            primary_ip = str(getattr(response, "primary_ip", "") or "")
-            if primary_ip:
-                self._url_guard.ensure_public_ip(primary_ip)
-                if primary_ip not in resolved.addresses:
-                    raise ToolRequestError("连接目标与已校验的 DNS 地址不一致。", retryable=False)
+            if not proxy:
+                primary_ip = str(getattr(response, "primary_ip", "") or "")
+                if primary_ip:
+                    self._url_guard.ensure_public_ip(primary_ip)
+                    if primary_ip not in resolved.addresses:
+                        raise ToolRequestError(
+                            "连接目标与已校验的 DNS 地址不一致。", retryable=False
+                        )
 
             if response.status_code not in _REDIRECT_STATUS:
                 return response
@@ -258,6 +265,19 @@ class HttpClient:
                 current_json = None
 
         raise ToolRequestError("来源重定向次数过多。", retryable=False)
+
+    def _fetch_curl_options(self, resolved: ResolvedPublicUrl, proxy: str) -> dict[CurlOpt, Any]:
+        """构造单跳抓取的 curl 选项：直连时钉住已校验地址，走代理时只转发。"""
+
+        options: dict[CurlOpt, Any] = {
+            CurlOpt.PROXY: proxy,
+            # 声明了长度的响应在传输开始前就被拒，省掉整段下载。
+            CurlOpt.MAXFILESIZE: self.config.max_fetch_bytes,
+        }
+        if not proxy:
+            # 代理按主机名自己解析，钉地址只会让 URL 与实际连接脱节。
+            options[CurlOpt.RESOLVE] = resolved.curl_resolve
+        return options
 
     @staticmethod
     async def _request_once(

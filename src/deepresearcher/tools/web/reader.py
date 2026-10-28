@@ -6,14 +6,13 @@ from typing import cast
 
 from deepresearcher.observability.events import JsonlSink, make_tool_event
 from deepresearcher.observability.events.names import EventName
-from deepresearcher.observability.execution import AgentExecutionScope
-from deepresearcher.observability.tracing.context import SpanContext, current_span_context
+from deepresearcher.observability.scope import AgentScope
+from deepresearcher.observability.span import SpanContext, current_span_context
 from deepresearcher.observability.tracing.spans import span
-from deepresearcher.state import SubTask
+from deepresearcher.schemas import Task
 from deepresearcher.tokens import get_token_estimator
 from deepresearcher.tools.errors import (
     SourceUnavailableError,
-    ToolConfigurationError,
     ToolParseError,
     UnsafeUrlError,
 )
@@ -51,11 +50,6 @@ class SourceReaderTool:
         material_store: ResearchMaterialStore,
         document_inline_max_tokens: int = 6_000,
     ):
-        # fetcher 必须是执行整条 provider 链、带 material_fetch_key 的 FetchService，
-        # 不能是单个 FetchProvider：两者的 afetch 协议同名，
-        # 传错时缓存键缺失不会被类型检查发现。
-        if fetcher is None:
-            raise ToolConfigurationError("SourceReaderTool 需要已配置的 FetchService。")
         self.fetcher = fetcher
         self.event_sink = event_sink
         self.fetch_timeout = fetch_timeout
@@ -64,10 +58,10 @@ class SourceReaderTool:
         self.document_inline_max_tokens = document_inline_max_tokens
         self.token_estimator = get_token_estimator()
 
-    async def arun(self, task: SubTask, result: SearchResult) -> SourceReaderToolResult:
+    async def arun(self, task: Task, result: SearchResult) -> SourceReaderToolResult:
         """抓取、解析并登记正文，不在工具内部触发额外 LLM 抽取。"""
         started = time.perf_counter()
-        execution = AgentExecutionScope.from_task(task, agent_name="ResearchAgent")
+        execution = AgentScope.from_task(task, agent_name="Researcher")
         task_context = {
             **execution.event_fields(),
             "worker_id": task.get("worker_id", task["id"]),
@@ -82,7 +76,7 @@ class SourceReaderTool:
 
     async def _read_into_material_store(
         self,
-        task: SubTask,
+        task: Task,
         result: SearchResult,
         *,
         started: float,
@@ -141,7 +135,7 @@ class SourceReaderTool:
                 raise SourceUnavailableError("empty_content", "来源没有可读取正文。")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 抓取失败退回搜索原文
             # 抓取失败时可登记搜索提供方已经返回的原文或摘要，
             # 但仍由 Researcher 阅读后决定是否提交 Evidence。
             document = self._search_content_document(result)

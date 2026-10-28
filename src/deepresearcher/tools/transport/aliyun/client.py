@@ -1,8 +1,4 @@
-"""隔离阿里云生成式 SDK，避免云厂商类型泄漏到 Search/Fetch 服务。
-
-SDK 响应在本边界一次性转换为窄 dataclass：success 检查、错误分类与字段读取都集中于此，
-两侧 provider 只接触 typed 字段，不再 getattr 探测云厂商响应结构。
-"""
+"""阿里云 DTS WebSearch/WebFetch 客户端。"""
 
 import asyncio
 import time

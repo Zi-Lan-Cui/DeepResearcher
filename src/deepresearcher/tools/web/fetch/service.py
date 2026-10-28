@@ -1,8 +1,4 @@
-"""网页抓取编排：Provider 顺序尝试与可恢复降级。
-
-正文级缓存不在本层：SourceReaderTool 经 ResearchMaterialStore.resolve_fetch 完成
-命中与回写，material_fetch_key 只负责算出可跨 Run 复用的正文身份交给 reader 使用。
-"""
+"""网页抓取编排：Provider 顺序尝试与可恢复降级"""
 
 import asyncio
 
@@ -66,7 +62,7 @@ class FetchService:
                 # 公网守卫拒绝是本进程的策略决定，不是某家 provider 的可用性问题；
                 # 降级到不经守卫的 provider（如 aliyun 服务端代取）等于绕过策略。
                 raise
-            except Exception as exc:  # Provider 失败由下一项接管；最终仍保留原异常语义。
+            except Exception as exc:  # noqa: BLE001 - Provider 失败由下一项接管，最终保留原异常语义
                 last_error = exc
                 last_failure = None
                 continue

@@ -83,7 +83,7 @@ class SearchService:
             raise ToolRequestError(
                 f"搜索供应商 {provider} 已被限流，跳过远程重试；"
                 f"约 {max(1, math.ceil(deadline - now))} 秒后恢复。"
-                "请基于已读取来源完成当前方向，或如实上报证据不足。",
+                "请基于已读取来源完成当前任务，或如实上报证据不足。",
                 retryable=False,
             )
 

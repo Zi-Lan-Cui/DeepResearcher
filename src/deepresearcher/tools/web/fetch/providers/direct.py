@@ -44,6 +44,7 @@ class DirectHttpFetchProvider:
         http_client: HttpClient | None = None,
     ):
         self.timeout = config.timeout
+        self.max_bytes = config.max_fetch_bytes
         self.http = http_client or HttpClient(config)
 
     async def afetch(
@@ -69,6 +70,11 @@ class DirectHttpFetchProvider:
                 raise TimeoutError("source_fetch_timeout") from exc
             fetch_duration_ms = (asyncio.get_running_loop().time() - fetch_started) * 1000
             data = response.content
+            if len(data) > self.max_bytes:
+                raise SourceUnavailableError(
+                    "content_too_large",
+                    f"来源正文 {len(data)} 字节，超过上限 {self.max_bytes} 字节。",
+                )
             content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
             ext = self._extension(str(response.url), content_type)
             try:
@@ -129,7 +135,6 @@ class DirectHttpFetchProvider:
             return
 
         normalized_title = title.casefold().strip()
-        visible_html_text = BeautifulSoup(data, "html.parser").get_text(" ", strip=True).casefold()
         if any(marker in normalized_title for marker in _CHALLENGE_TITLE_MARKERS):
             raise SourceUnavailableError(
                 "access_challenge", "来源返回验证码或安全验证页，无法取得可验证正文。"
@@ -140,7 +145,9 @@ class DirectHttpFetchProvider:
         ):
             raise SourceUnavailableError("login_required", "来源要求登录后才能读取正文。")
         if not text.strip():
-            if any(marker in visible_html_text for marker in _CHALLENGE_BODY_MARKERS):
+            # 正文为空才做第二遍解析：只为看整页有没有验证码字样，别对有正文的页面白建 DOM。
+            visible = BeautifulSoup(data, "html.parser").get_text(" ", strip=True).casefold()
+            if any(marker in visible for marker in _CHALLENGE_BODY_MARKERS):
                 raise SourceUnavailableError(
                     "access_challenge", "来源返回验证码或安全验证页，无法取得可验证正文。"
                 )

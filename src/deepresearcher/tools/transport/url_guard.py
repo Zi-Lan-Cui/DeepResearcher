@@ -1,9 +1,4 @@
-"""来源抓取使用的公网 URL 策略。
-
-本模块在发出请求前解析主机名并返回 libcurl RESOLVE 条目。
-调用方必须用这些条目建立实际连接；只查 DNS、再在 HTTP 栈内
-重新解析，会留下 DNS rebinding 窗口。
-"""
+"""来源抓取使用的公网 URL 策略。"""
 
 import asyncio
 import ipaddress
@@ -13,6 +8,14 @@ from dataclasses import dataclass
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from deepresearcher.tools.errors import UnsafeUrlError
+
+# IPv6 里承载 IPv4 的几种前缀：mapped、6to4、teredo 由 ipaddress 属性暴露，
+# 剩下的三种只能按末 32 位取。
+_CARRIED_IPV4_PREFIXES = (
+    ipaddress.ip_network("::/96"),  # IPv4-compatible，已废弃
+    ipaddress.ip_network("::ffff:0:0:0/96"),  # IPv4-translated，已废弃
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64
+)
 
 
 @dataclass(frozen=True)
@@ -33,17 +36,18 @@ class ResolvedPublicUrl:
 
 
 class PublicUrlGuard:
-    """按拦截清单判定目标地址可连接性的 HTTP(S) 目标守卫。
+    """按可达性判定目标地址的 HTTP(S) 目标守卫。
 
-    清单唯一来源是部署方的 SSRF_BLOCK_CIDRS 配置：不配置=不拦截
-    （URL 语法与凭据检查仍在）。判定只有清单成员资格一条规则，
-    代码里不留任何内置默认——配置里看到的清单就是实际执行的清单。
+    缺省拒绝：只接受全球可路由的单播地址，私网、回环、链路本地、保留段与组播
+    一律不可连接，不需要任何配置。SSRF_BLOCK_CIDRS 是在此之上追加的封堵清单。
+    allow_private 供 fake-IP 代理这类把公网域名解析到私网段的环境关掉基线。
     """
 
-    def __init__(self, block_cidrs: Sequence[str] = ()):
+    def __init__(self, block_cidrs: Sequence[str] = (), *, allow_private: bool = False):
         self._block: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
             ipaddress.ip_network(item.strip(), strict=False) for item in block_cidrs if item.strip()
         )
+        self._allow_private = allow_private
 
     async def resolve(self, url: str) -> ResolvedPublicUrl:
         parsed = self._parse(url)
@@ -93,26 +97,32 @@ class PublicUrlGuard:
             ip = ipaddress.ip_address(address)
         except ValueError:
             return False
-        return not self._in_block_list(ip)
+        return not self._is_blocked(ip)
 
-    def _in_block_list(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-        return any(ip.version == network.version and ip in network for network in self._block)
+    def _is_blocked(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        for candidate in (ip, *_carried_ipv4(ip)):
+            # 基线：全球可路由的单播才算公网。is_global 对组播返回真，得单独排除。
+            if not self._allow_private and not (candidate.is_global and not candidate.is_multicast):
+                return True
+            if any(candidate in net for net in self._block if candidate.version == net.version):
+                return True
+        return False
 
     def ensure_public_ip(self, address: str) -> None:
-        # 用于重定向逐跳校验：命中拦截清单即拒绝。
+        # 用于重定向逐跳校验：命中可达性判据或追加清单即拒绝。
         try:
             ip = ipaddress.ip_address(address)
         except ValueError as exc:
             raise UnsafeUrlError("目标地址不是有效的 IP 地址。") from exc
-        if self._in_block_list(ip):
+        if self._is_blocked(ip):
             raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
 
     @staticmethod
     def _parse(url: str) -> SplitResult:
         try:
             parsed = urlsplit(str(url).strip())
-            # 访问 .port 同时完成校验，拒绝非法与越界端口。
-            parsed.port
+            # 访问 .port 同时完成校验，拒绝非法与越界端口；取值本身不用。
+            _ = parsed.port
         except ValueError as exc:
             raise UnsafeUrlError("URL 格式无效。") from exc
         if parsed.scheme not in {"http", "https"}:
@@ -122,3 +132,23 @@ class PublicUrlGuard:
         if parsed.username is not None or parsed.password is not None:
             raise UnsafeUrlError("来源 URL 不允许包含用户名或密码。")
         return parsed
+
+
+def _carried_ipv4(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> tuple[ipaddress.IPv4Address, ...]:
+    """取 IPv6 地址里内嵌的 IPv4 目标，没有就返回空。"""
+    if ip.version != 6:
+        return ()
+    assert isinstance(ip, ipaddress.IPv6Address)
+    found: list[ipaddress.IPv4Address] = []
+    if ip.ipv4_mapped is not None:
+        found.append(ip.ipv4_mapped)
+    if ip.sixtofour is not None:
+        found.append(ip.sixtofour)
+    if ip.teredo is not None:
+        # teredo 的 server 与 client 两个端点都得判。
+        found.extend(ip.teredo)
+    if ip.ipv4_mapped is None and any(ip in net for net in _CARRIED_IPV4_PREFIXES):
+        found.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return tuple(found)

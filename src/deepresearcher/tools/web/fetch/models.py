@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from deepresearcher.errors import clip_text
-from deepresearcher.state import SubTask
+from deepresearcher.schemas import Task
 from deepresearcher.tools.web.documents import DocumentView
 from deepresearcher.tools.web.parsing.models import ParsedContent
 
@@ -46,12 +46,12 @@ class SourceReaderToolResult(BaseModel):
     reason_code: str = ""
 
 
-def failed_read(task: SubTask, error: Exception) -> SourceReaderToolResult:
+def failed_read(task: Task, error: Exception) -> SourceReaderToolResult:
     return SourceReaderToolResult(task_id=task["id"], status="failed", error=clip_text(str(error)))
 
 
 def skipped_read(
-    task: SubTask, *, source_url: str, reason_code: str, reason: str
+    task: Task, *, source_url: str, reason_code: str, reason: str
 ) -> SourceReaderToolResult:
     return SourceReaderToolResult(
         task_id=task["id"],
