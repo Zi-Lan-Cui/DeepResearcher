@@ -32,18 +32,18 @@ dependencies = [
     "alibabacloud-credentials>=1.0.0",
     "opentelemetry-api>=1.45.0",
     "opentelemetry-sdk>=1.45.0",
+    "rocketmq-python-client>=5.1.2",
 ]
 
 [project.scripts]
-deepresearcher-api = "deepresearcher.service.main:main"
-deepresearcher-worker = "deepresearcher.worker:main"
+deepresearcher-api = "deepresearcher.service.bootstrap.main:main"
+deepresearcher-worker = "deepresearcher.service.bootstrap.worker:main"
 
 [project.optional-dependencies]
 langfuse = ["langfuse>=3.15,<4"]  # 可选观测出口;不装则 executor 静默保持关闭
 
 [dependency-groups]
 dev = [
-    "aiosqlite>=0.22.1",
     "coverage[toml]>=7.6.0",
     # 开发环境常驻观测出口,使类型检查与测试覆盖可选接线;生产仍按 extra 可选安装。
     "langfuse>=3.15,<4",
@@ -58,11 +58,15 @@ dev = [
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
-extend-exclude = ["evals", "scripts"]
+extend-exclude = ["evals"]  # evals 为独立评测口径，不随主包门禁
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I"]
+select = ["E4", "E7", "E9", "F", "I", "B", "BLE", "PIE", "RET", "PLW", "S110"]
 ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 靠默认参数里的调用完成依赖注入，那不是 B008 要防的可变默认值。
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["deepresearcher"]
@@ -77,10 +81,6 @@ typeCheckingMode = "basic"
 reportMissingImports = "error"
 reportMissingTypeStubs = "none"
 
-# tests 用结构化、故意不完整的 fake 注入生产具体类型，这是刻意的测试设计而非缺陷。
-# include/exclude 只约束项目扫描；VSCode 插件对“打开的文件”永远即时分析，
-# 唯一能按目录差异化的是这个 executionEnvironments：对 tests 静默形态类噪音，
-# 保留 reportMissingImports / 未定义名等真错误，src 不受影响仍全量严格。
 [[tool.pyright.executionEnvironments]]
 root = "./tests"
 reportMissingImports = "error"

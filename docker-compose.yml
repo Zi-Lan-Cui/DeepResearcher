@@ -26,15 +26,74 @@ services:
       timeout: 3s
       retries: 10
 
+  # —— 入站 MQ：5.x 客户端走 gRPC，真正被连接的是 proxy 的 8081，不是 nameserver 的 9876。
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.5.1
+    command: sh mqnamesrv
+    ports:
+      - "${ROCKETMQ_NAMESRV_PORT:-9876}:9876"
+    restart: unless-stopped
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.5.1
+    command: sh mqbroker -n rocketmq-namesrv:9876 -c /home/rocketmq/broker.conf
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      # 本地开发把默认的 8g 堆压下来，否则笔记本上起不来。
+      JAVA_OPT_EXT: "-Xms512m -Xmx512m -Xmn256m"
+    volumes:
+      - ./env/rocketmq/broker.conf:/home/rocketmq/broker.conf:ro
+      - rocketmq-store:/home/rocketmq/store
+    ports:
+      - "${ROCKETMQ_BROKER_PORT:-10911}:10911"
+    depends_on:
+      - rocketmq-namesrv
+    restart: unless-stopped
+
+  rocketmq-proxy:
+    image: apache/rocketmq:5.5.1
+    command: sh mqproxy -pm cluster -n rocketmq-namesrv:9876 -pc /home/rocketmq/proxy.json
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      JAVA_OPT_EXT: "-Xms512m -Xmx512m -Xmn256m"
+    volumes:
+      - ./env/rocketmq/proxy.json:/home/rocketmq/proxy.json:ro
+    ports:
+      - "${ROCKETMQ_GRPC_PORT:-8081}:8081"
+    depends_on:
+      - rocketmq-broker
+    restart: unless-stopped
+
+  # topic 必须预先建好，且消息类型要对上：事务消息进不了 NORMAL topic，
+  # 普通消息也进不了 TRANSACTION topic。broker 的 autoCreateTopicEnable 建出来的是
+  # NORMAL，靠它建 run_dispatch 会在第一次发分派时直接报错。
+  rocketmq-topics:
+    image: apache/rocketmq:5.5.1
+    depends_on:
+      - rocketmq-broker
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+    entrypoint: >
+      sh -c "
+      sleep 15 &&
+      sh mqadmin updateTopic -n rocketmq-namesrv:9876 -c DefaultCluster
+        -t run_dispatch -r 8 -w 8 -a +message.type=TRANSACTION &&
+      sh mqadmin updateTopic -n rocketmq-namesrv:9876 -c DefaultCluster
+        -t run_redispatch -r 8 -w 8
+      "
+    restart: "no"
+
   api:
     build: .
-    command: ["python", "-m", "deepresearcher.service.main"]
+    command: ["python", "-m", "deepresearcher.service.bootstrap.main"]
     env_file: env/.env
     environment:
       # 容器内经服务名寻址,覆盖 env/.env 里的 127.0.0.1 宿主默认值。
       SERVICE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-deepsearch}:${POSTGRES_PASSWORD:-deepsearch}@postgres:5432/${POSTGRES_DB:-deepsearch}
       SERVICE_REDIS_URL: redis://redis:6379/0
       SERVICE_MATERIAL_REDIS_URL: redis://redis:6379/0
+      # 客户端连的是 proxy 的 gRPC 端口，不是 nameserver。
+      SERVICE_ROCKETMQ_ENDPOINTS: rocketmq-proxy:8081
       SERVICE_HOST: 0.0.0.0
     ports:
       - "${SERVICE_PORT:-8080}:8080"
@@ -43,22 +102,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      rocketmq-proxy:
+        condition: service_started
     restart: unless-stopped
 
   worker:
     build: .
-    command: ["python", "-m", "deepresearcher.worker"]
+    command: ["python", "-m", "deepresearcher.service.bootstrap.worker"]
     env_file: env/.env
     environment:
       SERVICE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-deepsearch}:${POSTGRES_PASSWORD:-deepsearch}@postgres:5432/${POSTGRES_DB:-deepsearch}
       SERVICE_REDIS_URL: redis://redis:6379/0
       SERVICE_MATERIAL_REDIS_URL: redis://redis:6379/0
+      SERVICE_ROCKETMQ_ENDPOINTS: rocketmq-proxy:8081
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
+      rocketmq-proxy:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   pgdata:
+  rocketmq-store:

@@ -1,5 +1,4 @@
-# 应用镜像:API 与 Worker 共用,由 docker-compose 编排(CMD 起 API,worker 服务覆盖 command)。
-# 容器内以 `python -m` 启动,与 README 开发路径同一入口;console script 供宿主机/uvx 使用。
+# 应用镜像:API 与 Worker 共用,由 docker-compose 编排
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -32,4 +31,4 @@ USER appuser
 
 EXPOSE 8080
 
-CMD ["python", "-m", "deepresearcher.service.main"]
+CMD ["python", "-m", "deepresearcher.service.bootstrap.main"]
