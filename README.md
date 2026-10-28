@@ -10,33 +10,58 @@
 
 ## 特性
 
-- **结论可核对**：正文结论附引用编号，文末来源表逐条列出标题、链接与原文摘录，逐字比对一致后才采用。
-- **内容有组织**：报告围绕一条核心主张展开，各章依次论证；交付的是结论，不是资料汇总。
-- **费用可控制**：研究深度、每轮方向数与证据池规模在创建时确定，执行中不再变更；单次研究可另设 token 与费用上限。
-- **异步不等待**：研究方向并行推进，总耗时由最慢的方向决定；任务在服务端执行，关闭页面不影响进度，服务重启后从中断处继续。
+- **原文追溯**：每条结论均出自原文，并在报告末附上逐字摘录的原文与出处链接，便于复查。
+- **异步并行**：子任务完成后结果动态注入，主任务无需等待所有子任务完成即可继续推进。
+- **组织清晰**：报告围绕一条核心主张展开，各章节相互呼应，而不是简单堆砌检索结果。
+- **状态可见**：研究过程中的每个阶段都会实时更新，用户可以随时查看任务的进展情况。
+- **费用可控**：有完善的预算成本控制，研究轮次，证据规模，单方向研究深度均可调节，按需付费。
 
 ## 快速开始
 
-用 Docker Compose 可以一键启动。本机开发需要 Python ≥ 3.12 和 [uv](https://docs.astral.sh/uv/)。
+用 Docker Compose 可以一键启动。
 
 ```bash
 git clone https://github.com/Zi-Lan-Cui/deepresearcher.git
 cd deepresearcher
 cp env/.env.example env/.env   # 填入模型配置 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL_ID，
                                # OpenAI 兼容接口均可。再填至少一个搜索服务：百度 / Tavily / SerpAPI / 阿里云
-docker compose up -d --build   # 一次拉起 API、Worker、Postgres 和 Redis
+docker compose up -d --build   # 启动服务，拉起 API、Worker、Postgres、Redis 和 RocketMQ
 ```
 
-打开 <http://localhost:8080> 注册账号并提交一个研究问题。详情页随研究推进逐阶段更新，研究结束后报告直接呈现在页面。研究轮数、预算与流式预览等可调项见 [env/.env.example](env/.env.example)。
+## 配置
 
-开发模式下应用跑在宿主机上，日志和进程输出都直接可见：
+完整配置项见 [env/.env.example](env/.env.example)，下面列出最常用的几项：
 
-```bash
-docker compose up -d postgres redis   # 只启动 Postgres 和 Redis
-uv sync
-uv run deepresearcher-api             # Web 服务，开在终端 1
-uv run deepresearcher-worker          # 研究执行进程，开在终端 2
-```
+| 配置项 | 作用 | 必填 | 默认 |
+|---|---|---|---|
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_ID` | 模型服务，OpenAI 兼容接口均可 | 是 | 无 |
+| `BAIDU_API_KEY` 或 `TAVILY_API_KEY` 或 `SERPAPI_API_KEY` | 搜索服务，至少配一个 | 是 | 无 |
+| `FETCH_PROVIDER_ORDER` | 网页抓取器，支持`aliyun`（需配阿里云凭据）；不填只用本地实现，可能被反爬拦截 | 否 | 空，只走 `direct` |
+| `SERVICE_JWT_SECRET` | 登录令牌签名 | 正式部署必填 | 本地可留空，重启后需重新登录 |
+| `SERVICE_ROCKETMQ_ENDPOINTS` | 分派消息的接入点，填 proxy 的 gRPC 端口 | 是 | `127.0.0.1:8081` |
+| `AGENT_MAX_RESEARCH_ROUNDS` | 研究轮数上限 | 否 | 2 |
+| `SERVICE_MAX_CONCURRENT_RUNS_PER_USER` | 单个用户同时进行的研究数 | 否 | 2 |
+| `LLM_MAX_TOKENS_PER_RUN` / `LLM_MAX_COST_CNY_PER_RUN` | 单次研究的 token 与花费上限 | 否 | 0，不限制 |
+| `SERVICE_RUN_TRACE_RETENTION_DAYS` | 已完成研究的过程数据保留天数，报告不受影响 | 否 | 14 |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | 调用链与耗时观测 | 否 | 缺任一即关闭 |
+| `SSRF_ALLOW_PRIVATE_ADDRESSES` | 允许抓取私网地址，供 fake-IP 代理等本地环境使用 | 否 | `false`，私网与保留段默认拦 |
+| `FETCH_PROXY` | 网页抓取时使用的代理。留空直连，并显式忽略环境里的 `HTTP_PROXY` | 否 | 空，直连 |
+
+模型花费由内置价表 `src/deepresearcher/pricing.py` 按人民币折算。接入新模型时在表里补一行价格即可。没有价格的模型照常记录用量，成本一栏留空。
+
+## 使用
+
+注册登录后输入问题。问题不够明确时，系统先给出一组澄清选项，回答后开始研究。详情页显示当前阶段、各研究方向的进展与证据池规模。
+
+![详情页：阶段时间线与研究进度实时呈现](assets/screenshots/progress.png)
+
+完成后直接阅读报告、复制或导出 PDF。正文结论后的编号对应文末来源表的一项，点开即见原文摘录：
+
+![来源表：每条结论对应逐字摘录的原文与出处链接](assets/screenshots/quotes.png)
+
+账户页可按账号设定研究轮数、每轮方向数、单方向深度与证据池规模，并逐日呈现 token 用量与花费，缓存命中与新计算的用量分开显示：
+
+![账户页：研究偏好设定与逐日 token 用量图](assets/screenshots/account.png)
 
 ## 运作方式
 
@@ -57,73 +82,21 @@ flowchart LR
 
 研究环节内部，每个方向先检索，再逐篇精读原文，摘出的证据与原文逐字比对通过后才进入证据池。
 
-## 使用
-
-### 网页
-
-注册登录后输入问题。问题不够明确时，系统先给出一组澄清选项，回答后开始研究。详情页显示当前阶段、各研究方向的进展与证据池规模。
-
-![详情页：阶段时间线与研究进度实时呈现](assets/screenshots/progress.png)
-
-完成后直接阅读报告、复制或导出 PDF。正文结论后的编号对应文末来源表的一项，点开即见原文摘录：
-
-![来源表：每条结论对应逐字摘录的原文与出处链接](assets/screenshots/quotes.png)
-
-账户页可按账号设定研究轮数、每轮方向数、单方向深度与证据池规模，并逐日呈现 token 用量与花费，缓存命中与新计算的用量分开显示：
-
-![账户页：研究偏好设定与逐日 token 用量图](assets/screenshots/account.png)
-
-### API
-
-服务本身是一组普通 HTTP 接口，网页只是第一个客户端：
-
-```bash
-# 注册并获取访问令牌
-TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"me@example.com","password":"<好密码>"}' | jq -r .token)
-
-# 提出研究问题，接口返回任务 id，研究转入后台执行
-curl -s -X POST http://127.0.0.1:8080/api/runs \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"query":"对比 Redis 与 MongoDB 在缓存场景下的取舍"}'
-
-# 进度与结果：SSE 事件流依次推送阶段、检索、证据计数，直到 done
-curl -N http://127.0.0.1:8080/api/runs/<run_id>/events \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-另有 `GET /api/runs` 历史列表、`POST /api/runs/{id}/resume` 回答澄清、`POST /api/runs/{id}/cancel` 取消。
-
-## 配置
-
-完整配置项见 [env/.env.example](env/.env.example)，下面列出最常用的几项：
-
-| 配置项 | 作用 | 必填 | 默认 |
-|---|---|---|---|
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_ID` | 模型服务，OpenAI 兼容接口均可 | 是 | 无 |
-| `BAIDU_API_KEY` 或 `TAVILY_API_KEY` 或 `SERPAPI_API_KEY` | 搜索服务，至少配一个 | 是 | 无 |
-| `SERVICE_JWT_SECRET` | 登录令牌签名 | 正式部署必填 | 本地可留空，重启后需重新登录 |
-| `AGENT_MAX_RESEARCH_ROUNDS` | 研究轮数上限 | 否 | 2 |
-| `SERVICE_MAX_CONCURRENT_RUNS_PER_USER` | 单个用户同时进行的研究数 | 否 | 2 |
-| `LLM_MAX_TOKENS_PER_RUN` / `LLM_MAX_COST_CNY_PER_RUN` | 单次研究的 token 与花费上限，花费以人民币元计 | 否 | 0，不限制 |
-| `SERVICE_RUN_TRACE_RETENTION_DAYS` | 已完成研究的过程数据保留天数，报告不受影响 | 否 | 14 |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | 调用链与耗时观测 | 否 | 缺任一即关闭 |
-
-模型花费由内置价表 `src/deepresearcher/pricing.py` 按人民币折算。接入新模型时在表里补一行价格即可。没有价格的模型照常记录用量，成本一栏留空。
-
 ## 项目结构
 
 ```
 Dockerfile                应用镜像，API 与 Worker 共用，由 compose 编排
 src/deepresearcher/
 ├── graph.py、nodes/、routing.py   LangGraph 流水线：路由→澄清→规划→写作→审阅
-├── agents/               supervisor、researcher、writer 等角色各自的工具、状态与子图
-├── service/              API、worker、队列、持久化、事件流与前端
+├── state.py              顶层状态：跨节点交接物的类型与合并语义
+├── agents/               各角色（supervisor、researcher、writer 等）的工具、状态与子图
+├── tools/                出站适配：搜索、抓取、解析、资料存取，只接收数据类型
+├── service/              宿主与适配器：HTTP、消费进程、队列、存储与协调、事件分发
 ├── observability/        事件记录、OTel 引擎与运行日志
 ├── prompts/              各角色的系统提示词，外置成 Markdown
 └── evidence/、reporting/、schemas/   证据模型、引用校验与渲染、数据契约
 tests/                    单元与集成测试，运行 make test
+scripts/                  不参与 pytest 的手动验证脚本，由 make verify-service 调用
 evals/                    基于 DRB RACE 口径的质量评测，见 evals/README.md
 docker/、docker-compose.yml         本地依赖与可选的自建观测栈
 env/.env.example          全部配置项与注释
@@ -138,7 +111,9 @@ make quality          # lint、类型、测试、覆盖率，CI 每次推送跑�
 make verify-service   # 实际启动 API 与 worker 两个进程做集成验证，不产生模型费用
 ```
 
-提交前跑一遍 `make quality` 即可。测试不依赖外部网络。
+服务层用例需要真实 PostgreSQL 与 Redis：`SERVICE_TEST_DATABASE_URL` 指定前者，缺则跳过（CI 上必须配置，否则直接报错）；Redis 默认连 `127.0.0.1:6379`，起不来时这组用例会失败而不是跳过。RocketMQ 用 `SERVICE_TEST_ROCKETMQ_ENDPOINTS` 指定，缺则整组跳过。
+
+提交前通过 `make quality` 即可
 
 ## 贡献
 
