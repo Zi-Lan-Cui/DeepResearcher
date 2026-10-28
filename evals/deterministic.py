@@ -1,15 +1,4 @@
-"""确定性 scorer：代码可确证的判定不交给 LLM judge。
-
-两类确定性判定：
-1. 引用完整性门,grounding 维:正文每个 [证据N] 都指向 citations_json 的合法
-   下标,来源条目 url/quote 非空。运行期校验已保证过,评测独立复算是为了让
-   报告分数不会失去引用完整性这一下限。
-2. 状态机门:run_done 恰好一次、事件 seq 连续。run_events 原始记录直读 DB,
-   SSE 只有投影帧,门禁判定需要原始序列。
-3. 过程指标只记录不判分,成本、时长、缓存命中随 artifact 落盘。
-
-轨迹只用于归因,不按工具调用顺序给报告质量打分。
-"""
+"""确定性校验评测"""
 
 from __future__ import annotations
 
@@ -19,7 +8,7 @@ from typing import Any, Callable
 
 from evals.schemas import Criterion, CriterionResult
 
-# 存量结果仍用 [来源N],改名后的新产物用 [证据N],两种标记都识别。
+# 兼容旧来源标识
 CITATION_MARKER = re.compile(r"\[(?:证据|来源)(\d+)\]")
 
 
@@ -90,7 +79,7 @@ def _result(
 
 
 def check_citation_integrity(artifact: Artifact, criterion: Criterion) -> CriterionResult:
-    """门：正文引用的每个 [证据N] 都有出处，且出处条目自带 url+quote。"""
+    """引用正确性校验:正文引用的证据/来源标号必须在 citations 列表中有对应条目,且条目必须有 url 与 quote 字段。"""
     status = artifact.detail.get("status")
     if status != "completed":
         return _result(artifact, criterion, "unknown", f"未到 completed（status={status}）")
@@ -118,6 +107,7 @@ def check_citation_integrity(artifact: Artifact, criterion: Criterion) -> Criter
 
 
 def check_done_exactly_once(artifact: Artifact, criterion: Criterion) -> CriterionResult:
+    """run_done 事件恰一帧。"""
     dones = artifact.events_of("run_done")
     if len(dones) == 1:
         return _result(artifact, criterion, "yes")
@@ -125,6 +115,7 @@ def check_done_exactly_once(artifact: Artifact, criterion: Criterion) -> Criteri
 
 
 def check_seq_continuous(artifact: Artifact, criterion: Criterion) -> CriterionResult:
+    """事件 seq 连续性校验:事件序列必须是连续的数字。"""
     seqs = [int(e["seq"]) for e in artifact.events if "seq" in e]
     if seqs and seqs == list(range(1, len(seqs) + 1)):
         return _result(artifact, criterion, "yes", f"seq 1..{len(seqs)} 连续")
@@ -137,7 +128,6 @@ CHECKS: dict[str, Check] = {
     "seq_continuous": check_seq_continuous,
 }
 
-# 每份完成产物自动附加的门;不写进题集,免得每题重复声明。
 UNIVERSAL_GATES = (
     "citation_integrity",
     "done_exactly_once",

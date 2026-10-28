@@ -1,14 +1,7 @@
 """DeepResearch Bench 适配器：只引用,不拷贝。
 
 DRB 代码是 MIT,但题目、criterion、专家参考文章受数据集许可约束。本模块不
-把任何 DRB 内容放进仓库,只在运行时从 $DRB_ROOT 解析其 jsonl,拼成
-:class:`~evals.schemas.EvalCase`。评测产物(分数、报告)是我们的输出,可以入
-库;原始数据集由使用者按 README 指引自行 clone。
-
-题集治理:为防对着已知 rubric 调提示词造成过拟合,中文 50 题按固定种子切成
-dev/holdout 两层。dev 允许查失败轨迹、归因、调提示词,holdout 只看分数。切
-分结果冻结在 split_drb_zh.json 供全组共用,改题目归属必须改这个文件、留下
-痕迹。
+把任何 DRB 内容放进仓库,只在运行时从 $DRB_ROOT 解析
 """
 
 from __future__ import annotations
@@ -29,11 +22,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def drb_root(override: str | Path | None = None) -> Path:
-    """解析外部 DRB 数据集目录，不推测使用者的本地文件布局。
-
-    命令行传入的 ``override`` 优先于 ``DRB_ROOT`` 环境变量。数据集不属于
-    本仓库，因此二者均未配置时直接给出可操作的错误，而不是绑定开发者目录。
-    """
+    """解析外部 DRB 数据集目录，优先级:传参 > DRB_ROOT 环境变量。"""
     configured = override or os.environ.get(DRB_ROOT_ENV)
     if not configured:
         raise FileNotFoundError(

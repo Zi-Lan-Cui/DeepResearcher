@@ -4,9 +4,9 @@
   split      生成或重看 DRB 中文 dev/holdout 切分,固定种子
   cases      列出题集,校验并报告问题
   run        经 HTTP API 跑题,产物落 evals/results/
-  score      确定性门,零 LLM 费用
-  judge      RACE 双文 0-10 判分,每题每轮正序+换序各判一次
-  report     记分表汇总,含 RACE 双序得分/门/pass^k
+  score      确定性校验
+  judge      RACE 对比 0-10 评分,每题每轮正序+换序各判一次
+  report     记分表汇总,含 RACE 双序得分/确定性校验/pass^k
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ from evals.schemas import (
     CriterionResult,
     EvalCase,
     RaceCriterionScore,
-    load_results,
     load_race_results,
-    merge_results,
+    load_results,
     merge_race_results,
+    merge_results,
 )
 
 EVALS_DIR = Path(__file__).resolve().parent

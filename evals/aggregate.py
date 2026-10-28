@@ -1,11 +1,4 @@
-"""聚合与报表：criterion 级结果 → RACE 双序得分、case 判定、pass@k/pass^k、效率汇总。
-
-分数呈现纪律：分块各自呈现,不合并为单一总分。
-  RACE Quality      正序与换序 target/(target+reference) 的均值,0.5=与专家参考打平
-  Gates             确定性三门(引用完整性/run_done/seq),不产质量分
-  Engineering pass@k / pass^k          ← 通过=三门均通过且双序均值>0.5
-  Efficiency        token/耗时/缓存,只记录,不参与判定
-"""
+"""根据 RACE 官方规则对 case 进行综合评分，附成本 metrics 汇总。"""
 
 from __future__ import annotations
 
@@ -15,7 +8,7 @@ from typing import Any, Iterable
 
 from evals.schemas import CriterionResult, EvalCase, RaceCriterionScore
 
-# 与专家参考打平记不过:通过要求双序均值严格高于 0.5。
+# 通过要求双序均值严格高于 0.5。
 RACE_PASS_RATIO = 0.5
 
 
@@ -38,11 +31,7 @@ def score_case(
     race_forward_rows: Iterable[RaceCriterionScore],
     race_swapped_rows: Iterable[RaceCriterionScore],
 ) -> CaseScore:
-    """门 + RACE 双序合成单轮判定：通过 = 三门均通过 ∧ (正序+换序) overall 均值 > 0.5。
-
-    任一序未判或无有效分则 race_mean 为 None,该轮不判过;两个方向的缺分
-    criterion 数由 race 聚合对象各自记录。
-    """
+    """对一个 case 进行综合评分。"""
     rows = [r for r in deterministic_rows if r.case_id == case.case_id and r.attempt == attempt]
     gates = [r for r in rows if r.criterion_id.startswith("gate:")]
     gates_green = all(r.verdict == "yes" for r in gates)
@@ -69,7 +58,7 @@ def score_case(
 
 @dataclass
 class RaceCaseScore:
-    """RACE 官方口径的单轮得分：target/(target+reference) 归一，0.5 为与参考文章打平。"""
+    """RACE 官方规则的单轮得分：target/(target+reference) 归一，0.5 为与参考文章打平。"""
 
     case_id: str
     attempt: int
@@ -84,11 +73,7 @@ class RaceCaseScore:
 def score_case_race(
     case: EvalCase, attempt: int, rows: Iterable[RaceCriterionScore]
 ) -> RaceCaseScore:
-    """复刻官方聚合：维度内 criterion 加权均分 → 维度权重求和 → 与参考文章做比值。
-
-    参数 rows 为全部 RACE 分数记录。双 None 的 criterion（judge 失败）不计入加权
-    分母；整维无有效分时该维均分按 0 计，与官方 score_calculator 的置零行为一致。
-    """
+    """对一个 case 的一轮判定进行 RACE 聚合。"""
     own = [
         row
         for row in rows
@@ -184,11 +169,7 @@ def k_metrics(scores: list[CaseScore]) -> dict[str, dict[str, Any]]:
 
 
 def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """把各 artifact 的 process_metrics 汇成效率块。
-
-    成本口径:token 已从网关实采,usage_estimated=false;estimated_cost_usd
-    在未配 LLM 单价时恒 0,这是当前只记录 token 的刻意口径,不是数据缺失。
-    """
+    """成本 metrics 汇总,只记录,不判 pass/fail。"""
     if not rows:
         return {"runs": 0}
     total_in = sum(int(r.get("input_tokens") or 0) for r in rows)

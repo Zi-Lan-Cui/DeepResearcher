@@ -1,13 +1,4 @@
-"""评测数据契约：DeepResearch Bench 的 case 与逐条判定记录。
-
-题集全部来自 DRB 中文题池,criterion 与维度权重取官方 rubric;判分走 RACE 口径
-(被测与专家参考文章各打 0-10 分,见 judge/aggregate)。确定性门对每份产物自动
-附加,判定写入 ``CriterionResult``,与 pass^k 同批记录计算,不另设第二套数据。
-
-设计约束:
-- 打分单位是 criterion,judge 每条独立调用,不给整篇报告打印象分;
-- 门行不写进题集,由 ``deterministic.score_artifact`` 注入,gate 前缀见该模块。
-"""
+"""评测数据契约"""
 
 from __future__ import annotations
 
@@ -16,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-# 维度名沿用 DRB 官方四维;门行自带 grounding 维,不在题集 rubric 范围内。
+# 维度名沿用 DRB 官方四维;
 DIMENSIONS = (
     "comprehensiveness",
     "insight",

@@ -1,5 +1,5 @@
 {
-  "description": "开发迭代集：DRB 中文 50 题中未进实测集的 20 题；调提示词与链路迭代用，成绩不作对外口径，与 test30 无交集",
+  "description": "开发迭代数据集：随机抽取DRB 中文 50 题中 20 题。",
   "external_ids": [
     "drb-zh-003", "drb-zh-005", "drb-zh-007", "drb-zh-008", "drb-zh-009",
     "drb-zh-010", "drb-zh-011", "drb-zh-013", "drb-zh-017", "drb-zh-018",

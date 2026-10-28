@@ -1,11 +1,4 @@
-"""rubric LLM judge：RACE 对齐 DeepResearchBench 官方的 0-10 双文对比分。
-
-- 判定单位是逐条 criterion,每条独立调用:一次长上下文里连判多条会互相干扰;
-- 同一调用内被测与专家参考文章各打 0-10 分,聚合走官方加权与
-  target/(target+reference) 归一(见 aggregate);
-- 两篇只称文章一/文章二,judge 不知道身份,正序与换序各判一次取均值消位次偏置;
-- 单条调用或解析失败记双 None,聚合端按官方口径把无分 criterion 排除出加权分母。
-"""
+"""rubric LLM judge：RACE 对齐 DeepResearchBench 官方的 0-10 双文对比分。"""
 
 from __future__ import annotations
 
@@ -48,8 +41,7 @@ def build_race_user_prompt(
     *,
     swap_positions: bool = False,
 ) -> str:
-    # 两篇只称文章一/文章二：judge 不应知道哪篇是被测、哪篇是参考（与官方一致），
-    # 身份披露会引入"专家"标签效应，位次校准见 swap_positions。
+    """构造 RACE judge 的 user prompt。"""
     parts = [
         f"**任务背景**\n{case.prompt}",
         f"**评审标准**\n{criterion.text}",
@@ -106,13 +98,7 @@ async def judge_case_race(
     reference: str,
     swap_positions: bool = False,
 ) -> list[RaceCriterionScore]:
-    """RACE 口径：每条 criterion 一次调用，被测与参考文章同台各打 0-10 分。
-
-    参数 reference 必须来自 DRB 的专家参考文章；swap_positions 为 True 时参考文章
-    放文章一位（位次校准），分数映射回 target/reference。标准流程正序、换序各调
-    一次本函数。单条失败或解析失败记双 None，聚合端按官方口径把无分 criterion
-    排除出加权分母。
-    """
+    """按照 RACE 对照 DRB 官方参考文章打分。"""
     concurrency = max(1, int(os.environ.get("EVAL_JUDGE_CONCURRENCY", "5")))
     total_timeout = float(os.environ.get("EVAL_JUDGE_TOTAL_TIMEOUT_SECONDS", "180"))
     max_tokens = int(
@@ -154,13 +140,7 @@ async def judge_case_race(
 
 
 class OpenAICompatJudge:
-    """生产 invoker：judge 身份取自评测侧 env,不回写也不依赖引擎配置。
-
-    judge 与被测同模型时 self-preference 会污染分数,默认报错而不是静默回
-    落:显式设 EVAL_SELF_JUDGE=1 才允许自评,此时自评状态写入 judge_meta、
-    报表带警示,分数只用于调试。独立 judge 用 EVAL_JUDGE_MODEL 指向另一模型
-    家族,可选配 EVAL_JUDGE_BASE_URL 与 EVAL_JUDGE_API_KEY。
-    """
+    """生产 invoker：judge 身份取自评测侧 env,不回写也不依赖引擎配置。"""
 
     def __init__(self) -> None:
         from openai import AsyncOpenAI
@@ -202,8 +182,7 @@ class OpenAICompatJudge:
             ],
             temperature=0,
             max_tokens=max_tokens,
-            # 网关模型是思考型:不禁用思考,max_tokens 预算会全花在隐藏思考上,
-            # content 返回空串、被解析成 unknown,整批评测判定失效。
+            # 禁用思考/推理链输出,避免污染分析文本,也能节省 token。
             extra_body={"thinking": {"type": "disabled"}},
         )
         return response.choices[0].message.content or ""

@@ -18,8 +18,8 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
-from deepresearcher.service.persistence.database import make_engine, make_session_factory
-from deepresearcher.service.persistence.models import RunEvent
+from deepresearcher.service.storage.engine import make_engine, make_session_factory
+from deepresearcher.service.storage.tables import RunEvent
 from evals.deterministic import Artifact, process_metrics
 from evals.schemas import EvalCase
 
@@ -108,7 +108,9 @@ class RunHarness:
                     raise TimeoutError(f"case 执行超时未收敛: {run_id} status={status}")
             await asyncio.sleep(POLL_SECONDS)
 
-    async def _drive_once(self, case: EvalCase, attempt: int, client: httpx.AsyncClient) -> Artifact:
+    async def _drive_once(
+        self, case: EvalCase, attempt: int, client: httpx.AsyncClient
+    ) -> Artifact:
         headers = await self._auth(client)
         create = await client.post(
             f"{self.base_url}/api/runs", json={"query": case.prompt}, headers=headers
