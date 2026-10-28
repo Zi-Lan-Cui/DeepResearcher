@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 
-from deepresearcher.service.persistence.models import Run, User
+from deepresearcher.service.storage.tables import Run, User
 from deepresearcher.service.web.dependencies import app_state, current_user
 
 router = APIRouter(prefix="/api/stats")
@@ -22,7 +22,7 @@ async def stats_daily(
 ) -> dict[str, Any]:
     """最近 N 天逐日聚合：runs 数、输入/输出/已缓存 token 与输入侧命中率。
 
-    日期按 UTC 分组（方言中立的 date()）；无 run 的日期不补零，缺位由前端图表处理。
+    日期按 UTC 分组；无 run 的日期不补零，缺位由前端图表处理。
     """
     if days not in STATS_WINDOW_DAYS:
         days = 30

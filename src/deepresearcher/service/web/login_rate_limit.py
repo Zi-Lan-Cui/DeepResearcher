@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import math
@@ -12,9 +11,9 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from deepresearcher.service.persistence.advisory_lock import acquire_xact_lock
-from deepresearcher.service.persistence.models import LoginThrottle, as_utc
-from deepresearcher.service.persistence.models import utcnow as _utcnow
+from deepresearcher.service.coordination.locks import acquire_xact_lock
+from deepresearcher.service.storage.tables import LoginThrottle
+from deepresearcher.service.storage.tables import utcnow as _utcnow
 
 
 @dataclass(frozen=True)
@@ -26,8 +25,7 @@ class LoginRateLimitResult:
 class LoginRateLimiter:
     """跨 API 进程原子地消耗登录预算。
 
-    PostgreSQL 用事务级 advisory lock 按隐私安全键串行化；
-    asyncio 锁只是 SQLite/测试的兼容路径。
+    事务级 advisory lock 按隐私安全键串行化，跨 API 进程原子生效。
     """
 
     def __init__(
@@ -46,33 +44,27 @@ class LoginRateLimiter:
         self._ip_attempts = ip_attempts
         self._window = timedelta(seconds=window_seconds)
         self._block = timedelta(seconds=block_seconds)
-        self._sqlite_lock = asyncio.Lock()
 
     async def consume(self, *, client_ip: str, email: str) -> LoginRateLimitResult:
+        # 获取ip和账号限制
         budgets = (
             (self._key("ip", client_ip), self._ip_attempts),
             (self._key("account", email), self._account_attempts),
         )
         async with self._session_factory() as session:
-            is_postgres = session.get_bind().dialect.name == "postgresql"
-            lock = _NullAsyncContext() if is_postgres else self._sqlite_lock
-            async with lock:
-                async with session.begin():
-                    for key_hash, _limit in sorted(budgets):
-                        await acquire_xact_lock(session, self._lock_id(key_hash))
-                    return await self._consume_locked(session, budgets)
+            async with session.begin():
+                for key_hash, _limit in sorted(budgets):
+                    await acquire_xact_lock(session, self._lock_id(key_hash))
+                return await self._consume_locked(session, budgets)
 
     async def clear_account(self, email: str) -> None:
         key_hash = self._key("account", email)
         async with self._session_factory() as session:
-            is_postgres = session.get_bind().dialect.name == "postgresql"
-            lock = _NullAsyncContext() if is_postgres else self._sqlite_lock
-            async with lock:
-                async with session.begin():
-                    await acquire_xact_lock(session, self._lock_id(key_hash))
-                    row = await session.get(LoginThrottle, key_hash)
-                    if row is not None:
-                        await session.delete(row)
+            async with session.begin():
+                await acquire_xact_lock(session, self._lock_id(key_hash))
+                row = await session.get(LoginThrottle, key_hash)
+                if row is not None:
+                    await session.delete(row)
 
     async def _consume_locked(
         self,
@@ -95,12 +87,13 @@ class LoginRateLimiter:
             row = rows.get(key_hash)
             if row is None:
                 continue
-            if row.blocked_until is not None and as_utc(row.blocked_until) > now:
+            if row.blocked_until is not None and row.blocked_until > now:
                 retry_after = max(
                     retry_after,
-                    math.ceil((as_utc(row.blocked_until) - now).total_seconds()),
+                    math.ceil((row.blocked_until - now).total_seconds()),
                 )
-            elif now - as_utc(row.window_started_at) < self._window and row.attempt_count >= limit:
+            # IP 和 账号均被封禁，取最长封禁时间
+            elif now - row.window_started_at < self._window and row.attempt_count >= limit:
                 row.blocked_until = now + self._block
                 row.updated_at = now
                 retry_after = max(retry_after, math.ceil(self._block.total_seconds()))
@@ -109,6 +102,7 @@ class LoginRateLimiter:
 
         for key_hash, _limit in budgets:
             row = rows.get(key_hash)
+            # 首次尝试或窗口过期，重置计数器；否则累加计数器。
             if row is None:
                 session.add(
                     LoginThrottle(
@@ -118,7 +112,7 @@ class LoginRateLimiter:
                         updated_at=now,
                     )
                 )
-            elif now - as_utc(row.window_started_at) >= self._window:
+            elif now - row.window_started_at >= self._window:
                 row.attempt_count = 1
                 row.window_started_at = now
                 row.blocked_until = None
@@ -138,11 +132,3 @@ class LoginRateLimiter:
     @staticmethod
     def _lock_id(key_hash: str) -> int:
         return int.from_bytes(bytes.fromhex(key_hash[:16]), signed=True)
-
-
-class _NullAsyncContext:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None

@@ -1,8 +1,4 @@
-"""进程内预览总线：EphemeralEventBus 协议的同环实现。
-
-只承载 text_delta 预览帧：无 seq、不写库、队满丢最旧。仅用于 worker 与订阅者
-同进程同事件循环的场景；生产装配走 Redis 总线，关闭时预览退化、durable 流不受影响。
-"""
+"""进程内预览总线"""
 
 from __future__ import annotations
 

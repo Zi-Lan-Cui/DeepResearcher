@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 
-from deepresearcher.service.persistence.models import Run, User
+from deepresearcher.service.storage.tables import Run, User
 
 
 def app_state(request: Request) -> Any:

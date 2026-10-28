@@ -1,9 +1,4 @@
-"""个人研究偏好：选项枚举、提交校验、创建冻结与对 AgentConfig 的应用。
-
-用户域一律 preferences（账户页"研究偏好"、/api/preferences、users.preferences 列）；
-键名即 AgentConfig 字段名，执行参数是技术契约，不随用户域改名。
-执行并发是服务端容量事项，不在用户面出现。
-"""
+"""个人研究偏好：选项枚举、提交校验、创建冻结与对 AgentConfig 的应用。"""
 
 from dataclasses import replace
 from typing import Any
@@ -12,7 +7,7 @@ from deepresearcher.config import AgentConfig
 
 PREFERENCE_CHOICES: dict[str, list[int]] = {
     "max_research_rounds": [1, 2, 3, 4],
-    "max_subtasks_per_round": [4, 8, 12],
+    "max_tasks_per_round": [4, 8, 12],
     "research_agent_max_turns": [8, 12, 20],
     "supervisor_max_active_evidences": [20, 30, 50],
 }

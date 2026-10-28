@@ -119,6 +119,7 @@
   /* 方向卡片：收窄成"子项"观感；running 淡绿 → done 灰白 */
   .tcard { border:1px solid var(--bd); border-radius:7px; margin:5px 0; background:#fff; }
   .tcard.running { background:#f0fdf4; border-color:#bbf7d0; }
+  .tcard.queued { background:#f8fafc; border-color:#dbe2ea; border-style:dashed; }
   .tcard.done { background:#f9fafb; color:var(--mut); }
   .tcard.warn { background:#fffbeb; border-color:#fde68a; color:var(--mut); }
   .tcard.failed { background:#fef2f2; border-color:#fecaca; color:#7f1d1d; }
@@ -132,6 +133,10 @@
   .tcard.expanded .tcard-toggle { transform:rotate(90deg); }
   .tcard-live { padding:0 10px 6px; font-size:12.5px; color:var(--mut); }
   .tcard-live.anim { animation:slidein .35s ease; }
+  /* 方向结论：与动作明细区分开，用左侧细线表示这是本方向的成品，不是又一条流水账。 */
+  .tcard-conclusion { margin:0 10px 9px; padding:8px 11px; border-left:2px solid var(--ac);
+                      background:#f6f9f9; border-radius:0 6px 6px 0;
+                      font-size:12.5px; line-height:1.72; color:#374151; white-space:pre-wrap; }
   @keyframes slidein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .tcard-meta { font-size:12px; color:var(--mut); white-space:nowrap; }
   .tcard-details { display:none; list-style:none; margin:0; padding:0 12px 10px 28px;

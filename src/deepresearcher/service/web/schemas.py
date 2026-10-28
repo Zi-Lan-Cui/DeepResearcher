@@ -22,6 +22,9 @@ class LoginBody(BaseModel):
 
 class CreateRunBody(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
+    # 客户端幂等键：网络重试或双击提交时，服务端据此返回同一个 run。
+    # 可选是为了兼容不传该字段的旧客户端。
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ResumeRunBody(BaseModel):

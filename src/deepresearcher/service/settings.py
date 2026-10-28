@@ -1,10 +1,4 @@
-"""服务层配置：数据库、JWT、监听与配额。
-
-引擎配置（LLM、搜索、agent 预算）仍由 deepresearcher.config.get_settings() 提供，
-本模块只定义把它部署成多用户服务所需的新键。env 文件沿用同一约定：
-DEEPRESEARCHER_ENV_FILE，默认 env/.env，load_dotenv(override=False)
-不会与引擎侧的加载互相覆盖；环境判别复用 APP_ENV。
-"""
+"""服务层配置：数据库、JWT、监听与配额。"""
 
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ from dotenv import load_dotenv
 
 from deepresearcher.config import project_path_env
 from deepresearcher.env import env_bool as _bool_env
-from deepresearcher.env import env_float as _float_env
 from deepresearcher.env import env_int as _int_env
 from deepresearcher.env import env_str as _env
 from deepresearcher.observability.logging_config import get_logger
@@ -38,18 +31,35 @@ class ServiceConfig:
     token_ttl_hours: int = 12
     max_concurrent_runs_per_user: int = 2
     max_global_queued_runs: int = 100
-    # 单个 worker 进程的同时执行槽位；多副本部署时全局总量等于该值乘以副本数，
-    # 对上游供应商的总量保护由每进程的 LLM_PROVIDER_RPM/TPM 按副本数折算承担。
-    # 与 max_global_queued_runs 是两件事：那是准入侧排队长度上限，这是执行侧并发数。
+    # 单个 worker 进程的同时执行槽位
     worker_max_running_runs: int = 3
-    worker_lease_seconds: int = 60
-    worker_heartbeat_seconds: int = 20
-    worker_poll_seconds: float = 15.0
+    worker_lease_check_seconds: int = 15
+    # 入站消息层：5.x 客户端走 gRPC，endpoints 指向 proxy 而不是 nameserver。
+    rocketmq_endpoints: str = "127.0.0.1:8081"
+    rocketmq_access_key: str = ""
+    rocketmq_access_secret: str = ""
+    rocketmq_namespace: str = ""
+    rocketmq_dispatch_topic: str = "run_dispatch"
+    # 补偿补发走独立 topic
+    rocketmq_redispatch_topic: str = "run_redispatch"
+    # 所有 worker 共用一个消费者组：组内是竞争消费，不按实例分 tag。
+    rocketmq_consumer_group: str = "deepresearcher-worker"
+    # 唯一租约：不可见时长就是接管时延，续租按 visibility_renew_seconds 触发
+    rocketmq_invisible_seconds: int = 90
+    rocketmq_visibility_renew_seconds: int = 30
+    # 投递次数上限。proxy 在 reconsumeTimes >= maxAttempts（消费组 retryMaxTimes + 1，默认
+    # 17）时直接转 %DLQ%，消息不再下发，这一行就再没有消息驱动。留 2 次余量，让 15、16、
+    # 17 次投递都有机会完成结算。
+    rocketmq_dispatch_max_attempts: int = 15
+    # 单条拉取请求挂多久。分派延迟由下面的并发度决定，这个值只影响空轮询的频率。
+    rocketmq_await_duration_seconds: int = 2
+    # 并发拉取循环数，同时也是预取上限。取值要盖住 topic 数乘队列数（本地 2 × 8 = 16），
+    # 否则仍有队列要等下一圈才被轮询到；拉满即停止拉取。
+    rocketmq_pull_fanout: int = 16
     redis_preview_enabled: bool = False
     redis_url: str = "redis://127.0.0.1:6379/0"
     redis_channel_prefix: str = "deepresearcher"
     redis_preview_queue_size: int = 128
-    material_store_backend: str = "memory"
     material_redis_url: str = "redis://127.0.0.1:6379/0"
     material_key_prefix: str = "deepresearcher:material"
     search_material_ttl_seconds: int = 6 * 60 * 60
@@ -85,6 +95,13 @@ def get_service_config() -> ServiceConfig:
             "缺少 SERVICE_DATABASE_URL。本地 docker-compose 对应值："
             "postgresql+asyncpg://deepsearch:deepsearch@localhost:5432/deepsearch"
         )
+    if not database_url.startswith("postgresql"):
+        raise ValueError(
+            "SERVICE_DATABASE_URL 必须是 postgresql+asyncpg://；"
+            "服务依赖 advisory lock 与 LISTEN/NOTIFY，不支持嵌入式数据库。"
+            "本地 docker-compose 对应值："
+            "postgresql+asyncpg://deepsearch:deepsearch@localhost:5432/deepsearch"
+        )
     environment = _env("APP_ENV", "development").lower()
     jwt_secret = _env("SERVICE_JWT_SECRET")
     if len(jwt_secret) < _MIN_SECRET_CHARS:
@@ -97,9 +114,6 @@ def get_service_config() -> ServiceConfig:
             environment,
         )
     redis_url = _env("SERVICE_REDIS_URL", "redis://127.0.0.1:6379/0")
-    material_backend = _env("SERVICE_MATERIAL_STORE_BACKEND", "memory").strip().lower()
-    if material_backend not in {"memory", "redis"}:
-        raise ValueError("SERVICE_MATERIAL_STORE_BACKEND 只能是 memory 或 redis。")
     return ServiceConfig(
         database_url=database_url,
         jwt_secret=jwt_secret,
@@ -107,14 +121,30 @@ def get_service_config() -> ServiceConfig:
         max_concurrent_runs_per_user=max(1, _int_env("SERVICE_MAX_CONCURRENT_RUNS_PER_USER", 2)),
         max_global_queued_runs=max(1, _int_env("SERVICE_MAX_GLOBAL_QUEUED_RUNS", 100)),
         worker_max_running_runs=max(1, _int_env("SERVICE_WORKER_MAX_RUNNING_RUNS", 3)),
-        worker_lease_seconds=max(10, _int_env("SERVICE_WORKER_LEASE_SECONDS", 60)),
-        worker_heartbeat_seconds=max(1, _int_env("SERVICE_WORKER_HEARTBEAT_SECONDS", 20)),
-        worker_poll_seconds=max(0.05, _float_env("SERVICE_WORKER_POLL_SECONDS", 15.0)),
+        worker_lease_check_seconds=max(1, _int_env("SERVICE_WORKER_LEASE_CHECK_SECONDS", 15)),
+        rocketmq_endpoints=_env("SERVICE_ROCKETMQ_ENDPOINTS", "127.0.0.1:8081"),
+        rocketmq_access_key=_env("SERVICE_ROCKETMQ_ACCESS_KEY"),
+        rocketmq_access_secret=_env("SERVICE_ROCKETMQ_ACCESS_SECRET"),
+        rocketmq_namespace=_env("SERVICE_ROCKETMQ_NAMESPACE"),
+        rocketmq_dispatch_topic=_env("SERVICE_ROCKETMQ_DISPATCH_TOPIC", "run_dispatch"),
+        rocketmq_redispatch_topic=_env("SERVICE_ROCKETMQ_REDISPATCH_TOPIC", "run_redispatch"),
+        rocketmq_consumer_group=_env("SERVICE_ROCKETMQ_CONSUMER_GROUP", "deepresearcher-worker"),
+        rocketmq_invisible_seconds=max(30, _int_env("SERVICE_ROCKETMQ_INVISIBLE_SECONDS", 90)),
+        rocketmq_visibility_renew_seconds=max(
+            10, _int_env("SERVICE_ROCKETMQ_VISIBILITY_RENEW_SECONDS", 30)
+        ),
+        # 下限 2：上限为 1 时第一条消息就可能被判死信，等于关掉入站。
+        rocketmq_dispatch_max_attempts=max(
+            2, _int_env("SERVICE_ROCKETMQ_DISPATCH_MAX_ATTEMPTS", 15)
+        ),
+        rocketmq_await_duration_seconds=max(
+            1, _int_env("SERVICE_ROCKETMQ_AWAIT_DURATION_SECONDS", 2)
+        ),
+        rocketmq_pull_fanout=max(1, _int_env("SERVICE_ROCKETMQ_PULL_FANOUT", 16)),
         redis_preview_enabled=_bool_env("SERVICE_REDIS_PREVIEW_ENABLED", False),
         redis_url=redis_url,
         redis_channel_prefix=_env("SERVICE_REDIS_CHANNEL_PREFIX", "deepresearcher"),
         redis_preview_queue_size=max(1, _int_env("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", 128)),
-        material_store_backend=material_backend,
         material_redis_url=_env("SERVICE_MATERIAL_REDIS_URL", redis_url),
         material_key_prefix=(
             _env("SERVICE_MATERIAL_KEY_PREFIX", "deepresearcher:material")
@@ -150,12 +180,11 @@ def clear_service_config_cache() -> None:
     get_service_config.cache_clear()
 
 
-def checkpoint_dsn(database_url: str) -> str | None:
+def checkpoint_dsn(database_url: str) -> str:
     """由业务库 URL 派生 checkpointer 的 psycopg DSN。
 
     AsyncPostgresSaver 走 psycopg，不认 SQLAlchemy 的 +asyncpg 方言，需改写协议前缀。
-    非 postgresql URL（测试用 SQLite）返回 None，装配方据此跳过 checkpointer。
     """
     if not database_url.startswith("postgresql"):
-        return None
+        raise ValueError(f"只支持 PostgreSQL，SERVICE_DATABASE_URL 为 {database_url!r}")
     return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)

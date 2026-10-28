@@ -1,24 +1,19 @@
-"""独立执行入口：python -m deepresearcher.worker。"""
+"""独立执行入口：python -m deepresearcher.service.bootstrap.worker。"""
 
 from __future__ import annotations
 
 import asyncio
-import signal
 
 from deepresearcher.config import get_settings
 from deepresearcher.observability import configure_logging
+from deepresearcher.service.bootstrap.loop import asyncio_loop_factory, install_stop_handlers
 from deepresearcher.service.execution.runtime import worker_lifespan
 
 
 async def run() -> None:
     """运行到 SIGINT/SIGTERM 取消主任务为止。"""
     stopped = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stopped.set)
-        except NotImplementedError:  # pragma: no cover - Windows event loop
-            pass
+    install_stop_handlers(stopped)
     async with worker_lifespan():
         await stopped.wait()
 
@@ -30,7 +25,8 @@ def main() -> None:
         log_path=settings.observability.log_dir / settings.observability.log_file,
     )
     try:
-        asyncio.run(run())
+        # 循环必须在建连接池之前就换掉，见 service.bootstrap.loop.selector_loop_factory。
+        asyncio.run(run(), loop_factory=asyncio_loop_factory())
     except KeyboardInterrupt:
         pass
 

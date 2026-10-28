@@ -3,15 +3,14 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from deepresearcher.service.persistence.models import Run, as_utc
+from deepresearcher.service.storage.tables import Run
 
 
 def run_summary(run: Run) -> dict[str, Any]:
     elapsed_ms = None
     if run.started_at:
-        # naive/aware 方言差异统一交给 as_utc(单源在 persistence.models)。
-        started_at = as_utc(run.started_at)
-        end = as_utc(run.finished_at) if run.finished_at else datetime.now(timezone.utc)
+        started_at = run.started_at
+        end = run.finished_at or datetime.now(timezone.utc)
         elapsed_ms = max(0, round((end - started_at).total_seconds() * 1000))
     return {
         "id": run.id,

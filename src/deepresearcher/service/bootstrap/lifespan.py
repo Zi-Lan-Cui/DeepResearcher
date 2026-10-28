@@ -1,9 +1,4 @@
-"""HTTP 控制层的 FastAPI lifespan 装配。
-
-API 不执行图：WorkerRuntime 只存在于独立 worker 进程
-（python -m deepresearcher.worker）。本 lifespan 在共享基础设施栈之上
-装配控制层的运行期依赖。
-"""
+"""HTTP 控制层的 FastAPI lifespan 装配。"""
 
 from __future__ import annotations
 
@@ -14,31 +9,36 @@ from typing import Any
 from fastapi import FastAPI
 
 from deepresearcher.config import Settings, get_settings
-from deepresearcher.service.auth import TokenCodec, make_current_user
+from deepresearcher.service.bootstrap.layers import MessagingPorts, build_runtime_stack
 from deepresearcher.service.runs.manager import RunManager
-from deepresearcher.service.runtime_stack import build_runtime_stack
 from deepresearcher.service.settings import ServiceConfig, get_service_config
+from deepresearcher.service.web.auth import TokenCodec, make_current_user
 from deepresearcher.service.web.login_rate_limit import LoginRateLimiter
 
 
 def make_lifespan(
     settings: Settings | None,
     config: ServiceConfig | None,
+    *,
+    messaging: MessagingPorts | None = None,
 ) -> Callable[[FastAPI], Any]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         service_config = config or get_service_config()
         engine_settings = settings or get_settings()
-        async with build_runtime_stack(service_config, engine_settings, role="api") as stack:
+        async with build_runtime_stack(
+            service_config, engine_settings, role="api", messaging=messaging
+        ) as stack:
             app.state.config = service_config
             app.state.settings = engine_settings
             app.state.engine = stack.engine
             app.state.session_factory = stack.session_factory
-            app.state.hub = stack.hub
+            app.state.buffer = stack.buffer
             app.state.manager = RunManager(
                 session_factory=stack.session_factory,
                 config=service_config,
-                hub=stack.hub,
+                buffer=stack.buffer,
+                publisher=stack.publisher,
                 checkpointer=stack.checkpointer,
                 signal_bus=stack.signal_bus,
             )

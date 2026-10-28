@@ -4,12 +4,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from deepresearcher.service.persistence.models import User
 from deepresearcher.service.preferences import (
     PREFERENCE_CHOICES,
     clamp_preferences,
     frozen_snapshot,
 )
+from deepresearcher.service.storage.tables import User
 from deepresearcher.service.web.dependencies import app_state, current_user
 from deepresearcher.service.web.schemas import UpdatePreferencesBody
 

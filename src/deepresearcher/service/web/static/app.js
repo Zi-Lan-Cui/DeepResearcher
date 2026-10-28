@@ -36,6 +36,27 @@ function logout() {
 
 function show(el) { document.querySelectorAll("main > section").forEach(s => s.classList.add("hide")); el.classList.remove("hide"); }
 
+/* 来源地址来自模型与抓取到的网页，只放行 http/https：javascript: 与 data: 会变成
+   注入面。不可用的地址退回纯文本，不留 href="#" 的死链。 */
+function safeHref(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch { return null; }
+}
+
+function sourceLink(url, text) {
+  const href = safeHref(url);
+  if (!href) {
+    const span = document.createElement("span");
+    span.textContent = text || String(url || "");
+    return span;
+  }
+  const a = document.createElement("a");
+  a.href = href; a.target = "_blank"; a.rel = "noopener"; a.textContent = text || href;
+  return a;
+}
+
 /* 视图路由：hash 极简版 */
 async function showView() {
   // 非路由 hash（锚点或外链分享）：归一化回 #/ 再正常路由，避免白屏或误切视图。
@@ -320,7 +341,7 @@ function drawUsageChart(series) {
 /* 账户：研究偏好表单 */
 const PREFERENCE_LABELS = {
   max_research_rounds: ["研究轮数", "轮次越多，耗时与费用越高"],
-  max_subtasks_per_round: ["每轮方向数", "单轮并行研究的方向上限"],
+  max_tasks_per_round: ["每轮方向数", "单轮并行研究的方向上限"],
   research_agent_max_turns: ["单方向深度", "单个方向允许的检索回合上限"],
   supervisor_max_active_evidences: ["证据池规模", "写作可直接引用的证据上限"],
 };
@@ -730,7 +751,9 @@ function stageNote(stage, text, warn) {
   if (renderNarration(body, text, warn)) trimStageNotes(body);
 }
 
-function ensureCard(id, title) {
+const QUEUED_HINT = "排队中，等待并发槽";
+
+function ensureCard(id, title, state) {
   let card = taskCards.get(id);
   if (card) {
     if (title) {
@@ -738,11 +761,13 @@ function ensureCard(id, title) {
       el.textContent = card.dataset.label + title;
       el.title = title;
     }
+    // 同一任务先排队后开跑：缺省 state 即"已开始"，把排队态切回进行中。
+    if (state !== "queued") setCardQueued(card, false);
     return card;
   }
   const label = "方向 " + (++taskSeq) + " · ";
   card = document.createElement("div");
-  card.className = "tcard running";
+  card.className = "tcard " + (state === "queued" ? "queued" : "running");
   card.dataset.label = label;
   const head = document.createElement("div"); head.className = "tcard-head";
   const t = document.createElement("div"); t.className = "tcard-title";
@@ -752,7 +777,8 @@ function ensureCard(id, title) {
   toggle.title = "展开动作明细";
   toggle.onclick = () => card.classList.toggle("expanded");
   head.append(t, toggle);
-  const live = document.createElement("div"); live.className = "tcard-live"; live.textContent = "准备中…";
+  const live = document.createElement("div"); live.className = "tcard-live";
+  live.textContent = state === "queued" ? QUEUED_HINT : "准备中…";
   const details = document.createElement("ul"); details.className = "tcard-details";
   card.append(head, live, details);
   ensureStage("supervisor").querySelector(".stage-body").appendChild(card);
@@ -761,12 +787,25 @@ function ensureCard(id, title) {
   return card;
 }
 
+/* 排队态只换底色与提示语，卡片本身早已存在——受理即建卡，用户不必等拿到并发槽才看见它。 */
+function setCardQueued(card, queued) {
+  card.classList.toggle("queued", queued);
+  if (queued) card.classList.remove("running"); else card.classList.add("running");
+  const live = card.querySelector(".tcard-live");
+  if (!live) return;
+  if (queued) live.textContent = QUEUED_HINT;
+  else if (live.textContent === QUEUED_HINT) live.textContent = "准备中…";
+  updateTaskCount();
+}
+
 function updateTaskCount() {
   const supervisor = stageBlocks.get("supervisor");
   if (!supervisor) return;
   const running = supervisor.querySelector(".tcard.running");
+  const queued = supervisor.querySelector(".tcard.queued");
   supervisor.querySelector(".stage-count").textContent =
-    taskSeq ? "已派 " + taskSeq + " 个方向" + (running ? " · 执行中" : "") : "";
+    taskSeq ? "已派 " + taskSeq + " 个方向" +
+      (running ? " · 执行中" : queued ? " · 排队中" : "") : "";
 }
 
 function renderStats(data) {
@@ -800,6 +839,19 @@ function cardAction(card, text) {
     while (details.children.length > 80) details.removeChild(details.firstChild);
   }
   details.scrollTop = details.scrollHeight;
+}
+
+/* 方向结论是用户唯一能读到研究内容的入口：卡片平时只显示计数，这里补一段可读总结。
+   失败的任务没有结论，宁可不显示，也不摆一行占位。 */
+function renderTaskConclusion(card, text) {
+  if (!text) return;
+  let block = card.querySelector(".tcard-conclusion");
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "tcard-conclusion";
+    card.querySelector(".tcard-live").after(block);
+  }
+  block.textContent = text;
 }
 
 /* 占位空态只会被真正产出进度内容的帧收走；status/stats 等不产内容。 */
@@ -868,15 +920,16 @@ function handleFrame(event, data) {
     if (data.status !== "awaiting_input") $("clarification-card").classList.add("hide");
   }
   else if (event === "stats") renderStats(data);
-  else if (event === "task_open") ensureCard(data.task, data.title);
+  else if (event === "task_open") ensureCard(data.task, data.title, data.state);
   else if (event === "task_update") {
     const card = ensureCard(data.task, "");           // 孤儿 update 兜底建卡
     if (data.text) cardAction(card, data.text);
   } else if (event === "task_done") {
     const card = ensureCard(data.task, "");
-    card.classList.remove("running");
+    card.classList.remove("running", "queued");
     card.classList.add(data.status === "failed" ? "failed" : data.status === "warn" ? "warn" : "done");
     cardAction(card, (data.status === "failed" ? "✗ " : "✓ ") + (data.summary || "本步完成"));
+    renderTaskConclusion(card, data.conclusion);
     updateTaskCount();
   } else if (event === "clarification") {
     renderClarification(data);
@@ -953,6 +1006,9 @@ function reasonBadge(reason) {
 }
 
 function badgeFor(status, info) {
+  if (status === "completed" && info && info.terminal_reason === "review_abstained") {
+    return { cls: "degraded", text: "未经审阅" };
+  }
   if (status === "completed" && info && info.answer_mode === "review_limited") {
     return { cls: "degraded", text: "受限报告" };
   }
@@ -1001,8 +1057,10 @@ function settleRunningBlocks() {
 async function onRunDone(data) {
   if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   $("report-card").classList.remove("hide");
+  const seq = runViewSeq;
   let detail;
   try { detail = await api("/api/runs/" + currentRunId); } catch (e) { return; }
+  if (seq !== runViewSeq) return;   // 请求期间切了 run，别把旧结果写进新视图
   // 用完整 detail 重设徽章：done 帧缺 terminal_reason，只有这里能判"部分报告"。
   setStatus(detail.status, detail);
   // 实时跑完同样要回填卡片标题：正文 H1 与 detail.title 相同会被剥重，
@@ -1050,7 +1108,9 @@ function renderReportMeta(detail) {
   }
   if (detail.answer_mode === "review_limited") {
     el.classList.add("warn");
-    parts.unshift("受限报告 · 已达到审阅修订上限");
+    parts.unshift(detail.terminal_reason === "review_abstained"
+      ? "未经审阅 · 审阅模型未给出结论"
+      : "受限报告 · 已达到审阅修订上限");
   } else if (degraded) {
     el.classList.add("warn");
     parts.unshift("部分报告");
@@ -1166,9 +1226,7 @@ function renderReport(markdownText, fallbackCitations, detail) {
     for (const c of fallbackCitations) {          // 兜底：老数据无表格式时列原始引用
       const p = document.createElement("p");
       p.textContent = c.title + " — ";
-      const a = document.createElement("a");
-      a.href = c.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = c.url;
-      p.appendChild(a);
+      p.appendChild(sourceLink(c.url, c.url));
       if (c.quote) { const q = document.createElement("i"); q.textContent = "「" + c.quote + "」"; p.appendChild(document.createElement("br")); p.appendChild(q); }
       sourcesEl.appendChild(p);
     }
@@ -1184,9 +1242,7 @@ function renderReport(markdownText, fallbackCitations, detail) {
     const label = document.createElement("b"); label.textContent = "[" + item.label + "] ";
     head.appendChild(label);
     if (item.title && item.title !== item.url) head.appendChild(document.createTextNode(item.title + " — "));
-    const a = document.createElement("a");
-    a.href = item.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = item.url;
-    head.appendChild(a);
+    head.appendChild(sourceLink(item.url, item.url));
     div.appendChild(head);
     if (item.quote) {
       const q = document.createElement("blockquote");
@@ -1430,7 +1486,11 @@ async function consumeStream(runId) {
 }
 
 let currentRunId = null;
+// 视图代次：每次切 run 自增。异步结果回来对不上就丢弃，否则旧请求会把上一个 run
+// 的标题、状态与报告写进新视图。
+let runViewSeq = 0;
 async function renderRun(runId) {
+  const seq = ++runViewSeq;
   currentRunId = runId;
   if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   lastSeq = 0;
@@ -1440,7 +1500,11 @@ async function renderRun(runId) {
   $("run-cancel").disabled = false;
   show($("view-run"));
   let detail;
-  try { detail = await api("/api/runs/" + runId); } catch (e) { progressLine(e.message, true); return; }
+  try { detail = await api("/api/runs/" + runId); } catch (e) {
+    if (seq === runViewSeq) progressLine(e.message, true);
+    return;
+  }
+  if (seq !== runViewSeq) return;
   $("run-query").textContent = detail.query;
   // 未澄清时标题即原问题，下一行纯重复；澄清后标题收敛，原文行才有对照价值。
   $("run-query").classList.toggle("hide", !detail.headline || detail.headline === detail.query);
@@ -1457,6 +1521,7 @@ async function renderRun(runId) {
     // 回放段全程瞬时收拢：刷新时不该看到"先展开再收起"的重演动画。
     instantReplay = true;
     const replayedDone = await consumeStream(runId);
+    if (seq !== runViewSeq) return;
     if (!replayedDone) onRunDone({ status: detail.status });
     const stages = $("stages");
     if (!stages.querySelector(".stage-block")) {

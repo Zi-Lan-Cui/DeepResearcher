@@ -4,12 +4,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from deepresearcher.service.events.projector import project_clarification
-from deepresearcher.service.persistence.models import Run, User
 from deepresearcher.service.preferences import frozen_snapshot
-from deepresearcher.service.runs.service import QuotaExceededError
+from deepresearcher.service.runs.admission import QuotaExceededError
+from deepresearcher.service.storage.tables import Run, User
 from deepresearcher.service.web.dependencies import app_state, current_user, owned_run
 from deepresearcher.service.web.presenters import run_summary
+from deepresearcher.service.web.projector import project_clarification
 from deepresearcher.service.web.schemas import CreateRunBody, ResumeRunBody
 
 router = APIRouter(prefix="/api/runs")
@@ -28,7 +28,12 @@ async def create_run(
     # 个人偏好在创建时刻冻结进 run 行：此后用户改偏好、服务器改 env 都不回溯本场。
     preferences_snapshot = frozen_snapshot(user.preferences, state.settings.agent)
     try:
-        run_id = await state.manager.start(user.id, query, preferences_snapshot)
+        run_id = await state.manager.start(
+            user.id,
+            query,
+            preferences_snapshot,
+            request_id=body.request_id,
+        )
     except QuotaExceededError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
     return {"run_id": run_id}

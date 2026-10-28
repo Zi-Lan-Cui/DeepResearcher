@@ -8,14 +8,14 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from deepresearcher.service.auth import (
+from deepresearcher.service.runs.transitions import OUTSTANDING_STATUSES
+from deepresearcher.service.storage.tables import Run, RunUsage, User
+from deepresearcher.service.web.auth import (
     hash_password,
     normalize_email,
     password_policy_ok,
     verify_password,
 )
-from deepresearcher.service.persistence.models import Run, RunUsage, User
-from deepresearcher.service.runs.transitions import OUTSTANDING_STATUSES
 from deepresearcher.service.web.dependencies import app_state, current_user
 from deepresearcher.service.web.schemas import LoginBody, RegisterBody
 

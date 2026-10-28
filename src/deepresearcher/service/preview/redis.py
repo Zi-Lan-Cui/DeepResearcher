@@ -140,6 +140,8 @@ async def create_redis_ephemeral_bus(
         client = Redis.from_url(
             redis_url,
             decode_responses=False,
+            # redis-py 8 默认 RESP3，低版本服务端会拒绝 HELLO。
+            protocol=2,
             socket_connect_timeout=REDIS_PREVIEW_IO_TIMEOUT_SECONDS,
             socket_timeout=REDIS_PREVIEW_IO_TIMEOUT_SECONDS,
         )
