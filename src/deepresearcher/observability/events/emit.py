@@ -1,8 +1,4 @@
-"""Agent/领域审计事件的一行式发射。
-
-日志与 sink 写入磁盘的顺序集中为一份实现；上下文关联字段由事件工厂
-自读 contextvars，各 Agent 的调用方无需自行展开 current_context()。
-"""
+"""Agent/领域审计事件的一行式发射。"""
 
 import logging
 from collections.abc import Mapping
@@ -16,13 +12,7 @@ DEFAULT_CONTENT_KEYS = ("markdown", "normalized_markdown", "report")
 
 
 class AgentEmit(Protocol):
-    """各 Agent Deps 携带的事件发射回调的统一契约。
-
-    绑定自 agents 侧的 _emit/_emit_audit_event。component 关键字允许
-    领域事件改记到别的组件名下，例如 Supervisor 派发链发出的事件归属
-    research_agent 组件，默认值由绑定方自带。Deps 以此协议替代宽松的
-    Callable，两个 agent 的 emit 遵循同一契约。
-    """
+    """各 Agent Deps 携带的事件发射回调的统一契约。"""
 
     def __call__(
         self,

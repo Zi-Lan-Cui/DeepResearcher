@@ -1,9 +1,4 @@
-"""LedgerSpanProcessor：把本项目的 span 写成事件日志记录（run_events/JSONL）。
-
-on_start 写 *_started，on_end 写 *_completed/failed/cancelled。只处理本
-instrumentation scope 的 span，按 deepresearcher.run_id 路由到该 run 的 sink；
-查无 sink 时丢弃并告警一次，写 sink 抛错不得波及 span 路径。
-"""
+"""LedgerSpanProcessor：把本项目的 span 写成事件日志记录（run_events/JSONL）。"""
 
 import json
 import logging

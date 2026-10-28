@@ -1,4 +1,4 @@
-"""单次 Agent 执行的非持久化归属信息。"""
+"""单次 Agent 调用的非持久化归属标签。"""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class AgentExecutionScope:
-    """标识一次 Agent 执行属于哪个 run/任务。
+class AgentScope:
+    """标识这次 Agent 调用归属哪个 run/task。
 
-    Scope 随运行时上下文注入，不进入 checkpoint；工具名、tool_call_id、
-    turn 和耗时由中间件在调用处补充。
+    只承载坐标、不承载执行轨迹：时间、状态、耗时由中间件在调用处补进事件，
+    本对象随运行时上下文注入，不进入 checkpoint。
     """
 
     run_id: str
@@ -26,7 +26,7 @@ class AgentExecutionScope:
         task: Mapping[str, object],
         *,
         agent_name: str,
-    ) -> "AgentExecutionScope":
+    ) -> "AgentScope":
         task_id = str(task["id"])
         return cls(
             run_id=str(task.get("run_id") or ""),

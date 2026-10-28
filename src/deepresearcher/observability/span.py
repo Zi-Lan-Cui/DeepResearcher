@@ -1,9 +1,4 @@
-"""业务关联标签的 ContextVar 载体：new_id 生成、current_span_context 冻结快照。
-
-trace/span 身份本身由 OpenTelemetry 当前上下文持有，见 spans.py；此处只保留
-run/session/node 三个业务标签——日志前缀与事件上的关联字段依赖它们，
-与 span 生命周期解耦。
-"""
+"""业务关联标签的 ContextVar 载体：new_id 生成、current_span_context 冻结快照。"""
 
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -24,11 +19,7 @@ class TraceContext:
 
 @dataclass(frozen=True)
 class SpanContext:
-    """从活跃上下文冻结出的可携带关联身份。
-
-    在 span 内取出后，跨 with 边界或跨协程交给 helper 写事件时传 link= 即可，不必
-    直接传 trace/span 字符串；link=None 时事件工厂自动读取当前上下文。
-    """
+    """从活跃上下文冻结出的可携带关联身份。"""
 
     trace_id: str | None = None
     span_id: str | None = None

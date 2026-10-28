@@ -1,12 +1,8 @@
 """事件去重键：只由业务对象与执行位置构成，重放时取到同一个值。
 
-    {checkpoint_ns}|{event_type}|{identity}   位置与对象都可得
-    {event_type}|{identity}                   仅有对象身份
-    都不成立 → None                           该事件不参与去重
-
-checkpoint_ns 由父 checkpoint、节点名与 step 派生，恢复后重算仍相同，换一轮又不同，
-因此重放不变且跨轮可区分（checkpoint_id 首次执行时是 None，不能替代）。identity 取
-task_id、tool_call_id、operation_id 拼接；seq 由数据库自增、重放必然变大，只做水位。
+{checkpoint_ns}|{event_type}|{identity}   位置与对象都可得
+{event_type}|{identity}                   仅有对象身份
+都不成立 → None                           该事件不参与去重
 """
 
 from __future__ import annotations
@@ -55,11 +51,7 @@ def bind_position(namespace: str | None) -> Iterator[None]:
 
 @contextmanager
 def bind_position_from(config: Any) -> Iterator[None]:
-    """从 LangGraph 注入的 config 取出 checkpoint_ns 并绑定。
-
-    config 可能是 RunnableConfig 也可能是普通映射。测试直接调用节点函数时
-    没有 config，此时不绑定，事件落回对象身份那一档。
-    """
+    """从 LangGraph 注入的 config 取出 checkpoint_ns 并绑定。"""
     configurable = config.get("configurable") if isinstance(config, Mapping) else None
     if not isinstance(configurable, Mapping):
         configurable = {}
@@ -68,11 +60,7 @@ def bind_position_from(config: Any) -> Iterator[None]:
 
 
 def bind_position_from_current() -> Any:
-    """按当前上下文里的 config 绑定位置，返回 contextmanager。
-
-    模型与工具钩子没有显式 config 参数，但处在 LangGraph 的 config 作用域内，
-    ensure_config() 能取到所在节点的 ns。取不到就不绑定，不阻断执行。
-    """
+    """按当前上下文里的 config 绑定位置，返回 contextmanager。"""
     try:
         config = ensure_config()
     except Exception:  # noqa: BLE001 - 取不到就是没位置，降级处理，不阻断执行

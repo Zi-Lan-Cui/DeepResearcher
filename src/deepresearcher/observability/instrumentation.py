@@ -15,7 +15,7 @@ from langgraph.errors import GraphBubbleUp
 from deepresearcher.observability.events.models import make_node_event
 from deepresearcher.observability.events.sink import JsonlSink
 from deepresearcher.observability.logging_config import get_logger
-from deepresearcher.observability.tracing.context import (
+from deepresearcher.observability.span import (
     SpanContext,
     bind_context,
     current_span_context,

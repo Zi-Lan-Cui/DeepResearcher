@@ -2,7 +2,7 @@ import logging
 import logging.config
 from pathlib import Path
 
-from deepresearcher.observability.tracing.context import current_context
+from deepresearcher.observability.span import current_context
 
 
 def get_logger(name: str = "deepresearcher") -> logging.Logger:

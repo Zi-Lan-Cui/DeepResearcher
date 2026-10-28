@@ -13,7 +13,7 @@ from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_trace
 
 from deepresearcher.errors import clip_text
-from deepresearcher.observability.tracing.context import bind_context, current_context
+from deepresearcher.observability.span import bind_context, current_context
 
 # OTel 语义惯例：出站依赖调用(工具触网)用 CLIENT，图内编排节点用 INTERNAL。
 _SPAN_KIND_MAP = {

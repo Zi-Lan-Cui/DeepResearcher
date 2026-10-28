@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from deepresearcher.errors import clip_text
 from deepresearcher.observability.events.dedup import build_dedup_key
-from deepresearcher.observability.tracing.context import SpanContext, current_span_context
+from deepresearcher.observability.span import SpanContext, current_span_context
 
 
 def _link_or(link: SpanContext | None) -> SpanContext:
