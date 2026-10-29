@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar, cast
 
 from langchain_core.exceptions import OutputParserException
@@ -50,14 +50,23 @@ def classify_llm_error(exc: BaseException) -> str | None:
     return None
 
 
-def build_llm(settings: Settings | None = None) -> ChatOpenAI:
-    """构造研究链所需的裸模型；配置缺失应在应用装配期失败。"""
+def build_llm(
+    settings: Settings | None = None,
+    *,
+    request_overrides: Mapping[str, Any] | None = None,
+) -> BaseChatModel:
+    """构造研究链所需的裸模型；配置缺失应在应用装配期失败。
+
+    参数：
+        settings: 省略时取 get_settings()。
+        request_overrides: 该实例的请求参数覆盖，语义见 derive_llm。
+    """
     config = (settings or get_settings()).llm
     if not config.configured:
         raise LLMConfigurationError(
-            "缺少 LLM_API_KEY、LLM_BASE_URL 或 LLM_MODEL_ID，无法构造研究应用。"
+            "缺少 LLM_API_KEY、LLM_BASE_URL 或 LLM_MODEL_ID，无法构造LLM客户端。"
         )
-    return ChatOpenAI(
+    llm = ChatOpenAI(
         model=config.model,
         api_key=SecretStr(config.api_key),
         base_url=config.base_url,
@@ -65,6 +74,37 @@ def build_llm(settings: Settings | None = None) -> ChatOpenAI:
         timeout=config.timeout,
         max_completion_tokens=config.max_completion_tokens,
     )
+    return derive_llm(llm, request_overrides)
+
+
+def derive_llm(
+    llm: BaseChatModel,
+    request_overrides: Mapping[str, Any] | None = None,
+) -> BaseChatModel:
+    """派生一份带请求参数覆盖的模型实例；没有覆盖项时原样返回。"""
+    if not request_overrides:
+        return llm
+    updates = dict(request_overrides)
+    fields = getattr(type(llm), "model_fields", None)
+    if fields is not None:
+        unknown = sorted(set(updates) - set(fields))
+        if unknown:
+            raise LLMConfigurationError(
+                f"请求参数 {', '.join(unknown)} 不是 {type(llm).__name__} 的字段；"
+                "供应商私有的思考开关请放进 extra_body。"
+            )
+    extra = updates.get("extra_body")
+    if isinstance(extra, Mapping):
+        # 与构造期已有的 extra_body 合并，覆盖项优先：派生不能把基线已有的键抹掉。
+        base_extra = getattr(llm, "extra_body", None) or {}
+        updates["extra_body"] = {**dict(base_extra), **dict(extra)}
+    copier = getattr(llm, "model_copy", None)
+    if copier is None:
+        # 有覆盖项却派生不出来，必须报错：静默返回基线等于开关没生效。
+        raise LLMConfigurationError(
+            f"{type(llm).__name__} 不能按请求参数派生；覆盖项只支持 pydantic 模型实例。"
+        )
+    return copier(update=updates)
 
 
 async def ainvoke_text(

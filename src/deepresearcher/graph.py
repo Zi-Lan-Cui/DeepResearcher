@@ -11,7 +11,7 @@ from deepresearcher.agents.clarifier.graph import build_clarifier_graph
 from deepresearcher.agents.supervisor import Supervisor
 from deepresearcher.config import Settings, get_settings
 from deepresearcher.errors import clip_text
-from deepresearcher.llm import build_llm
+from deepresearcher.llm import build_llm, derive_llm
 from deepresearcher.node_runner import execute_node
 from deepresearcher.observability.events.dedup import bind_position_from
 from deepresearcher.observability.instrumentation import instrument_node
@@ -51,6 +51,17 @@ _TRUNCATED_FIELDS: dict[str, int | None] = {
 
 #: 只上报条数的集合字段。
 _COUNTED_FIELDS = ("citations", "task_results", "evidences", "paragraph_bindings")
+
+#: 可以按角色覆盖模型请求参数的名字；与 build_graph 里逐个派生的实例一一对应。
+_OVERRIDABLE_ACTORS = (
+    "router",
+    "quick_answer",
+    "clarifier",
+    "supervisor",
+    "researcher",
+    "writer",
+    "reviewer",
+)
 
 
 def summarize_node_result(result: dict, *, max_text_chars: int) -> dict:
@@ -225,13 +236,29 @@ def build_graph(
     """
     settings = settings or get_settings()
     llm = llm or build_llm(settings)
+    # 每个 agent 持有一份派生实例，思考开关这类请求参数才能按角色分开。
+    # 没有覆盖项的 agent 共用同一基线对象，不多占客户端。
+    overrides = settings.llm.request_overrides
+    unknown_actors = sorted(set(overrides) - set(_OVERRIDABLE_ACTORS))
+    if unknown_actors:
+        raise ValueError(
+            f"LLM_REQUEST_OVERRIDES 含未知角色：{', '.join(unknown_actors)}；"
+            f"可选：{', '.join(_OVERRIDABLE_ACTORS)}"
+        )
+    llm_router = derive_llm(llm, overrides.get("router"))
+    llm_quick_answer = derive_llm(llm, overrides.get("quick_answer"))
+    llm_clarifier = derive_llm(llm, overrides.get("clarifier"))
+    llm_supervisor = derive_llm(llm, overrides.get("supervisor"))
+    llm_researcher = derive_llm(llm, overrides.get("researcher"))
+    llm_writer = derive_llm(llm, overrides.get("writer"))
+    llm_reviewer = derive_llm(llm, overrides.get("reviewer"))
 
     if not settings.search.configured:
         provider = settings.search.provider
         if provider == "auto":
             detail = (
-                "需要 BAIDU/TAVILY/SERPAPI API Key；如使用阿里云，请显式设置 "
-                "SEARCH_PROVIDER=aliyun 并配置默认凭据链"
+                "需要 BAIDU/TAVILY/SERPAPI API Key，或 "
+                "ALIBABA_CLOUD_ACCESS_KEY_ID + ALIBABA_CLOUD_ACCESS_KEY_SECRET"
             )
         else:
             detail = f"已选择 {provider}，但未配置该搜索 Provider 所需的凭据"
@@ -242,10 +269,9 @@ def build_graph(
         raise ValueError("build_graph 需要 material_store：材料存储没有进程内实现")
     shared_materials = material_store
     owns_http_client = http_client is None
-    uses_aliyun = settings.search.provider == "aliyun" or (
-        "aliyun" in settings.search.fetch_provider_order
+    aliyun_client = (
+        create_aliyun_dts_client(settings.search) if settings.search.aliyun_in_use else None
     )
-    aliyun_client = create_aliyun_dts_client(settings.search) if uses_aliyun else None
     search_tool = SearchTool(
         SearchService(
             settings.search,
@@ -258,8 +284,8 @@ def build_graph(
     fetch_providers = []
     for provider_name in settings.search.fetch_provider_order:
         if provider_name == "aliyun":
-            if aliyun_client is None:  # pragma: no cover - guarded by uses_aliyun
-                raise ToolConfigurationError("未初始化阿里云 DTS AI 客户端")
+            if aliyun_client is None:  # pragma: no cover - guarded by aliyun_in_use
+                raise ToolConfigurationError("未初始化阿里云网页搜索客户端")
             fetch_providers.append(AliyunFetchProvider(settings.search, aliyun_client))
         else:
             fetch_providers.append(DirectHttpFetchProvider(settings.search, shared_http))
@@ -274,13 +300,13 @@ def build_graph(
         document_inline_max_tokens=settings.agent.document_inline_max_tokens,
     )
     clarifier = Clarifier(
-        llm,
+        llm_clarifier,
         settings.agent,
         context_window_tokens=settings.llm.context_window_tokens,
     )
     clarifier_graph = build_clarifier_graph(clarifier.run)
     writer_agent = Writer(
-        llm,
+        llm_writer,
         settings.agent,
         render_incomplete=lambda state: render_incomplete_report(
             state,
@@ -291,7 +317,7 @@ def build_graph(
         context_window_tokens=settings.llm.context_window_tokens,
     )
     research_agent = Researcher(
-        llm,
+        llm_researcher,
         settings.agent,
         search_tool=search_tool,
         reader_tool=reader_tool,
@@ -300,7 +326,7 @@ def build_graph(
         material_store=shared_materials,
     )
     supervisor = Supervisor(
-        llm,
+        llm_supervisor,
         settings.agent,
         research_agent=research_agent,
         event_sink=event_sink,
@@ -311,7 +337,7 @@ def build_graph(
         NodeName.ROUTER,
         _routed_node(
             NodeName.ROUTER,
-            lambda state: nodes.router(state, llm, agent_config=settings.agent),
+            lambda state: nodes.router(state, llm_router, agent_config=settings.agent),
             route_after_router,
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
@@ -337,7 +363,7 @@ def build_graph(
         NodeName.QUICK_ANSWER,
         _routed_node(
             NodeName.QUICK_ANSWER,
-            lambda state: nodes.quick_answer(state, llm, agent_config=settings.agent),
+            lambda state: nodes.quick_answer(state, llm_quick_answer, agent_config=settings.agent),
             route_after_quick_answer,
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
@@ -388,7 +414,7 @@ def build_graph(
         NodeName.REVIEWER,
         _routed_node(
             NodeName.REVIEWER,
-            lambda state: nodes.reviewer(state, llm, agent_config=settings.agent),
+            lambda state: nodes.reviewer(state, llm_reviewer, agent_config=settings.agent),
             route_after_reviewer,
             event_sink=event_sink,
             max_text_chars=settings.observability.max_text_chars,
