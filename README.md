@@ -35,15 +35,13 @@ docker compose up -d --build   # 启动服务，拉起 API、Worker、Postgres�
 | 配置项 | 作用 | 必填 | 默认 |
 |---|---|---|---|
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_ID` | 模型服务，OpenAI 兼容接口均可 | 是 | 无 |
-| `BAIDU_API_KEY` / `TAVILY_API_KEY` / `SERPAPI_API_KEY` / `ALIBABA_CLOUD_ACCESS_KEY_ID`+`SECRET` | 搜索服务，至少配一处；阿里云填充 AccessKey 即在 `auto` 下生效 | 是 | 无 |
-| `FETCH_PROVIDER_ORDER` | 网页抓取器，支持`aliyun`（需配阿里云凭据）与 `direct`（本地）；本地实现更容易被反爬拦截 | 否 | 空，只走 `direct` |
-| `ALIYUN_WEB_PROXY` | 阿里云出网代理。留空直连，并忽略环境里的 `HTTP_PROXY` | 否 | 空，直连 |
+| `BAIDU_API_KEY` / `TAVILY_API_KEY` / `SERPAPI_API_KEY` / `DEEPSEEK_API_KEY` / `ALIBABA_CLOUD_ACCESS_KEY_ID`+`SECRET` | 搜索服务，至少配一处；阿里云填充 AccessKey 即在 `auto` 下生效 | 是 | 无 |
+| `FETCH_PROVIDER_ORDER` | 网页抓取器，支持 `direct`、`aliyun` 与 `deepseek`；`direct` 容易被反爬拦截，推荐配置 | 否 | `direct` |
 | `SERVICE_JWT_SECRET` | 登录令牌签名 | 正式部署必填 | 本地可留空，重启后需重新登录 |
-| `SERVICE_ROCKETMQ_ENDPOINTS` | 分派消息的接入点，填 proxy 的 gRPC 端口 | 是 | `127.0.0.1:8081` |
 | `AGENT_MAX_RESEARCH_ROUNDS` | 研究轮数上限 | 否 | 2 |
 | `SERVICE_MAX_CONCURRENT_RUNS_PER_USER` | 单个用户同时进行的研究数 | 否 | 2 |
 | `LLM_MAX_TOKENS_PER_RUN` / `LLM_MAX_COST_CNY_PER_RUN` | 单次研究的 token 与花费上限 | 否 | 0，不限制 |
-| `LLM_REQUEST_OVERRIDES` | 按角色覆盖模型请求参数（JSON），如只关研究员的思考；键为 `supervisor` / `researcher` / `writer` / `reviewer` / `router` / `quick_answer` / `clarifier` | 否 | 空，全部共用同一模型 |
+| `LLM_REQUEST_OVERRIDES` |节点请求的额外参数，JSON 格式，可用于关闭模型思考 | 否 | 空 |
 | `SERVICE_RUN_TRACE_RETENTION_DAYS` | 已完成研究的过程数据保留天数，报告本身不受影响 | 否 | 14 |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | 调用链与耗时观测 | 否 | 缺任一即关闭 |
 | `SSRF_ALLOW_PRIVATE_ADDRESSES` | 允许抓取私网地址，供 fake-IP 代理等本地环境使用 | 否 | `false`，私网与保留段默认拦 |
@@ -55,9 +53,12 @@ docker compose up -d --build   # 启动服务，拉起 API、Worker、Postgres�
 
 注册登录后输入问题。问题不够明确时，系统会给出澄清选项帮助确定问题边界，保障回答方向正确性。问题确定后，点击开始研究，下方时间线会实时显示当前阶段、派发方向以及各研究方向的进展，查询哪些关键词，抓取了哪些网站。
 
-![详情页：阶段时间线与研究进度实时呈现](assets/screenshots/progress.png)
+![详情页：阶段时间线与研究进度实时呈现](assets/screenshots/progress.jpeg)
 
-完成后下方会给出带详细引用的研究报告，可复制或导出为 PDF。引用标号点击可转到对应来源，点开即见原文摘录：
+完成后下方会给出带详细引用的研究报告，可复制或导出为 PDF。
+![研究报告：带交叉引用](assets/screenshots/article.png)
+
+引用标号点击可转到对应来源，点开即见原文摘录：
 
 ![来源表：每条结论对应逐字摘录的原文与出处链接](assets/screenshots/quotes.png)
 
