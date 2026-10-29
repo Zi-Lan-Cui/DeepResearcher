@@ -19,7 +19,6 @@ def _clean_env(monkeypatch, tmp_path):
         "SERVICE_MAX_GLOBAL_QUEUED_RUNS",
         "SERVICE_WORKER_MAX_RUNNING_RUNS",
         "SERVICE_WORKER_HEARTBEAT_SECONDS",
-        "SERVICE_REDIS_PREVIEW_ENABLED",
         "SERVICE_REDIS_URL",
         "SERVICE_REDIS_CHANNEL_PREFIX",
         "SERVICE_REDIS_PREVIEW_QUEUE_SIZE",
@@ -75,7 +74,6 @@ def test_development_falls_back_to_ephemeral_secret(_clean_env, monkeypatch):
     assert config.rocketmq_dispatch_max_attempts < 17
     # 简单消费者一次只轮询一个 topic，长轮询时长直接变成另一个 topic 上的分派延迟。
     assert config.rocketmq_await_duration_seconds <= 5
-    assert config.redis_preview_enabled is False
     assert config.redis_url == "redis://127.0.0.1:6379/0"
     assert config.redis_preview_queue_size == 128
     assert config.login_account_attempts == 5
@@ -100,7 +98,6 @@ def test_env_overrides_are_clamped(_clean_env, monkeypatch):
     monkeypatch.setenv("SERVICE_JWT_SECRET", _long_secret())
     monkeypatch.setenv("SERVICE_TOKEN_TTL_HOURS", "0")  # 非法 → 夹到最小 1
     monkeypatch.setenv("SERVICE_MAX_CONCURRENT_RUNS_PER_USER", "not-a-number")  # 回落默认
-    monkeypatch.setenv("SERVICE_REDIS_PREVIEW_ENABLED", "true")
     monkeypatch.setenv("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", "0")
     monkeypatch.setenv("SERVICE_RUN_TRACE_RETENTION_DAYS", "-5")
     monkeypatch.setenv("SERVICE_RETENTION_SWEEP_INTERVAL_SECONDS", "1")
@@ -109,7 +106,6 @@ def test_env_overrides_are_clamped(_clean_env, monkeypatch):
     assert config.run_trace_retention_days == 0
     assert config.retention_sweep_interval_seconds == 60
     assert config.max_concurrent_runs_per_user == 2
-    assert config.redis_preview_enabled is True
     assert config.redis_preview_queue_size == 1
 
 

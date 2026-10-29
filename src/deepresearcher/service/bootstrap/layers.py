@@ -146,14 +146,13 @@ async def build_runtime_stack(
         if http_client is not None:
             resources.push_async_callback(http_client.aclose)
         ephemeral_bus: EphemeralEventBus | None = None
-        if service_config.redis_preview_enabled:
-            ephemeral_bus = await create_redis_ephemeral_bus(
-                service_config.redis_url,
-                channel_prefix=service_config.redis_channel_prefix,
-                queue_size=service_config.redis_preview_queue_size,
-            )
-            if ephemeral_bus is not None:  # 工厂可能返回 None；持久事件仍可用，无需登记释放
-                resources.push_async_callback(ephemeral_bus.close)
+        ephemeral_bus = await create_redis_ephemeral_bus(
+            service_config.redis_url,
+            channel_prefix=service_config.redis_channel_prefix,
+            queue_size=service_config.redis_preview_queue_size,
+        )
+        if ephemeral_bus is not None:  # Redis 不可用时仍保留持久事件流
+            resources.push_async_callback(ephemeral_bus.close)
 
         dsn = checkpoint_dsn(service_config.database_url)
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver

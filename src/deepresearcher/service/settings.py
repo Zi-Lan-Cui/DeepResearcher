@@ -48,15 +48,13 @@ class ServiceConfig:
     rocketmq_invisible_seconds: int = 90
     rocketmq_visibility_renew_seconds: int = 30
     # 投递次数上限。proxy 在 reconsumeTimes >= maxAttempts（消费组 retryMaxTimes + 1，默认
-    # 17）时直接转 %DLQ%，消息不再下发，这一行就再没有消息驱动。留 2 次余量，让 15、16、
-    # 17 次投递都有机会完成结算。
+    # 17）时直接转 %DLQ%，消息不再下发，未被结算，留 2 次余量进行结算
     rocketmq_dispatch_max_attempts: int = 15
     # 单条拉取请求挂多久。分派延迟由下面的并发度决定，这个值只影响空轮询的频率。
     rocketmq_await_duration_seconds: int = 2
-    # 并发拉取循环数，同时也是预取上限。取值要盖住 topic 数乘队列数（本地 2 × 8 = 16），
-    # 否则仍有队列要等下一圈才被轮询到；拉满即停止拉取。
+    # 并发拉取循环数，同时也是预取上限。取值建议大于 topic 数乘队列数（本地 2 × 8 = 16），
+    # 否则仍有队列要等下一圈才能被轮询到
     rocketmq_pull_fanout: int = 16
-    redis_preview_enabled: bool = False
     redis_url: str = "redis://127.0.0.1:6379/0"
     redis_channel_prefix: str = "deepresearcher"
     redis_preview_queue_size: int = 128
@@ -141,7 +139,6 @@ def get_service_config() -> ServiceConfig:
             1, _int_env("SERVICE_ROCKETMQ_AWAIT_DURATION_SECONDS", 2)
         ),
         rocketmq_pull_fanout=max(1, _int_env("SERVICE_ROCKETMQ_PULL_FANOUT", 16)),
-        redis_preview_enabled=_bool_env("SERVICE_REDIS_PREVIEW_ENABLED", False),
         redis_url=redis_url,
         redis_channel_prefix=_env("SERVICE_REDIS_CHANNEL_PREFIX", "deepresearcher"),
         redis_preview_queue_size=max(1, _int_env("SERVICE_REDIS_PREVIEW_QUEUE_SIZE", 128)),
