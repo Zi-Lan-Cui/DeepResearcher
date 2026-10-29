@@ -28,10 +28,14 @@ from deepresearcher.tools.transport.aliyun import (
 )
 from deepresearcher.tools.web import (
     AliyunFetchProvider,
+    DeepSeekFetchProvider,
     DirectHttpFetchProvider,
     FetchService,
     SearchService,
 )
+from deepresearcher.tools.web.fetch.providers import build_fetch_providers
+from deepresearcher.tools.web.search.providers import build_search_providers
+from deepresearcher.tools.web.search.providers.deepseek import DeepSeekSearchProvider
 
 
 def test_aliyun_wrapper_does_not_import_credentials_before_settings_load():
@@ -465,6 +469,166 @@ def test_search_rejects_malformed_response():
     )
     with pytest.raises(ToolParseError):
         asyncio.run(client.asearch("question"))
+
+
+def test_deepseek_search_maps_results_and_carries_body():
+    fake = FakeHttpClient(
+        response(
+            {
+                "results": [
+                    {
+                        "rerank_score": 2.4,
+                        "title": "DeepSeek V4 发布",
+                        "url": "https://example.com/v4",
+                        "snippet": "短摘要",
+                        "summary": "长摘要",
+                        "content": "# 正文\n\n正文内容",
+                        "date": "2026-06-01T00:00:00+00:00",
+                    },
+                    {"title": "无链接", "url": ""},
+                ]
+            }
+        )
+    )
+    results = asyncio.run(
+        DeepSeekSearchProvider(SearchConfig(deepseek_api_key="sk-test"), fake).asearch("q", 5)
+    )
+
+    assert results == [
+        {
+            "title": "DeepSeek V4 发布",
+            "url": "https://example.com/v4",
+            "snippet": "长摘要",
+            "raw_content": "# 正文\n\n正文内容",
+            "content_provider": "deepseek",
+            "score": 2.4,
+            "published_at": "2026-06-01T00:00:00+00:00",
+        }
+    ]
+    assert fake.last_kwargs["json"] == {"query": "q", "count": 5, "need_content": True}
+    assert fake.last_kwargs["request_kind"] == "search"
+    assert fake.last_kwargs["headers"]["Authorization"] == "Bearer sk-test"
+
+
+def test_deepseek_search_clamps_count_into_api_range():
+    fake = FakeHttpClient(response({"results": []}))
+
+    asyncio.run(DeepSeekSearchProvider(SearchConfig(deepseek_api_key="k"), fake).asearch("q", 99))
+
+    # 越界是 400 而不是截断，必须先夹住再发。
+    assert fake.last_kwargs["json"]["count"] == 50
+
+
+def test_deepseek_search_parse_failure_is_reported_as_parse_error():
+    fake = FakeHttpClient(
+        response({"results": [{"url": "https://a.test", "rerank_score": "high"}]})
+    )
+
+    with pytest.raises(ToolParseError):
+        asyncio.run(
+            DeepSeekSearchProvider(SearchConfig(deepseek_api_key="k"), fake).asearch("q", 5)
+        )
+
+
+def test_deepseek_fetch_parses_markdown_returned_by_service():
+    fake = FakeHttpClient(
+        response(
+            {"title": "示例文章", "content": "# 标题\n\n正文一段。\n\n## 小节\n\n第二段。"},
+            url="https://api.deepseek.com/v1/tools/fetch",
+        )
+    )
+    document = asyncio.run(
+        DeepSeekFetchProvider(SearchConfig(deepseek_api_key="k"), fake).afetch(
+            "https://example.com/a"
+        )
+    )
+
+    assert document["title"] == "示例文章"
+    assert "正文一段。" in document["text"]
+    assert [block["block_type"] for block in document["blocks"]] == [
+        "heading",
+        "paragraph",
+        "heading",
+        "paragraph",
+    ]
+    assert document["retrieval_method"] == "deepseek_web_fetch"
+    assert document["ext"] == "md"
+    assert fake.last_kwargs["json"] == {"url": "https://example.com/a"}
+    assert fake.last_kwargs["request_kind"] == "fetch"
+
+
+def test_deepseek_fetch_turns_not_found_into_skippable_reason():
+    error = ToolRequestError("HTTP 404 from https://api.deepseek.com", retryable=False)
+    error.status_code = 404
+
+    with pytest.raises(SourceUnavailableError) as exc_info:
+        asyncio.run(
+            DeepSeekFetchProvider(
+                SearchConfig(deepseek_api_key="k"), FakeHttpClient(error=error)
+            ).afetch("https://example.com/gone")
+        )
+
+    assert exc_info.value.reason_code == "empty_content"
+
+
+def test_deepseek_fetch_marks_invalid_key_as_account_level():
+    error = ToolRequestError("HTTP 401 from https://api.deepseek.com", retryable=False)
+    error.status_code = 401
+
+    with pytest.raises(ProviderExhaustedError) as exc_info:
+        asyncio.run(
+            DeepSeekFetchProvider(
+                SearchConfig(deepseek_api_key="k"), FakeHttpClient(error=error)
+            ).afetch("https://example.com/a")
+        )
+
+    assert exc_info.value.user_code == "invalid_key"
+
+
+def test_deepseek_fetch_keeps_transport_failure_retryable():
+    error = ToolRequestError("请求失败（共 3 次）：连接被重置")
+
+    with pytest.raises(ToolRequestError) as exc_info:
+        asyncio.run(
+            DeepSeekFetchProvider(
+                SearchConfig(deepseek_api_key="k"), FakeHttpClient(error=error)
+            ).afetch("https://example.com/a")
+        )
+
+    # 没有状态码说明没拿到服务端答复，不能降级成「来源不可用」把这次读取判死。
+    assert not isinstance(exc_info.value, SourceUnavailableError)
+    assert exc_info.value.retryable is True
+
+
+def test_deepseek_fetch_rejects_empty_body_before_parse():
+    fake = FakeHttpClient(response({"title": "", "content": " \n "}))
+
+    with pytest.raises(SourceUnavailableError) as exc_info:
+        asyncio.run(
+            DeepSeekFetchProvider(SearchConfig(deepseek_api_key="k"), fake).afetch(
+                "https://example.com/empty"
+            )
+        )
+
+    assert exc_info.value.reason_code == "empty_content"
+
+
+def test_deepseek_only_enters_chains_when_credentials_exist():
+    http = FakeHttpClient()
+    search = build_search_providers(
+        SearchConfig(deepseek_api_key="k", tavily_api_key="t"), http, None
+    )
+    fetch = build_fetch_providers(
+        SearchConfig(deepseek_api_key="k", fetch_provider_order=("direct", "deepseek")), http, None
+    )
+    fetch_without_key = build_fetch_providers(
+        SearchConfig(fetch_provider_order=("direct", "deepseek")), http, None
+    )
+
+    assert [name for name, _ in search] == ["deepseek", "tavily"]
+    assert [provider.name for provider in fetch] == ["direct", "deepseek"]
+    # 没有 key 的抓取器直接不进链，而不是每次请求都撞 401。
+    assert [provider.name for provider in fetch_without_key] == ["direct"]
 
 
 def test_fetch_parses_html_without_network():

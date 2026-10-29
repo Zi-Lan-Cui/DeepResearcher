@@ -31,10 +31,18 @@ from deepresearcher.tools.web.materials import ResearchMaterialStore
 from deepresearcher.tools.web.parsing.models import DocumentBlock
 from deepresearcher.tools.web.search.models import SearchResult
 from deepresearcher.vocab import (
+    RETRIEVAL_DEEPSEEK_SEARCH_CONTENT,
     RETRIEVAL_ORIGIN_FETCH,
+    RETRIEVAL_SEARCH_PROVIDER_CONTENT,
     RETRIEVAL_SEARCH_SUMMARY,
     RETRIEVAL_TAVILY_RAW_CONTENT,
 )
+
+# 搜索接口随结果带回的正文按供应商标注，别让 deepseek 的内容挂上 tavily 的名字。
+_SEARCH_CONTENT_METHODS: dict[str, str] = {
+    "tavily": RETRIEVAL_TAVILY_RAW_CONTENT,
+    "deepseek": RETRIEVAL_DEEPSEEK_SEARCH_CONTENT,
+}
 
 
 class SourceReaderTool:
@@ -276,7 +284,10 @@ class SourceReaderTool:
         raw_content = str(result.get("raw_content", "")).strip()
         snippet = str(result.get("snippet", "")).strip()
         if raw_content:
-            text, method, ceiling = raw_content, RETRIEVAL_TAVILY_RAW_CONTENT, "strict"
+            method = _SEARCH_CONTENT_METHODS.get(
+                str(result.get("content_provider", "")), RETRIEVAL_SEARCH_PROVIDER_CONTENT
+            )
+            text, ceiling = raw_content, "strict"
         elif snippet:
             text, method, ceiling = snippet, RETRIEVAL_SEARCH_SUMMARY, "partial"
         else:

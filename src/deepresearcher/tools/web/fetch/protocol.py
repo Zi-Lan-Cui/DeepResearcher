@@ -6,7 +6,7 @@ from deepresearcher.tools.web.fetch.models import SourceDocument
 
 
 class FetchProvider(Protocol):
-    """取得并标准化一个 URL；不负责 Evidence 抽取。"""
+    """取得并标准化一个 URL"""
 
     name: str
 

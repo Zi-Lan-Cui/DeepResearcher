@@ -84,8 +84,9 @@ def _clear_search_credentials(monkeypatch):
         "ALIBABA_CLOUD_CREDENTIALS_URI",
         "BAIDU_API_KEY",
         "SERPAPI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "SEARCH_PROVIDER",
-        "SEARCH_PROVIDER_PRIORITY",
+        "SEARCH_PROVIDER_ORDER",
     ):
         monkeypatch.delenv(name, raising=False)
 

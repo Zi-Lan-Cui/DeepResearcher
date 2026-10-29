@@ -27,14 +27,13 @@ from deepresearcher.routing import (
 )
 from deepresearcher.state import RunState
 from deepresearcher.tools import (
-    AliyunFetchProvider,
-    DirectHttpFetchProvider,
     FetchService,
     HttpClient,
     SearchService,
     SearchTool,
     SourceReaderTool,
     ToolConfigurationError,
+    build_fetch_providers,
 )
 from deepresearcher.tools.transport.aliyun import create_aliyun_dts_client
 from deepresearcher.tools.web.materials import ResearchMaterialStore
@@ -257,7 +256,7 @@ def build_graph(
         provider = settings.search.provider
         if provider == "auto":
             detail = (
-                "需要 BAIDU/TAVILY/SERPAPI API Key，或 "
+                "需要 BAIDU/TAVILY/SERPAPI/DEEPSEEK API Key，或 "
                 "ALIBABA_CLOUD_ACCESS_KEY_ID + ALIBABA_CLOUD_ACCESS_KEY_SECRET"
             )
         else:
@@ -281,14 +280,7 @@ def build_graph(
         ),
         event_sink=event_sink,
     )
-    fetch_providers = []
-    for provider_name in settings.search.fetch_provider_order:
-        if provider_name == "aliyun":
-            if aliyun_client is None:  # pragma: no cover - guarded by aliyun_in_use
-                raise ToolConfigurationError("未初始化阿里云网页搜索客户端")
-            fetch_providers.append(AliyunFetchProvider(settings.search, aliyun_client))
-        else:
-            fetch_providers.append(DirectHttpFetchProvider(settings.search, shared_http))
+    fetch_providers = build_fetch_providers(settings.search, shared_http, aliyun_client)
     reader_tool = SourceReaderTool(
         FetchService(
             fetch_providers,

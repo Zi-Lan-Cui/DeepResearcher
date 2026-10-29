@@ -10,6 +10,7 @@ from deepresearcher.tools.errors import (
 from deepresearcher.tools.transport import HttpClient
 from deepresearcher.tools.web import (
     AliyunFetchProvider,
+    DeepSeekFetchProvider,
     DirectHttpFetchProvider,
     FetchProvider,
     FetchService,
@@ -19,11 +20,13 @@ from deepresearcher.tools.web import (
     SearchTool,
     SourceDocument,
     SourceReaderTool,
+    build_fetch_providers,
 )
 
 __all__ = [
     "AliyunFetchProvider",
     "HttpClient",
+    "DeepSeekFetchProvider",
     "DirectHttpFetchProvider",
     "FetchProvider",
     "FetchService",
@@ -38,4 +41,5 @@ __all__ = [
     "ToolError",
     "ToolParseError",
     "ToolRequestError",
+    "build_fetch_providers",
 ]

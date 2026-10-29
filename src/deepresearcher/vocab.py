@@ -25,10 +25,14 @@ AnswerMode = Literal[
 
 INCOMPLETE_REPORT_HEADING = "报告未生成"
 
-# 研究材料来源的四种类型：原始抓取、阿里云网页抓取、Tavily 原始内容、搜索摘要。
+# 研究材料来源：本地抓取、云端抓取、搜索接口随结果带回的正文与摘要。
 RETRIEVAL_ORIGIN_FETCH = "origin_fetch"
 RETRIEVAL_ALIYUN_WEB_FETCH = "aliyun_web_fetch"
+RETRIEVAL_DEEPSEEK_WEB_FETCH = "deepseek_web_fetch"
 RETRIEVAL_TAVILY_RAW_CONTENT = "tavily_raw_content"
+RETRIEVAL_DEEPSEEK_SEARCH_CONTENT = "deepseek_search_content"
+# 没有专属词的搜索供应商带回正文时用它，不冒用别家的名字。
+RETRIEVAL_SEARCH_PROVIDER_CONTENT = "search_provider_content"
 RETRIEVAL_SEARCH_SUMMARY = "search_summary"
 
 # 证据支持强度的顺序与排名，便于比较大小。

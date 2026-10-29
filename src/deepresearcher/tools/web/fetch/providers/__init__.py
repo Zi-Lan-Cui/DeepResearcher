@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from deepresearcher.tools.errors import ToolConfigurationError
 from deepresearcher.tools.web.fetch.providers.aliyun import AliyunFetchProvider
+from deepresearcher.tools.web.fetch.providers.deepseek import DeepSeekFetchProvider
 from deepresearcher.tools.web.fetch.providers.direct import DirectHttpFetchProvider
 
 if TYPE_CHECKING:
@@ -12,7 +13,12 @@ if TYPE_CHECKING:
     from deepresearcher.tools.transport.http_client import HttpClient
     from deepresearcher.tools.web.fetch.protocol import FetchProvider
 
-__all__ = ["AliyunFetchProvider", "DirectHttpFetchProvider", "build_fetch_providers"]
+__all__ = [
+    "AliyunFetchProvider",
+    "DeepSeekFetchProvider",
+    "DirectHttpFetchProvider",
+    "build_fetch_providers",
+]
 
 
 def build_fetch_providers(
@@ -24,6 +30,7 @@ def build_fetch_providers(
     builders = {
         "aliyun": lambda: AliyunFetchProvider(config, _require_aliyun(aliyun_client)),
         "direct": lambda: DirectHttpFetchProvider(config, http_client),
+        "deepseek": lambda: _require_deepseek(config, http_client),
     }
     providers: list["FetchProvider"] = []
     failures: list[str] = []
@@ -45,3 +52,9 @@ def _require_aliyun(client: "AliyunDtsApi | None") -> "AliyunDtsApi":
     if client is None:
         raise ToolConfigurationError("阿里云客户端未创建")
     return client
+
+
+def _require_deepseek(config: "SearchConfig", http_client: "HttpClient | None") -> "FetchProvider":
+    if not config.deepseek_api_key:
+        raise ToolConfigurationError("未配置 DEEPSEEK_API_KEY")
+    return DeepSeekFetchProvider(config, http_client)

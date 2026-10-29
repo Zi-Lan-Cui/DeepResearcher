@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from deepresearcher.tools.errors import ToolConfigurationError
 from deepresearcher.tools.web.search.providers.aliyun import AliyunSearchProvider
 from deepresearcher.tools.web.search.providers.baidu import BaiduSearchProvider
+from deepresearcher.tools.web.search.providers.deepseek import DeepSeekSearchProvider
 from deepresearcher.tools.web.search.providers.serpapi import SerpApiSearchProvider
 from deepresearcher.tools.web.search.providers.tavily import TavilySearchProvider
 
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AliyunSearchProvider",
     "BaiduSearchProvider",
+    "DeepSeekSearchProvider",
     "SerpApiSearchProvider",
     "TavilySearchProvider",
     "build_search_providers",
@@ -33,6 +35,7 @@ def build_search_providers(
         "baidu": lambda: BaiduSearchProvider(config, http_client),
         "tavily": lambda: TavilySearchProvider(config, http_client),
         "serpapi": lambda: SerpApiSearchProvider(config, http_client),
+        "deepseek": lambda: DeepSeekSearchProvider(config, http_client),
     }
     providers: list[tuple[str, Any]] = []
     failures: list[str] = []

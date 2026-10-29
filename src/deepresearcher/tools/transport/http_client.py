@@ -148,9 +148,12 @@ class HttpClient:
                             _SEARCH_PROVIDER_FATAL[response.status_code],
                             f"HTTP {response.status_code} from {url}",
                         )
-                    raise ToolRequestError(
+                    error = ToolRequestError(
                         f"HTTP {response.status_code} from {url}", retryable=False
                     )
+                    # 抓取侧要按状态码分流：同样是 4xx，404 是来源终局，401 是凭据问题。
+                    error.status_code = response.status_code
+                    raise error
                 else:
                     return response
             except (Timeout, RequestException) as exc:

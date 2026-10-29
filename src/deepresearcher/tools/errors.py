@@ -36,6 +36,8 @@ class ToolRequestError(ToolError):
     retryable = True
     # 传输层在 429/503 时写入的本地单调时钟恢复点；None 表示不是配额型失败。
     rate_limit_reset_ts: float | None = None
+    # 服务端明确返回的状态码；连接失败、超时等本地故障为 None。
+    status_code: int | None = None
 
 
 class UnsafeUrlError(ToolRequestError):

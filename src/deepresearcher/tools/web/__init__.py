@@ -9,11 +9,13 @@ from deepresearcher.tools.web.documents import (
 )
 from deepresearcher.tools.web.fetch import (
     AliyunFetchProvider,
+    DeepSeekFetchProvider,
     DirectHttpFetchProvider,
     FetchProvider,
     FetchService,
     SourceDocument,
     SourceReaderToolResult,
+    build_fetch_providers,
 )
 from deepresearcher.tools.web.reader import SourceReaderTool
 from deepresearcher.tools.web.search import (
@@ -27,6 +29,7 @@ from deepresearcher.tools.web.search import (
 
 __all__ = [
     "AliyunFetchProvider",
+    "DeepSeekFetchProvider",
     "DirectHttpFetchProvider",
     "DocumentGrepMatch",
     "DocumentOutlineItem",
@@ -44,4 +47,5 @@ __all__ = [
     "SourceDocument",
     "SourceReaderTool",
     "SourceReaderToolResult",
+    "build_fetch_providers",
 ]

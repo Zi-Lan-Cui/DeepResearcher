@@ -26,9 +26,10 @@ from deepresearcher.vocab import SUPPORT_ORDER, Support
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # 已实现的搜索供应商，也是 SEARCH_PROVIDER_ORDER 的合法取值。
-SEARCH_PROVIDERS = frozenset({"aliyun", "baidu", "tavily", "serpapi"})
-SEARCH_PROVIDER_ORDER = ("aliyun", "baidu", "tavily", "serpapi")
-FETCH_PROVIDERS = frozenset({"aliyun", "direct"})
+SEARCH_PROVIDERS = frozenset({"aliyun", "baidu", "tavily", "serpapi", "deepseek"})
+# DeepSeek 排在最前：它自带正文与权威性评分，凭据未配置时自动跳过。
+SEARCH_PROVIDER_ORDER = ("deepseek", "aliyun", "baidu", "tavily", "serpapi")
+FETCH_PROVIDERS = frozenset({"aliyun", "direct", "deepseek"})
 
 
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
@@ -189,15 +190,19 @@ class SearchConfig:
     baidu_api_key: str = ""
     tavily_api_key: str = ""
     serpapi_api_key: str = ""
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    # 检索时一并取回正文：命中量不变、只多花响应体积，换取抓取失败时能就地降级。
+    deepseek_search_content: bool = True
     # 阿里云 SDK 无 API Key 可读，只能按环境变量判断凭据来源是否已给出。
     aliyun_configured: bool = False
-    provider: Literal["auto", "aliyun", "baidu", "tavily", "serpapi"] = "auto"
+    provider: Literal["auto", "aliyun", "baidu", "tavily", "serpapi", "deepseek"] = "auto"
     # provider=auto 时的尝试顺序；显式写某一家则只用它，不降级。
     search_provider_order: tuple[str, ...] = SEARCH_PROVIDER_ORDER
     # 连续失败几次把该供应商移出候选池，以及首次冷却时长（之后按被踢次数递增）。
     fail_threshold: int = 3
     cooldown_seconds: float = 60.0
-    fetch_provider_order: tuple[Literal["aliyun", "direct"], ...] = ("direct",)
+    fetch_provider_order: tuple[Literal["aliyun", "direct", "deepseek"], ...] = ("direct",)
     aliyun_region_id: str = "cn-beijing"
     aliyun_endpoint: str = "dtsai.cn-beijing.aliyuncs.com"
     aliyun_agent_name: str = "deepresearcher"
@@ -270,6 +275,7 @@ class SearchConfig:
             "baidu": self.baidu_api_key,
             "tavily": self.tavily_api_key,
             "serpapi": self.serpapi_api_key,
+            "deepseek": self.deepseek_api_key,
         }.get(provider, "")
 
     @property
@@ -443,14 +449,16 @@ def _search_config() -> SearchConfig:
     )
     return SearchConfig(
         provider=cast(
-            Literal["auto", "aliyun", "baidu", "tavily", "serpapi"],
+            Literal["auto", "aliyun", "baidu", "tavily", "serpapi", "deepseek"],
             _choice_env("SEARCH_PROVIDER", "auto", {"auto"} | SEARCH_PROVIDERS),
         ),
         search_provider_order=search_provider_order,
         fail_threshold=max(1, _int_env("SEARCH_PROVIDER_FAIL_THRESHOLD", 3)),
         cooldown_seconds=max(1.0, _float_env("SEARCH_PROVIDER_COOLDOWN_SECONDS", 60.0)),
         aliyun_configured=_aliyun_credentials_present(),
-        fetch_provider_order=cast(tuple[Literal["aliyun", "direct"], ...], fetch_provider_order),
+        fetch_provider_order=cast(
+            tuple[Literal["aliyun", "direct", "deepseek"], ...], fetch_provider_order
+        ),
         aliyun_region_id=_env("ALIYUN_WEB_REGION_ID", "cn-beijing"),
         aliyun_endpoint=_env("ALIYUN_WEB_ENDPOINT", "dtsai.cn-beijing.aliyuncs.com"),
         aliyun_agent_name=_env("ALIYUN_WEB_AGENT_NAME", "deepresearcher"),
@@ -462,6 +470,9 @@ def _search_config() -> SearchConfig:
         baidu_api_key=_env("BAIDU_API_KEY"),
         tavily_api_key=_env("TAVILY_API_KEY"),
         serpapi_api_key=_env("SERPAPI_API_KEY"),
+        deepseek_api_key=_env("DEEPSEEK_API_KEY"),
+        deepseek_base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+        deepseek_search_content=_bool_env("DEEPSEEK_SEARCH_CONTENT", True),
         http_timeout=_float_env("HTTP_TIMEOUT", 20.0),
         max_results=max(1, _int_env("SEARCH_MAX_RESULTS", 5)),
         max_attempts=max(1, _int_env("HTTP_MAX_ATTEMPTS", 3)),
