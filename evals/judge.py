@@ -140,7 +140,7 @@ async def judge_case_race(
 
 
 class OpenAICompatJudge:
-    """生产 invoker：judge 身份取自评测侧 env,不回写也不依赖引擎配置。"""
+    """judge  invoker"""
 
     def __init__(self) -> None:
         from openai import AsyncOpenAI
