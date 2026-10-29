@@ -6,8 +6,9 @@ from urllib.parse import urlsplit
 
 from deepresearcher.evidence.models import normalize_title_whitespace
 from deepresearcher.reporting.validation import _CITE_MARKER, _FENCED_CODE, _INLINE_CODE
-from deepresearcher.schemas import Citation, RunError, SupervisorProgress, TaskResult
+from deepresearcher.schemas import Citation, SupervisorProgress, TaskResult
 from deepresearcher.state import RunState, section
+from deepresearcher.vocab import INCOMPLETE_REPORT_HEADING
 
 # 检查模型是否在正文生成了证据来源小节，若有则移除；避免用户看到重复的来源列表。
 _REFERENCE_HEADING = re.compile(
@@ -121,8 +122,12 @@ def _reference_list(
     return "\n".join(lines)
 
 
-# 部分报告里的任务只是诊断线索，不是交付主体：短题化后逐条列出。
+# 诊断页里的任务只是线索，不是交付主体：短题化后逐条列出。
 _TASK_SUMMARY_MAX_CHARS = 40
+
+# 子任务括号里的附注：执行状态只在非「已完成」时出现，覆盖度始终出现。
+_TASK_STATUS_LABELS = {"failed": "执行失败", "cancelled": "已取消"}
+_TASK_COVERAGE_LABELS = {"sufficient": "覆盖完整", "partial": "部分覆盖", "insufficient": "未覆盖"}
 
 
 def _task_field(task: object, name: str, default: object = None) -> object:
@@ -142,54 +147,72 @@ def _summarize(text: object, max_chars: int) -> str:
 def render_incomplete_report(state: RunState, reasons: list[str]) -> str:
     """研究未完成/写作失败路径的降级报告；不补写任何研究结论。
 
-    零证据路径塌缩为诊断卡（原因与恢复方式）；有证据的部分报告只列任务短题与状态，
-    不复述方向结论——报告只认 Supervisor 给的任务书，方向内容留在工作台。
+    零证据与有证据共用同一副骨架：研究问题、进度、阻塞原因、子任务结果。
+    reasons 为空表示中断原因已由详情页横幅承载，此时整节省略而不是留下空标题。
     """
     evidences = state.get("evidences", [])
     task_results = state.get("task_results", [])
     research = section(state, "supervisor", SupervisorProgress)
     evidence_count = len(evidences)
     source_count = len({item.source_url for item in evidences if item.source_url})
+    # 0 证据时任务级缺口全是"无法获取"类复读，不逐条列；系统性故障要单说。
+    blockers = list(reasons)
+    if evidence_count == 0 and any(
+        bool(_task_field(task, "provider_exhausted")) for task in task_results
+    ):
+        blockers.append("搜索服务额度或凭据不可用，属系统性故障，与问题本身无关。")
     lines = [
-        "# 研究未完成",
+        f"# {INCOMPLETE_REPORT_HEADING}",
         "",
         "## 研究问题",
         str(state.get("clarified_query") or state.get("query") or "（未提供研究问题）"),
         "",
         "## 研究进度",
         f"已执行 {research.current_round} 轮，收集 {source_count} 个来源和 {evidence_count} 条证据。",
-        "",
-        "## 阻塞原因",
     ]
-    lines.extend(f"- {reason}" for reason in reasons)
+    if blockers:
+        lines.extend(["", "## 阻塞原因"])
+        lines.extend(f"- {blocker}" for blocker in blockers)
     if evidence_count == 0:
-        # 0 证据时任务级缺口全是"无法获取"类复读，列出只会淹没真正的原因。
-        if any(bool(_task_field(task, "provider_exhausted")) for task in task_results):
-            lines.append("- 搜索服务额度或凭据不可用，属系统性故障，与问题本身无关。")
-        lines.extend(
-            [
-                "",
-                "本次研究没有收集到任何可验证的证据，因此不给出结论，也不以模型内部知识补写。",
-                "恢复方式：补充或更换搜索服务凭据（env/.env）后重新提交该问题；本次运行不保留部分结果。",
-            ]
-        )
-        return "\n".join(lines)
+        lines.extend(["", "本次研究没有收集到任何可验证的证据，报告未生成。"])
     if task_results:
-        lines.extend(["", "### 任务结果"])
-        for task in task_results:
-            status = f"{_task_field(task, 'execution_status', 'unknown')}/{_task_field(task, 'coverage_status', 'unknown')}"
-            task_title = _summarize(
-                _task_field(task, "research_direction", "未命名任务"), _TASK_SUMMARY_MAX_CHARS
-            )
-            task_evidence = _task_field(task, "evidence_count", 0)
-            lines.append(f"- {task_title}（{status}，证据 {task_evidence} 条）")
+        lines.extend(["", "### 子任务结果"])
+        lines.extend(_task_line(task) for task in task_results)
     return "\n".join(lines)
 
 
-def render_error_report(state: RunState, error: RunError) -> str:
-    """渲染面向用户的失败报告；异常原文与阶段标识只保留在日志和内部事件。"""
-    del error
-    return render_incomplete_report(state, ["研究流程中途失败，未能完成本次交付；请稍后重新提交。"])
+def _task_line(task: object) -> str:
+    """子任务行：任务名 + 括号附注。「已完成」是常态，不占字数。"""
+    title = _summarize(
+        _task_field(task, "research_direction", "未命名任务"), _TASK_SUMMARY_MAX_CHARS
+    )
+    notes: list[str] = []
+    execution = str(_task_field(task, "execution_status", "") or "")
+    if execution and execution != "completed":
+        notes.append(_TASK_STATUS_LABELS.get(execution, execution))
+    coverage = str(_task_field(task, "coverage_status", "") or "")
+    if coverage:
+        notes.append(_TASK_COVERAGE_LABELS.get(coverage, coverage))
+    notes.append(f"证据 {_task_field(task, 'evidence_count', 0)} 条")
+    return f"- {title}（{' · '.join(notes)}）"
+
+
+def render_error_report(state: RunState) -> str:
+    """失败路径的降级报告：写过正文就保留那一版，没写过才出诊断页。
+
+    中断发生在写完之后（例如写作成功、审阅阶段异常），已经产出的正文不该跟着丢；
+    中断位置、错误类型与具体信息由详情页横幅取 RunError 渲染，正文只写已经发生的
+    事实，不复述错误，也不给不看错误类型的恢复建议。
+    """
+    citations = list(state.get("citations") or [])
+    draft = str(state.get("report_draft") or "")
+    if draft and citations:
+        return render_final_report(
+            body=draft,
+            citations=citations,
+            title=str(state.get("report_title") or ""),
+        )
+    return render_incomplete_report(state, [])
 
 
 def no_evidence_blockers(state: RunState) -> list[str]:

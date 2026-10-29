@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select, update
 
@@ -202,11 +202,20 @@ class RunExecutor:
                     self.mark_lease_lost(run_id)
         except UsageBudgetExceeded as exc:
             logger.info("research_budget_exhausted run_id=%s reason=%s", run_id, exc)
+            budget_message = "本次研究已达用量上限，请调整配额后重试。"
             written = await self.persist_status(
                 work,
                 status="failed",
                 terminal_reason="budget_exhausted",
-                error_message="本次研究已达用量上限，请调整配额后重试。",
+                error_message=budget_message,
+                error_json=_error_payload(
+                    {
+                        "stage": "",
+                        "code": "budget_exhausted",
+                        "message": budget_message,
+                        "retryable": False,
+                    }
+                ),
             )
             if written is None:
                 self.mark_lease_lost(run_id)
@@ -217,11 +226,20 @@ class RunExecutor:
                 written = await self._fail_llm_unavailable(work, llm_code)
             else:
                 logger.exception("research_run_failed run_id=%s", run_id)
+                failure_message = "运行执行失败，请稍后重试或重新发起。"
                 written = await self.persist_status(
                     work,
                     status="failed",
                     terminal_reason="run_exception",
-                    error_message="运行执行失败，请稍后重试或重新发起。",
+                    error_message=failure_message,
+                    error_json=_error_payload(
+                        {
+                            "stage": "",
+                            "code": "run_exception",
+                            "message": failure_message,
+                            "retryable": False,
+                        }
+                    ),
                 )
             if written is None:
                 self.mark_lease_lost(run_id)
@@ -473,11 +491,9 @@ class RunExecutor:
             citations_json=citations,
             evidence_count=int(result.get("evidence_count") or len(result.get("evidences") or [])),
             source_count=int(result.get("source_count") or len(result.get("source_refs") or [])),
-            error_message=(
-                f"阶段 {_field(error, 'stage', 'unknown')} 执行失败，请稍后重试或重新发起。"
-                if error
-                else None
-            ),
+            error_message=_field(error, "message", "") or None,
+            error_json=_error_payload(error),
+            review_json=_review_payload(result.get("review")),
         )
 
     async def persist_status(
@@ -532,12 +548,19 @@ class RunExecutor:
     async def _fail_llm_unavailable(self, work: RunWork, user_code: str) -> TerminalState | None:
         """LLM 网关账户级不可用：类型化 terminal_reason + 安全文案，快速失败。"""
         logger.warning("research_llm_unavailable run_id=%s code=%s", work.run_id, user_code)
+        message = _LLM_UNAVAILABLE_MESSAGE.get(user_code, "模型服务暂时不可用，请稍后重试。")
         return await self.persist_status(
             work,
             status="failed",
             terminal_reason=f"llm_unavailable:{user_code}",
-            error_message=_LLM_UNAVAILABLE_MESSAGE.get(
-                user_code, "模型服务暂时不可用，请稍后重试。"
+            error_message=message,
+            error_json=_error_payload(
+                {
+                    "stage": "",
+                    "code": f"llm_unavailable:{user_code}",
+                    "message": message,
+                    "retryable": False,
+                }
             ),
         )
 
@@ -565,3 +588,47 @@ def _preview_channel(namespace: Any) -> str | None:
         return None
     head = str(namespace[0]).split(":", 1)[0]
     return head if head in PREVIEW_CHANNELS else None
+
+
+# 落库的错误只留详情页要用的四项：detail 是异常原文与栈，属内部信息。
+_ERROR_FIELDS = ("stage", "code", "message", "retryable")
+
+
+def _error_payload(error: Any) -> dict[str, Any] | None:
+    """RunError 或等价 dict → 落库结构；空壳错误返回 None。"""
+    if error is None:
+        return None
+    data = (
+        error.model_dump()
+        if hasattr(error, "model_dump")
+        else (dict(error) if isinstance(error, dict) else None)
+    )
+    if not data:
+        return None
+    payload = {key: data[key] for key in _ERROR_FIELDS if data.get(key) not in (None, "")}
+    return payload or None
+
+
+def _review_payload(review: Any) -> dict[str, Any] | None:
+    """ReviewProgress → 落库结构；尚未进入审阅的运行返回 None。"""
+    if review is None:
+        return None
+    data = (
+        review.model_dump()
+        if hasattr(review, "model_dump")
+        else (dict(review) if isinstance(review, dict) else None)
+    )
+    if not data or data.get("status") in (None, "", "pending"):
+        return None
+    issues = [
+        {"severity": str(item.get("severity", "")), "reason": str(item.get("reason", ""))}
+        for item in cast(list[Any], data.get("issues") or [])
+        if isinstance(item, dict) and item.get("reason")
+    ]
+    return {
+        "status": str(data.get("status") or ""),
+        "attempts": int(data.get("attempts") or 0),
+        "feedback": str(data.get("feedback") or ""),
+        "failure_reason": str(data.get("failure_reason") or ""),
+        "issues": issues,
+    }

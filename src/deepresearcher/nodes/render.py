@@ -67,14 +67,14 @@ async def render_final_report_node(state: RunState):
                     phase="completed", terminal_reason=RenderOutcome.REVIEW_RECOVERY_EXHAUSTED
                 ),
             }
-    if review.status == "abstained":
-        # 弃权是没审成，不是没写出来：草稿齐备就照常交付，只标明未经审阅。
+    if review.status == "failed":
+        # 审阅失败不是没写出来：草稿齐备就照常交付，只标明未经审阅。
         citations = list(state.get("citations", []))
         draft = state.get("report_draft", "")
         if not citations or not draft:
             return {
                 "report": render_incomplete_report(
-                    state, ["审阅未给出结论，且缺少可渲染的草稿或引用元数据。"]
+                    state, ["审阅失败，且缺少可渲染的草稿或引用元数据。"]
                 ),
                 "answer_mode": "research_incomplete",
                 "run": RunStatus(
@@ -87,14 +87,14 @@ async def render_final_report_node(state: RunState):
                 citations=citations,
                 title=str(state.get("report_title") or ""),
             )
-            + "\n\n> 注：审阅未给出结论，本报告未经审阅校验。",
+            + "\n\n> 注：审阅失败，本报告未经审阅校验。",
             "answer_mode": "review_limited",
-            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REVIEW_ABSTAINED),
+            "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REVIEW_FAILED),
         }
     if review.status == "rejected":
-        feedback = review.feedback or "整体审阅未通过。"
+        # 否决原因由详情页横幅从 review 读，正文再写一遍就是同一句话的第二份。
         return {
-            "report": render_incomplete_report(state, [f"整体审阅未通过：{feedback}"]),
+            "report": render_incomplete_report(state, []),
             "answer_mode": "research_incomplete",
             "run": RunStatus(phase="completed", terminal_reason=RenderOutcome.REVIEW_REJECTED),
         }

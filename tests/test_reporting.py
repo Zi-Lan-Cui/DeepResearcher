@@ -190,7 +190,9 @@ def test_render_final_report_node_routes_failure_paths():
         )
     )
     assert result["answer_mode"] == "research_incomplete"
-    assert "核心结论缺少来源" in result["report"]
+    # 否决原因由详情页横幅从 review 读；正文再写一遍就是同一句话的第二份。
+    assert result["report"].startswith("# 报告未生成\n")
+    assert "核心结论缺少来源" not in result["report"]
 
     # 审阅回流耗尽 → 保留最后一版及完整参考来源，以受限报告交付
     result = asyncio.run(
@@ -220,13 +222,13 @@ def test_render_final_report_node_routes_failure_paths():
     assert "## 证据来源" in result["report"]
     assert "审阅修订已达上限" in result["report"]
 
-    # 审阅弃权 → 草稿齐备照常交付，但标明未经审阅
+    # 审阅失败 → 草稿齐备照常交付，但标明未经审阅
     result = asyncio.run(
         render_final_report_node(
             {
                 "clarified_query": "A 的性能",
                 "run": {"phase": "reviewing"},
-                "review": {"status": "abstained", "attempts": 3},
+                "review": {"status": "failed", "attempts": 3},
                 "report_draft": "## 结论\n\nA 的平均延迟为 20ms。[[cite:e1]]",
                 "citations": [
                     Citation(
@@ -241,7 +243,7 @@ def test_render_final_report_node_routes_failure_paths():
         )
     )
     assert result["answer_mode"] == "review_limited"
-    assert result["run"].terminal_reason == "review_abstained"
+    assert result["run"].terminal_reason == "review_failed"
     assert "未经审阅" in result["report"]
     assert "## 证据来源" in result["report"]
 
@@ -387,7 +389,7 @@ def test_final_report_without_title_falls_back_to_system_heading():
 
 
 def test_incomplete_report_collapses_zero_evidence_to_diagnostic_card():
-    """零证据时塌缩为诊断卡:只给原因与恢复方式,不逐条罗列方向和缺口。"""
+    """零证据时仍是诊断卡:给原因与系统性说明,子任务只留短题不复述缺口。"""
     state = {
         "clarified_query": "如何克服恐惧",
         "evidences": [],
@@ -405,10 +407,14 @@ def test_incomplete_report_collapses_zero_evidence_to_diagnostic_card():
 
     report = render_incomplete_report(state, ["搜索服务额度耗尽"])
 
+    assert report.startswith("# 报告未生成\n")
     assert "搜索服务额度耗尽" in report
     assert "系统性故障" in report  # provider_exhausted 命中，给系统性说明
-    assert "恢复方式" in report
-    assert "任务结果" not in report  # 塌缩为一段，不逐条罗列
+    # 恢复方式给的是操作指引，且不看失败类型一律归因搜索，已删除。
+    assert "恢复方式" not in report
+    # 子任务照列，但每条只有短题与状态，没有方向结论与缺口复读。
+    assert "### 子任务结果" in report
+    assert "未覆盖 · 证据 0 条" in report
     assert "未闭合缺口" not in report
 
 

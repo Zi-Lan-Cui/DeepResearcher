@@ -122,6 +122,10 @@ class Run(Base):
     answer_mode: Mapped[str | None] = mapped_column(String(32))
     terminal_reason: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
+    # 失败字段：stage/code/message/retryable
+    error_json: Mapped[dict | None] = mapped_column(JSON)
+    # 审阅终态：status/attempts/feedback/failure_reason/issues。
+    review_json: Mapped[dict | None] = mapped_column(JSON)
     report_markdown: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(String(160))
     citations_json: Mapped[list | None] = mapped_column(JSON)

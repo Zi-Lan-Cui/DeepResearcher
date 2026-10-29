@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
-from deepresearcher.reporting import render_error_report, render_incomplete_report
+from deepresearcher.reporting import render_error_report
 from deepresearcher.routing import NodeName
 from deepresearcher.schemas import RunError, RunStatus, failure_event_fields
 from deepresearcher.state import RunState, restore_state_models, validate_state_invariants
@@ -64,14 +64,7 @@ async def execute_node(
             ),
             "answer_mode": "research_incomplete",
             "supervisor_next": NodeName.RENDER_FINAL_REPORT,
-            "report": (
-                render_incomplete_report(
-                    cast(RunState, state),
-                    ["本次研究已达用量上限，已保留当前获取的研究进度。"],
-                )
-                if budget_exhausted
-                else render_error_report(cast(RunState, state), error)
-            ),
+            "report": render_error_report(cast(RunState, state)),
         }
         # 运行器的产物与节点产物过同一条不变量校验。此处校验不通过说明
         # 错误路径本身被改坏，是运行器的 bug，直接向上抛出。

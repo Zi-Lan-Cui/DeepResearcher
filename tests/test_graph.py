@@ -286,7 +286,8 @@ def test_top_level_node_failure_becomes_renderable_run_error():
     assert result["run"].phase == "failed"
     assert result["run"].terminal_reason == "node_failed"
     assert result["run"].error.stage == "broken"
-    assert "研究流程中途失败" in result["report"]
+    # 错误不进正文：中断位置与原因由详情页横幅读 RunError 渲染，正文只写事实。
+    assert result["report"].startswith("# 报告未生成\n")
     assert "boom" not in result["report"]
     # 边界产出的失败产物必须通过与节点产物相同的不变量校验，此为回归用例。
     validate_state_invariants({}, result)
@@ -301,7 +302,7 @@ def test_usage_budget_exhaustion_degrades_to_incomplete_report():
     assert result["run"].phase == "failed"
     assert result["run"].terminal_reason == "budget_exhausted"
     assert result["run"].error.code == "budget_exhausted"
-    assert "已达用量上限" in result["report"]
+    assert result["report"].startswith("# 报告未生成\n")
     assert "run_token_budget_exhausted" not in result["report"]
 
 
@@ -412,7 +413,7 @@ def test_compiled_graph_clarify_failure_renders_failure_report(tmp_path, monkeyp
 
     assert result["run"].phase == "failed"
     assert result["run"].error.stage == "clarify"
-    assert "研究流程中途失败" in result["report"]
+    assert result["report"].startswith("# 报告未生成\n")
     assert "clarify boom" not in result["report"]
 
 
@@ -451,7 +452,7 @@ def test_compiled_graph_supervisor_failure_skips_writer(tmp_path, monkeypatch):
 
     assert result["run"].error.stage == "supervisor"
     assert result.get("writer") is None
-    assert "研究流程中途失败" in result["report"]
+    assert result["report"].startswith("# 报告未生成\n")
     assert "supervisor boom" not in result["report"]
 
 
@@ -470,7 +471,7 @@ def test_compiled_graph_writer_failure_renders_failure_report(tmp_path, monkeypa
     )
 
     assert result["run"].error.stage == "writer"
-    assert "研究流程中途失败" in result["report"]
+    assert result["report"].startswith("# 报告未生成\n")
     assert "writer boom" not in result["report"]
 
 
@@ -494,7 +495,9 @@ def test_compiled_graph_reviewer_failure_renders_failure_report(tmp_path, monkey
     )
 
     assert result["run"].error.stage == "review"
-    assert "研究流程中途失败" in result["report"]
+    # 审阅阶段炸掉时草稿已经写完：保留那一版正文，诊断页会把它丢掉。
+    assert result["report"].startswith("# 研究报告\n")
+    assert "测试事实" in result["report"]
     assert "reviewer boom" not in result["report"]
 
 
@@ -592,9 +595,9 @@ def test_approved_reviewer_bypasses_supervisor_and_renders_final_report():
     assert route_after_reviewer({"review": {"status": "rejected"}}) == NodeName.SUPERVISOR
 
 
-def test_abstained_reviewer_renders_instead_of_looping_back():
-    """弃权是没审成，回流只会让监督循环再烧一轮并可能再弃权一次。"""
-    assert route_after_reviewer({"review": {"status": "abstained"}}) == NodeName.RENDER_FINAL_REPORT
+def test_failed_reviewer_renders_instead_of_looping_back():
+    """审阅失败是没跑出结论，回流只会让监督循环再烧一轮并可能再失败一次。"""
+    assert route_after_reviewer({"review": {"status": "failed"}}) == NodeName.RENDER_FINAL_REPORT
 
 
 def test_terminal_phase_trunk_overrides_every_business_handoff():

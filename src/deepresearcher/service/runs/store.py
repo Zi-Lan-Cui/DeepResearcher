@@ -227,17 +227,7 @@ class RunStore:
         return exhaust.target if settled is not None else None
 
     async def reopen_exhausted(self, run_id: str) -> bool:
-        """死信的显式恢复入口：把「投递耗尽」的终态行退回 interrupted 等重投。
-
-        只认 terminal_reason 为 dispatch_attempts_exhausted 的行：这类 run 从未成功
-        领取过，重新分派不重复已发生的副作用。
-
-        参数：
-            run_id: 目标 run。
-
-        返回：
-            bool: 真的完成了退回。行不是该原因结案时返回 False。
-        """
+        """死信恢复入口：把重试耗尽的终态行退回 interrupted 等重投。"""
         reopen = transition_for("reopen_exhausted")
         exhausted_reason = transition_for("settle_exhausted").reason
         async with self._session_factory() as session:
@@ -252,6 +242,8 @@ class RunStore:
                     status=reopen.target,
                     terminal_reason=None,
                     error_message=None,
+                    error_json=None,
+                    review_json=None,
                     finished_at=None,
                     lease_owner=None,
                     fence_token=Run.fence_token + 1,
