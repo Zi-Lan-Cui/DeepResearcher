@@ -14,6 +14,7 @@ from curl_cffi.requests import AsyncSession, Response
 from curl_cffi.requests.exceptions import RequestException, Timeout
 from curl_cffi.requests.impersonate import DEFAULT_CHROME, DEFAULT_FIREFOX, DEFAULT_SAFARI
 
+from deepresearcher.backoff import delay_seconds
 from deepresearcher.config import SearchConfig
 from deepresearcher.timing import elapsed_ms
 from deepresearcher.tools.errors import ProviderExhaustedError, ToolRequestError
@@ -156,15 +157,16 @@ class HttpClient:
                 last_error = exc
 
             if attempt + 1 < self.config.max_attempts:
-                if retry_after is not None:
-                    delay = min(self.config.retry_after_max_seconds, retry_after)
-                else:
-                    delay = min(
-                        self.config.retry_max_seconds,
-                        self.config.retry_initial_seconds * (2**attempt),
+                await asyncio.sleep(
+                    delay_seconds(
+                        attempt,
+                        initial_delay=self.config.retry_initial_seconds,
+                        max_delay=self.config.retry_max_seconds,
+                        jitter_ratio=_JITTER_RATIO,
+                        retry_after=retry_after,
+                        retry_after_cap=self.config.retry_after_max_seconds,
                     )
-                # 错开重试时点，避免并发请求的重试同时打满同一个限流窗口。
-                await asyncio.sleep(delay + random.uniform(0, delay * _JITTER_RATIO))
+                )
 
         error = ToolRequestError(
             f"请求失败（共 {self.config.max_attempts} 次）：{url}; reason={last_error}"

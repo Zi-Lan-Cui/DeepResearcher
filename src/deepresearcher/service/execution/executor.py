@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from sqlalchemy import select, update
 
+from deepresearcher.backoff import delay_seconds
 from deepresearcher.config import Settings
 from deepresearcher.graph import build_graph
 from deepresearcher.llm import classify_llm_error
@@ -534,14 +535,17 @@ class RunExecutor:
 
         成功即复位，间歇性失败不该拖慢稳态延迟。
         """
-        delay = _FLUSH_INTERVAL_SECONDS
+        failures = 0
         try:
             while True:
-                await asyncio.sleep(delay)
-                if await self._buffer.flush(run_id):
-                    delay = _FLUSH_INTERVAL_SECONDS
-                else:
-                    delay = min(delay * 2, _FLUSH_BACKOFF_MAX_SECONDS)
+                await asyncio.sleep(
+                    delay_seconds(
+                        failures,
+                        initial_delay=_FLUSH_INTERVAL_SECONDS,
+                        max_delay=_FLUSH_BACKOFF_MAX_SECONDS,
+                    )
+                )
+                failures = 0 if await self._buffer.flush(run_id) else failures + 1
         except asyncio.CancelledError:
             return
 

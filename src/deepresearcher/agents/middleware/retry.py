@@ -10,6 +10,7 @@ from langchain.agents.middleware import (
 )
 from langchain_core.tools import BaseTool
 
+from deepresearcher.backoff import DEFAULT_BACKOFF_FACTOR
 from deepresearcher.llm import LLMConfigurationError, classify_llm_error
 from deepresearcher.tools.errors import ToolError
 from deepresearcher.usage_runtime import UsageBudgetExceeded
@@ -32,7 +33,7 @@ class ToolErrorNormalizerMiddleware(AgentMiddleware):
     """工具异常边界归一：重试层的判定依据是构造期声明，不是异常类型猜测。
 
     工具重试的唯一准入是 ToolError.retryable；未标记的意外异常在本层补声明：
-    TimeoutError 与 ConnectionError 可重试，其余按 bug 级判不可重试。
+    TimeoutError 与 ConnectionError 可重试，其余按 bug 判不可重试。
     """
 
     @property
@@ -52,8 +53,7 @@ class ToolErrorNormalizerMiddleware(AgentMiddleware):
             ) from exc
 
 
-# 模型失败引导文本的指纹：ToolLoopGuard 据此区分后端故障引导与协议违规纯文本，
-# 对前者退回会把一次故障放大成一整轮新的重试；改动本串需同步 ToolLoopGuard 的匹配。
+# 模型失败标记
 MODEL_FAILURE_MARKER = "的模型调用在重试后仍未成功"
 
 
@@ -114,7 +114,8 @@ class _NamedToolRetryMiddleware(ToolRetryMiddleware):
 
 
 _RETRY_MAX_RETRIES: int = 2
-_RETRY_BACKOFF: dict[str, float] = {"backoff_factor": 2.0, "initial_delay": 1.0, "max_delay": 20.0}
+_RETRY_INITIAL_DELAY_SECONDS: float = 1.0
+_RETRY_MAX_DELAY_SECONDS: float = 20.0
 
 
 def model_retry(
@@ -122,9 +123,9 @@ def model_retry(
     *,
     event_slug: str | None = None,
     max_retries: int = _RETRY_MAX_RETRIES,
-    backoff_factor: float = _RETRY_BACKOFF["backoff_factor"],
-    initial_delay: float = _RETRY_BACKOFF["initial_delay"],
-    max_delay: float = _RETRY_BACKOFF["max_delay"],
+    backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
+    initial_delay: float = _RETRY_INITIAL_DELAY_SECONDS,
+    max_delay: float = _RETRY_MAX_DELAY_SECONDS,
     emit: Callable[[str, dict[str, object]], None] | None = None,
 ) -> ModelRetryMiddleware:
     """创建带有项目统一错误提示的模型重试中间件。
@@ -155,9 +156,9 @@ def tool_retry(
     tool_label: str,
     *,
     max_retries: int = _RETRY_MAX_RETRIES,
-    backoff_factor: float = _RETRY_BACKOFF["backoff_factor"],
-    initial_delay: float = _RETRY_BACKOFF["initial_delay"],
-    max_delay: float = _RETRY_BACKOFF["max_delay"],
+    backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
+    initial_delay: float = _RETRY_INITIAL_DELAY_SECONDS,
+    max_delay: float = _RETRY_MAX_DELAY_SECONDS,
 ) -> ToolRetryMiddleware:
     """创建只作用于指定外部工具的重试中间件。"""
     return _NamedToolRetryMiddleware(
