@@ -9,8 +9,8 @@
   tick         全局杂项一行
   stats        运行指标 {轮次, 任务, 证据计数}
   task_open    开一张任务卡 {task, title, state}（state=queued 表示在等并发槽）
-  task_update  任务卡滚动一条动作 {task, text}
-  task_done    任务卡结束 {task, status, summary, conclusion}
+  task_update  任务卡追加一条动作 {task, step}
+  task_done    任务卡结束 {task, status, summary, finding, conclusion}
   status       运行状态变化（service 合成）
   headline     浓缩标题写入数据库（service 合成）
   error        需要用户知道的异常提示
@@ -31,6 +31,7 @@ from deepresearcher.schemas.limits import (
     EVENT_CONTENT_PREVIEW_CHARS,
     RUN_HEADLINE_MAX_CHARS,
     TASK_CONCLUSION_MAX_CHARS,
+    TASK_FINDING_MAX_CHARS,
 )
 
 _STAGE_TITLES: dict[str, str] = {
@@ -65,6 +66,32 @@ def _display_host(url: object) -> str:
     return host.removeprefix("www.")[:48]
 
 
+def _display_url(url: object, max_chars: int = 48) -> str:
+    """URL → 展示用短地址：主机名加路径，超长时截去路径中段。
+
+    同一站点的不同页面靠路径尾部区分，因此截断保留开头与结尾，去掉中间；
+    尾段从完整的路径分隔处起，避免把一个词切成两截。
+    """
+    try:
+        parts = urlsplit(str(url or ""))
+    except ValueError:
+        return ""
+    host = (parts.hostname or "").removeprefix("www.")
+    if not host:
+        return ""
+    path = parts.path.rstrip("/")
+    if len(host) + len(path) <= max_chars:
+        return host + path
+    budget = max_chars - len(host) - 2
+    if budget <= 0:
+        return host[:max_chars]
+    tail = path[-budget:]
+    cut = tail.find("/")
+    if cut > 0:
+        tail = tail[cut:]
+    return f"{host}/…{tail}"
+
+
 @dataclass(frozen=True)
 class SseFrame:
     event: str
@@ -85,6 +112,51 @@ def project_clarification(payload: Mapping[str, Any]) -> dict[str, Any] | None:
         else []
     )
     return {"question": question, "options": options} if question else None
+
+
+def project_run_error(payload: Any) -> dict[str, str] | None:
+    """落库的 RunError → 详情页可见的中断三项；两项正文都缺则不成帧。"""
+    if not isinstance(payload, Mapping):
+        return None
+    code = _text(payload.get("code"), 64)
+    message = _text(payload.get("message"), 200)
+    if not (code or message):
+        return None
+    stage = _text(payload.get("stage"), 64)
+    return {
+        "stage": stage,
+        "stage_label": _STAGE_TITLES.get(stage, stage) if stage else "",
+        "code": code,
+        "message": message,
+    }
+
+
+# 「弃权」是审阅失败的旧叫法；旧行仍这么写，出口统一成新词，前端只认一个。
+_REVIEW_STATUS_ALIASES = {"abstained": "failed"}
+
+
+def project_review(payload: Any) -> dict[str, Any] | None:
+    """落库的 ReviewProgress → 详情页可见的轮次与意见；未进入审阅的运行返回 None。"""
+    if not isinstance(payload, Mapping):
+        return None
+    status = _text(payload.get("status"), 16)
+    if not status or status == "pending":
+        return None
+    raw_issues = payload.get("issues")
+    issues = [
+        _text(item.get("reason"), 160)
+        for item in (raw_issues if isinstance(raw_issues, list) else [])
+        if isinstance(item, Mapping) and _text(item.get("reason"), 160)
+    ][:3]
+    return {
+        "status": _REVIEW_STATUS_ALIASES.get(status, status),
+        "attempts": _int(payload.get("attempts")),
+        "feedback": _text(payload.get("feedback"), 300),
+        # 旧行把这一栏写成 abstain_reason；换词前的 run 不该因此丢掉失败原因。
+        "failure_reason": _text(payload.get("failure_reason"), 200)
+        or _text(payload.get("abstain_reason"), 200),
+        "issues": issues,
+    }
 
 
 def project(record: Mapping[str, Any]) -> SseFrame | None:
@@ -206,7 +278,7 @@ def _research_task_started(seq: Any, node: Any, payload: Mapping[str, Any]) -> S
 
 
 def _research_task_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
-    """完成帧带两行：计数摘要，以及用户唯一能读到的方向结论。"""
+    """完成帧带三行：计数摘要、卡面摘要、展开后的完整结论。"""
     summary = "证据 {} · 来源 {}".format(
         _int(payload.get("evidence_count")), _int(payload.get("source_count"))
     )
@@ -217,6 +289,7 @@ def _research_task_completed(seq: Any, node: Any, payload: Mapping[str, Any]) ->
         {
             "status": _text(payload.get("execution_status"), 16) or "done",
             "summary": summary,
+            "finding": _text(payload.get("finding"), TASK_FINDING_MAX_CHARS),
             "conclusion": _text(payload.get("conclusion"), TASK_CONCLUSION_MAX_CHARS),
         },
     )
@@ -229,98 +302,98 @@ def _research_task_failed(seq: Any, node: Any, payload: Mapping[str, Any]) -> Ss
 def _task_evidence_added(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     """本次提交的审计：accepted=0 表示全被退回修正，不是新增。"""
     accepted = _int(payload.get("accepted_count"))
-    if accepted > 0:
-        return _task("task_update", seq, payload, {"text": f"新增证据 +{accepted}"})
-    if _int(payload.get("rejected_count")) or _int(payload.get("duplicate_count")):
-        return _task("task_update", seq, payload, {"text": "证据未通过校验，正在修正"})
+    rejected = _int(payload.get("rejected_count")) + _int(payload.get("duplicate_count"))
+    if accepted:
+        return _step(
+            seq,
+            payload,
+            "提交",
+            "证据",
+            f"{accepted} 条通过",
+            note=f"{rejected} 条退回" if rejected else "",
+        )
+    if rejected:
+        return _step(seq, payload, "提交", "证据", note="未通过校验")
     return None
 
 
-def _source_fetch_started(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
-    host = _display_host(payload.get("requested_url"))
-    return _task(
-        "task_update", seq, payload, {"text": f"正在读取：{host}" if host else "读取来源中…"}
-    )
-
-
 def _source_document_registered(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
-    """材料缓存命中要标成「复用」而不是「已读取」。
+    """材料缓存命中要标成「复用」而不是「读取」。
 
-    同一来源被两个任务读取时，一律写「已读取」会让用户以为重复抓取了两次。
+    同一来源被两个任务读取时，一律写「读取」会让用户以为重复抓取了两次。
     """
-    host = _display_host(payload.get("final_url") or payload.get("requested_url"))
+    raw = payload.get("final_url") or payload.get("requested_url")
+    shown = _display_url(raw) or "一份来源"
     cached = bool(payload.get("material_cache_hit"))
-    verb = "复用来源" if cached else "已读取"
-    fallback = "复用已读取的来源" if cached else "来源已读取"
-    return _task("task_update", seq, payload, {"text": f"{verb}：{host}" if host else fallback})
+    return _step(seq, payload, "复用" if cached else "读取", shown, title=str(raw or ""))
 
 
 def _source_read_failed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
-    host = _display_host(payload.get("url"))
-    return _task(
-        "task_update", seq, payload, {"text": f"读取失败：{host}" if host else "某来源读取失败"}
+    """读取失败与跳过在左列分开：前者是异常，后者是按条件放弃。"""
+    raw = payload.get("url")
+    return _step(
+        seq,
+        payload,
+        "失败",
+        _display_host(raw) or "一份来源",
+        note="读取失败",
+        title=str(raw or ""),
     )
 
 
 def _source_read_skipped(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     """未知 reason_code 回退通用词，不透出机器码。"""
     label = _SOURCE_SKIP_LABELS.get(str(payload.get("reason_code")), "不可读")
-    host = _display_host(payload.get("url"))
-    return _task(
-        "task_update",
+    raw = payload.get("url")
+    return _step(
         seq,
         payload,
-        {"text": f"已跳过：{host}（{label}）" if host else f"来源已跳过（{label}）"},
+        "跳过",
+        _display_host(raw) or "一份来源",
+        note=label,
+        title=str(raw or ""),
     )
 
 
 def _task_search_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     """批次行只报逐查询行覆盖不到的信息。
 
-    全批失败时逐查询的失败行已在场，批次行再下一遍结论只是重复；但熔断、预检这类
-    不产生逐查询行的失败必须留一行，否则这条信息到不了用户。
+    逐查询结果由 search_query_completed 各占一行，候选总数与失败数都能由这些行加出，
+    再报一遍只是重复。批次行只在两种情况下不可省：整批没有逐查询行可发（熔断、预检），
+    以及部分查询命中进程内缓存——缓存查询不发逐查询事件，界面上原本没有它的位置。
     """
-    candidates = _int(payload.get("candidate_count"))
-    failures = _int(payload.get("failure_count"))
     status = str(payload.get("status") or "")
     if status and status != "completed":
-        if failures:
-            return None
-        text = "检索失败"
-    elif failures and candidates:
-        text = "本批检索完成：{} 条候选来源，其中 {} 个查询失败".format(candidates, failures)
-    elif failures:
-        return None  # 全部查询失败：逐查询的失败行已经逐条说明
-    elif candidates:
-        text = "本批检索完成：{} 条候选来源".format(candidates)
-    else:
-        text = "本批检索完成：未找到相关来源"
-    return _task("task_update", seq, payload, {"text": text})
-
-
-def _search_query_started(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
-    query = _text(payload.get("query"), 60)
-    return _task("task_update", seq, payload, {"text": f"正在检索：{query}"})
+        return _step(seq, payload, "检索", "本批查询", note="失败")
+    cached = _int(payload.get("cache_hit_count"))
+    if not cached:
+        return None
+    return _step(
+        seq,
+        payload,
+        "复用",
+        f"{cached} 个查询",
+        f"{_int(payload.get('candidate_count'))} 条候选",
+        note="命中缓存",
+    )
 
 
 def _search_query_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
+    """一条查询一行；没搜到结果时右列留空，原因进括注，右列只放同构计数。"""
     count = _int(payload.get("candidate_count"))
-    return _task(
-        "task_update",
+    return _step(
         seq,
         payload,
-        {
-            "text": "{} → {}".format(
-                _text(payload.get("query"), 60),
-                f"{count} 条候选" if count else "未见相关来源",
-            )
-        },
+        "检索",
+        f"「{_text(payload.get('query'), 60)}」",
+        f"{count} 条候选" if count else "",
+        note="" if count else "未见相关来源",
     )
 
 
 def _search_query_failed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     query = _text(payload.get("query"), 60)
-    return _task("task_update", seq, payload, {"text": f"检索失败，已跳过：{query}"})
+    return _step(seq, payload, "检索", f"「{query}」", note="失败")
 
 
 # 指标与杂项
@@ -393,12 +466,10 @@ _PROJECTORS: dict[str, Callable[[Any, Any, Mapping[str, Any]], SseFrame | None]]
     EventName.RESEARCH_TASK_COMPLETED: _research_task_completed,
     EventName.RESEARCH_TASK_FAILED: _research_task_failed,
     EventName.TASK_EVIDENCE_ADDED: _task_evidence_added,
-    EventName.SOURCE_FETCH_STARTED: _source_fetch_started,
     EventName.SOURCE_DOCUMENT_REGISTERED: _source_document_registered,
     EventName.SOURCE_READ_FAILED: _source_read_failed,
     EventName.SOURCE_READ_SKIPPED: _source_read_skipped,
     EventName.TASK_SEARCH_COMPLETED: _task_search_completed,
-    EventName.SEARCH_QUERY_STARTED: _search_query_started,
     EventName.SEARCH_QUERY_COMPLETED: _search_query_completed,
     EventName.SEARCH_QUERY_FAILED: _search_query_failed,
     EventName.RESEARCH_ROUND_COMPLETED: _research_round_completed,
@@ -438,7 +509,7 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
         label = {
             "approved": "审阅通过",
             "rejected": "审阅要求修改",
-            "abstained": "审阅未给出结论",
+            "failed": "审阅失败",
         }.get(str(payload.get("review_status", "")), "")
         feedback = _text(payload.get("review_feedback"), 120)
         return "；".join(part for part in (label, feedback) if part)
@@ -457,6 +528,29 @@ def _task(event: str, seq: Any, payload: Mapping[str, Any], extra: dict) -> SseF
     if not task:
         return None
     return _frame(event, seq, {"task": task, **extra})
+
+
+def _step(
+    seq: Any,
+    payload: Mapping[str, Any],
+    act: str,
+    obj: str,
+    res: str = "",
+    *,
+    note: str = "",
+    title: str = "",
+) -> SseFrame | None:
+    """任务卡的一行动作：左列动作词、中间对象、右列计数，括注与悬停地址按需附加。
+
+    三段分开给，是因为它们的排版职责不同：act 定宽便于纵向对齐，res 只放同构计数
+    以便右对齐成一列，note 是非计数的原因说明，跟在对象后面。
+    """
+    step = {"act": act, "obj": obj, "res": res}
+    if note:
+        step["note"] = note
+    if title:
+        step["title"] = title
+    return _task("task_update", seq, payload, {"step": step})
 
 
 def _tick(seq: Any, text: str | None) -> SseFrame | None:

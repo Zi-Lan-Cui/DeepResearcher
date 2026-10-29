@@ -362,10 +362,10 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
                     "payload": {"task_id": "task-0001", "question": "方向甲的局部事实"},
                 },
                 {
-                    "event_type": "direction_search_completed",
+                    "event_type": "search_query_completed",
                     "payload": {
                         "task_id": "task-0001",
-                        "research_direction": "方向甲",
+                        "query": "关键词甲",
                         "candidate_count": 5,
                     },
                 },
@@ -376,6 +376,7 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
                         "execution_status": "completed",
                         "evidence_count": 2,
                         "source_count": 1,
+                        "finding": "两条官方文档互证该结论。",
                     },
                 },
             ]
@@ -393,8 +394,13 @@ async def test_sse_replays_completed_run_and_ends_with_done(client):
     assert "supervisor" in stage_opens  # 阶段块由 node_started 事件驱动出现
     by_event = {event: data for event, data in frames if event.startswith("task_")}
     assert by_event["task_open"]["title"] == "方向甲的局部事实"
-    assert by_event["task_update"]["text"] == "本批检索完成：5 条候选来源"
+    assert by_event["task_update"]["step"] == {
+        "act": "检索",
+        "obj": "「关键词甲」",
+        "res": "5 条候选",
+    }
     assert by_event["task_done"]["summary"] == "证据 2 · 来源 1"
+    assert by_event["task_done"]["finding"] == "两条官方文档互证该结论。"
     assert by_event["task_update"]["task"] == "task-0001"
     seqs = [data["seq"] for _, data in frames]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)

@@ -116,32 +116,61 @@
      代码底纹与继承色链接，不引入新的视觉重量。 */
   .ln code { background:#f1f5f9; border-radius:3px; padding:0 4px; font-size:0.92em; }
   .ln a { color:inherit; text-decoration:underline; }
-  /* 方向卡片：收窄成"子项"观感；running 淡绿 → done 灰白 */
-  .tcard { border:1px solid var(--bd); border-radius:7px; margin:5px 0; background:#fff; }
-  .tcard.running { background:#f0fdf4; border-color:#bbf7d0; }
-  .tcard.queued { background:#f8fafc; border-color:#dbe2ea; border-style:dashed; }
-  .tcard.done { background:#f9fafb; color:var(--mut); }
-  .tcard.warn { background:#fffbeb; border-color:#fde68a; color:var(--mut); }
-  .tcard.failed { background:#fef2f2; border-color:#fecaca; color:#7f1d1d; }
-  .tcard-head { display:flex; align-items:center; gap:8px; padding:5px 10px; }
-  .tcard-title { flex:1; font-weight:600; font-size:13px; line-height:1.45;
-                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .tcard-toggle { border:0; background:none; cursor:pointer; color:var(--mut);
-                  font-size:11px; padding:2px 6px; transition:transform .15s, background-color .15s, color .15s; }
-  /* 幽灵展开钮只加浅底与变色，不做实心填充。 */
-  .tcard-toggle:hover { background:#eef2f6; color:var(--ac); }
-  .tcard.expanded .tcard-toggle { transform:rotate(90deg); }
-  .tcard-live { padding:0 10px 6px; font-size:12.5px; color:var(--mut); }
+  /* 方向卡片：白底加左侧状态竖条。状态不换底色——底色语义与阶段块重复，
+     读者得先猜"这块颜色代表什么"，而竖条只需与阶段块的节点环比对。
+     卡面四段：标题行、摘要、当前动作、元信息行；展开后追加流水与完整结论。 */
+  .tcard { position:relative; border:1px solid var(--bd); border-radius:8px;
+           margin:8px 0; background:#fff; }
+  .tcard::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:2px;
+                   border-radius:1px; background:#cbd2d9; }
+  .tcard.running::before { background:var(--ac); }
+  .tcard.failed::before { background:#b42318; }
+  .tcard.queued { border-style:dashed; }
+  .tcard.queued::before { background:#e3e6ea; }
+  .tcard-head { display:flex; align-items:center; gap:8px; padding:13px 15px 0 17px; }
+  .tcard-title { flex:1; min-width:0; font-weight:500; font-size:13px; line-height:1.5;
+                 color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* 摘要标记：下面那段是提炼，不是该方向的全部产出；完整论证在展开区与报告里。 */
+  .tcard-tag { flex:none; padding:1px 6px; border-radius:4px; background:#f1f3f5;
+               font-size:11.5px; line-height:1.5; color:var(--mut); }
+  .tcard-finding { margin:6px 15px 12px 17px; font-size:12.5px; line-height:1.7; color:#2c3035; }
+  .tcard-live { padding:6px 15px 12px 17px; font-size:11.5px; line-height:1.7; color:var(--mut); }
   .tcard-live.anim { animation:slidein .35s ease; }
-  /* 方向结论：与动作明细区分开，用左侧细线表示这是本方向的成品，不是又一条流水账。 */
-  .tcard-conclusion { margin:0 10px 9px; padding:8px 11px; border-left:2px solid var(--ac);
-                      background:#f6f9f9; border-radius:0 6px 6px 0;
-                      font-size:12.5px; line-height:1.72; color:#374151; white-space:pre-wrap; }
+  /* 元信息行既是卡面与展开区的分隔，也是展开入口所在；两条线只留这一条。 */
+  .tcard-meta { display:flex; align-items:center; justify-content:space-between;
+                padding:10px 15px 10px 17px; border-top:1px solid #f1f3f5;
+                font-size:11.5px; color:var(--mut); }
+  .tcard-counts { font-variant-numeric:tabular-nums; }
+  .tcard-more { display:inline-flex; align-items:center; gap:4px; margin:-2px -3px -2px 0;
+                padding:2px 0; border:0; background:none; font:inherit; font-size:11.5px;
+                color:var(--mut); cursor:pointer; border-radius:4px; }
+  .tcard-more:hover { color:var(--ac); }
+  .tcard-more .chev { display:flex; }
+  .tcard-more svg { display:block; transition:transform .2s ease; }
+  .tcard.open .tcard-more svg { transform:rotate(90deg); }
+  /* 展开用 0fr → 1fr：不需先测内容高度，长短流水共用一套过渡。 */
+  .tcard-detail { display:grid; grid-template-rows:0fr; transition:grid-template-rows .22s ease; }
+  .tcard.open .tcard-detail { grid-template-rows:1fr; }
+  .tcard-inner { overflow:hidden; }
+  /* 动作流水：单一网格，所有行同一左边界。层级只靠轮次之间的留白表达，不缩进、不画线。 */
+  .tcard-trace { padding:4px 15px 8px 17px; }
+  .trace-row { display:grid; grid-template-columns:26px minmax(0,1fr) auto; column-gap:10px;
+               align-items:baseline; padding:3px 0; }
+  .trace-row.new-round { padding-top:11px; }
+  .trace-act { font-size:11.5px; line-height:1.7; color:#7a828a; }
+  .trace-obj { min-width:0; font-size:12.5px; line-height:1.7; color:#2c3035;
+               overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .trace-note { margin-left:6px; color:#a0a6ad; }
+  .trace-res { font-size:11.5px; line-height:1.7; color:var(--mut); text-align:right;
+               font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .trace-row.dim .trace-act, .trace-row.dim .trace-obj, .trace-row.dim .trace-res { color:#a0a6ad; }
+  .trace-row.bad .trace-act { color:#b42318; }
+  .tcard-note { padding:0 15px 12px 17px; }
+  .tcard-note-label { display:block; margin:0 0 8px; padding-top:15px; border-top:1px solid #f1f3f5;
+                      font-size:11.5px; font-weight:500; color:var(--mut); }
+  .tcard-note p { margin:0; font-size:12.5px; line-height:1.75; color:#2c3035;
+                  white-space:pre-wrap; }
   @keyframes slidein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
-  .tcard-meta { font-size:12px; color:var(--mut); white-space:nowrap; }
-  .tcard-details { display:none; list-style:none; margin:0; padding:0 12px 10px 28px;
-                   font-size:12.5px; color:var(--mut); max-height:180px; overflow-y:auto; }
-  .tcard.expanded .tcard-details { display:block; }
   /* 运行指标条（轮次/方向/证据）：标题区独立位置，不混进结果流 */
   #run-metrics { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   #run-metrics .chip { font-size:12.5px; padding:2px 10px; border-radius:99px;
@@ -166,7 +195,7 @@
              border-bottom:1px solid #f0f1f3; border-radius:8px; cursor:pointer; }
   .run-row:last-child { border-bottom:0; }
   .run-row:hover { background:#f7f9fc; }
-  /* 三列定宽对齐：徽章定宽（容四字的"部分报告"）→ 问题起点齐；
+  /* 三列定宽对齐：徽章定宽（容四字的"未经审阅"）→ 问题起点齐；
      计数/时间右对齐定宽 → 不再参差。定宽而非改名，保住"完成≠完整"的语义。 */
   .run-row .badge { width:74px; text-align:center; }
   .run-q { flex:1; min-width:0; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -199,11 +228,33 @@
   .report-actions { display:flex; align-items:center; gap:8px; flex:none; }
   .report-actions button { padding:4px 12px; font-size:12.5px; white-space:nowrap; }
   .report .md { line-height:1.8; }
+  /* 终态横幅：红=没跑完，黄=跑完了但审阅有话说。字段用 64px 定宽两列，
+     值的换行不会错开标签。红档多一条左色条，让「没跑完」在视觉上独占。 */
+  .report-banner { display:flex; gap:10px; align-items:flex-start; margin:0 0 16px;
+                   padding:11px 14px; border-radius:8px;
+                   background:#fdf8ea; border:1px solid #f2e5c6; }
+  .report-banner[data-tone="halt"] { background:#fcebeb; border-color:#fecaca;
+                                     border-left:3px solid #e24b4a; }
+  .report-banner .banner-icon { flex:none; margin-top:2px; line-height:0; }
+  .report-banner .banner-text { min-width:0; flex:1; }
+  .report-banner .banner-title { display:block; font-size:13px; font-weight:500;
+                                 color:#8a6d1f; line-height:1.45; }
+  .report-banner[data-tone="halt"] .banner-title { color:#a12622; }
+  .report-banner .banner-fields { display:grid; grid-template-columns:64px 1fr;
+                                  gap:3px 10px; margin:8px 0 0; }
+  .report-banner .banner-fields dt { font-size:12px; color:#9c8b63; line-height:1.6; }
+  .report-banner[data-tone="halt"] .banner-fields dt { color:#9a5f57; }
+  .report-banner .banner-fields dd { margin:0; font-size:12.5px; color:var(--fg);
+                                     line-height:1.6; overflow-wrap:anywhere; }
+  .report-banner .banner-fields dd code { font:11.5px/1.5 ui-monospace,"SFMono-Regular",Consolas,monospace;
+                                          background:#fff; color:#8f2b26; border-radius:4px;
+                                          padding:0 4px; border:1px solid #f0cfcc; }
+  /* 横幅接管标题下方间距：20px 会让标题与警示脱节。 */
+  #report-card:has(.report-banner:not(.hide)) .report-head { margin-bottom:12px; }
   .report-meta { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
   .report-meta span { font-size:12.5px; padding:3px 10px; border-radius:99px;
                       background:#e9f2f1; color:#0f5150; border:1px solid #cfe3e1;
                       font-variant-numeric:tabular-nums; }
-  .report-meta.warn span:first-child { background:#fef3c7; color:#92400e; border-color:#fde68a; }
   /* 正文标题永远小于卡片标题(15px bold)才不层级倒挂；writer 违规写出的
      # 一级标题也钳在 18px 内。 */
   .report .md h1 { font-size:18px; margin:18px 0 8px; }
@@ -322,6 +373,7 @@
   @media (prefers-reduced-motion: reduce) {
     .stage-block.running .dot { animation:none; }
     .tcard-live.anim { animation:none; }
+    .tcard-detail, .tcard-more svg { transition:none; }
     .skip-link { transition:none; }
     .stage-collapse { transition:none; }
     .stage-block { transition:none; }

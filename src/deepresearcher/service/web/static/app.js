@@ -753,6 +753,12 @@ function stageNote(stage, text, warn) {
 
 const QUEUED_HINT = "排队中，等待并发槽";
 
+/* 展开入口的箭头用 SVG 而非 ▸ 字符：字符的基线随字体浮动，与同一行的计数对不齐。 */
+const CHEVRON =
+  '<svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+  '<path d="M3.2 1.5L7 5L3.2 8.5" stroke="currentColor" stroke-width="1.3" ' +
+  'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 function ensureCard(id, title, state) {
   let card = taskCards.get(id);
   if (card) {
@@ -769,18 +775,48 @@ function ensureCard(id, title, state) {
   card = document.createElement("div");
   card.className = "tcard " + (state === "queued" ? "queued" : "running");
   card.dataset.label = label;
+
   const head = document.createElement("div"); head.className = "tcard-head";
   const t = document.createElement("div"); t.className = "tcard-title";
   t.textContent = label + (title || "研究方向");
   t.title = title || "";
-  const toggle = document.createElement("button"); toggle.className = "tcard-toggle"; toggle.textContent = "▸";
-  toggle.title = "展开动作明细";
-  toggle.onclick = () => card.classList.toggle("expanded");
-  head.append(t, toggle);
+  const tag = document.createElement("span"); tag.className = "tcard-tag hide";
+  tag.textContent = "摘要";
+  tag.title = "本方向的关键结论提炼，完整论证以报告与证据为准";
+  head.append(t, tag);
+
+  // 摘要只在完成且有 finding 时出现；运行中的卡片用下面那行当前动作占位。
+  const finding = document.createElement("p"); finding.className = "tcard-finding hide";
   const live = document.createElement("div"); live.className = "tcard-live";
   live.textContent = state === "queued" ? QUEUED_HINT : "准备中…";
-  const details = document.createElement("ul"); details.className = "tcard-details";
-  card.append(head, live, details);
+
+  const meta = document.createElement("div"); meta.className = "tcard-meta hide";
+  const counts = document.createElement("span"); counts.className = "tcard-counts";
+  const more = document.createElement("button"); more.type = "button";
+  more.className = "tcard-more hide"; more.setAttribute("aria-expanded", "false");
+  const detailId = "tcard-detail-" + taskSeq;
+  more.setAttribute("aria-controls", detailId);
+  more.innerHTML = '详情<span class="chev">' + CHEVRON + "</span>";
+  meta.append(counts, more);
+
+  const detail = document.createElement("div"); detail.className = "tcard-detail";
+  detail.id = detailId;
+  const inner = document.createElement("div"); inner.className = "tcard-inner";
+  const trace = document.createElement("div"); trace.className = "tcard-trace";
+  const note = document.createElement("div"); note.className = "tcard-note hide";
+  const noteLabel = document.createElement("span"); noteLabel.className = "tcard-note-label";
+  noteLabel.textContent = "完整结论";
+  const noteBody = document.createElement("p");
+  note.append(noteLabel, noteBody);
+  inner.append(trace, note);
+  detail.appendChild(inner);
+
+  more.onclick = () => {
+    const open = card.classList.toggle("open");
+    more.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+
+  card.append(head, finding, live, meta, detail);
   ensureStage("supervisor").querySelector(".stage-body").appendChild(card);
   taskCards.set(id, card);
   updateTaskCount();
@@ -827,31 +863,67 @@ function renderStats(data) {
   }
 }
 
-function cardAction(card, text) {
-  const live = card.querySelector(".tcard-live");
-  live.textContent = text;
-  live.classList.remove("anim"); void live.offsetWidth; live.classList.add("anim");
-  const details = card.querySelector(".tcard-details");
-  const last = details.lastElementChild;
-  if (!last || last.textContent !== text) {          // 连续重复动作只留一条
-    const li = document.createElement("li"); li.textContent = text;
-    details.appendChild(li);
-    while (details.children.length > 80) details.removeChild(details.firstChild);
+/* 动作流水的一行。左列动作词定宽，右列只放计数；非计数的原因跟在对象后作括注，
+   右列因此始终是同构的「数字 + 条 + 名词」，右对齐后数字落在同一条竖线上。 */
+function traceRow(step, newRound) {
+  const row = document.createElement("div");
+  row.className = "trace-row";
+  if (newRound) row.classList.add("new-round");
+  if (step.act === "跳过") row.classList.add("dim");
+  if (step.act === "失败") row.classList.add("bad");
+  row.dataset.act = step.act || "";
+  const act = document.createElement("span"); act.className = "trace-act";
+  act.textContent = step.act || "";
+  const obj = document.createElement("span"); obj.className = "trace-obj";
+  obj.textContent = step.obj || "";
+  if (step.title) obj.title = step.title;
+  if (step.note) {
+    const note = document.createElement("span"); note.className = "trace-note";
+    note.textContent = step.note;
+    obj.appendChild(note);
   }
-  details.scrollTop = details.scrollHeight;
+  const res = document.createElement("span"); res.className = "trace-res";
+  res.textContent = step.res || "";
+  row.append(act, obj, res);
+  return row;
 }
 
-/* 方向结论是用户唯一能读到研究内容的入口：卡片平时只显示计数，这里补一段可读总结。
-   失败的任务没有结论，宁可不显示，也不摆一行占位。 */
-function renderTaskConclusion(card, text) {
-  if (!text) return;
-  let block = card.querySelector(".tcard-conclusion");
-  if (!block) {
-    block = document.createElement("div");
-    block.className = "tcard-conclusion";
-    card.querySelector(".tcard-live").after(block);
+/* 动作既进流水，也更新卡面那行当前动作——完成前它是用户唯一的进展提示。
+   元信息行与展开入口在第一条动作到达时才现身：空流水不该给一个点了看不到东西的按钮。 */
+function cardAction(card, step) {
+  const trace = card.querySelector(".tcard-trace");
+  const prev = trace.lastElementChild;
+  // 一次检索领起它那一轮读取，前面已经出现过别的动作时才留间距。
+  const newRound = step.act === "检索" && prev !== null && prev.dataset.act !== "检索";
+  trace.appendChild(traceRow(step, newRound));
+  while (trace.children.length > 80) trace.removeChild(trace.firstChild);
+  card.querySelector(".tcard-meta").classList.remove("hide");
+  const live = card.querySelector(".tcard-live");
+  live.textContent = "正在" + step.act + (step.obj ? " " + step.obj : "");
+  live.classList.remove("anim"); void live.offsetWidth; live.classList.add("anim");
+}
+
+/* 完成时卡面换成摘要：分方向查清了什么，完整论证与缺口仍留在展开区的结论里。 */
+function finishCard(card, data) {
+  const live = card.querySelector(".tcard-live");
+  if (data.status === "failed") {
+    live.textContent = data.summary || "研究未成功";
+  } else {
+    live.classList.add("hide");
+    if (data.summary) card.querySelector(".tcard-counts").textContent = data.summary;
   }
-  block.textContent = text;
+  if (data.finding) {
+    const finding = card.querySelector(".tcard-finding");
+    finding.textContent = data.finding;
+    finding.classList.remove("hide");
+    card.querySelector(".tcard-tag").classList.remove("hide");
+  }
+  if (data.conclusion) {
+    const note = card.querySelector(".tcard-note");
+    note.querySelector("p").textContent = data.conclusion;
+    note.classList.remove("hide");
+  }
+  if (data.conclusion || data.summary) card.querySelector(".tcard-meta").classList.remove("hide");
 }
 
 /* 占位空态只会被真正产出进度内容的帧收走；status/stats 等不产内容。 */
@@ -923,13 +995,12 @@ function handleFrame(event, data) {
   else if (event === "task_open") ensureCard(data.task, data.title, data.state);
   else if (event === "task_update") {
     const card = ensureCard(data.task, "");           // 孤儿 update 兜底建卡
-    if (data.text) cardAction(card, data.text);
+    if (data.step) cardAction(card, data.step);
   } else if (event === "task_done") {
     const card = ensureCard(data.task, "");
     card.classList.remove("running", "queued");
     card.classList.add(data.status === "failed" ? "failed" : data.status === "warn" ? "warn" : "done");
-    cardAction(card, (data.status === "failed" ? "✗ " : "✓ ") + (data.summary || "本步完成"));
-    renderTaskConclusion(card, data.conclusion);
+    finishCard(card, data);
     updateTaskCount();
   } else if (event === "clarification") {
     renderClarification(data);
@@ -978,14 +1049,13 @@ function resetProgressView() {
 }
 
 /* completed 只代表"产出了终稿"；writer 耗尽/研究不完美的残局报告降级显示，
-   不再用一个绿色 completed 掩盖"没成功"。数据源：answer_mode/terminal_reason。 */
+   不再用一个绿色 completed 掩盖"没成功"。数据源：answer_mode/terminal_reason/report_kind。 */
 const STATUS_LABEL = {
   running: "进行中", resuming: "恢复续跑中", queued: "排队中", interrupted: "已中断，等待恢复", awaiting_input: "等待回答",
   completed: "已完成", failed: "失败", cancelled: "已取消",
 };
 
-// 失败原因专属徽章：executor 写的 terminal_reason 精确到"为什么失败"，让用户一眼区分
-// 基础设施（模型额度/密钥/限流、搜索额度、服务重启）与运行本身出错，而非笼统"失败"。
+// 中断类型的用户词：横幅「错误类型」一栏的中文名，未登记的码只显示裸码。
 const REASON_LABEL = {
   "llm_unavailable:invalid_key": "模型密钥无效",
   "llm_unavailable:insufficient_credit": "模型余额不足",
@@ -996,30 +1066,34 @@ const REASON_LABEL = {
   server_restart: "服务重启中断",
   lease_expired_without_checkpoint: "中断且无断点",
   run_exception: "运行异常",
+  node_failed: "运行异常",
 };
 
-function reasonBadge(reason) {
-  if (!reason) return null;
-  if (REASON_LABEL[reason]) return REASON_LABEL[reason];
-  if (reason.startsWith("llm_unavailable:")) return "模型服务不可用";
-  return null;
+function reasonLabel(code) {
+  if (!code) return "";
+  if (REASON_LABEL[code]) return REASON_LABEL[code];
+  if (code.startsWith("llm_unavailable:")) return "模型服务不可用";
+  return "";
 }
 
+/* 结论词只有三个：未完成（红）、未通过（黄）、未经审阅（黄）。
+   判据是「有没有可读的完整正文」与「审阅给出了什么结论」，两者都由服务端给；
+   「部分报告」「受限报告」是同一件事的另一种说法，列表与详情各叫一个名字，
+   同一条 run 在两处对不上，所以只留这套词。 */
 function badgeFor(status, info) {
-  if (status === "completed" && info && info.terminal_reason === "review_abstained") {
-    return { cls: "degraded", text: "未经审阅" };
+  const d = info || {};
+  if (status === "cancelled") return { cls: "cancelled", text: "已取消" };
+  if (status !== "completed" && status !== "failed") {
+    return { cls: status, text: STATUS_LABEL[status] || status };
   }
-  if (status === "completed" && info && info.answer_mode === "review_limited") {
-    return { cls: "degraded", text: "受限报告" };
+  if (status === "completed") {
+    if (d.terminal_reason === "review_failed") return { cls: "degraded", text: "未经审阅" };
+    if (d.answer_mode === "review_limited") return { cls: "degraded", text: "未通过" };
+    if (d.report_kind === "full" && d.answer_mode !== "research_incomplete") {
+      return { cls: "completed", text: "已完成" };
+    }
   }
-  const degraded = status === "completed" && info &&
-    (info.answer_mode === "research_incomplete" || info.terminal_reason === "writer_exhausted");
-  if (degraded) return { cls: "degraded", text: "部分报告" };
-  if (status === "failed" && info) {
-    const label = reasonBadge(info.terminal_reason);
-    if (label) return { cls: "failed", text: label };
-  }
-  return { cls: status, text: STATUS_LABEL[status] || status };
+  return { cls: "failed", text: "未完成" };
 }
 
 function setStatus(status, info) {
@@ -1061,11 +1135,11 @@ async function onRunDone(data) {
   let detail;
   try { detail = await api("/api/runs/" + currentRunId); } catch (e) { return; }
   if (seq !== runViewSeq) return;   // 请求期间切了 run，别把旧结果写进新视图
-  // 用完整 detail 重设徽章：done 帧缺 terminal_reason，只有这里能判"部分报告"。
+  // 用完整 detail 重设徽章：done 帧缺 terminal_reason，只有这里能判「未通过」这类结论。
   setStatus(detail.status, detail);
   // 实时跑完同样要回填卡片标题：正文 H1 与 detail.title 相同会被剥重，
   // 这里不补，标题位在页面上就两头落空。
-  $("report-card-title").textContent = detail.title || "研究报告";
+  applyReportTitle(detail);
   if (detail.status === "awaiting_input") {
     if (detail.clarification) renderClarification(detail.clarification);
     return;
@@ -1077,9 +1151,14 @@ async function onRunDone(data) {
 }
 
 /* 渲染器拼在 markdown 里的报告头（# 研究报告 / ## 研究问题 / > 横幅）与页面
-   头部卡片信息重复——剥出正文，统计信息改为独立的元提示栏（数字取 detail 字段）。 */
+   头部卡片信息重复——剥出正文，统计信息改为独立的元提示栏（数字取 detail 字段）。
+   空壳页的 H1 是「报告未生成」，同一个词已经写在卡片标题上，只剥这一行；
+   它的「研究问题」「研究进度」是正文主体，不是页头信息，必须保留。 */
 function stripReportHead(markdownText) {
   const lines = markdownText.split("\n");
+  if (/^#\s*报告未生成/.test(lines[0] || "")) {
+    return lines.slice(1).join("\n").replace(/^\n+/, "");
+  }
   if (!/^#\s*研究报告/.test(lines[0] || "")) return markdownText;
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
@@ -1092,34 +1171,140 @@ function stripReportHead(markdownText) {
   return lines.slice(i).join("\n").replace(/^\n+/, "");
 }
 
+/* 终态横幅：没交付完整成品时，把「断在哪、什么错、正文停在什么状态」集中在一处。
+   红档＝没跑完，黄档＝跑完了但审阅有话说；同一个骨架，只换配色。
+   字段全部取服务端：error 来自 runs.error_json，review 来自 runs.review_json，
+   正文状态来自 report_kind——前端不从标题或证据数去猜。 */
+const BANNER_ICON_HALT = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">'
+  + '<circle cx="8" cy="8" r="6.5" stroke="#dc2626" stroke-width="1.3"/>'
+  + '<path d="M8 4.5v4.2" stroke="#dc2626" stroke-width="1.3" stroke-linecap="round"/>'
+  + '<circle cx="8" cy="11.2" r=".78" fill="#dc2626"/></svg>';
+const BANNER_ICON_WARN = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">'
+  + '<path d="M8 1.9 1.5 13.1h13L8 1.9Z" stroke="#c08a1e" stroke-width="1.3" stroke-linejoin="round"/>'
+  + '<path d="M8 6.1v3.2" stroke="#c08a1e" stroke-width="1.3" stroke-linecap="round"/>'
+  + '<circle cx="8" cy="11.4" r=".78" fill="#c08a1e"/></svg>';
+
+function bannerField(label, value, code) {
+  return { label, value: Array.isArray(value) ? value : [value], code: code || "" };
+}
+
+function reportBannerModel(detail) {
+  if (!detail) return null;
+  const body = detail.report_kind === "none" ? "未生成" : "最近一次生成版本";
+  const review = detail.review;
+  if (detail.answer_mode === "review_limited" && review) {
+    if (review.status === "failed") {
+      return {
+        tone: "quality",
+        title: "未经审阅",
+        fields: [
+          bannerField("审阅轮次", review.attempts + " 轮，未取得结论"),
+          bannerField("失败原因", review.failure_reason || "审阅模型没有返回结论"),
+          bannerField("正文状态", body),
+        ],
+      };
+    }
+    const opinions = (review.issues || []).length ? review.issues
+      : (review.feedback ? [review.feedback] : ["审阅未给出具体意见"]);
+    return {
+      tone: "quality",
+      title: "未通过",
+      fields: [
+        bannerField("审阅轮次", review.attempts + " 轮，均未通过"),
+        bannerField("审阅意见", opinions),
+        bannerField("正文状态", body),
+      ],
+    };
+  }
+  // 红档：有结构化错误就照实说断在哪；老 run 没有 error_json，只留结论与正文状态。
+  if (detail.report_kind === "none" || detail.status === "failed") {
+    const error = detail.error || {};
+    const fields = [];
+    if (error.stage_label) fields.push(bannerField("中断位置", error.stage_label));
+    if (error.code || error.message) {
+      fields.push(bannerField("错误类型", reasonLabel(error.code), error.code));
+      fields.push(bannerField("具体信息", error.message || "（未记录）"));
+    }
+    // 审阅否决不是异常，没有 RunError：原因在 review 里，同样收进来，
+    // 否则这条卡片只剩「正文状态」一个字段，而正文里也不该再说一遍。
+    if (!error.code && review && review.status === "rejected") {
+      const opinions = (review.issues || []).length ? review.issues
+        : [review.feedback || "审阅未给出具体意见"];
+      fields.push(bannerField("审阅轮次", review.attempts + " 轮，均未通过"));
+      fields.push(bannerField("审阅意见", opinions));
+    }
+    fields.push(bannerField("正文状态", body));
+    return { tone: "halt", title: "未完成", fields };
+  }
+  return null;
+}
+
+function renderReportBanner(detail) {
+  const host = $("report-banner");
+  host.replaceChildren();
+  const model = reportBannerModel(detail);
+  host.classList.toggle("hide", !model);
+  if (!model) return;
+  host.dataset.tone = model.tone;
+  const icon = document.createElement("span");
+  icon.className = "banner-icon";
+  icon.innerHTML = model.tone === "halt" ? BANNER_ICON_HALT : BANNER_ICON_WARN;
+  const text = document.createElement("div");
+  text.className = "banner-text";
+  const title = document.createElement("b");
+  title.className = "banner-title";
+  title.textContent = model.title;
+  const dl = document.createElement("dl");
+  dl.className = "banner-fields";
+  for (const field of model.fields) {
+    const dt = document.createElement("dt");
+    dt.textContent = field.label;
+    const dd = document.createElement("dd");
+    field.value.forEach((line, index) => {
+      if (index) dd.appendChild(document.createElement("br"));
+      dd.appendChild(document.createTextNode(line));
+    });
+    if (field.code) {
+      dd.appendChild(document.createTextNode(" "));
+      const code = document.createElement("code");
+      code.textContent = field.code;
+      dd.appendChild(code);
+    }
+    dl.append(dt, dd);
+  }
+  text.append(title, dl);
+  host.append(icon, text);
+}
+
+/* 标题位回答「这张卡片里是什么」：有正文就是 Writer 拟的报告名，没有正文就是
+   「报告未生成」。判据取 report_kind 而不是 title——Writer 起过名但正文没写出来时
+   title 也有值，按它判会把空壳页标成一份报告。 */
+function applyReportTitle(detail) {
+  $("report-card-title").textContent = detail && detail.report_kind === "none"
+    ? "报告未生成"
+    : ((detail && detail.title) || "研究报告");
+}
+
+/* 结论由横幅承载，这一栏只留计量：同一件事在页面上有两个名字，
+   撤掉哪个都会让另一处孤零零，所以撤的是重复的那份。 */
 function renderReportMeta(detail) {
   const el = $("report-meta");
   el.innerHTML = "";
+  el.classList.remove("warn");
   if (!detail || !detail.report_markdown) { el.classList.add("hide"); return; }
-  el.classList.remove("hide", "warn");
   const parts = [];
-  const degraded = detail.answer_mode === "research_incomplete"
-    || detail.terminal_reason === "writer_exhausted";
   if (detail.answer_mode === "quick_answer") {
     parts.push("即时回答 · 未联网检索");
   } else {
     if (detail.evidence_count) parts.push("证据 " + detail.evidence_count);
     if (detail.source_count) parts.push("来源 " + detail.source_count);  // 来源=去重后的文章数
   }
-  if (detail.answer_mode === "review_limited") {
-    el.classList.add("warn");
-    parts.unshift(detail.terminal_reason === "review_abstained"
-      ? "未经审阅 · 审阅模型未给出结论"
-      : "受限报告 · 已达到审阅修订上限");
-  } else if (degraded) {
-    el.classList.add("warn");
-    parts.unshift("部分报告");
-  }
   for (const text of parts) {
     const span = document.createElement("span");
     span.textContent = text;
     el.appendChild(span);
   }
+  el.classList.toggle("hide", parts.length === 0);
 }
 
 /* 证据来源表由管道生成、编号权威唯一：正文 [证据N] 与表条目一一对应。
@@ -1198,6 +1383,7 @@ function renderReport(markdownText, fallbackCitations, detail) {
   const stripped = stripReportFooter(stripReportHead(markdownText));
   const [bodyMarkdown, referencesMarkdown, refHeading] = splitReport(stripped);
   renderReportMeta(detail);
+  renderReportBanner(detail);
   $("report-actions").classList.toggle("hide", !(detail && detail.report_markdown));
   // 徽标与动作都缺席时（失败路径只有一行错误文本），整条眉题行不留空档。
   $("report-toolbar").classList.toggle("hide",
@@ -1510,7 +1696,7 @@ async function renderRun(runId) {
   $("run-query").classList.toggle("hide", !detail.headline || detail.headline === detail.query);
   $("run-title").textContent = "研究：" + (detail.headline || detail.query);
   $("run-title").title = detail.query;
-  $("report-card-title").textContent = detail.title || "研究报告";
+  applyReportTitle(detail);
   setStatus(detail.status, detail);
   if (["completed", "failed", "cancelled"].includes(detail.status)) {
     // 终态先按 detail 落证据/来源底座；重放中的 stats 帧到达会整体替换。

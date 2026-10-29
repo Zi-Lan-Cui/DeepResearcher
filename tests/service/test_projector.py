@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from deepresearcher.service.web.projector import project
+from deepresearcher.service.web.presenters import report_kind
+from deepresearcher.service.web.projector import project, project_review, project_run_error
 
 # 每个用例都会把 SECRET 塞进这些被禁字段，任何一帧的输出 JSON 里都不许出现。
 DENIED_FIELDS = {
@@ -121,22 +122,49 @@ def test_unknown_node_failure_falls_back_to_global_error():
     assert project(_record("node_failed", node="mystery")).event == "error"
 
 
-def test_direction_search_becomes_task_update_without_direction_text():
-    """方向文案只在事件卡片首次出现时输出一次；update 行只报数量，不重复长标题。"""
+def test_batch_search_row_is_dropped_when_every_query_has_its_own_row():
+    """逐查询行已给出候选数与失败数，批次汇总再报一遍只是重复。"""
+    assert (
+        project(
+            _record("direction_search_completed", {"task_id": "task-0001", "candidate_count": 5})
+        )
+        is None
+    )
+    # 方向长标题不进 update 行，卡片标题只在建卡时给一次。
+    assert (
+        project(
+            _record(
+                "direction_search_completed",
+                {"task_id": "task-0001", "research_direction": "x" * 200, "cache_hit_count": 1},
+            )
+        )
+        is not None
+    )
+
+
+def test_batch_search_reports_cache_hits_without_query_rows():
+    """命中进程内缓存的查询不发逐查询事件，只有批次行能告知这部分结果。"""
     frame = project(
         _record(
             "direction_search_completed",
-            {"task_id": "task-0001", "research_direction": "x" * 200, "candidate_count": 5},
+            {"task_id": "task-0001", "candidate_count": 5, "cache_hit_count": 2},
         )
     )
-    assert frame.event == "task_update"
-    assert frame.data["task"] == "task-0001"
-    assert frame.data["text"] == "本批检索完成：5 条候选来源"
+    assert frame is not None and frame.event == "task_update"
+    assert frame.data["step"] == {
+        "act": "复用",
+        "obj": "2 个查询",
+        "res": "5 条候选",
+        "note": "命中缓存",
+    }
     assert "xxxx" not in json.dumps(frame.data, ensure_ascii=False)
 
 
 def test_task_frames_require_task_id():
-    assert project(_record("direction_search_completed", {"candidate_count": 5})) is None
+    assert (
+        project(_record("direction_search_completed", {"candidate_count": 5, "cache_hit_count": 1}))
+        is None
+    )
 
 
 def test_direction_arrival_merged_maps_to_plan_line():
@@ -298,6 +326,25 @@ def test_queued_task_opens_card_before_concurrency_slot():
     assert "state" not in started.data  # 开始帧不带 state，缺省即进行中
 
 
+def test_long_source_path_keeps_its_tail():
+    """同一站点的页面靠路径尾部区分，截断保留尾部并落在路径分隔处。"""
+    frame = project(
+        _record(
+            "source_document_registered",
+            {
+                "task_id": "task-0001",
+                "requested_url": (
+                    "https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/"
+                ),
+            },
+        )
+    )
+    shown = frame.data["step"]["obj"]
+    assert len(shown) <= 48
+    assert shown.startswith("redis.io/…/")
+    assert shown.endswith("management/persistence")
+
+
 def test_research_task_card_lifecycle():
     opened = project(
         _record(
@@ -319,13 +366,16 @@ def test_research_task_card_lifecycle():
         )
     )
     assert titled.data["title"] == "性善论的先验根据"  # 有短题优先用短题，不展示长问题
-    started = project(
-        _record(
-            "source_fetch_started",
-            {"task_id": "task-0001", "requested_url": "https://www.pku.edu.cn/x?q=SECRET"},
+    # 抓取开始不单独成行：它和随后的登记是同一件事，只留登记那一行。
+    assert (
+        project(
+            _record(
+                "source_fetch_started",
+                {"task_id": "task-0001", "requested_url": "https://www.pku.edu.cn/x?q=SECRET"},
+            )
         )
+        is None
     )
-    assert started.data["text"] == "正在读取：pku.edu.cn"
     registered = project(
         _record(
             "source_document_registered",
@@ -336,7 +386,12 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert registered.data["text"] == "已读取：b.example"
+    assert registered.data["step"] == {
+        "act": "读取",
+        "obj": "b.example/p",
+        "res": "",
+        "title": "https://b.example/p",
+    }
     cached = project(
         _record(
             "source_document_registered",
@@ -348,7 +403,9 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert cached.data["text"] == "复用来源：iso25000.com"  # 缓存命中不是重新抓取
+    # 缓存命中不是重新抓取，动作词必须区分开。
+    assert cached.data["step"]["act"] == "复用"
+    assert cached.data["step"]["obj"] == "iso25000.com/en/x"
     skipped = project(
         _record(
             "source_read_skipped",
@@ -359,22 +416,36 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert skipped.data["text"] == "已跳过：pay.example（需登录）"
+    # 原因是非计数信息，进括注，右列只留计数。
+    assert skipped.data["step"] == {
+        "act": "跳过",
+        "obj": "pay.example",
+        "res": "",
+        "note": "需登录",
+        "title": "https://pay.example/x",
+    }
     unknown_skip = project(
         _record(
             "source_read_skipped",
             {"task_id": "task-0001", "url": "", "reason_code": "some_machine_code"},
         )
     )
-    assert unknown_skip.data["text"] == "来源已跳过（不可读）"
+    assert unknown_skip.data["step"] == {
+        "act": "跳过",
+        "obj": "一份来源",
+        "res": "",
+        "note": "不可读",
+    }
     failed = project(
         _record("source_read_failed", {"task_id": "task-0001", "url": "https://dead.example"})
     )
-    assert failed.data["text"] == "读取失败：dead.example"
+    # 读取失败是异常，跳过是按条件放弃，左列分开两种动作词。
+    assert failed.data["step"]["act"] == "失败"
+    assert failed.data["step"]["note"] == "读取失败"
     extracting = project(
         _record("direction_evidence_added", {"task_id": "task-0001", "accepted_count": 4})
     )
-    assert extracting.data["text"] == "新增证据 +4"
+    assert extracting.data["step"] == {"act": "提交", "obj": "证据", "res": "4 条通过"}
     all_rejected = project(
         _record(
             "direction_evidence_added",
@@ -386,7 +457,12 @@ def test_research_task_card_lifecycle():
             },
         )
     )
-    assert all_rejected.data["text"] == "证据未通过校验，正在修正"
+    assert all_rejected.data["step"] == {
+        "act": "提交",
+        "obj": "证据",
+        "res": "",
+        "note": "未通过校验",
+    }
     empty_audit = project(_record("direction_evidence_added", {"task_id": "task-0001"}))
     assert empty_audit is None  # 零新增零退回的审计记录不打扰用户
     done = project(
@@ -397,6 +473,7 @@ def test_research_task_card_lifecycle():
                 "execution_status": "completed",
                 "evidence_count": 7,
                 "source_count": 3,
+                "finding": "Redis 复制默认异步，主从切换可能丢写。",
                 "conclusion": "两条官方文档互证 Redis 的复制是异步的。",
             },
         )
@@ -406,12 +483,14 @@ def test_research_task_card_lifecycle():
         "completed",
         "证据 7 · 来源 3",
     )
-    # 方向结论是用户唯一读得到的研究内容，计数之外必须随帧到达。
+    # 摘要与结论是两条通道：前者上卡面，后者留在展开区。
+    assert done.data["finding"] == "Redis 复制默认异步，主从切换可能丢写。"
     assert done.data["conclusion"] == "两条官方文档互证 Redis 的复制是异步的。"
     failed = project(
         _record("research_task_completed", {"task_id": "task-0001", "execution_status": "failed"})
     )
     assert failed.data["conclusion"] == ""  # 无结论的任务不编占位文本
+    assert failed.data["finding"] == ""
 
 
 def test_writer_stage_lifecycle():
@@ -491,52 +570,53 @@ def test_text_delta_whitelist_and_no_seq():
 # 若有代码重新投影这类帧，出口仍会被拒绝。
 
 
-def test_search_query_progress_becomes_task_update():
-    started = project(_record("search_query_started", {"task_id": "t1", "query": "关键词甲"}))
-    assert (started.event, started.data["text"]) == ("task_update", "正在检索：关键词甲")
+def test_search_query_progress_becomes_single_step_row():
+    """检索开始不单独成行：它和同一查询的结果是同一件事。"""
+    assert project(_record("search_query_started", {"task_id": "t1", "query": "关键词甲"})) is None
     done = project(
         _record(
             "search_query_completed",
             {"task_id": "t1", "query": "关键词甲", "candidate_count": 12},
         )
     )
-    assert done.data["text"] == "关键词甲 → 12 条候选"
+    assert done.data["step"] == {"act": "检索", "obj": "「关键词甲」", "res": "12 条候选"}
     empty = project(
         _record(
             "search_query_completed", {"task_id": "t1", "query": "关键词甲", "candidate_count": 0}
         )
     )
-    assert empty.data["text"] == "关键词甲 → 未见相关来源"  # 零候选是检索无结果，不是失败
+    # 零候选是检索无结果，不是失败：右列留空，原因进括注。
+    assert empty.data["step"] == {
+        "act": "检索",
+        "obj": "「关键词甲」",
+        "res": "",
+        "note": "未见相关来源",
+    }
     failed = project(_record("search_query_failed", {"task_id": "t1", "query": "x"}))
-    assert failed.data["text"].startswith("检索失败，已跳过")
+    assert failed.data["step"] == {"act": "检索", "obj": "「x」", "res": "", "note": "失败"}
 
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
-        ({"candidate_count": 5, "failure_count": 0}, "本批检索完成：5 条候选来源"),
-        (
-            {"candidate_count": 3, "failure_count": 1},
-            "本批检索完成：3 条候选来源，其中 1 个查询失败",
-        ),
-        ({"candidate_count": 0, "failure_count": 0}, "本批检索完成：未找到相关来源"),
-        # 全部查询失败：逐查询行已逐条说明，批次行不重复下结论。
-        ({"candidate_count": 0, "failure_count": 2}, None),
-        ({"candidate_count": 0, "failure_count": 2, "status": "failed"}, None),
-        # 没有逐查询行可依托的批次失败必须留一行，否则用户看不到失败。
-        ({"candidate_count": 0, "failure_count": 0, "status": "failed"}, "检索失败"),
+        # 没有逐查询行可依托的整批失败必须留一行，否则用户看不到失败。
+        ({"status": "failed"}, "失败"),
+        ({"status": "failed", "failure_count": 2}, "失败"),
+        # 逐查询行齐全且无缓存命中：批次行不再重复汇总。
+        ({"candidate_count": 5}, None),
+        ({"candidate_count": 0}, None),
+        ({"candidate_count": 3, "failure_count": 1}, None),
+        # 命中缓存的查询没有逐查询行，批次行是它唯一的出口。
+        ({"candidate_count": 5, "cache_hit_count": 1}, "命中缓存"),
     ],
 )
-def test_direction_search_completed_distinguishes_empty_from_failed(payload, expected):
-    """0 候选不报完成，批次行只补充逐查询行给不出的信息。"""
+def test_batch_search_only_reports_what_query_rows_cannot(payload, expected):
+    """0 候选不报完成；逐查询行覆盖得到的汇总一律省掉。"""
     frame = project(_record("direction_search_completed", {"task_id": "t1", **payload}))
     if expected is None:
         assert frame is None
     else:
-        assert frame.data["text"] == expected
-    # 存量事件（无 failure_count/status）仍按旧判定，不因新分支变化。
-    legacy = project(_record("direction_search_completed", {"task_id": "t1", "candidate_count": 5}))
-    assert legacy.data["text"] == "本批检索完成：5 条候选来源"
+        assert frame.data["step"]["note"] == expected
 
 
 @pytest.mark.parametrize(
@@ -569,3 +649,84 @@ def test_never_leaks_denied_fields(event_type):
     if frame is None:
         return
     assert "SECRET" not in json.dumps(frame.data, ensure_ascii=False)
+
+
+def test_report_kind_separates_shell_from_real_body():
+    """正文形态决定徽章与卡片标题，空壳页不能因为换了词就变成一份报告。"""
+    assert report_kind(None) == "none"
+    assert report_kind("") == "none"
+    assert report_kind("# 报告未生成\n\n## 研究问题\n…") == "none"
+    # 改词前落库的空壳页仍是诊断页。
+    assert report_kind("# 研究未完成\n\n## 研究问题\n…") == "none"
+    assert report_kind("# 研究报告\n\n正文") == "full"
+
+
+def test_project_run_error_translates_stage_and_drops_internals():
+    """阶段名要与时间线同一个词；detail 是异常原文，不外发。"""
+    error = project_run_error(
+        {
+            "stage": "writer",
+            "code": "node_failed",
+            "message": "与模型服务的连接被重置",
+            "retryable": True,
+            "detail": "SECRET",
+        }
+    )
+    assert error == {
+        "stage": "writer",
+        "stage_label": "撰写报告 · Writer",
+        "code": "node_failed",
+        "message": "与模型服务的连接被重置",
+    }
+
+
+def test_project_run_error_falls_back_to_raw_stage_and_skips_empty():
+    assert (
+        project_run_error({"stage": "custom", "code": "run_exception", "message": "失败"})[
+            "stage_label"
+        ]
+        == "custom"
+    )
+    assert project_run_error(None) is None
+    assert project_run_error({"stage": "writer"}) is None
+
+
+def test_project_review_lists_opinions_and_skips_pending():
+    review = project_review(
+        {
+            "status": "rejected",
+            "attempts": 2,
+            "feedback": "整体未通过",
+            "failure_reason": "",
+            "issues": [{"severity": "fatal", "reason": f"意见{i}"} for i in range(5)],
+        }
+    )
+    assert review is not None
+    assert review["attempts"] == 2
+    assert review["issues"] == ["意见0", "意见1", "意见2"]  # 最多三条，正文列不下更多
+    assert project_review({"status": "pending", "attempts": 0}) is None
+    assert project_review(None) is None
+
+
+def test_legacy_abstained_word_is_renamed_on_the_way_out():
+    """「弃权」是审阅失败的旧词：旧 checkpoint、旧 review_json、旧 terminal_reason
+    都在入口或出口换成新词，判据分支与前端只认 failed。"""
+    from deepresearcher.schemas import ReviewProgress
+    from deepresearcher.service.web.presenters import _terminal_reason
+
+    restored = ReviewProgress.model_validate(
+        {"status": "abstained", "abstain_reason": "审阅输出连续 2 次超出长度上限"}
+    )
+    assert restored.status == "failed"
+    assert restored.failure_reason == "审阅输出连续 2 次超出长度上限"
+
+    legacy = project_review(
+        {"status": "abstained", "attempts": 1, "abstain_reason": "审阅输出连续 2 次超出长度上限"}
+    )
+    assert legacy is not None
+    assert legacy["status"] == "failed"
+    assert legacy["failure_reason"] == "审阅输出连续 2 次超出长度上限"
+
+    assert _terminal_reason("review_abstained") == "review_failed"
+    assert _terminal_reason("review_failed") == "review_failed"
+    assert _terminal_reason(None) is None
