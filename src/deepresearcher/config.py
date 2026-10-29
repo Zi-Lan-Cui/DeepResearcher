@@ -25,9 +25,9 @@ from deepresearcher.vocab import SUPPORT_ORDER, Support
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 已实现的搜索供应商，也是 SEARCH_PROVIDER_PRIORITY 的合法取值。
+# 已实现的搜索供应商，也是 SEARCH_PROVIDER_ORDER 的合法取值。
 SEARCH_PROVIDERS = frozenset({"aliyun", "baidu", "tavily", "serpapi"})
-SEARCH_PROVIDER_PRIORITY = ("aliyun", "baidu", "tavily", "serpapi")
+SEARCH_PROVIDER_ORDER = ("aliyun", "baidu", "tavily", "serpapi")
 FETCH_PROVIDERS = frozenset({"aliyun", "direct"})
 
 
@@ -81,12 +81,9 @@ class LLMConfig:
     max_cost_cny_platform_hourly: float = 0.0
     max_cost_cny_platform_daily: float = 0.0
     price_version: str = PRICE_TABLE_VERSION
-    # 结构化输出不合规时重新提交给模型修复的次数。
-    structured_repair_attempts: int = 1
-    # 按 agent 覆盖单次请求参数，键为 supervisor / researcher / writer / reviewer /
-    # router / quick_answer / clarifier，值为该 agent 的字段覆盖。供应商私有的思考
-    # 开关放 extra_body，各家键名不同（thinking / enable_thinking /
-    # chat_template_kwargs），这里只透传、不解释。
+    # 结构化输出不合规时最多请求几次（含首次）；用尽后把最后一次异常抛给调用方。
+    structured_max_attempts: int = 2
+    # 传递自定义参数给模型。
     request_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
@@ -96,8 +93,8 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    # 结构化收尾未提交时允许的额外纠正次数；Researcher/Writer 共用。
-    finalization_attempts: int = 2
+    # 模型只输出纯文本、未调提交工具时最多驳回几回合；用尽后放行，交业务层作回退。Researcher/Writer 共用。
+    submission_max_rejections: int = 2
     # Supervisor 的研究轮次上限；一轮包含一次评估、派发和汇总。
     max_research_rounds: int = 3
     # 审阅轮次上限（含首次审阅）；用尽后不再返工，按最后一版草稿交付。
@@ -199,7 +196,7 @@ class SearchConfig:
     aliyun_configured: bool = False
     provider: Literal["auto", "aliyun", "baidu", "tavily", "serpapi"] = "auto"
     # provider=auto 时的尝试顺序；显式写某一家则只用它，不降级。
-    priority: tuple[str, ...] = SEARCH_PROVIDER_PRIORITY
+    search_provider_order: tuple[str, ...] = SEARCH_PROVIDER_ORDER
     # 连续失败几次把该供应商移出候选池，以及首次冷却时长（之后按被踢次数递增）。
     fail_threshold: int = 3
     cooldown_seconds: float = 60.0
@@ -211,15 +208,18 @@ class SearchConfig:
     # 阿里云 SDK 的出口代理。留空即直连，并显式写 no_proxy=* —— SDK 会自己读
     # HTTP(S)_PROXY，进程被外部注入代理时，请求会被转到一个未必连得上阿里云的代理。
     aliyun_proxy: str = ""
-    timeout: float = 20.0
+    # 搜索与抓取共用同一个 HTTP 客户端，这里是它的单请求超时。
+    http_timeout: float = 20.0
     max_results: int = 5
-    retry_attempts: int = 3
+    # 单次请求最多发几次（含首次）；用尽后抛带上一次原因的 ToolRequestError。
+    max_attempts: int = 3
     retry_initial_seconds: float = 1.0
     retry_max_seconds: float = 10.0
     retry_after_max_seconds: float = 60.0
     # 同一供应商同时允许的搜索请求数，为单个 worker 限制
-    max_concurrent_requests: int = 2
-    max_concurrent_fetches: int = 6
+    search_max_concurrent_requests: int = 2
+    # 抓取侧的同时在线请求数，与搜索分开计数
+    fetch_max_concurrent_requests: int = 6
     # 单份来源正文的字节上限：超限判内容不可用，不进解析，也不让 BeautifulSoup 建 DOM。
     max_fetch_bytes: int = 24 * 1024 * 1024
     # 抓取出口代理。留空即直连，并把代理显式置空 —— libcurl 在 CURLOPT_PROXY
@@ -237,7 +237,7 @@ class SearchConfig:
     @property
     def candidates(self) -> tuple[str, ...]:
         """本次配置允许尝试的供应商序列；显式指定时只有一家。"""
-        return self.priority if self.provider == "auto" else (self.provider,)
+        return self.search_provider_order if self.provider == "auto" else (self.provider,)
 
     @property
     def search_provider(self) -> str:
@@ -363,14 +363,14 @@ def _llm_config() -> LLMConfig:
         max_cost_cny_platform_hourly=max(0.0, _float_env("LLM_MAX_COST_CNY_PLATFORM_HOURLY", 0.0)),
         max_cost_cny_platform_daily=max(0.0, _float_env("LLM_MAX_COST_CNY_PLATFORM_DAILY", 0.0)),
         price_version=_env("LLM_PRICE_VERSION", PRICE_TABLE_VERSION) or PRICE_TABLE_VERSION,
-        structured_repair_attempts=max(0, _int_env("LLM_STRUCTURED_REPAIR_ATTEMPTS", 1)),
+        structured_max_attempts=max(1, _int_env("LLM_STRUCTURED_MAX_ATTEMPTS", 2)),
         request_overrides=_request_overrides_env(),
     )
 
 
 def _agent_config() -> AgentConfig:
     return AgentConfig(
-        finalization_attempts=max(0, _int_env("AGENT_FINALIZATION_ATTEMPTS", 2)),
+        submission_max_rejections=max(0, _int_env("AGENT_SUBMISSION_MAX_REJECTIONS", 2)),
         max_research_rounds=max(1, _int_env("AGENT_MAX_RESEARCH_ROUNDS", 3)),
         max_review_attempts=max(1, _int_env("AGENT_MAX_REVIEW_ATTEMPTS", 2)),
         writer_max_turns=max(1, _int_env("AGENT_WRITER_MAX_TURNS", 8)),
@@ -445,15 +445,15 @@ def _aliyun_credentials_present() -> bool:
 
 def _search_config() -> SearchConfig:
     fetch_provider_order = _ordered_choices_env("FETCH_PROVIDER_ORDER", "direct", FETCH_PROVIDERS)
-    priority = _ordered_choices_env(
-        "SEARCH_PROVIDER_PRIORITY", ",".join(SEARCH_PROVIDER_PRIORITY), SEARCH_PROVIDERS
+    search_provider_order = _ordered_choices_env(
+        "SEARCH_PROVIDER_ORDER", ",".join(SEARCH_PROVIDER_ORDER), SEARCH_PROVIDERS
     )
     return SearchConfig(
         provider=cast(
             Literal["auto", "aliyun", "baidu", "tavily", "serpapi"],
             _choice_env("SEARCH_PROVIDER", "auto", {"auto"} | SEARCH_PROVIDERS),
         ),
-        priority=priority,
+        search_provider_order=search_provider_order,
         fail_threshold=max(1, _int_env("SEARCH_PROVIDER_FAIL_THRESHOLD", 3)),
         cooldown_seconds=max(1.0, _float_env("SEARCH_PROVIDER_COOLDOWN_SECONDS", 60.0)),
         aliyun_configured=_aliyun_credentials_present(),
@@ -469,14 +469,14 @@ def _search_config() -> SearchConfig:
         baidu_api_key=_env("BAIDU_API_KEY"),
         tavily_api_key=_env("TAVILY_API_KEY"),
         serpapi_api_key=_env("SERPAPI_API_KEY"),
-        timeout=_float_env("SEARCH_TIMEOUT", 20.0),
+        http_timeout=_float_env("HTTP_TIMEOUT", 20.0),
         max_results=max(1, _int_env("SEARCH_MAX_RESULTS", 5)),
-        retry_attempts=max(1, _int_env("SEARCH_RETRY_ATTEMPTS", 3)),
-        retry_initial_seconds=max(0.0, _float_env("SEARCH_RETRY_INITIAL_SECONDS", 1.0)),
-        retry_max_seconds=max(0.0, _float_env("SEARCH_RETRY_MAX_SECONDS", 10.0)),
-        retry_after_max_seconds=max(0.0, _float_env("SEARCH_RETRY_AFTER_MAX_SECONDS", 60.0)),
-        max_concurrent_requests=max(1, _int_env("SEARCH_MAX_CONCURRENT_REQUESTS", 2)),
-        max_concurrent_fetches=max(1, _int_env("FETCH_MAX_CONCURRENT_REQUESTS", 6)),
+        max_attempts=max(1, _int_env("HTTP_MAX_ATTEMPTS", 3)),
+        retry_initial_seconds=max(0.0, _float_env("HTTP_RETRY_INITIAL_SECONDS", 1.0)),
+        retry_max_seconds=max(0.0, _float_env("HTTP_RETRY_MAX_SECONDS", 10.0)),
+        retry_after_max_seconds=max(0.0, _float_env("HTTP_RETRY_AFTER_MAX_SECONDS", 60.0)),
+        search_max_concurrent_requests=max(1, _int_env("SEARCH_MAX_CONCURRENT_REQUESTS", 2)),
+        fetch_max_concurrent_requests=max(1, _int_env("FETCH_MAX_CONCURRENT_REQUESTS", 6)),
         max_fetch_bytes=max(1, _int_env("FETCH_MAX_BYTES", 24 * 1024 * 1024)),
         fetch_proxy=_env("FETCH_PROXY"),
         tavily_include_raw_content=_bool_env("TAVILY_INCLUDE_RAW_CONTENT", True),

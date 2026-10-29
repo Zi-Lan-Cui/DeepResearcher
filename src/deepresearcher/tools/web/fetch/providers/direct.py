@@ -43,7 +43,7 @@ class DirectHttpFetchProvider:
         config: SearchConfig,
         http_client: HttpClient | None = None,
     ):
-        self.timeout = config.timeout
+        self.http_timeout = config.http_timeout
         self.max_bytes = config.max_fetch_bytes
         self.http = http_client or HttpClient(config)
 
@@ -61,10 +61,10 @@ class DirectHttpFetchProvider:
                     self.http.arequest(
                         "GET",
                         url,
-                        timeout=fetch_timeout or self.timeout,
+                        timeout=fetch_timeout or self.http_timeout,
                         request_kind="fetch",
                     ),
-                    timeout=fetch_timeout or self.timeout,
+                    timeout=fetch_timeout or self.http_timeout,
                 )
             except asyncio.TimeoutError as exc:
                 raise TimeoutError("source_fetch_timeout") from exc
@@ -81,7 +81,7 @@ class DirectHttpFetchProvider:
                 parse_started = asyncio.get_running_loop().time()
                 title, text, blocks = await asyncio.wait_for(
                     asyncio.to_thread(self._parse, data, content_type, ext),
-                    timeout=parse_timeout or self.timeout,
+                    timeout=parse_timeout or self.http_timeout,
                 )
                 parse_duration_ms = (asyncio.get_running_loop().time() - parse_started) * 1000
             except asyncio.TimeoutError as exc:

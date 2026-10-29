@@ -697,7 +697,7 @@ def test_http_client_retries_transient_timeout():
             return httpx.Response(200, request=httpx.Request("GET", "https://example.com"))
 
     raw = RetryingClient()
-    config = SearchConfig(retry_attempts=2, retry_initial_seconds=0, retry_max_seconds=0)
+    config = SearchConfig(max_attempts=2, retry_initial_seconds=0, retry_max_seconds=0)
     assert (
         asyncio.run(HttpClient(config, raw).arequest("GET", "https://example.com")).status_code
         == 200
@@ -710,7 +710,7 @@ def test_http_client_raises_typed_error_after_retries():
         async def request(self, *args, **kwargs):
             return httpx.Response(503, request=httpx.Request("GET", "https://example.com"))
 
-    config = SearchConfig(retry_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
+    config = SearchConfig(max_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
     with pytest.raises(ToolRequestError):
         asyncio.run(HttpClient(config, FailingClient()).arequest("GET", "https://example.com"))
 
@@ -744,7 +744,7 @@ def test_http_client_prefers_retry_after_over_local_backoff(monkeypatch):
     """429 的 Retry-After 优先于本地指数曲线，且不被 retry_max_seconds 截断。"""
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=2,
+        max_attempts=2,
         retry_initial_seconds=1.0,
         retry_max_seconds=10.0,
         retry_after_max_seconds=60.0,
@@ -762,7 +762,7 @@ def test_http_client_caps_retry_after_at_independent_limit(monkeypatch):
     """服务端要求过长等待时按 retry_after_max_seconds 截断，避免病态挂起。"""
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=2,
+        max_attempts=2,
         retry_initial_seconds=1.0,
         retry_max_seconds=10.0,
         retry_after_max_seconds=45.0,
@@ -781,7 +781,7 @@ def test_http_client_parses_http_date_retry_after(monkeypatch):
     when = datetime.now(timezone.utc) + timedelta(seconds=12)
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=2,
+        max_attempts=2,
         retry_initial_seconds=1.0,
         retry_max_seconds=10.0,
         retry_after_max_seconds=60.0,
@@ -797,7 +797,7 @@ def test_http_client_keeps_exponential_backoff_without_retry_after(monkeypatch):
     """无 Retry-After 时保持原指数曲线（外加至多 25% jitter）。"""
     sleeps = _collect_sleeps(monkeypatch)
     config = SearchConfig(
-        retry_attempts=3,
+        max_attempts=3,
         retry_initial_seconds=2.0,
         retry_max_seconds=10.0,
     )
@@ -824,7 +824,7 @@ def test_http_client_records_rate_limit_reset_on_429(monkeypatch):
     _collect_sleeps(monkeypatch)
     import time as _time
 
-    config = SearchConfig(retry_attempts=2, retry_initial_seconds=0, retry_max_seconds=0)
+    config = SearchConfig(max_attempts=2, retry_initial_seconds=0, retry_max_seconds=0)
     client = HttpClient(config, _StatusClient(429, {"Retry-After": "30"}))
     with pytest.raises(ToolRequestError) as caught:
         asyncio.run(client.arequest("GET", "https://example.com"))
@@ -836,7 +836,7 @@ def test_http_client_uses_default_window_for_429_without_header(monkeypatch):
     _collect_sleeps(monkeypatch)
     import time as _time
 
-    config = SearchConfig(retry_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
+    config = SearchConfig(max_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
     client = HttpClient(config, _StatusClient(429))
     with pytest.raises(ToolRequestError) as caught:
         asyncio.run(client.arequest("GET", "https://example.com"))
@@ -846,7 +846,7 @@ def test_http_client_uses_default_window_for_429_without_header(monkeypatch):
 
 def test_http_client_no_reset_ts_for_non_rate_limit_failure(monkeypatch):
     _collect_sleeps(monkeypatch)
-    config = SearchConfig(retry_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
+    config = SearchConfig(max_attempts=1, retry_initial_seconds=0, retry_max_seconds=0)
     client = HttpClient(config, _StatusClient(500))
     with pytest.raises(ToolRequestError) as caught:
         asyncio.run(client.arequest("GET", "https://example.com"))
@@ -886,7 +886,7 @@ def _client_with_providers(*providers, health=None):
 
 
 def _limited_error(seconds: float = 30.0) -> ToolRequestError:
-    error = ToolRequestError("请求失败（重试 3 次）")
+    error = ToolRequestError("请求失败（共 3 次）")
     error.rate_limit_reset_ts = time.monotonic() + seconds
     return error
 
@@ -997,10 +997,10 @@ class _ConcurrencyTrackingProvider:
 
 
 def test_search_client_caps_provider_concurrency():
-    """跨 worker 并发查询被限制到同时最多 max_concurrent_requests 路。"""
+    """跨 worker 并发查询被限制到同时最多 search_max_concurrent_requests 路。"""
     provider = _ConcurrencyTrackingProvider()
     client = SearchService(
-        SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
+        SearchConfig(provider="baidu", baidu_api_key="test", search_max_concurrent_requests=2)
     )
     client._providers = [("baidu", provider)]
 
@@ -1031,7 +1031,7 @@ def test_search_client_queued_request_bails_when_provider_opens():
 
     provider = BlockingThenRateLimited()
     client = SearchService(
-        SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=1)
+        SearchConfig(provider="baidu", baidu_api_key="test", search_max_concurrent_requests=1)
     )
     client._providers = [("baidu", provider)]
 

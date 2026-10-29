@@ -133,7 +133,7 @@ class AliyunDtsClient:
         started = time.monotonic()
         status = "success"
         try:
-            response = await asyncio.wait_for(start(), timeout=self._config.timeout)
+            response = await asyncio.wait_for(start(), timeout=self._config.http_timeout)
             return response.body
         except asyncio.TimeoutError as exc:
             status = "timeout"

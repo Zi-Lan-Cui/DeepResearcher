@@ -70,7 +70,7 @@ class HttpClient:
         url_guard: PublicUrlGuard | None = None,
     ):
         self.config = config
-        self.client = client or AsyncSession(timeout=config.timeout)
+        self.client = client or AsyncSession(timeout=config.http_timeout)
         self._owns_client = client is None
         # 同一长连接上轮换浏览器指纹会让连接携带与新建时不同的 TLS 上下文，
         # search/generic 走共享连接池、对端是自家 API，进程级固定一档即可；
@@ -80,8 +80,8 @@ class HttpClient:
             config.ssrf_block_cidrs, allow_private=config.ssrf_allow_private_addresses
         )
         self._capacity = {
-            "search": asyncio.Semaphore(config.max_concurrent_requests),
-            "fetch": asyncio.Semaphore(config.max_concurrent_fetches),
+            "search": asyncio.Semaphore(config.search_max_concurrent_requests),
+            "fetch": asyncio.Semaphore(config.fetch_max_concurrent_requests),
         }
 
     async def arequest(
@@ -97,7 +97,7 @@ class HttpClient:
     ) -> Response:
         last_error: Exception | None = None
         rate_limit_reset_ts: float | None = None
-        for attempt in range(self.config.retry_attempts):
+        for attempt in range(self.config.max_attempts):
             retry_after: float | None = None
             try:
                 started = time.monotonic()
@@ -155,7 +155,7 @@ class HttpClient:
             except (Timeout, RequestException) as exc:
                 last_error = exc
 
-            if attempt + 1 < self.config.retry_attempts:
+            if attempt + 1 < self.config.max_attempts:
                 if retry_after is not None:
                     delay = min(self.config.retry_after_max_seconds, retry_after)
                 else:
@@ -167,7 +167,7 @@ class HttpClient:
                 await asyncio.sleep(delay + random.uniform(0, delay * _JITTER_RATIO))
 
         error = ToolRequestError(
-            f"请求失败（重试 {self.config.retry_attempts} 次）：{url}; reason={last_error}"
+            f"请求失败（共 {self.config.max_attempts} 次）：{url}; reason={last_error}"
         )
         # 把最后一次观测到的限流恢复点附在错误上，供调用方做跨请求断路。
         error.rate_limit_reset_ts = rate_limit_reset_ts
@@ -209,7 +209,7 @@ class HttpClient:
             if self._owns_client:
                 curl_options = self._fetch_curl_options(resolved, proxy)
                 async with AsyncSession(
-                    timeout=self.config.timeout,
+                    timeout=self.config.http_timeout,
                     trust_env=False,
                     allow_redirects=False,
                     curl_options=curl_options,

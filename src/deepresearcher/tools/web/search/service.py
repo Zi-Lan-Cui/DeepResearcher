@@ -106,7 +106,7 @@ class SearchService:
     def _semaphore(self, provider: str) -> asyncio.Semaphore:
         semaphore = self._provider_semaphores.get(provider)
         if semaphore is None:
-            semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
+            semaphore = asyncio.Semaphore(self.config.search_max_concurrent_requests)
             self._provider_semaphores[provider] = semaphore
         return semaphore
 

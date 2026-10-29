@@ -360,7 +360,7 @@ def test_researcher_exhaustion_does_not_promote_unsubmitted_documents_to_evidenc
     agent = researcher_agent(
         AgentConfig(
             research_agent_max_turns=1,
-            finalization_attempts=1,
+            submission_max_rejections=1,
             research_agent_max_evidences_per_task=2,
         ),
         [

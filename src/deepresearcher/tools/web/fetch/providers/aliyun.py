@@ -53,7 +53,7 @@ class AliyunFetchProvider:
         try:
             body = await asyncio.wait_for(
                 self._client.web_fetch(url, self._config.aliyun_fetch_output_format),
-                timeout=fetch_timeout or self._config.timeout,
+                timeout=fetch_timeout or self._config.http_timeout,
             )
         except asyncio.TimeoutError as exc:
             raise ToolRequestError("阿里云 WebFetch 请求超时。") from exc
@@ -69,7 +69,7 @@ class AliyunFetchProvider:
         try:
             parsed_title, text, blocks = await asyncio.wait_for(
                 asyncio.to_thread(self._parse_content, data, content_format),
-                timeout=parse_timeout or self._config.timeout,
+                timeout=parse_timeout or self._config.http_timeout,
             )
         except (TypeError, ValueError) as exc:
             raise ToolParseError(f"阿里云 WebFetch 正文格式异常：{exc}") from exc

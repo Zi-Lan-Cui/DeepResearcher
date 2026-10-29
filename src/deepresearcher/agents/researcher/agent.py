@@ -117,7 +117,7 @@ class Researcher:
                                         TaskStopReason.BLOCKED_WITHOUT_EVIDENCE,
                                     }
                                 ),
-                                max_rejections=self.config.finalization_attempts,
+                                max_rejections=self.config.submission_max_rejections,
                                 warn_below_turns=4,
                                 low_turn_budget_message=(
                                     "【剩余回合提醒】当前仅剩 {remaining_turns} 个模型回合。"

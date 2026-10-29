@@ -93,7 +93,7 @@ class Writer:
                                 submitted_probe=lambda ctx: (
                                     getattr(ctx, "validated_draft", None) is not None
                                 ),
-                                max_rejections=self.config.finalization_attempts,
+                                max_rejections=self.config.submission_max_rejections,
                             ),
                             # 草稿落定后下一跳退出循环
                             exit_probe=lambda ctx, _state: (

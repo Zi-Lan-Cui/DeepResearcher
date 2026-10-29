@@ -14,10 +14,13 @@ from pydantic import BaseModel, SecretStr, ValidationError
 
 from deepresearcher.config import Settings, get_settings
 from deepresearcher.errors import AgentError
+from deepresearcher.observability.logging_config import get_logger
 from deepresearcher.usage_runtime import enforce_usage_budget
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 STRUCTURED_ERRORS = (OutputParserException, ValidationError, ValueError)
+
+_logger = get_logger("deepresearcher.llm")
 
 
 class LLMError(AgentError):
@@ -126,11 +129,8 @@ async def ainvoke_structured(
     *,
     request_kwargs: dict[str, Any] | None = None,
 ) -> SchemaT:
-    """只在已收到不合规 JSON 时 repair；传输级重试由 openai SDK 负责。
-
-    修复预算从配置 LLM_STRUCTURED_REPAIR_ATTEMPTS 读取。预算耗尽时抛最后一次异常。
-    """
-    repair_attempts = get_settings().llm.structured_repair_attempts
+    """按 Schema 取结构化输出；输出不合规时自动重发。"""
+    max_attempts = get_settings().llm.structured_max_attempts
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
     contract = SystemMessage(
         content=(
@@ -144,14 +144,22 @@ async def ainvoke_structured(
         runnable = runnable.bind(**request_kwargs)
     structured_messages = [contract, *messages]
     current_messages = list(structured_messages)
-    for attempt in range(repair_attempts + 1):
+    for attempt in range(max_attempts):
         try:
             await enforce_usage_budget()
             # with_structured_output 的运行期产物即 SchemaT；类型系统只看到 Runnable 宽签名。
             return cast(SchemaT, await runnable.ainvoke(current_messages))
         except STRUCTURED_ERRORS as exc:
-            if attempt >= repair_attempts:
+            if attempt + 1 >= max_attempts:
                 raise
+            # 重发发生在调用方视野之外，只在日志留痕，调用方看到的是最终结果。
+            _logger.warning(
+                "structured_output_repair attempt=%d/%d schema=%s error=%s",
+                attempt + 1,
+                max_attempts,
+                schema.__name__,
+                type(exc).__name__,
+            )
             current_messages = [
                 *structured_messages,
                 HumanMessage(

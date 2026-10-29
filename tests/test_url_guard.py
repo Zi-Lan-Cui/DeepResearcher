@@ -247,7 +247,7 @@ def test_http_client_validates_every_redirect_before_following():
     raw = RedirectingClient()
     guard = Guard()
     client = HttpClient(
-        SearchConfig(retry_attempts=1),
+        SearchConfig(max_attempts=1),
         raw,  # type: ignore[arg-type]
         url_guard=guard,  # type: ignore[arg-type]
     )
@@ -272,7 +272,7 @@ def test_http_client_reuses_one_impersonate_profile_for_search_requests():
 
     raw = RecordingClient()
     client = HttpClient(
-        SearchConfig(retry_attempts=2, retry_initial_seconds=0.0, retry_max_seconds=0.0),
+        SearchConfig(max_attempts=2, retry_initial_seconds=0.0, retry_max_seconds=0.0),
         raw,  # type: ignore[arg-type]
     )
     asyncio.run(client.arequest("GET", "https://api.example/search", request_kind="search"))
@@ -297,7 +297,7 @@ def test_http_client_rejects_peer_outside_pinned_dns_set():
             return response
 
     client = HttpClient(
-        SearchConfig(retry_attempts=1),
+        SearchConfig(max_attempts=1),
         ReboundClient(),  # type: ignore[arg-type]
         url_guard=Guard(),  # type: ignore[arg-type]
     )
@@ -306,7 +306,7 @@ def test_http_client_rejects_peer_outside_pinned_dns_set():
 
 
 def test_fetch_curl_options_disable_ambient_proxy_and_keep_dns_pin():
-    client = HttpClient(SearchConfig(retry_attempts=1))
+    client = HttpClient(SearchConfig(max_attempts=1))
     resolved = ResolvedPublicUrl(
         "https://public.example/", "public.example", 443, ("93.184.216.34",)
     )
@@ -338,7 +338,7 @@ def test_http_client_still_blocks_loopback_peer_when_no_proxy_configured():
             return response
 
     client = HttpClient(
-        SearchConfig(retry_attempts=1),
+        SearchConfig(max_attempts=1),
         LoopbackPeerClient(),  # type: ignore[arg-type]
         url_guard=Guard(),  # type: ignore[arg-type]
     )
@@ -362,7 +362,7 @@ def test_http_client_skips_peer_pin_when_proxy_is_configured():
             return response
 
     client = HttpClient(
-        SearchConfig(retry_attempts=1, fetch_proxy="http://127.0.0.1:7890"),
+        SearchConfig(max_attempts=1, fetch_proxy="http://127.0.0.1:7890"),
         ProxiedClient(),  # type: ignore[arg-type]
         url_guard=Guard(),  # type: ignore[arg-type]
     )
