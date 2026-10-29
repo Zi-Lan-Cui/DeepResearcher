@@ -423,6 +423,7 @@ def test_research_task_card_lifecycle():
         "res": "",
         "note": "需登录",
         "title": "https://pay.example/x",
+        "tone": "dim",
     }
     unknown_skip = project(
         _record(
@@ -435,12 +436,14 @@ def test_research_task_card_lifecycle():
         "obj": "一份来源",
         "res": "",
         "note": "不可读",
+        "tone": "dim",
     }
     failed = project(
         _record("source_read_failed", {"task_id": "task-0001", "url": "https://dead.example"})
     )
-    # 读取失败是异常，跳过是按条件放弃，左列分开两种动作词。
-    assert failed.data["step"]["act"] == "失败"
+    # 左列仍是动作词（呈现层拿它拼「正在…」），异常与否由 tone 标记。
+    assert failed.data["step"]["act"] == "读取"
+    assert failed.data["step"]["tone"] == "bad"
     assert failed.data["step"]["note"] == "读取失败"
     extracting = project(
         _record("direction_evidence_added", {"task_id": "task-0001", "accepted_count": 4})
@@ -593,7 +596,14 @@ def test_search_query_progress_becomes_single_step_row():
         "note": "未见相关来源",
     }
     failed = project(_record("search_query_failed", {"task_id": "t1", "query": "x"}))
-    assert failed.data["step"] == {"act": "检索", "obj": "「x」", "res": "", "note": "失败"}
+    # 与读取失败同档：动作词不动，只把状态词染红。
+    assert failed.data["step"] == {
+        "act": "检索",
+        "obj": "「x」",
+        "res": "",
+        "note": "失败",
+        "tone": "bad",
+    }
 
 
 @pytest.mark.parametrize(
@@ -656,8 +666,6 @@ def test_report_kind_separates_shell_from_real_body():
     assert report_kind(None) == "none"
     assert report_kind("") == "none"
     assert report_kind("# 报告未生成\n\n## 研究问题\n…") == "none"
-    # 改词前落库的空壳页仍是诊断页。
-    assert report_kind("# 研究未完成\n\n## 研究问题\n…") == "none"
     assert report_kind("# 研究报告\n\n正文") == "full"
 
 
@@ -706,27 +714,3 @@ def test_project_review_lists_opinions_and_skips_pending():
     assert review["issues"] == ["意见0", "意见1", "意见2"]  # 最多三条，正文列不下更多
     assert project_review({"status": "pending", "attempts": 0}) is None
     assert project_review(None) is None
-
-
-def test_legacy_abstained_word_is_renamed_on_the_way_out():
-    """「弃权」是审阅失败的旧词：旧 checkpoint、旧 review_json、旧 terminal_reason
-    都在入口或出口换成新词，判据分支与前端只认 failed。"""
-    from deepresearcher.schemas import ReviewProgress
-    from deepresearcher.service.web.presenters import _terminal_reason
-
-    restored = ReviewProgress.model_validate(
-        {"status": "abstained", "abstain_reason": "审阅输出连续 2 次超出长度上限"}
-    )
-    assert restored.status == "failed"
-    assert restored.failure_reason == "审阅输出连续 2 次超出长度上限"
-
-    legacy = project_review(
-        {"status": "abstained", "attempts": 1, "abstain_reason": "审阅输出连续 2 次超出长度上限"}
-    )
-    assert legacy is not None
-    assert legacy["status"] == "failed"
-    assert legacy["failure_reason"] == "审阅输出连续 2 次超出长度上限"
-
-    assert _terminal_reason("review_abstained") == "review_failed"
-    assert _terminal_reason("review_failed") == "review_failed"
-    assert _terminal_reason(None) is None

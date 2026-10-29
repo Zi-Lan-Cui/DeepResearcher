@@ -131,10 +131,6 @@ def project_run_error(payload: Any) -> dict[str, str] | None:
     }
 
 
-# 「弃权」是审阅失败的旧叫法；旧行仍这么写，出口统一成新词，前端只认一个。
-_REVIEW_STATUS_ALIASES = {"abstained": "failed"}
-
-
 def project_review(payload: Any) -> dict[str, Any] | None:
     """落库的 ReviewProgress → 详情页可见的轮次与意见；未进入审阅的运行返回 None。"""
     if not isinstance(payload, Mapping):
@@ -149,12 +145,10 @@ def project_review(payload: Any) -> dict[str, Any] | None:
         if isinstance(item, Mapping) and _text(item.get("reason"), 160)
     ][:3]
     return {
-        "status": _REVIEW_STATUS_ALIASES.get(status, status),
+        "status": status,
         "attempts": _int(payload.get("attempts")),
         "feedback": _text(payload.get("feedback"), 300),
-        # 旧行把这一栏写成 abstain_reason；换词前的 run 不该因此丢掉失败原因。
-        "failure_reason": _text(payload.get("failure_reason"), 200)
-        or _text(payload.get("abstain_reason"), 200),
+        "failure_reason": _text(payload.get("failure_reason"), 200),
         "issues": issues,
     }
 
@@ -329,15 +323,16 @@ def _source_document_registered(seq: Any, node: Any, payload: Mapping[str, Any])
 
 
 def _source_read_failed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
-    """读取失败与跳过在左列分开：前者是异常，后者是按条件放弃。"""
+    """读取失败与跳过都还是动作词，异常与否靠 tone 区分配色。"""
     raw = payload.get("url")
     return _step(
         seq,
         payload,
-        "失败",
+        "读取",
         _display_host(raw) or "一份来源",
         note="读取失败",
         title=str(raw or ""),
+        tone="bad",
     )
 
 
@@ -352,6 +347,7 @@ def _source_read_skipped(seq: Any, node: Any, payload: Mapping[str, Any]) -> Sse
         _display_host(raw) or "一份来源",
         note=label,
         title=str(raw or ""),
+        tone="dim",
     )
 
 
@@ -393,7 +389,7 @@ def _search_query_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> 
 
 def _search_query_failed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     query = _text(payload.get("query"), 60)
-    return _step(seq, payload, "检索", f"「{query}」", note="失败")
+    return _step(seq, payload, "检索", f"「{query}」", note="失败", tone="bad")
 
 
 # 指标与杂项
@@ -539,17 +535,21 @@ def _step(
     *,
     note: str = "",
     title: str = "",
+    tone: str = "",
 ) -> SseFrame | None:
     """任务卡的一行动作：左列动作词、中间对象、右列计数，括注与悬停地址按需附加。
 
     三段分开给，是因为它们的排版职责不同：act 定宽便于纵向对齐，res 只放同构计数
     以便右对齐成一列，note 是非计数的原因说明，跟在对象后面。
+    act 只放动作词——呈现层会拿它拼「正在…」；结果分类进 tone（bad/dim），只管配色。
     """
     step = {"act": act, "obj": obj, "res": res}
     if note:
         step["note"] = note
     if title:
         step["title"] = title
+    if tone:
+        step["tone"] = tone
     return _task("task_update", seq, payload, {"step": step})
 
 

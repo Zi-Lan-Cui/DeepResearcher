@@ -88,6 +88,9 @@
   .stage-block.collapsed .stage-head:hover::after,
   .stage-block.collapsed.expanded .stage-head::after { opacity:1; }
   .stage-block.collapsed.expanded .stage-head::after { content:"收起"; }
+  /* 没有旁白可回看的段不给展开入口：点了张开一个空盒子比不给按钮更糟。 */
+  .stage-block.no-detail .stage-head { cursor:default; }
+  .stage-block.no-detail .stage-head::after { content:none; }
   /* 节点：白底彩圈的环钉在轨道上，压住穿行其下的轴线；状态只换环色。 */
   .stage-head .dot { position:absolute; left:-19.5px; top:13px; z-index:1;
                      width:9px; height:9px; border-radius:99px; box-sizing:content-box;
@@ -164,7 +167,9 @@
   .trace-res { font-size:11.5px; line-height:1.7; color:var(--mut); text-align:right;
                font-variant-numeric:tabular-nums; white-space:nowrap; }
   .trace-row.dim .trace-act, .trace-row.dim .trace-obj, .trace-row.dim .trace-res { color:#a0a6ad; }
-  .trace-row.bad .trace-act { color:#b42318; }
+  /* 只给状态染色：左列是固定动作词表（检索/读取/复用/跳过），它一旦随结果变色，
+     同一个词在同一张卡上就有了两种含义。 */
+  .trace-row.bad .trace-note { color:#b42318; }
   .tcard-note { padding:0 15px 12px 17px; }
   .tcard-note-label { display:block; margin:0 0 8px; padding-top:15px; border-top:1px solid #f1f3f5;
                       font-size:11.5px; font-weight:500; color:var(--mut); }
@@ -183,6 +188,8 @@
   /* 论文式引用角标：[证据N] → 上标小链接 */
   #report sup.cite-ref { font-size:11px; line-height:0; }
   #report sup.cite-ref a { color:var(--ac); text-decoration:none; font-weight:600; }
+  /* 没有正文时不留一段空行——结论已由横幅说完。 */
+  #report:empty { display:none; }
   .badge { display:inline-block; padding:1px 10px; border-radius:99px; font-size:12.5px; border:1px solid var(--bd); white-space:nowrap; flex:none; }
   .badge.running,.badge.resuming,.badge.queued,.badge.interrupted,.badge.awaiting_input { color:#92400e; background:#fef3c7; border-color:#fde68a; }
   .badge.completed { color:#166534; background:#dcfce7; border-color:#bbf7d0; }
@@ -228,22 +235,25 @@
   .report-actions { display:flex; align-items:center; gap:8px; flex:none; }
   .report-actions button { padding:4px 12px; font-size:12.5px; white-space:nowrap; }
   .report .md { line-height:1.8; }
-  /* 终态横幅：红=没跑完，黄=跑完了但审阅有话说。字段用 64px 定宽两列，
-     值的换行不会错开标签。红档多一条左色条，让「没跑完」在视觉上独占。 */
+  /* 终态横幅：红=没跑完，黄=跑完了但审阅有话说，灰=用户主动取消（不是事故）。
+     字段用 64px 定宽两列，值的换行不会错开标签。红档多一条左色条，让「没跑完」在视觉上独占。 */
   .report-banner { display:flex; gap:10px; align-items:flex-start; margin:0 0 16px;
                    padding:11px 14px; border-radius:8px;
                    background:#fdf8ea; border:1px solid #f2e5c6; }
   .report-banner[data-tone="halt"] { background:#fcebeb; border-color:#fecaca;
                                      border-left:3px solid #e24b4a; }
+  .report-banner[data-tone="muted"] { background:#f1f5f9; border-color:#e2e8f0; }
   .report-banner .banner-icon { flex:none; margin-top:2px; line-height:0; }
   .report-banner .banner-text { min-width:0; flex:1; }
   .report-banner .banner-title { display:block; font-size:13px; font-weight:500;
                                  color:#8a6d1f; line-height:1.45; }
   .report-banner[data-tone="halt"] .banner-title { color:#a12622; }
+  .report-banner[data-tone="muted"] .banner-title { color:#64748b; }
   .report-banner .banner-fields { display:grid; grid-template-columns:64px 1fr;
                                   gap:3px 10px; margin:8px 0 0; }
   .report-banner .banner-fields dt { font-size:12px; color:#9c8b63; line-height:1.6; }
   .report-banner[data-tone="halt"] .banner-fields dt { color:#9a5f57; }
+  .report-banner[data-tone="muted"] .banner-fields dt { color:#94a3b8; }
   .report-banner .banner-fields dd { margin:0; font-size:12.5px; color:var(--fg);
                                      line-height:1.6; overflow-wrap:anywhere; }
   .report-banner .banner-fields dd code { font:11.5px/1.5 ui-monospace,"SFMono-Regular",Consolas,monospace;

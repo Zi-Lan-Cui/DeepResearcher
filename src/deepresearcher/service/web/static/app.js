@@ -1,6 +1,7 @@
 "use strict";
 /* 基础设施 */
 const tokenKey = "deepresearcher.token";
+const EXPIRED_LOGIN = "登录已过期，请重新登录。";
 const $ = (id) => document.getElementById(id);
 let lastSeq = 0;        // SSE 去重水位：重连/回放都只会重发旧 seq，单调消费即可
 // 逻辑事件去重：节点崩溃重跑会重新生成一条事件（新 seq、新 event_id），
@@ -17,8 +18,8 @@ function authHeaders(extra) {
 async function api(path, options) {
   const resp = await fetch(path, Object.assign({ headers: authHeaders({ "Content-Type": "application/json" }) }, options));
   if (resp.status === 401 && path !== "/api/login" && path !== "/api/register") {
-    logout();
-    throw new Error("登录已过期，请重新登录。");
+    logout(EXPIRED_LOGIN);
+    throw new Error(EXPIRED_LOGIN);
   }
   const body = resp.status === 204 ? null : await resp.json().catch(() => null);
   if (!resp.ok) {
@@ -27,11 +28,13 @@ async function api(path, options) {
   return body;
 }
 
-function logout() {
+// 401 一律回登录页，但要把原因带到表单上：静默跳转看起来像被踢下线。
+function logout(reason) {
   localStorage.removeItem(tokenKey);
   if (streamAbort) streamAbort.abort();
   location.hash = "#/";
   showView();
+  if (reason) $("auth-error").textContent = reason;
 }
 
 function show(el) { document.querySelectorAll("main > section").forEach(s => s.classList.add("hide")); el.classList.remove("hide"); }
@@ -751,7 +754,7 @@ function stageNote(stage, text, warn) {
   if (renderNarration(body, text, warn)) trimStageNotes(body);
 }
 
-const QUEUED_HINT = "排队中，等待并发槽";
+const QUEUED_HINT = "排队中";
 
 /* 展开入口的箭头用 SVG 而非 ▸ 字符：字符的基线随字体浮动，与同一行的计数对不齐。 */
 const CHEVRON =
@@ -869,8 +872,8 @@ function traceRow(step, newRound) {
   const row = document.createElement("div");
   row.className = "trace-row";
   if (newRound) row.classList.add("new-round");
-  if (step.act === "跳过") row.classList.add("dim");
-  if (step.act === "失败") row.classList.add("bad");
+  if (step.tone === "dim") row.classList.add("dim");
+  if (step.tone === "bad") row.classList.add("bad");
   row.dataset.act = step.act || "";
   const act = document.createElement("span"); act.className = "trace-act";
   act.textContent = step.act || "";
@@ -898,9 +901,20 @@ function cardAction(card, step) {
   trace.appendChild(traceRow(step, newRound));
   while (trace.children.length > 80) trace.removeChild(trace.firstChild);
   card.querySelector(".tcard-meta").classList.remove("hide");
+  card.querySelector(".tcard-more").classList.remove("hide");
   const live = card.querySelector(".tcard-live");
   live.textContent = "正在" + step.act + (step.obj ? " " + step.obj : "");
   live.classList.remove("anim"); void live.offsetWidth; live.classList.add("anim");
+}
+
+/* 一条证据都没拿到时研究员只写结论不写摘要，卡面会只剩计数。
+   取结论首句顶上，比留一张空卡诚实——它说明的正是"为什么没有产出"。 */
+function leadingSentence(text) {
+  const flat = (text || "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  const end = flat.search(/[。！？]/);
+  const head = end >= 0 ? flat.slice(0, end + 1) : flat;
+  return head.length > 120 ? head.slice(0, 120) + "…" : head;
 }
 
 /* 完成时卡面换成摘要：分方向查清了什么，完整论证与缺口仍留在展开区的结论里。 */
@@ -912,9 +926,10 @@ function finishCard(card, data) {
     live.classList.add("hide");
     if (data.summary) card.querySelector(".tcard-counts").textContent = data.summary;
   }
-  if (data.finding) {
+  const brief = data.finding || leadingSentence(data.conclusion);
+  if (brief) {
     const finding = card.querySelector(".tcard-finding");
-    finding.textContent = data.finding;
+    finding.textContent = brief;
     finding.classList.remove("hide");
     card.querySelector(".tcard-tag").classList.remove("hide");
   }
@@ -923,6 +938,8 @@ function finishCard(card, data) {
     note.querySelector("p").textContent = data.conclusion;
     note.classList.remove("hide");
   }
+  // 详情只剩「完整结论」也要能展开；计数（summary）单独出现时不必给入口。
+  if (data.conclusion) card.querySelector(".tcard-more").classList.remove("hide");
   if (data.conclusion || data.summary) card.querySelector(".tcard-meta").classList.remove("hide");
 }
 
@@ -1128,6 +1145,31 @@ function settleRunningBlocks() {
   updateTaskCount();
 }
 
+/* 审阅段的旁白来自 node_completed 的 stage_done 帧；该帧落不了库时，收尾兜底会把
+   这一段折成一个点开是空的盒子。runs.review_json 是同一份结论的另一份来源，用它顶上。 */
+function fillReviewConclusion(review) {
+  if (!review) return;
+  const block = stageBlocks.get("reviewer");
+  if (!block) return;
+  const body = block.querySelector(".stage-body");
+  if (body.querySelector(".ln")) return;
+  const label = review.status === "approved" ? "审阅通过"
+    : review.status === "rejected" ? "审阅要求修改"
+    : review.status === "failed" ? "审阅未取得结论" : "审阅已完成";
+  const reason = (review.issues || [])[0] || review.failure_reason || review.feedback || "";
+  renderNarration(body, reason ? label + "；" + reason : label,
+                  review.status === "failed" || review.status === "rejected");
+}
+
+/* 收口之后一步：没有旁白可回看的段不留下展开入口。 */
+function markEmptyStages() {
+  for (const block of stageBlocks.values()) {
+    const empty = !block.querySelector(".stage-body").hasChildNodes();
+    block.classList.toggle("no-detail", empty);
+    if (empty) block.classList.remove("expanded");
+  }
+}
+
 async function onRunDone(data) {
   if (streamAbort) { streamAbort.abort(); streamAbort = null; }
   $("report-card").classList.remove("hide");
@@ -1145,8 +1187,12 @@ async function onRunDone(data) {
     return;
   }
   $("clarification-card").classList.add("hide");
-  if (["completed", "failed", "cancelled"].includes(detail.status)) settleRunningBlocks();
-  const reportMarkdown = detail.report_markdown || detail.error_message || "（无报告内容）";
+  if (["completed", "failed", "cancelled"].includes(detail.status)) {
+    settleRunningBlocks();
+    fillReviewConclusion(detail.review);
+    markEmptyStages();
+  }
+  const reportMarkdown = detail.report_markdown || detail.error_message || "";
   renderReport(reportMarkdown, detail.citations || [], detail);
 }
 
@@ -1183,6 +1229,11 @@ const BANNER_ICON_WARN = '<svg width="15" height="15" viewBox="0 0 16 16" fill="
   + '<path d="M8 1.9 1.5 13.1h13L8 1.9Z" stroke="#c08a1e" stroke-width="1.3" stroke-linejoin="round"/>'
   + '<path d="M8 6.1v3.2" stroke="#c08a1e" stroke-width="1.3" stroke-linecap="round"/>'
   + '<circle cx="8" cy="11.4" r=".78" fill="#c08a1e"/></svg>';
+const BANNER_ICON_MUTED = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">'
+  + '<circle cx="8" cy="8" r="6.5" stroke="#94a3b8" stroke-width="1.3"/>'
+  + '<path d="M8 8v3.2" stroke="#94a3b8" stroke-width="1.3" stroke-linecap="round"/>'
+  + '<circle cx="8" cy="4.6" r=".78" fill="#94a3b8"/></svg>';
+const BANNER_ICONS = { halt: BANNER_ICON_HALT, muted: BANNER_ICON_MUTED };
 
 function bannerField(label, value, code) {
   return { label, value: Array.isArray(value) ? value : [value], code: code || "" };
@@ -1217,7 +1268,10 @@ function reportBannerModel(detail) {
     };
   }
   // 红档：有结构化错误就照实说断在哪；老 run 没有 error_json，只留结论与正文状态。
-  if (detail.report_kind === "none" || detail.status === "failed") {
+  // 主动取消走同一套字段，只把色调降成灰白——与状态徽标一个口径。
+  if (detail.report_kind === "none"
+      || detail.status === "failed"
+      || detail.status === "cancelled") {
     const error = detail.error || {};
     const fields = [];
     if (error.stage_label) fields.push(bannerField("中断位置", error.stage_label));
@@ -1234,7 +1288,9 @@ function reportBannerModel(detail) {
       fields.push(bannerField("审阅意见", opinions));
     }
     fields.push(bannerField("正文状态", body));
-    return { tone: "halt", title: "未完成", fields };
+    return detail.status === "cancelled"
+      ? { tone: "muted", title: "已取消", fields }
+      : { tone: "halt", title: "未完成", fields };
   }
   return null;
 }
@@ -1248,7 +1304,7 @@ function renderReportBanner(detail) {
   host.dataset.tone = model.tone;
   const icon = document.createElement("span");
   icon.className = "banner-icon";
-  icon.innerHTML = model.tone === "halt" ? BANNER_ICON_HALT : BANNER_ICON_WARN;
+  icon.innerHTML = BANNER_ICONS[model.tone] || BANNER_ICON_WARN;
   const text = document.createElement("div");
   text.className = "banner-text";
   const title = document.createElement("b");
@@ -1407,6 +1463,8 @@ function renderReport(markdownText, fallbackCitations, detail) {
   const sourcesEl = $("sources");
   sourcesEl.innerHTML = "";
   const items = referencesMarkdown ? parseReferences(referencesMarkdown) : [];
+  // 分隔线只在真有来源时才画，否则空壳卡片底部留一条孤线。
+  $("report-rule").classList.toggle("hide", !items.length && !fallbackCitations.length);
   if (!items.length) {
     $("sources-title").classList.toggle("hide", !fallbackCitations.length);
     for (const c of fallbackCitations) {          // 兜底：老数据无表格式时列原始引用
@@ -1636,7 +1694,7 @@ async function consumeStream(runId) {
       // 带已消费水位续传：页面挂后台被静默掐断后，重连接续而非从头重放。
       if (lastSeq > 0) headers["Last-Event-ID"] = String(lastSeq);
       const resp = await fetch("/api/runs/" + runId + "/events", { headers, signal: ctrl.signal });
-      if (resp.status === 401) { logout(); return; }
+      if (resp.status === 401) { logout(EXPIRED_LOGIN); return; }
       const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       let sawDone = false;
