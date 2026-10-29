@@ -21,6 +21,7 @@ from deepresearcher.tools.web.parsing import (
 )
 from deepresearcher.vocab import RETRIEVAL_ORIGIN_FETCH
 
+_HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _CHALLENGE_TITLE_MARKERS = ("验证码", "安全验证", "访问验证", "just a moment", "security check")
 _LOGIN_TITLE_MARKERS = ("登录", "sign in", "log in")
 _CHALLENGE_BODY_MARKERS = (
@@ -31,6 +32,11 @@ _CHALLENGE_BODY_MARKERS = (
     "security verification",
     "访问验证",
 )
+_LOGIN_WALL_MAX_TEXT_CHARS = 300
+# 跳转壳与前端渲染页的判断：HTML 下载量不小，正文却几乎为零。两个阈值必须同时成立，
+# 只卡字数会误伤真正短小的页面——它们的 HTML 体积也小。
+_SHELL_MIN_BYTES = 5_000
+_SHELL_MAX_TEXT_CHARS = 200
 
 
 class DirectHttpFetchProvider:
@@ -126,39 +132,15 @@ class DirectHttpFetchProvider:
     @staticmethod
     def _ensure_readable(title: str, text: str, data: bytes, content_type: str) -> None:
         """在正文进入 LLM 前拦截验证码页、登录墙与动态空壳。"""
-        is_html = content_type in {"text/html", "application/xhtml+xml"}
-        if not is_html:
-            if not text.strip():
-                raise SourceUnavailableError(
-                    "empty_content", "文档未解析出文本，可能是扫描件或不支持的格式。"
-                )
-            return
-
-        normalized_title = title.casefold().strip()
-        if any(marker in normalized_title for marker in _CHALLENGE_TITLE_MARKERS):
-            raise SourceUnavailableError(
-                "access_challenge", "来源返回验证码或安全验证页，无法取得可验证正文。"
-            )
-        if (
-            any(marker in normalized_title for marker in _LOGIN_TITLE_MARKERS)
-            and len(text.strip()) < 300
-        ):
-            raise SourceUnavailableError("login_required", "来源要求登录后才能读取正文。")
-        if not text.strip():
-            # 正文为空才做第二遍解析：只为看整页有没有验证码字样，别对有正文的页面白建 DOM。
-            visible = BeautifulSoup(data, "html.parser").get_text(" ", strip=True).casefold()
-            if any(marker in visible for marker in _CHALLENGE_BODY_MARKERS):
-                raise SourceUnavailableError(
-                    "access_challenge", "来源返回验证码或安全验证页，无法取得可验证正文。"
-                )
-            raise SourceUnavailableError(
-                "empty_content", "来源未提供可读取正文，可能是动态渲染页面或空页面。"
-            )
+        problem = _unreadable_reason(data, text, title, content_type)
+        if problem is not None:
+            reason_code, message = problem
+            raise SourceUnavailableError(reason_code, message)
 
     def _parse(
         self, data: bytes, content_type: str, ext: str
     ) -> tuple[str, str, list[DocumentBlock]]:
-        if content_type in {"text/html", "application/xhtml+xml"} or ext in {"html", "htm"}:
+        if content_type in _HTML_CONTENT_TYPES or ext in {"html", "htm"}:
             return parse_html_blocks(data)
         if content_type == "application/pdf" or ext == "pdf":
             title, text = parse_pdf(data)
@@ -213,3 +195,42 @@ class DirectHttpFetchProvider:
         }:
             return DocumentModality.RICH
         return DocumentModality.BINARY
+
+
+def _unreadable_reason(
+    data: bytes, text: str, title: str, content_type: str
+) -> tuple[str, str] | None:
+    """判定正文不可读的原因；可读返回 None，否则给出错误码与可直接展示的说明。"""
+    body = text.strip()
+    if content_type not in _HTML_CONTENT_TYPES:
+        if body:
+            return None
+        return "empty_content", "文档未解析出文本，可能是扫描件或不支持的格式。"
+
+    headline = title.casefold().strip()
+    if any(marker in headline for marker in _CHALLENGE_TITLE_MARKERS):
+        return "access_challenge", "来源返回验证码或安全验证页，无法取得可验证正文。"
+    if (
+        any(marker in headline for marker in _LOGIN_TITLE_MARKERS)
+        and len(body) < _LOGIN_WALL_MAX_TEXT_CHARS
+    ):
+        return "login_required", "来源要求登录后才能读取正文。"
+    if body:
+        if _is_dynamic_shell(data, body, content_type):
+            return (
+                "empty_content",
+                f"来源 HTML 有 {len(data)} 字节，正文仅 {len(body)} 字，疑似跳转壳或动态渲染页面。",
+            )
+        return None
+    # 正文为空才做第二遍解析：只为看整页有没有验证码字样，别对有正文的页面白建 DOM。
+    visible = BeautifulSoup(data, "html.parser").get_text(" ", strip=True).casefold()
+    if any(marker in visible for marker in _CHALLENGE_BODY_MARKERS):
+        return "access_challenge", "来源返回验证码或安全验证页，无法取得可验证正文。"
+    return "empty_content", "来源未提供可读取正文，可能是动态渲染页面或空页面。"
+
+
+def _is_dynamic_shell(data: bytes, text: str, content_type: str) -> bool:
+    """HTML 下载量不小却几乎取不到正文时判为壳页：内容是前端渲染或脚本跳转出来的。"""
+    if content_type not in _HTML_CONTENT_TYPES:
+        return False
+    return len(data) >= _SHELL_MIN_BYTES and len(text.strip()) < _SHELL_MAX_TEXT_CHARS

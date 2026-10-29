@@ -497,6 +497,85 @@ def test_fetch_rejects_captcha_page_before_evidence_extraction():
     assert exc_info.value.reason_code == "access_challenge"
 
 
+def test_fetch_rejects_redirect_shell_that_parses_to_one_line():
+    """Kafka 官网这类「200 + 脚本跳转」页：HTML 几十 KB，正文只有 Redirecting..."""
+    empty_div = b'<div class="' + b"x" * 120 + b'"></div>'
+    html = (
+        b"<html><head><title>Documentation Redirect | Apache Kafka</title></head><body>"
+        + empty_div * 200
+        + b"<p>Redirecting...</p></body></html>"
+    )
+    assert len(html) > 5_000
+    fake = FakeHttpClient(
+        response(
+            {},
+            url="https://kafka.apache.org/documentation/",
+            content=html,
+            content_type="text/html",
+        )
+    )
+    with pytest.raises(SourceUnavailableError) as exc_info:
+        asyncio.run(
+            DirectHttpFetchProvider(SearchConfig(), fake).afetch(
+                "https://kafka.apache.org/documentation/"
+            )
+        )
+    assert exc_info.value.reason_code == "empty_content"
+    assert "字节" in str(exc_info.value)
+
+
+def test_fetch_accepts_large_html_with_substantial_body():
+    """体积阈值只用来排除空壳：同样的 HTML 量有正文就必须放行。"""
+    empty_div = b'<div class="' + b"x" * 120 + b'"></div>'
+    html = (
+        b"<html><head><title>Quorum Queues</title></head><body>"
+        + empty_div * 100
+        + b"<main><p>"
+        + "仲裁队列基于 Raft 复制日志，写入需多数派确认。".encode() * 20
+        + b"</p></main></body></html>"
+    )
+    fake = FakeHttpClient(
+        response(
+            {},
+            url="https://www.rabbitmq.com/docs/quorum-queues",
+            content=html,
+            content_type="text/html",
+        )
+    )
+    document = asyncio.run(
+        DirectHttpFetchProvider(SearchConfig(), fake).afetch(
+            "https://www.rabbitmq.com/docs/quorum-queues"
+        )
+    )
+    assert document["status"] == "completed"
+    assert "Raft" in document["text"]
+
+
+def test_fetch_accepts_small_html_with_short_body():
+    """短页面不该被误伤：HTML 本身也小，说明不是渲染壳。"""
+    html = b"<html><head><title>Status</title></head><body><p>All systems operational.</p></body></html>"
+    fake = FakeHttpClient(
+        response({}, url="https://status.example.com", content=html, content_type="text/html")
+    )
+    document = asyncio.run(
+        DirectHttpFetchProvider(SearchConfig(), fake).afetch("https://status.example.com")
+    )
+    assert document["status"] == "completed"
+    assert "operational" in document["text"]
+
+
+def test_dynamic_shell_rule_only_applies_to_html():
+    """纯文本本就可能一页只有一行，体积判据不能套上去。"""
+    content = b"short line" + b" " * 20_000
+    fake = FakeHttpClient(
+        response({}, url="https://example.com/a.log", content=content, content_type="text/plain")
+    )
+    document = asyncio.run(
+        DirectHttpFetchProvider(SearchConfig(), fake).afetch("https://example.com/a.log")
+    )
+    assert document["status"] == "completed"
+
+
 def test_fetch_rejects_body_over_byte_limit():
     """超限正文不进解析：MAXFILESIZE 只管声明了长度的响应，分块传输由这里兜住。"""
     payload = b"x" * 4096
