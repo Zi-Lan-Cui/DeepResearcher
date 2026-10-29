@@ -45,18 +45,23 @@ class Base(DeclarativeBase):
 
 
 class ProviderHealthRecord(Base):
-    """搜索提供方账户级健康（跨 worker 共享的熔断位）。
+    """提供方健康（跨 worker 共享的冷却位）。
 
-    provider 主键；open_until 为该 key 判定不可用的恢复时刻（UTC）；
-    reason 是稳定 user_code（invalid_key/insufficient_credit/forbidden/quota_exhausted）。
+    主键带命名空间前缀：搜索是 search:<provider>，将来的 LLM 是 llm:<base_url>:<model>，
+    两者共用一张表但互不影响。failures 是连续失败数（成功即清零），strikes 是累计被踢
+    次数（决定冷却时长递增），reason 是稳定原因码。
     """
 
     __tablename__ = "provider_health"
 
-    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(160), primary_key=True)
     reason: Mapped[str] = mapped_column(String(32))
     open_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # create_all 只覆盖新库；既有库缺这两列时先 DROP TABLE provider_health 再重建，
+    # 它只是熔断记忆，丢了不影响正确性。
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    strikes: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class User(Base):

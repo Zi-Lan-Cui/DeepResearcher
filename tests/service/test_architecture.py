@@ -37,7 +37,9 @@ ALLOWED_KERNEL_IMPORTS = frozenset(
         "deepresearcher.schemas",  # StopReason 等
         "deepresearcher.schemas.limits",  # EVENT_CONTENT_PREVIEW_CHARS
         "deepresearcher.pricing",  # LLM 单价表与成本公式（记账与重算共用）
-        "deepresearcher.vocab",  # RETRIEVAL_* 常量
+        "deepresearcher.vocab",  # RETRIEVAL_* / INCOMPLETE_REPORT_HEADING 等共享字面量
+        # 依赖健康端口：协议在 kernel 声明，持久化实现在 service，消费方在 tools
+        "deepresearcher.health",  # HealthLedger / Cooldown / Unavailable
         # 资料与传输端口（tools 侧 protocol/store 抽象，外壳注入实现）
         "deepresearcher.tools.transport",  # HttpClient
         "deepresearcher.tools.web.documents",  # DocumentRef / DocumentReadRange / 大纲与 Grep 结果
