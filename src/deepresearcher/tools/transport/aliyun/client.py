@@ -1,7 +1,8 @@
-"""阿里云 DTS WebSearch/WebFetch 客户端。"""
+"""阿里云网页搜索/抓取 WebSearch/WebFetch 客户端。"""
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -61,9 +62,10 @@ class AliyunDtsApi(Protocol):
 
 
 class AliyunDtsClient:
-    def __init__(self, config: SearchConfig, sdk_client: Any):
+    def __init__(self, config: SearchConfig, sdk_client: Any, *, runtime: Any | None = None):
         self._config = config
         self._sdk_client = sdk_client
+        self._runtime = runtime or _runtime_options(config)
 
     async def web_search(self, query: str, limit: int) -> AliyunWebSearchBody:
         # SDK 可能在 import 时固化默认凭据链的环境变量，因此延迟到
@@ -76,7 +78,10 @@ class AliyunDtsClient:
             max_results=min(max(1, limit), 50),
             agent_name=self._config.aliyun_agent_name,
         )
-        body = await self._call("search", self._sdk_client.web_search_async(request))
+        body = await self._call(
+            "search",
+            lambda: self._sdk_client.web_search_with_options_async(request, self._runtime),
+        )
         self._require_success("search", body)
         return AliyunWebSearchBody(
             items=[
@@ -98,7 +103,10 @@ class AliyunDtsClient:
             output_format=output_format,
             agent_name=self._config.aliyun_agent_name,
         )
-        body = await self._call("fetch", self._sdk_client.web_fetch_async(request))
+        body = await self._call(
+            "fetch",
+            lambda: self._sdk_client.web_fetch_with_options_async(request, self._runtime),
+        )
         self._require_success("fetch", body)
         return AliyunWebFetchBody(
             content=str(getattr(body, "content", "") or ""),
@@ -121,11 +129,11 @@ class AliyunDtsClient:
                 f"阿里云 Web{category.title()} 返回失败：{message or '未知错误'}"
             )
 
-    async def _call(self, category: str, request: Any) -> Any:
+    async def _call(self, category: str, start: Callable[[], Awaitable[Any]]) -> Any:
         started = time.monotonic()
         status = "success"
         try:
-            response = await asyncio.wait_for(request, timeout=self._config.timeout)
+            response = await asyncio.wait_for(start(), timeout=self._config.timeout)
             return response.body
         except asyncio.TimeoutError as exc:
             status = "timeout"
@@ -152,6 +160,20 @@ class AliyunDtsClient:
                 duration_ms=elapsed_ms(started),
                 detail={"provider": "aliyun"},
             )
+
+
+def _runtime_options(config: SearchConfig) -> Any:
+    """固定 SDK 的代理口径。
+
+    darabonba 在没有显式取值时会自己读 HTTP(S)_PROXY，进程被外部注入代理后请求会被
+    转到一个未必连得上阿里云的代理上。这里与抓取侧一致：配了代理就只用它，没配就写
+    no_proxy=* 直连。
+    """
+    from darabonba.runtime import RuntimeOptions
+
+    if config.aliyun_proxy:
+        return RuntimeOptions(http_proxy=config.aliyun_proxy, https_proxy=config.aliyun_proxy)
+    return RuntimeOptions(no_proxy="*")
 
 
 def create_aliyun_dts_client(config: SearchConfig) -> AliyunDtsClient:

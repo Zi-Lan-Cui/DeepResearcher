@@ -1,4 +1,4 @@
-"""阿里云 DTS AI SDK 的窄接口封装。"""
+"""阿里云网页搜索/抓取 SDK 的窄接口封装。"""
 
 from deepresearcher.tools.transport.aliyun.client import (
     AliyunDtsApi,
