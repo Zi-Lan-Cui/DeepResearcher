@@ -17,7 +17,20 @@ from typing import Any
 from langchain_core.runnables import ensure_config
 
 #: 组成对象身份的 payload 键；取全部非空值拼接，顺序固定。
-_IDENTITY_KEYS = ("task_id", "tool_call_id", "operation_id")
+#:
+#: task_id 与 operation_id 在一次任务内恒定，只有这两项时，同一任务内同类事件的多次
+#: 发生会算出同一个键，写库时被判为重放而丢弃。对象标识键补齐区分度：检索用 query，
+#: 抓取用 requested_url 或 url，文档登记用 document_id。这些值取自模型输出、搜索
+#: 结果或正文内容，重放同一次执行时取值不变，不影响去重语义。
+_IDENTITY_KEYS = (
+    "task_id",
+    "tool_call_id",
+    "operation_id",
+    "document_id",
+    "url",
+    "requested_url",
+    "query",
+)
 
 #: 键长上限，与 run_events.dedup_key 列宽（512）留有一倍余量。超长改用摘要，
 #: 避免写库时被列宽截断，把两条不同的键截成同一个。

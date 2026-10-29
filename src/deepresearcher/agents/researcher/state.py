@@ -50,6 +50,7 @@ class ResearcherState(AgentState):
     documents: Annotated[dict[str, DocumentRef], merge_dict_by_key]
     selected_candidate_ids: Annotated[list[str], merge_unique]
     conclusion: Annotated[str, replace_channel]
+    finding: Annotated[str, replace_channel]
     stop_reason: Annotated[TaskStopReason | None, retain_if_absent]
     stop_detail: Annotated[str, replace_channel]
     provider_exhausted: Annotated[bool, merge_or]
@@ -107,11 +108,7 @@ class ResearcherDeps:
 
 @dataclass
 class ResearcherContext:
-    """Researcher 一次 run 的注入载荷：字段全是数据，不含行为。
-
-    行为实现在 services.py，tools.py 从本对象转交参数。相对路径为相对仓库根。
-    中间件 observability 用 getattr 读取 scope 做事件归因，缺席不崩溃但事件失去归属。
-    """
+    """Researcher 一次 run 的注入载荷"""
 
     deps: ResearcherDeps
     scope: AgentScope
@@ -148,6 +145,7 @@ class ResearcherTaskState:
     skipped: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     conclusion: str = ""
+    finding: str = ""
     stop_reason: TaskStopReason = TaskStopReason.STEP_BUDGET_EXHAUSTED
     stop_detail: str = "任务级探索步数预算已耗尽。"
     # 搜索提供方账户级不可用，即额度耗尽或鉴权失败。仅作数据：本任务与 Supervisor 的
@@ -214,6 +212,7 @@ class ResearcherTaskState:
             },
             "selected_candidate_ids": sorted(self.selected_candidate_ids),
             "conclusion": self.conclusion,
+            "finding": self.finding,
             "stop_reason": self.stop_reason,
             "stop_detail": self.stop_detail,
             "provider_exhausted": self.provider_exhausted,
@@ -262,6 +261,8 @@ class ResearcherTaskState:
             view.selected_candidate_ids = set(values["selected_candidate_ids"] or [])
         if "conclusion" in values:
             view.conclusion = str(values["conclusion"] or "")
+        if "finding" in values:
+            view.finding = str(values["finding"] or "")
         if "stop_detail" in values:
             view.stop_detail = str(values["stop_detail"] or "")
         if values.get("stop_reason") is not None:

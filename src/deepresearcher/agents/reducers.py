@@ -1,9 +1,4 @@
-"""内层循环 state 通道的共用 reducer。reducer 定义同一 superstep 内多份工具增量如何折叠。
-
-同批多个 tool_calls 并发执行，并发工具只能写合并语义通道：按 id 去重、取 max、集合并、
-增量施加到集合、按键合并。replace 语义即整字段由最后写入值覆盖，只允许串行工具写：通道按
-调用序而非完成序合并，并发写整字段快照会互相覆盖增量。各内层图共用，合并规则只在此一处。
-"""
+"""内层循环 state 通道的共用 reducer。reducer 定义同一 superstep 内多份工具增量如何折叠。"""
 
 from typing import Any
 

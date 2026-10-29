@@ -55,6 +55,17 @@ def _channel_command(
     )
 
 
+def _tool_context(runtime: ToolRuntime[ResearcherContext]) -> dict[str, object]:
+    """工具级事件上下文：任务级字段加本次调用的 tool_call_id。
+
+    task_id 与 operation_id 在一次任务内恒定，缺 tool_call_id 时同一工具的多次调用
+    同键，被事件存储判为重放而丢弃。tool_call_id 来自模型输出并随 checkpoint 持久化，
+    重放同一回合时取值不变，不破坏去重语义。
+    """
+    context = runtime.context
+    return {**context.event_context, "tool_call_id": runtime.tool_call_id}
+
+
 def build_researcher_tools() -> list[BaseTool]:
     """创建一套绑定到 ResearcherContext 的任务级工具。"""
 
@@ -68,7 +79,7 @@ def build_researcher_tools() -> list[BaseTool]:
         ctx = runtime.context
         candidate_keys_before = set(ctx.task_state.candidates)
         result = await services.search_sources(
-            ctx.deps, ctx.task, ctx.task_state, ctx.event_context, queries, reason
+            ctx.deps, ctx.task, ctx.task_state, _tool_context(runtime), queries, reason
         )
         new_candidates = {
             key: _candidate_channel_entry(value)
@@ -98,7 +109,7 @@ def build_researcher_tools() -> list[BaseTool]:
         ctx = runtime.context
         document_keys_before = set(ctx.task_state.documents)
         result = await services.read_sources(
-            ctx.deps, ctx.task, ctx.task_state, ctx.event_context, candidate_ids, reason
+            ctx.deps, ctx.task, ctx.task_state, _tool_context(runtime), candidate_ids, reason
         )
         new_documents = {
             key: _document_channel_entry(value)
@@ -193,7 +204,7 @@ def build_researcher_tools() -> list[BaseTool]:
             ctx.deps,
             ctx.task,
             task_state,
-            ctx.event_context,
+            _tool_context(runtime),
             [
                 item.model_dump(mode="json") if isinstance(item, EvidenceSubmission) else dict(item)
                 for item in evidences
@@ -269,6 +280,7 @@ def build_researcher_tools() -> list[BaseTool]:
         reason: str,
         selected_evidence_ids: list[str],
         conclusion: str,
+        finding: str,
         runtime: ToolRuntime[ResearcherContext],
     ) -> Command:
         """提交当前任务的最终局部结果；被拒则按回执修正后重提。"""
@@ -280,6 +292,7 @@ def build_researcher_tools() -> list[BaseTool]:
             reason,
             selected_evidence_ids,
             conclusion,
+            finding,
         )
         # 被拒时 stop_reason 与活跃集都不变，不落通道，只回一份纠错回执。
         if result.get("status") != "accepted":
@@ -290,6 +303,7 @@ def build_researcher_tools() -> list[BaseTool]:
             tool_name="TaskComplete",
             channel_update={
                 "conclusion": task_state.conclusion,
+                "finding": task_state.finding,
                 "stop_reason": task_state.stop_reason,
                 "stop_detail": task_state.stop_detail,
                 "active_evidence_ids": task_state.active_diff_since(active_before),

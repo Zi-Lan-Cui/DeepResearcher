@@ -307,6 +307,7 @@ class Researcher:
             evidence_count=len(active_evidences),
             source_count=len(active_sources),
             conclusion=task_state.conclusion,
+            finding=task_state.finding,
             queries=task_state.queries,
             read_urls=task_state.read_urls,
             skip_reasons=sorted(set(task_state.skipped)),

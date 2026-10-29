@@ -357,9 +357,12 @@ async def read_document(
         )
     except ValueError as exc:
         return {"status": "rejected", "reason": str(exc)}
+    # 请求行段可能整体越过文档末尾，此时 ranges 为空而 status 仍为 completed。回执带上
+    # 实际行数，模型才能判断是文档确实没有该行段，而不是读取被截断成空。
     return {
         "status": "completed",
         "document_id": document_id,
+        "line_count": task_state.documents[document_id].line_count,
         "ranges": [item.model_dump(mode="json") for item in windows],
         "truncated_range_count": max(0, len(ranges) - len(requested)),
     }
@@ -447,7 +450,7 @@ async def _validate_submissions(
         if evidence_id in pending_ids:
             duplicates.append(evidence_id)
             continue
-        requested_support = str(raw.get("support", "direct"))
+        requested_support = str(raw.get("support", "strict"))
         support = _bounded_support(requested_support, document.support_ceiling)
         confidence_value = raw.get("confidence", 0.0)
         if not isinstance(confidence_value, (int, float, str)):
@@ -556,7 +559,7 @@ async def add_evidence(
 async def _read_candidates(
     deps: ResearcherDeps, task: Task, candidates: list[SearchCandidate]
 ) -> list[object]:
-    semaphore = asyncio.Semaphore(deps.config.research_agent_read_concurrency)
+    semaphore = asyncio.Semaphore(deps.config.research_agent_max_concurrent_source_reads)
 
     async def read_one(candidate: SearchCandidate) -> object:
         async with semaphore:
@@ -639,6 +642,7 @@ def complete_task(
     reason: str,
     selected_evidence_ids: list[str],
     conclusion: str,
+    finding: str = "",
 ) -> dict[str, object]:
     """TaskComplete 业务：校验选定集、落定 stop_reason，返回完整回执。"""
     requested = list(dict.fromkeys(selected_evidence_ids))
@@ -652,12 +656,15 @@ def complete_task(
     active_evidences = task_state.active_evidences()
     if active_evidences:
         task_state.conclusion = conclusion.strip()
+        task_state.finding = finding.strip()
         task_state.stop_reason = TaskStopReason.COMPLETE
     else:
         # 无证据时的模型自述无从校验，整段换成对当前状态的如实说明。
         task_state.conclusion = "本任务未取得可锚定的 Evidence，因此不给出研究结论。当前状态：" + (
             reason.strip() or "未说明具体的停止原因。"
         )
+        # 摘要同样无从校验，与 conclusion 一并置空，卡面不显示。
+        task_state.finding = ""
         task_state.stop_reason = TaskStopReason.BLOCKED_WITHOUT_EVIDENCE
     task_state.stop_detail = reason
     return {

@@ -13,6 +13,7 @@ from deepresearcher.agents.researcher import Researcher, services
 from deepresearcher.agents.researcher.agent import RESEARCHER_SERIAL_TOOLS
 from deepresearcher.agents.researcher.state import (
     ResearcherContext,
+    ResearcherDeps,
     ResearcherState,
     ResearcherTaskState,
     working_set_snapshot,
@@ -21,6 +22,7 @@ from deepresearcher.agents.researcher.tools import build_researcher_tools
 from deepresearcher.config import AgentConfig
 from deepresearcher.evidence.models import Evidence
 from deepresearcher.evidence.validator import SourceIndex
+from deepresearcher.observability.scope import AgentScope
 from deepresearcher.schemas import (
     DocumentReadTarget,
     EvidenceSubmission,
@@ -80,7 +82,7 @@ def test_research_agent_search_and_read_do_not_implicitly_create_evidence():
         research_agent_max_evidences_per_task=2,
         research_agent_max_turns=4,
         research_agent_max_queries=4,
-        research_agent_read_concurrency=2,
+        research_agent_max_concurrent_source_reads=2,
     )
     reader = CapturingReader()
     agent = researcher_agent(
@@ -333,7 +335,7 @@ def test_researcher_builds_minimum_result_when_finalization_never_submits():
                 claim="已验证的有限事实",
                 quote="原文片段",
                 source_url="https://example.com/a",
-                support="direct",
+                support="strict",
             )
         ]
     )
@@ -510,14 +512,14 @@ def test_researcher_reads_registered_document_and_adds_verified_evidence():
                     "claim": "实验端到端延迟为 20ms。",
                     "quote_start": "实验表明端到端延迟",
                     "quote_end": "20ms",
-                    "support": "direct",
+                    "support": "strict",
                     "confidence": 0.9,
                 },
                 {
                     "document_id": document.document_id,
                     "claim": "不存在的事实",
                     "quote_start": "正文里没有这句话",
-                    "support": "direct",
+                    "support": "strict",
                     "confidence": 0.9,
                 },
             ],
@@ -544,7 +546,7 @@ def test_document_id_sanitizer_strips_injected_control_chars():
             "document_id": contaminated,
             "claim": "主张",
             "quote_start": "开头",
-            "support": "direct",
+            "support": "strict",
             "confidence": 0.9,
         }
     )
@@ -615,7 +617,7 @@ def test_working_set_snapshot_carries_direction_and_source_identity():
         quote="原文",
         source_url="https://example.com/x",
         source_title="来源页",
-        support="direct",
+        support="strict",
         confidence=0.8,
     )
     task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=8)
@@ -736,6 +738,199 @@ def test_add_evidence_anchor_resolves_across_punctuation_style():
     assert task_state.evidences[0].quote == "报告称“非常稳健”，通过验收"
     assert events[0]["accepted_count"] == 1
     assert events[0]["rejected_count"] == 0
+
+
+def test_search_event_payload_carries_tool_call_id():
+    # 同一任务可多次检索。载荷缺 tool_call_id 时各次去重键相同，事件存储只保留首次，
+    # 前端只收到第一轮的检索行。
+    events: list[dict[str, object]] = []
+
+    def capture_emit(event_type: str, payload: dict[str, object], **kwargs: object) -> None:
+        del kwargs
+        if event_type == "direction_search_completed":
+            events.append(payload)
+
+    deps = ResearcherDeps(
+        config=AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=MemoryResearchMaterialStore(),
+        emit=capture_emit,
+    )
+    context = ResearcherContext(
+        deps=deps,
+        scope=AgentScope.from_task(TASK, agent_name="Researcher"),
+        task=TASK,
+        task_state=ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4),
+        event_context={"task_id": TASK["id"], "operation_id": "research-task-0001"},
+    )
+    runtime = SimpleNamespace(context=context, tool_call_id="call-search-1")
+    tool = {item.name: item for item in build_researcher_tools()}["SearchSources"]
+
+    asyncio.run(tool.coroutine(reason="查找快照机制", queries=["Redis RDB"], runtime=runtime))
+
+    assert events[0]["queries"] == ["Redis RDB"]
+    assert events[0]["tool_call_id"] == "call-search-1"
+
+
+def test_add_evidence_event_payload_carries_tool_call_id():
+    # 同一任务可多次提交证据。载荷缺 tool_call_id 时各次去重键相同，事件存储会把后几次
+    # 判为重放丢弃，前端只收到首次提交。
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(
+            text="Redis 的 RDB 会在指定时间间隔内生成数据集快照。",
+            title="快照机制",
+            source_url="https://example.com/rdb",
+        )
+    )
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.documents[document.document_id] = document
+    events: list[dict[str, object]] = []
+
+    def capture_emit(event_type: str, payload: dict[str, object], **kwargs: object) -> None:
+        del kwargs
+        if event_type == "direction_evidence_added":
+            events.append(payload)
+
+    deps = ResearcherDeps(
+        config=AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+        emit=capture_emit,
+    )
+    context = ResearcherContext(
+        deps=deps,
+        scope=AgentScope.from_task(TASK, agent_name="Researcher"),
+        task=TASK,
+        task_state=task_state,
+        event_context={"task_id": TASK["id"], "operation_id": "research-task-0001"},
+    )
+    runtime = SimpleNamespace(context=context, tool_call_id="call-evidence-1")
+    tool = {item.name: item for item in build_researcher_tools()}["AddEvidence"]
+
+    asyncio.run(
+        tool.coroutine(
+            evidences=[
+                {
+                    "document_id": document.document_id,
+                    "claim": "RDB 按时间间隔生成快照。",
+                    "quote_start": "RDB",
+                    "quote_end": "数据集快照",
+                    "confidence": 0.8,
+                }
+            ],
+            reason="提交快照机制的原文",
+            runtime=runtime,
+        )
+    )
+
+    assert events[0]["accepted_count"] == 1
+    assert events[0]["tool_call_id"] == "call-evidence-1"
+
+
+def test_read_document_reports_line_count_when_ranges_exceed_document():
+    # 行段整体越过文档末尾时 ranges 为空且状态仍是 completed；回执带实际行数，
+    # 模型才能判断该改读哪一段，而不是重复同一请求。
+    store = MemoryResearchMaterialStore()
+    document = asyncio.run(
+        store.put(
+            text="第一行\n第二行\n第三行", title="三行", source_url="https://example.com/three"
+        )
+    )
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.documents[document.document_id] = document
+    deps = ResearcherDeps(
+        config=AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=store,
+        emit=lambda *_args, **_kwargs: None,
+    )
+
+    read = asyncio.run(
+        services.read_document(deps, task_state, document.document_id, [(9, 12)], "越界行段")
+    )
+
+    assert read["status"] == "completed"
+    assert read["ranges"] == []
+    assert read["line_count"] == 3
+
+
+def _state_with_one_active_evidence() -> ResearcherTaskState:
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+    task_state.evidences.append(
+        Evidence(
+            evidence_id="ev-1",
+            task_id="task-0001",
+            research_direction="方向甲",
+            claim="RDB 按间隔生成快照",
+            quote="保存数据集快照",
+            source_url="https://example.com/rdb",
+            support="strict",
+        )
+    )
+    task_state.active_evidence_ids = {"ev-1"}
+    return task_state
+
+
+def test_complete_task_writes_finding_alongside_conclusion():
+    # finding 与 conclusion 由同一次提交写入，各走一条通道：前者上卡面，后者给 Supervisor。
+    task_state = _state_with_one_active_evidence()
+
+    result = services.complete_task(
+        task_state, "取证足够", ["ev-1"], "完整叙述。", "RDB 按间隔做全量快照。"
+    )
+
+    assert result["status"] == "accepted"
+    assert task_state.finding == "RDB 按间隔做全量快照。"
+    assert task_state.conclusion == "完整叙述。"
+
+
+def test_complete_task_clears_finding_when_nothing_is_selected():
+    # 无活跃证据时模型自述无从校验，摘要与结论一并置空，卡面不出现摘要行。
+    task_state = ResearcherTaskState(active_evidence_limit=4, evidence_archive_limit=4)
+
+    result = services.complete_task(task_state, "没查到", [], "模型自述。", "模型自述摘要。")
+
+    assert result["status"] == "accepted"
+    assert task_state.finding == ""
+    assert "未取得可锚定的 Evidence" in task_state.conclusion
+
+
+def test_task_complete_tool_puts_finding_into_the_channel():
+    # 摘要经通道回传，而不是由前端截取 conclusion：两者长度与语气都不一样。
+    task_state = _state_with_one_active_evidence()
+    deps = ResearcherDeps(
+        config=AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=FakeReader(),
+        material_store=None,
+        emit=lambda *_args, **_kwargs: None,
+    )
+    context = ResearcherContext(
+        deps=deps,
+        scope=AgentScope.from_task(TASK, agent_name="Researcher"),
+        task=TASK,
+        task_state=task_state,
+        event_context={"task_id": TASK["id"], "operation_id": "research-task-0001"},
+    )
+    runtime = SimpleNamespace(context=context, tool_call_id="call-complete-1")
+    tool = {item.name: item for item in build_researcher_tools()}["TaskComplete"]
+
+    command = asyncio.run(
+        tool.coroutine(
+            reason="取证足够",
+            selected_evidence_ids=["ev-1"],
+            conclusion="完整叙述。",
+            finding="RDB 按间隔做全量快照。",
+            runtime=runtime,
+        )
+    )
+
+    assert command.update["finding"] == "RDB 按间隔做全量快照。"
+    assert command.update["conclusion"] == "完整叙述。"
 
 
 def test_add_evidence_scans_each_document_once(monkeypatch):
@@ -920,7 +1115,7 @@ def test_source_reader_registers_tavily_raw_content_when_page_fetch_is_unavailab
     assert result.status == "completed"
     ref = asyncio.run(store.get(result.documents[0].document_id))
     assert ref.retrieval_method == "tavily_raw_content"
-    assert ref.support_ceiling == "direct"
+    assert ref.support_ceiling == "strict"
     assert ref.published_at == "2026-07-04"
 
 
@@ -1101,6 +1296,7 @@ def test_researcher_selection_channels_are_serial_only():
     """非并发安全通道 = 方向收尾(TaskComplete,串行)独写集。"""
     assert _non_concurrency_safe_channels(ResearcherState) == {
         "conclusion",
+        "finding",
         "stop_reason",
         "stop_detail",
     }

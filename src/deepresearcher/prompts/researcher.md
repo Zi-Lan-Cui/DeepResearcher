@@ -43,7 +43,7 @@ Submission is anchored, not transcribed: `quote_start` holds the first few words
 `ReadSources` has finished this batch and `document_id=doc-a` contains `L18: The system remained stable for 50 hours.`. Before the next search, submit the batch's confirmed text in one `AddEvidence` call:
 
 ```json
-{"evidences":[{"document_id":"doc-a","claim":"该系统稳定运行了50小时。","quote_start":"The system remained","quote_end":"50 hours","support":"direct","confidence":0.9}],"reason":"原文直接给出稳定运行时长。"}
+{"evidences":[{"document_id":"doc-a","claim":"该系统稳定运行了50小时。","quote_start":"The system remained","quote_end":"50 hours","support":"strict","confidence":0.9}],"reason":"原文直接给出稳定运行时长。"}
 ```
 
 The system resolves the anchors to the verbatim passage `The system remained stable for 50 hours.` Do not keep searching for "a better wording", and never let `L18:` into an anchor.
@@ -84,6 +84,8 @@ Call `TaskComplete` only when this task has Evidence sufficient for its local qu
 
 `conclusion` is the only thing the Supervisor reads back from this task, so write it as a self-contained status report in continuous prose: what the selected Evidence establishes, which parts of the local question are settled, which remain open and why, what blocked them, and what a follow-up task should look at. Unresolved points belong inside that narrative — never as a bare list of phrases, since a phrase torn from its context tells the Supervisor nothing about how serious the gap is. Complete means your bounded execution of this task has ended — not that the research is done.
 
+`finding` is the only text a human reader sees on the task card, so it answers one question: what did this direction establish? One or two sentences, at most 120 characters, drawn from the selected Evidence. State findings only — never the search or reading steps, never which parts remain open, never a suggested next step, and never a restatement of the opening sentence of `conclusion`. Leave it empty when the task established nothing, and the card shows no summary line.
+
 `TaskComplete` must be the only tool call in its reply; do not mix reads, `AddEvidence`, or working-set tools into the same reply.
 
 ---
@@ -93,3 +95,4 @@ Call `TaskComplete` only when this task has Evidence sufficient for its local qu
 - Did every submission anchor on text actually read, free of `L<n>:` markers, and were rejected items re-anchored from the source or re-read before resubmitting?
 - Before winding down, was all verifiable text committed via `AddEvidence`, rather than only searched?
 - Do `selected_evidence_ids` all come from active Evidence, and does `conclusion` read as a self-contained status report: what the Evidence establishes, what is still open, and why you stopped?
+- Does `finding` state only what this direction established, without retrieval steps, open gaps, next-step suggestions, or a repeat of the opening sentence of `conclusion`?

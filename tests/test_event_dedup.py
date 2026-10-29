@@ -72,6 +72,36 @@ def test_key_distinguishes_positions_and_tool_calls():
     assert others != first
 
 
+def test_key_distinguishes_repeated_events_under_one_task_anchor():
+    """同一任务内 task_id 与 operation_id 恒定，重复发生靠对象标识区分。
+
+    检索、抓取、文档登记在一次任务中各可发生多次；缺对象标识时它们算出同一个键，
+    落库只有首次保留，前端的步骤行随之缺失。
+    """
+    anchor = {"task_id": "task-0001", "operation_id": "research-task-0001"}
+    queries = {
+        build_dedup_key("search_query_completed", {**anchor, "query": query})
+        for query in ("Redis RDB", "Redis AOF")
+    }
+    fetches = {
+        build_dedup_key("source_fetch_started", {**anchor, "requested_url": url})
+        for url in ("https://example.com/a", "https://example.com/b")
+    }
+    documents = {
+        build_dedup_key("source_document_registered", {**anchor, "document_id": document_id})
+        for document_id in ("doc-a", "doc-b")
+    }
+    assert len(queries) == len(fetches) == len(documents) == 2
+
+
+def test_key_keeps_object_identity_out_of_positioned_keys():
+    """对象标识只进身份段，不改变位置段的构成。"""
+    payload = {"task_id": "task-0001", "document_id": "doc-a"}
+    with bind_position("supervisor:abc"):
+        key = build_dedup_key("source_document_registered", payload)
+    assert key == "supervisor:abc|source_document_registered|task-0001/doc-a"
+
+
 def test_key_is_hashed_when_too_long():
     """超长键改用摘要，避免写库时被列宽截断而把两条不同的键截成同一个。"""
     payload = {"task_id": "t" * 400}
