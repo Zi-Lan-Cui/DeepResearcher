@@ -1,4 +1,4 @@
-"""阿里云 DTS AI WebFetch Provider。"""
+"""阿里云网页抓取 WebFetch Provider。"""
 
 import asyncio
 import hashlib

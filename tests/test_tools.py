@@ -2,6 +2,7 @@ import asyncio
 import json
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -9,6 +10,7 @@ import pytest
 from curl_cffi.requests.exceptions import Timeout
 
 from deepresearcher.config import SearchConfig
+from deepresearcher.health import MemoryHealthLedger
 from deepresearcher.tools.errors import (
     ProviderExhaustedError,
     SourceUnavailableError,
@@ -298,13 +300,30 @@ def test_search_parses_aliyun_results_through_common_contract():
     ]
 
 
+def test_auto_selects_aliyun_when_credentials_are_configured():
+    class FakeAliyunClient:
+        async def web_search(self, query, limit):
+            return AliyunWebSearchBody(items=[AliyunWebSearchItem(url="https://a.test")])
+
+    # 显式 key 也配着：阿里云凭据是显式给出的，优先级高于顺手留着的 key。
+    client = SearchService(
+        SearchConfig(aliyun_configured=True, tavily_api_key="tvly", max_results=2),
+        aliyun_client=FakeAliyunClient(),
+    )
+
+    assert client.provider_name == "aliyun"
+    assert asyncio.run(client.asearch("Spring Boot"))[0]["content_provider"] == "aliyun"
+
+
 def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
     class FakeSdkClient:
         def __init__(self):
             self.requests = []
+            self.runtimes = []
 
-        async def web_search_async(self, request):
+        async def web_search_with_options_async(self, request, runtime):
             self.requests.append(request)
+            self.runtimes.append(runtime)
             return SimpleNamespace(
                 body=SimpleNamespace(
                     success=True,
@@ -315,8 +334,9 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
                 )
             )
 
-        async def web_fetch_async(self, request):
+        async def web_fetch_with_options_async(self, request, runtime):
             self.requests.append(request)
+            self.runtimes.append(runtime)
             return SimpleNamespace(
                 body=SimpleNamespace(
                     success=True,
@@ -356,6 +376,29 @@ def test_aliyun_sdk_wrapper_builds_search_and_fetch_requests():
     assert search_request.max_results == 50
     assert fetch_request.url == "https://spring.io"
     assert fetch_request.output_format == "markdown"
+    # 未配代理时写 no_proxy=*：SDK 自己会读 HTTP(S)_PROXY，不写死会被外部代理劫走。
+    assert sdk.runtimes[0].no_proxy == "*"
+    assert sdk.runtimes[0].https_proxy is None
+
+
+def test_aliyun_sdk_wrapper_uses_configured_proxy():
+    class RecordingSdk:
+        def __init__(self):
+            self.runtime = None
+
+        async def web_search_with_options_async(self, _request, runtime):
+            self.runtime = runtime
+            return SimpleNamespace(
+                body=SimpleNamespace(success=True, error_message="", search_result=[])
+            )
+
+    sdk = RecordingSdk()
+    client = AliyunDtsClient(SearchConfig(aliyun_proxy="http://127.0.0.1:7890"), sdk)
+
+    asyncio.run(client.web_search("q", 3))
+
+    assert sdk.runtime.https_proxy == "http://127.0.0.1:7890"
+    assert sdk.runtime.no_proxy is None
 
 
 def test_aliyun_account_level_sdk_error_trips_provider_exhausted():
@@ -371,10 +414,10 @@ def test_aliyun_account_level_sdk_error_trips_provider_exhausted():
         def __init__(self, code: str):
             self._code = code
 
-        async def web_search_async(self, _request):
+        async def web_search_with_options_async(self, _request, _runtime):
             raise SdkError(self._code, "boom")
 
-        async def web_fetch_async(self, _request):  # pragma: no cover - 只走 search
+        async def web_fetch_with_options_async(self, _request, _runtime):  # pragma: no cover
             raise AssertionError
 
     def call_with(code):
@@ -811,74 +854,129 @@ def test_http_client_no_reset_ts_for_non_rate_limit_failure(monkeypatch):
     assert caught.value.rate_limit_reset_ts is None
 
 
-class _RateLimitedProvider:
-    """记录调用次数的假 provider；always_limited 时只抛非限流的普通错误。"""
+class _CountingProvider:
+    """记录调用次数的假 provider；error 为 None 时返回一条结果。"""
 
-    def __init__(self, error: ToolRequestError):
+    def __init__(self, name: str, error: Exception | None = None):
+        self.name = name
         self.error = error
         self.calls = 0
 
     async def asearch(self, query: str, limit: int):
         self.calls += 1
-        raise self.error
+        if self.error is not None:
+            raise self.error
+        return [
+            {
+                "title": query,
+                "url": f"https://{query}.test",
+                "content_provider": self.name,
+                "score": 1.0,
+            }
+        ]
 
 
-def _client_with_fake_provider(monkeypatch, provider):
-    import time as _time
+def _client_with_providers(*providers, health=None):
+    """绕过真实 HTTP 与凭据，直接给定候选列表。"""
+    client = SearchService(
+        SearchConfig(provider="baidu", baidu_api_key="test"), provider_health=health
+    )
+    client._providers = list(providers)
+    return client
 
-    client = SearchService(SearchConfig(provider="baidu", baidu_api_key="test"))
-    monkeypatch.setattr(client, "_provider", lambda: provider)
-    return client, _time
 
-
-def test_search_client_breaker_opens_after_rate_limited_failure(monkeypatch):
-    """provider 报限流后，窗口内的后续查询直接快速失败，不发起请求。"""
-    import time as _time
-
+def _limited_error(seconds: float = 30.0) -> ToolRequestError:
     error = ToolRequestError("请求失败（重试 3 次）")
-    error.rate_limit_reset_ts = _time.monotonic() + 30
-    provider = _RateLimitedProvider(error)
-    client, _ = _client_with_fake_provider(monkeypatch, provider)
-
-    with pytest.raises(ToolRequestError):
-        asyncio.run(client.asearch("第一个查询"))
-    assert provider.calls == 1
-
-    with pytest.raises(ToolRequestError, match="已被限流") as caught:
-        asyncio.run(client.asearch("第二个查询"))
-    assert provider.calls == 1  # 第二个查询没有出网
-    assert caught.value.retryable is False
-    assert "约 30 秒后恢复" in str(caught.value) or "秒后恢复" in str(caught.value)
+    error.rate_limit_reset_ts = time.monotonic() + seconds
+    return error
 
 
-def test_search_client_breaker_expires_and_admits_probe(monkeypatch):
-    """恢复窗口到期后，下一个请求放行做探针；成功则恢复正常。"""
-    import time as _time
+def test_search_degrades_to_next_provider_and_stays_there_while_cooling():
+    """主选报限流后同一次调用立刻换下一家；后续调用不再碰它。"""
+    primary = _CountingProvider("aliyun", _limited_error())
+    backup = _CountingProvider("tavily")
+    client = _client_with_providers(("aliyun", primary), ("tavily", backup))
 
-    error = ToolRequestError("请求失败")
-    error.rate_limit_reset_ts = _time.monotonic() + 30
-    provider = _RateLimitedProvider(error)
-    client, _ = _client_with_fake_provider(monkeypatch, provider)
+    first = asyncio.run(client.asearch("q1"))
+    assert [item["content_provider"] for item in first] == ["tavily"]
+    assert (primary.calls, backup.calls) == (1, 1)
+
+    second = asyncio.run(client.asearch("q2"))
+    assert [item["content_provider"] for item in second] == ["tavily"]
+    assert (primary.calls, backup.calls) == (1, 2)
+
+
+def test_search_returns_to_primary_after_cooldown():
+    """冷却到期后重新把主选放回首位，不需要重启进程。"""
+    clock = [1000.0]
+    health = MemoryHealthLedger(clock=lambda: clock[0])
+    primary = _CountingProvider("aliyun", _limited_error(seconds=30))
+    backup = _CountingProvider("tavily")
+    client = _client_with_providers(("aliyun", primary), ("tavily", backup), health=health)
+
+    asyncio.run(client.asearch("q1"))
+    asyncio.run(client.asearch("q2"))
+    assert primary.calls == 1
+
+    primary.error = None
+    clock[0] += 31
+    results = asyncio.run(client.asearch("q3"))
+    assert [item["content_provider"] for item in results] == ["aliyun"]
+    assert primary.calls == 2
+
+
+def test_search_reports_remaining_seconds_when_all_providers_cooling():
+    """全都不可用时不出网，并把恢复时间说清楚。"""
+    clock = [1000.0]
+    health = MemoryHealthLedger(clock=lambda: clock[0])
+    primary = _CountingProvider("aliyun", _limited_error(seconds=30))
+    backup = _CountingProvider("tavily", _limited_error(seconds=45))
+    client = _client_with_providers(("aliyun", primary), ("tavily", backup), health=health)
 
     with pytest.raises(ToolRequestError):
         asyncio.run(client.asearch("q1"))
-    # 模拟窗口已过
-    client._rate_limit_deadlines["baidu"] = _time.monotonic() - 1
-    with pytest.raises(ToolRequestError):  # provider 仍然失败（非限流路径会重新开窗判断）
+    assert (primary.calls, backup.calls) == (1, 1)
+
+    with pytest.raises(ToolRequestError, match="秒后恢复") as caught:
         asyncio.run(client.asearch("q2"))
-    assert provider.calls == 2  # 探针请求真的出网了
+    assert (primary.calls, backup.calls) == (1, 1)  # 全部跳过，没有出网
+    assert "aliyun" in str(caught.value) and "tavily" in str(caught.value)
 
 
-def test_search_client_ignores_plain_failures_for_breaker(monkeypatch):
-    """不带恢复点的普通失败（如 401）不开断路器。"""
-    provider = _RateLimitedProvider(ToolRequestError("HTTP 401", retryable=False))
-    client, _ = _client_with_fake_provider(monkeypatch, provider)
+def test_search_counts_consecutive_failures_before_cooling():
+    """普通失败按连续次数累计；未到阈值前每次都要真的重试。"""
+    provider = _CountingProvider("baidu", ToolRequestError("HTTP 500"))
+    client = _client_with_providers(("baidu", provider))
 
-    for _ in range(2):
-        with pytest.raises(ToolRequestError, match="401"):
+    for _ in range(3):
+        with pytest.raises(ToolRequestError, match="500"):
             asyncio.run(client.asearch("q"))
-    assert provider.calls == 2
-    assert client._rate_limit_deadlines == {}
+    assert provider.calls == 3
+
+    with pytest.raises(ToolRequestError, match="秒后恢复"):
+        asyncio.run(client.asearch("q"))
+    assert provider.calls == 3
+
+
+def test_search_success_resets_failure_streak():
+    """成功一次即清零，偶发失败不会累积成冷却。"""
+    provider = _CountingProvider("baidu", ToolRequestError("HTTP 500"))
+    client = _client_with_providers(("baidu", provider))
+
+    for _ in range(3):
+        provider.error = ToolRequestError("HTTP 500")
+        for _ in range(2):
+            with pytest.raises(ToolRequestError):
+                asyncio.run(client.asearch("q"))
+        provider.error = None
+        asyncio.run(client.asearch("q"))
+    assert provider.calls == 9
+
+
+def test_search_construction_fails_when_no_provider_is_ready():
+    """没有任何可用供应商属于配置问题，构造期就要报出来。"""
+    with pytest.raises(ToolConfigurationError, match="没有可用的搜索供应商"):
+        SearchService(SearchConfig())
 
 
 class _ConcurrencyTrackingProvider:
@@ -890,8 +988,6 @@ class _ConcurrencyTrackingProvider:
         self.calls = 0
 
     async def asearch(self, query: str, limit: int):
-        import asyncio
-
         self.in_flight += 1
         self.calls += 1
         self.peak = max(self.peak, self.in_flight)
@@ -900,12 +996,13 @@ class _ConcurrencyTrackingProvider:
         return []
 
 
-def test_search_client_caps_provider_concurrency(monkeypatch):
+def test_search_client_caps_provider_concurrency():
     """跨 worker 并发查询被限制到同时最多 max_concurrent_requests 路。"""
     provider = _ConcurrencyTrackingProvider()
-    config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
-    client = SearchService(config)
-    monkeypatch.setattr(client, "_provider", lambda: provider)
+    client = SearchService(
+        SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=2)
+    )
+    client._providers = [("baidu", provider)]
 
     async def run():
         await asyncio.gather(*(client.asearch(f"q{i}") for i in range(8)))
@@ -915,10 +1012,8 @@ def test_search_client_caps_provider_concurrency(monkeypatch):
     assert provider.peak <= 2
 
 
-def test_search_client_queued_request_bails_when_breaker_opens(monkeypatch):
-    """拿到并发许可后复查断路：排队期间被别的请求开窗，则不出网。"""
-    import time as _time
-
+def test_search_client_queued_request_bails_when_provider_opens():
+    """拿到并发许可后复查冷却：排队期间被别的请求踢出，则不出网。"""
     release = asyncio.Event()
     opened = asyncio.Event()
 
@@ -930,28 +1025,27 @@ def test_search_client_queued_request_bails_when_breaker_opens(monkeypatch):
             self.calls += 1
             if self.calls == 1:
                 await release.wait()  # 占住唯一许可，让第二个请求排队
-                error = ToolRequestError("请求失败（重试 3 次）")
-                error.rate_limit_reset_ts = _time.monotonic() + 30
-                raise error
+                raise _limited_error()
             opened.set()
             return []
 
     provider = BlockingThenRateLimited()
-    config = SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=1)
-    client = SearchService(config)
-    monkeypatch.setattr(client, "_provider", lambda: provider)
+    client = SearchService(
+        SearchConfig(provider="baidu", baidu_api_key="test", max_concurrent_requests=1)
+    )
+    client._providers = [("baidu", provider)]
 
     async def run():
         first = asyncio.create_task(client.asearch("q1"))
         await asyncio.sleep(0)  # 让 first 进入 provider 并占住许可
         second = asyncio.create_task(client.asearch("q2"))  # 卡在信号量上
         await asyncio.sleep(0)
-        release.set()  # first 结束并开断路器；second 拿到许可后复查 → 快速失败
-        with pytest.raises(ToolRequestError):
+        release.set()  # first 失败并踢出该供应商；second 拿到许可后复查 → 跳过
+        with pytest.raises(ToolRequestError, match="请求失败"):
             await first
-        with pytest.raises(ToolRequestError, match="已被限流"):
+        with pytest.raises(ToolRequestError, match="秒后恢复"):
             await second
 
     asyncio.run(run())
-    assert provider.calls == 1  # 第二个请求复查断路后未出网
+    assert provider.calls == 1
     assert not opened.is_set()

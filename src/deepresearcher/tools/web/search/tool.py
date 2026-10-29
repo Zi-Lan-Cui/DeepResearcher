@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from collections import Counter
 
 from deepresearcher.errors import clip_text
 from deepresearcher.observability.events import JsonlSink, make_tool_event
@@ -16,7 +17,7 @@ from deepresearcher.schemas.limits import (
     SEARCH_RESULTS_AUDIT_PREVIEW_COUNT,
 )
 from deepresearcher.tools.cache_keys import canonical_url, normalize_text, semantic_cache_key
-from deepresearcher.tools.errors import ProviderExhaustedError, ToolConfigurationError
+from deepresearcher.tools.errors import ProviderExhaustedError
 from deepresearcher.tools.web.search.models import (
     SearchFailure,
     SearchResult,
@@ -35,8 +36,6 @@ class SearchTool:
         *,
         event_sink: JsonlSink | None = None,
     ):
-        if client is None:
-            raise ToolConfigurationError("SearchTool 需要已配置的 SearchService。")
         self.client = client
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.tools.web_search")
@@ -125,6 +124,8 @@ class SearchTool:
                             payload={
                                 **task_context,
                                 "query": query,
+                                # 降级时实际响应的供应商，覆盖任务级的首选值。
+                                "provider": _content_provider(results, task_context["provider"]),
                                 "candidate_count": len(results),
                             },
                         )
@@ -170,7 +171,7 @@ class SearchTool:
             self.logger.info(
                 "search_completed task=%s provider=%s effective_limit=%s queries=%d candidates=%d queries=%r",
                 task["id"],
-                task_context["provider"],
+                _content_provider(ranked, task_context["provider"]),
                 task_context["effective_limit"],
                 len(search_queries),
                 len(ranked),
@@ -198,6 +199,7 @@ class SearchTool:
                                     ],
                                     "url": item.get("url", ""),
                                     "score": item.get("score", 0.0),
+                                    "provider": item.get("content_provider", ""),
                                 }
                                 for item in ranked[:SEARCH_RESULTS_AUDIT_PREVIEW_COUNT]
                             ],
@@ -257,3 +259,11 @@ class SearchTool:
             key=lambda item: item.get("score", 0.0),
             reverse=True,
         )
+
+
+def _content_provider(results, fallback: str) -> str:
+    """本批结果贡献最多的供应商；结果为空时用 fallback（首选）。"""
+    counts = Counter(
+        str(item.get("content_provider")) for item in results if item.get("content_provider")
+    )
+    return counts.most_common(1)[0][0] if counts else fallback

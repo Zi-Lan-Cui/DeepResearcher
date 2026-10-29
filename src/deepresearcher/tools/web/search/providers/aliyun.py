@@ -1,4 +1,4 @@
-"""阿里云 DTS AI WebSearch Provider。"""
+"""阿里云网页搜索 WebSearch Provider。"""
 
 from deepresearcher.tools.transport.aliyun import AliyunDtsApi
 from deepresearcher.tools.web.search.models import SearchResult

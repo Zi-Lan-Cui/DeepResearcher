@@ -1,91 +1,107 @@
-"""SearchService：与供应商无关的搜索编排。
-
-选路、扇出、限流排队与账户级熔断都在这里。调用方是 SearchTool，下接各个
-SearchProvider；结果契约（SearchResult / SearchCandidate）在 models。
-"""
+"""SearchService：与供应商无关的搜索编排。"""
 
 import asyncio
 import math
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deepresearcher.config import SearchConfig
+from deepresearcher.health import HealthLedger, MemoryHealthLedger
 from deepresearcher.tools.errors import (
     ProviderExhaustedError,
-    ToolConfigurationError,
+    ToolError,
     ToolRequestError,
 )
 from deepresearcher.tools.transport.http_client import HttpClient
-from deepresearcher.tools.web.search.health import MemoryProviderHealth, ProviderHealth
 from deepresearcher.tools.web.search.models import SearchResult
+from deepresearcher.tools.web.search.providers import build_search_providers
 
 if TYPE_CHECKING:
     from deepresearcher.tools.transport.aliyun import AliyunDtsApi
 
-# 账户级不可用（额度/鉴权）的默认熔断窗口：长到足以停止连续请求该提供方，
-# 又能在上游恢复后自动恢复。
-_PROVIDER_HEALTH_SECONDS = 900.0
+# 账户级不可用（额度/鉴权）重试同 key 结果不变，冷却时长取长一些。
+_ACCOUNT_LEVEL_SECONDS = 900.0
+
+
+def _key(name: str) -> str:
+    """账本主键带命名空间，与将来 LLM 的 <base_url>:<model> 共用一张表也不撞车。"""
+    return f"search:{name}"
 
 
 class SearchService:
+    """按配置顺序尝试候选供应商；确定不可用的那家会被后续请求跳过。"""
+
     def __init__(
         self,
         config: SearchConfig,
         http_client: HttpClient | None = None,
         *,
         aliyun_client: "AliyunDtsApi | None" = None,
-        provider_health: ProviderHealth | None = None,
+        provider_health: HealthLedger | None = None,
     ):
         self.config = config
         self.http = http_client or HttpClient(config)
-        # 供应商级断路表：provider -> 单调时钟恢复点。传输层在 429/503 上
-        # 记录的恢复时间会写到这里，窗口内的新请求不再发起外部请求向供应商重复请求。
-        self._rate_limit_deadlines: dict[str, float] = {}
-        # 供应商级并发上限：provider -> Semaphore。worker × query 的乘性并发
-        # 在这里限制为对供应商的恒定在飞请求数。
+        self._health: HealthLedger = provider_health or MemoryHealthLedger()
+        # 供应商级并发上限：worker × query 的乘性并发在这里压成对供应商的恒定在飞数。
         self._provider_semaphores: dict[str, asyncio.Semaphore] = {}
-        self._aliyun_client = aliyun_client
-        # 账户级健康（额度/鉴权）：可跨进程共享；默认进程内存。
-        self._health: ProviderHealth = provider_health or MemoryProviderHealth()
+        # 构造期即完成初始化：没有可用供应商属于配置问题，必须在这里失败而不是首次检索时。
+        self._providers: list[tuple[str, Any]] = build_search_providers(
+            config, self.http, aliyun_client
+        )
 
     async def asearch(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
-        provider = self.provider_name
-        # 账户级熔断优先：同 key 已不可用时连发起外部请求都不必。
-        open_reason = await self._health.is_open(provider)
-        if open_reason:
-            raise ProviderExhaustedError(
-                open_reason, f"搜索供应商 {provider} 已熔断（{open_reason}），暂停出网。"
-            )
-        self._raise_if_rate_limited(provider)
-        async with self._semaphore(provider):
-            # 排队期间断路可能已被别的请求打开；拿到许可后必须复查。
-            self._raise_if_rate_limited(provider)
-            limit = max_results or self.config.max_results
-            try:
-                return await self._provider().asearch(query, limit)
-            except ProviderExhaustedError as exc:
-                # 鉴权/额度型：置熔断标记，让本 worker 后续（乃至跨 worker）快速失败。
-                await self._health.trip(provider, exc.user_code, _PROVIDER_HEALTH_SECONDS)
-                raise
-            except ToolRequestError as exc:
-                reset = getattr(exc, "rate_limit_reset_ts", None)
-                if reset:
-                    self._rate_limit_deadlines[provider] = max(
-                        self._rate_limit_deadlines.get(provider, 0.0), reset
+        limit = max_results or self.config.max_results
+        failures: list[str] = []
+        errors: list[ToolError] = []
+        for name, provider in self._providers:
+            key = _key(name)
+            blocked = await self._health.unavailable(key)
+            if blocked is not None:
+                failures.append(self._describe_blocked(name, blocked.reason, blocked.retry_after))
+                continue
+            async with self._semaphore(name):
+                # 排队期间可能已被其它并发请求踢出。
+                blocked = await self._health.unavailable(key)
+                if blocked is not None:
+                    failures.append(
+                        self._describe_blocked(name, blocked.reason, blocked.retry_after)
                     )
-                raise
-
-    def _raise_if_rate_limited(self, provider: str) -> None:
-        deadline = self._rate_limit_deadlines.get(provider, 0.0)
-        now = time.monotonic()
-        if now < deadline:
-            # retryable=False：本窗口内立即重试没有意义，标记为不可重试，由调用方改用其他策略。
-            raise ToolRequestError(
-                f"搜索供应商 {provider} 已被限流，跳过远程重试；"
-                f"约 {max(1, math.ceil(deadline - now))} 秒后恢复。"
-                "请基于已读取来源完成当前任务，或如实上报证据不足。",
-                retryable=False,
+                    continue
+                try:
+                    results = await provider.asearch(query, limit)
+                except ProviderExhaustedError as exc:
+                    await self._health.trip(key, exc.user_code, _ACCOUNT_LEVEL_SECONDS)
+                    errors.append(exc)
+                    failures.append(f"{name}：{exc.user_code}")
+                    continue
+                except ToolError as exc:
+                    await self._note_failure(key, exc)
+                    errors.append(exc)
+                    failures.append(f"{name}：{exc}")
+                    continue
+                await self._health.record_success(key)
+                return results
+        # 只有一家时保留原始异常类型与文案，配置单供应商的行为与降级前完全一致。
+        if len(errors) == 1:
+            raise errors[0]
+        exhausted = next((e for e in errors if isinstance(e, ProviderExhaustedError)), None)
+        if exhausted is not None:
+            raise ProviderExhaustedError(
+                exhausted.user_code, f"所有搜索供应商都不可用 —— {'；'.join(failures)}"
             )
+        raise ToolRequestError(f"所有搜索供应商都不可用 —— {'；'.join(failures)}", retryable=False)
+
+    async def _note_failure(self, key: str, exc: ToolError) -> None:
+        """按失败类型记账：429 走已知恢复点，其余计入连续失败。"""
+        reset = getattr(exc, "rate_limit_reset_ts", None)
+        if reset:
+            await self._health.trip(key, "rate_limited", max(1.0, reset - time.monotonic()))
+        else:
+            await self._health.record_failure(key, exc.code, self.config.cooldown)
+
+    @staticmethod
+    def _describe_blocked(name: str, reason: str, retry_after: float) -> str:
+        return f"{name}：{reason}，约 {max(1, math.ceil(retry_after))} 秒后恢复"
 
     def _semaphore(self, provider: str) -> asyncio.Semaphore:
         semaphore = self._provider_semaphores.get(provider)
@@ -96,45 +112,10 @@ class SearchService:
 
     @property
     def provider_name(self) -> str:
-        """返回本次配置实际选择的搜索供应商，便于诊断有效配置。"""
-        if self.config.provider != "auto":
-            return self.config.provider
-        if self.config.baidu_api_key:
-            return "baidu"
-        if self.config.tavily_api_key:
-            return "tavily"
-        if self.config.serpapi_api_key:
-            return "serpapi"
-        return "unconfigured"
+        """首选供应商；降级时实际响应用哪家看结果里的 content_provider。"""
+        return self._providers[0][0]
 
     @property
     def effective_limit(self) -> int:
-        """返回未显式覆盖时 SearchTool 实际传给供应商的结果上限。"""
+        """未显式覆盖时 SearchTool 实际传给供应商的结果上限。"""
         return self.config.max_results
-
-    def _provider(self):
-        from deepresearcher.tools.web.search.providers import (
-            AliyunSearchProvider,
-            BaiduSearchProvider,
-            SerpApiSearchProvider,
-            TavilySearchProvider,
-        )
-
-        providers = {
-            "baidu": (self.config.baidu_api_key, BaiduSearchProvider),
-            "tavily": (self.config.tavily_api_key, TavilySearchProvider),
-            "serpapi": (self.config.serpapi_api_key, SerpApiSearchProvider),
-        }
-        if self.config.provider == "aliyun":
-            if self._aliyun_client is None:
-                raise ToolConfigurationError("已选择 aliyun，但未初始化阿里云 DTS AI 客户端")
-            return AliyunSearchProvider(self._aliyun_client)
-        if self.config.provider != "auto":
-            key, provider_type = providers[self.config.provider]
-            if not key:
-                raise ToolConfigurationError(f"已选择 {self.config.provider}，但未配置对应 API Key")
-            return provider_type(self.config, self.http)
-        for key, provider_type in providers.values():
-            if key:
-                return provider_type(self.config, self.http)
-        raise ToolConfigurationError("未配置 BAIDU_API_KEY、TAVILY_API_KEY 或 SERPAPI_API_KEY")
