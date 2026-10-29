@@ -76,6 +76,59 @@ def test_explicit_search_provider_requires_matching_key():
     assert SearchConfig(provider="aliyun").configured
 
 
+def _clear_search_credentials(monkeypatch):
+    # 优先级顺序会改变 auto 的选择结果，本机 .env 里写过它，必须一并清掉。
+    for name in (
+        "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+        "ALIBABA_CLOUD_CREDENTIALS_URI",
+        "BAIDU_API_KEY",
+        "SERPAPI_API_KEY",
+        "SEARCH_PROVIDER",
+        "SEARCH_PROVIDER_PRIORITY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_auto_selects_aliyun_when_credentials_present(monkeypatch):
+    _clear_search_credentials(monkeypatch)
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ak")
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "sk")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly")
+
+    config = _search_config()
+
+    assert config.aliyun_configured is True
+    assert config.search_provider == "aliyun"
+    assert config.aliyun_in_use is True
+
+
+def test_auto_skips_aliyun_without_credentials(monkeypatch):
+    _clear_search_credentials(monkeypatch)
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly")
+
+    config = _search_config()
+
+    assert config.aliyun_configured is False
+    assert config.search_provider == "tavily"
+
+
+def test_auto_requires_any_provider_credential(monkeypatch):
+    _clear_search_credentials(monkeypatch)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    config = _search_config()
+
+    assert config.search_provider == "unconfigured"
+    assert config.configured is False
+
+
+def test_fetch_only_aliyun_still_requires_aliyun_client():
+    # 搜索不走阿里云、只把抓取交给它时，装配期照样要建客户端。
+    assert SearchConfig(fetch_provider_order=("aliyun",)).aliyun_in_use is True
+    assert SearchConfig(tavily_api_key="k").aliyun_in_use is False
+
+
 def test_fetch_proxy_defaults_to_empty_and_reads_configured_value(monkeypatch):
     monkeypatch.delenv("FETCH_PROXY", raising=False)
     assert _search_config().fetch_proxy == ""

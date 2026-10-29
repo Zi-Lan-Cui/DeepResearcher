@@ -1,10 +1,12 @@
 """统一配置入口"""
 
+import json
 import re
-from dataclasses import dataclass
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from dotenv import load_dotenv
 
@@ -12,6 +14,7 @@ from deepresearcher.env import env_bool as _bool_env
 from deepresearcher.env import env_float as _float_env
 from deepresearcher.env import env_int as _int_env
 from deepresearcher.env import env_str as _env
+from deepresearcher.health import Cooldown
 from deepresearcher.pricing import PRICE_TABLE_VERSION
 from deepresearcher.schemas.limits import (
     EVIDENCE_REFERENCES_HARD_LIMIT,
@@ -21,6 +24,11 @@ from deepresearcher.schemas.limits import (
 from deepresearcher.vocab import SUPPORT_ORDER, Support
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# 已实现的搜索供应商，也是 SEARCH_PROVIDER_PRIORITY 的合法取值。
+SEARCH_PROVIDERS = frozenset({"aliyun", "baidu", "tavily", "serpapi"})
+SEARCH_PROVIDER_PRIORITY = ("aliyun", "baidu", "tavily", "serpapi")
+FETCH_PROVIDERS = frozenset({"aliyun", "direct"})
 
 
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
@@ -33,7 +41,7 @@ def _cidr_list_env(name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in re.split(r"[,\n]", _env(name)) if item.strip())
 
 
-def _ordered_choices_env(name: str, default: str, choices: set[str]) -> tuple[str, ...]:
+def _ordered_choices_env(name: str, default: str, choices: AbstractSet[str]) -> tuple[str, ...]:
     """读取有序、逗号分隔的选项列表；显式拒绝未知值。"""
     values = tuple(item.strip().lower() for item in _env(name, default).split(","))
     invalid = [item or "<empty>" for item in values if item not in choices]
@@ -75,6 +83,11 @@ class LLMConfig:
     price_version: str = PRICE_TABLE_VERSION
     # 结构化输出不合规时重新提交给模型修复的次数。
     structured_repair_attempts: int = 1
+    # 按 agent 覆盖单次请求参数，键为 supervisor / researcher / writer / reviewer /
+    # router / quick_answer / clarifier，值为该 agent 的字段覆盖。供应商私有的思考
+    # 开关放 extra_body，各家键名不同（thinking / enable_thinking /
+    # chat_template_kwargs），这里只透传、不解释。
+    request_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def configured(self) -> bool:
@@ -87,8 +100,8 @@ class AgentConfig:
     finalization_attempts: int = 2
     # Supervisor 的研究轮次上限；一轮包含一次评估、派发和汇总。
     max_research_rounds: int = 3
-    # Reviewer 判定 fatal 后，Supervisor 允许组织的修复循环次数。
-    max_post_review_recovery_cycles: int = 1
+    # 审阅轮次上限（含首次审阅）；用尽后不再返工，按最后一版草稿交付。
+    max_review_attempts: int = 2
     # Writer 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
     writer_max_turns: int = 8
     writer_feedback_chars: int = 800
@@ -101,7 +114,7 @@ class AgentConfig:
     reviewer_retry_attempts: int = 1
     reviewer_retry_initial_seconds: float = 2.0
     max_tasks_per_round: int = 12
-    max_parallel_workers: int = 3
+    supervisor_max_concurrent_tasks: int = 3
     # Supervisor 当前可激活并交给研究综合稿选择的 Evidence 上限。
     supervisor_max_active_evidences: int = 30
     supervisor_preview_chars: int = 300
@@ -129,7 +142,7 @@ class AgentConfig:
     research_agent_max_evidences_per_task: int = 6
     # 单任务发现过的完整候选档案上限；活跃工作集仍由上一项限制。
     research_agent_max_evidence_candidates_per_task: int = 12
-    research_agent_read_concurrency: int = 3
+    research_agent_max_concurrent_source_reads: int = 3
     # 来源抓取与解析的分层 deadline。
     source_fetch_timeout: float = 30.0
     source_parse_timeout: float = 20.0
@@ -182,19 +195,29 @@ class SearchConfig:
     baidu_api_key: str = ""
     tavily_api_key: str = ""
     serpapi_api_key: str = ""
+    # 阿里云 SDK 无 API Key 可读，只能按环境变量判断凭据来源是否已给出。
+    aliyun_configured: bool = False
     provider: Literal["auto", "aliyun", "baidu", "tavily", "serpapi"] = "auto"
+    # provider=auto 时的尝试顺序；显式写某一家则只用它，不降级。
+    priority: tuple[str, ...] = SEARCH_PROVIDER_PRIORITY
+    # 连续失败几次把该供应商移出候选池，以及首次冷却时长（之后按被踢次数递增）。
+    fail_threshold: int = 3
+    cooldown_seconds: float = 60.0
     fetch_provider_order: tuple[Literal["aliyun", "direct"], ...] = ("direct",)
     aliyun_region_id: str = "cn-beijing"
     aliyun_endpoint: str = "dtsai.cn-beijing.aliyuncs.com"
     aliyun_agent_name: str = "deepresearcher"
     aliyun_fetch_output_format: Literal["markdown", "html", "text"] = "markdown"
+    # 阿里云 SDK 的出口代理。留空即直连，并显式写 no_proxy=* —— SDK 会自己读
+    # HTTP(S)_PROXY，进程被外部注入代理时，请求会被转到一个未必连得上阿里云的代理。
+    aliyun_proxy: str = ""
     timeout: float = 20.0
     max_results: int = 5
     retry_attempts: int = 3
     retry_initial_seconds: float = 1.0
     retry_max_seconds: float = 10.0
     retry_after_max_seconds: float = 60.0
-    # 同一供应商同时允许的搜索请求数，跨 worker 全局生效；限流窗口下降低并发比快速重试更有效。
+    # 同一供应商同时允许的搜索请求数，为单个 worker 限制
     max_concurrent_requests: int = 2
     max_concurrent_fetches: int = 6
     # 单份来源正文的字节上限：超限判内容不可用，不进解析，也不让 BeautifulSoup 建 DOM。
@@ -212,17 +235,51 @@ class SearchConfig:
     ssrf_allow_private_addresses: bool = False
 
     @property
+    def candidates(self) -> tuple[str, ...]:
+        """本次配置允许尝试的供应商序列；显式指定时只有一家。"""
+        return self.priority if self.provider == "auto" else (self.provider,)
+
+    @property
+    def search_provider(self) -> str:
+        """按 candidates 取第一个凭据就绪的供应商；全不可用返回 unconfigured。"""
+        for name in self.candidates:
+            if self.ready(name):
+                return name
+        return "unconfigured"
+
+    @property
+    def cooldown(self) -> Cooldown:
+        """连续失败后的冷却策略，时长按被踢次数递增，五倍封顶。"""
+        return Cooldown(
+            threshold=self.fail_threshold,
+            base_seconds=self.cooldown_seconds,
+            max_seconds=self.cooldown_seconds * 5,
+        )
+
+    def ready(self, name: str) -> bool:
+        """该供应商的凭据是否已给出。"""
+        if name == "aliyun":
+            # 显式选择时按可用处理：身份由 SDK 默认凭据链决定，构造期验证不了。
+            return self.provider == "aliyun" or self.aliyun_configured
+        return bool(self._api_key(name))
+
+    @property
     def configured(self) -> bool:
-        if self.provider == "aliyun":
-            # 阿里云 SDK 通过默认凭据链读取身份，不强制使用固定环境变量。
-            return True
-        if self.provider == "baidu":
-            return bool(self.baidu_api_key)
-        if self.provider == "tavily":
-            return bool(self.tavily_api_key)
-        if self.provider == "serpapi":
-            return bool(self.serpapi_api_key)
-        return bool(self.baidu_api_key or self.tavily_api_key or self.serpapi_api_key)
+        """是否有至少一个凭据就绪的供应商。"""
+        return self.search_provider != "unconfigured"
+
+    def _api_key(self, provider: str) -> str:
+        return {
+            "baidu": self.baidu_api_key,
+            "tavily": self.tavily_api_key,
+            "serpapi": self.serpapi_api_key,
+        }.get(provider, "")
+
+    @property
+    def aliyun_in_use(self) -> bool:
+        """装配期是否需要创建阿里云客户端。"""
+        search_wants = self.aliyun_configured and "aliyun" in self.candidates
+        return search_wants or "aliyun" in self.fetch_provider_order
 
 
 @dataclass(frozen=True)
@@ -263,6 +320,28 @@ def get_settings() -> Settings:
     )
 
 
+def _request_overrides_env() -> dict[str, dict[str, Any]]:
+    """读取按 agent 的请求参数覆盖表；未配置返回空表。
+
+    这一项无法用声明式字段表达，模型提供商的思考开关键名不同。
+    """
+    raw = _env("LLM_REQUEST_OVERRIDES")
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM_REQUEST_OVERRIDES 不是合法 JSON：{exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM_REQUEST_OVERRIDES 必须是 {agent 名: 请求参数对象}")
+    overrides: dict[str, dict[str, Any]] = {}
+    for actor, value in parsed.items():
+        if not isinstance(value, dict):
+            raise ValueError(f"LLM_REQUEST_OVERRIDES 的 {actor} 必须是请求参数对象")
+        overrides[str(actor)] = dict(value)
+    return overrides
+
+
 def _llm_config() -> LLMConfig:
     return LLMConfig(
         api_key=_env("LLM_API_KEY"),
@@ -285,6 +364,7 @@ def _llm_config() -> LLMConfig:
         max_cost_cny_platform_daily=max(0.0, _float_env("LLM_MAX_COST_CNY_PLATFORM_DAILY", 0.0)),
         price_version=_env("LLM_PRICE_VERSION", PRICE_TABLE_VERSION) or PRICE_TABLE_VERSION,
         structured_repair_attempts=max(0, _int_env("LLM_STRUCTURED_REPAIR_ATTEMPTS", 1)),
+        request_overrides=_request_overrides_env(),
     )
 
 
@@ -292,9 +372,7 @@ def _agent_config() -> AgentConfig:
     return AgentConfig(
         finalization_attempts=max(0, _int_env("AGENT_FINALIZATION_ATTEMPTS", 2)),
         max_research_rounds=max(1, _int_env("AGENT_MAX_RESEARCH_ROUNDS", 3)),
-        max_post_review_recovery_cycles=max(
-            0, _int_env("AGENT_MAX_POST_REVIEW_RECOVERY_CYCLES", 1)
-        ),
+        max_review_attempts=max(1, _int_env("AGENT_MAX_REVIEW_ATTEMPTS", 2)),
         writer_max_turns=max(1, _int_env("AGENT_WRITER_MAX_TURNS", 8)),
         writer_feedback_chars=max(100, _int_env("AGENT_WRITER_FEEDBACK_CHARS", 800)),
         writer_minimum_support=cast(
@@ -312,7 +390,9 @@ def _agent_config() -> AgentConfig:
             0.0, _float_env("AGENT_REVIEWER_RETRY_INITIAL_SECONDS", 2.0)
         ),
         max_tasks_per_round=max(1, _int_env("AGENT_MAX_TASKS_PER_ROUND", 12)),
-        max_parallel_workers=max(1, _int_env("AGENT_MAX_PARALLEL_WORKERS", 3)),
+        supervisor_max_concurrent_tasks=max(
+            1, _int_env("AGENT_SUPERVISOR_MAX_CONCURRENT_TASKS", 3)
+        ),
         supervisor_max_active_evidences=max(
             1, _int_env("AGENT_SUPERVISOR_MAX_ACTIVE_EVIDENCES", 30)
         ),
@@ -341,7 +421,9 @@ def _agent_config() -> AgentConfig:
         research_agent_max_evidence_candidates_per_task=max(
             1, _int_env("AGENT_RESEARCH_MAX_EVIDENCE_CANDIDATES_PER_TASK", 12)
         ),
-        research_agent_read_concurrency=max(1, _int_env("AGENT_RESEARCH_READ_CONCURRENCY", 3)),
+        research_agent_max_concurrent_source_reads=max(
+            1, _int_env("AGENT_RESEARCH_MAX_CONCURRENT_SOURCE_READS", 3)
+        ),
         source_fetch_timeout=max(1.0, _float_env("AGENT_SOURCE_FETCH_TIMEOUT", 30.0)),
         source_parse_timeout=max(1.0, _float_env("AGENT_SOURCE_PARSE_TIMEOUT", 20.0)),
         source_total_timeout=max(1.0, _float_env("AGENT_SOURCE_TOTAL_TIMEOUT", 180.0)),
@@ -354,24 +436,35 @@ def _agent_config() -> AgentConfig:
     )
 
 
+def _aliyun_credentials_present() -> bool:
+    """环境变量里是否存在可用的阿里云凭据来源。"""
+    if _env("ALIBABA_CLOUD_ACCESS_KEY_ID") and _env("ALIBABA_CLOUD_ACCESS_KEY_SECRET"):
+        return True
+    return bool(_env("ALIBABA_CLOUD_CREDENTIALS_URI"))
+
+
 def _search_config() -> SearchConfig:
-    fetch_provider_order = _ordered_choices_env(
-        "FETCH_PROVIDER_ORDER", "direct", {"aliyun", "direct"}
+    fetch_provider_order = _ordered_choices_env("FETCH_PROVIDER_ORDER", "direct", FETCH_PROVIDERS)
+    priority = _ordered_choices_env(
+        "SEARCH_PROVIDER_PRIORITY", ",".join(SEARCH_PROVIDER_PRIORITY), SEARCH_PROVIDERS
     )
     return SearchConfig(
         provider=cast(
             Literal["auto", "aliyun", "baidu", "tavily", "serpapi"],
-            _choice_env(
-                "SEARCH_PROVIDER", "auto", {"auto", "aliyun", "baidu", "tavily", "serpapi"}
-            ),
+            _choice_env("SEARCH_PROVIDER", "auto", {"auto"} | SEARCH_PROVIDERS),
         ),
+        priority=priority,
+        fail_threshold=max(1, _int_env("SEARCH_PROVIDER_FAIL_THRESHOLD", 3)),
+        cooldown_seconds=max(1.0, _float_env("SEARCH_PROVIDER_COOLDOWN_SECONDS", 60.0)),
+        aliyun_configured=_aliyun_credentials_present(),
         fetch_provider_order=cast(tuple[Literal["aliyun", "direct"], ...], fetch_provider_order),
-        aliyun_region_id=_env("ALIYUN_DTS_REGION_ID", "cn-beijing"),
-        aliyun_endpoint=_env("ALIYUN_DTS_ENDPOINT", "dtsai.cn-beijing.aliyuncs.com"),
-        aliyun_agent_name=_env("ALIYUN_DTS_AGENT_NAME", "deepresearcher"),
+        aliyun_region_id=_env("ALIYUN_WEB_REGION_ID", "cn-beijing"),
+        aliyun_endpoint=_env("ALIYUN_WEB_ENDPOINT", "dtsai.cn-beijing.aliyuncs.com"),
+        aliyun_agent_name=_env("ALIYUN_WEB_AGENT_NAME", "deepresearcher"),
+        aliyun_proxy=_env("ALIYUN_WEB_PROXY"),
         aliyun_fetch_output_format=cast(
             Literal["markdown", "html", "text"],
-            _choice_env("ALIYUN_DTS_FETCH_OUTPUT_FORMAT", "markdown", {"markdown", "html", "text"}),
+            _choice_env("ALIYUN_WEB_FETCH_OUTPUT_FORMAT", "markdown", {"markdown", "html", "text"}),
         ),
         baidu_api_key=_env("BAIDU_API_KEY"),
         tavily_api_key=_env("TAVILY_API_KEY"),
