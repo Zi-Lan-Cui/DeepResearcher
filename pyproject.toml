@@ -33,6 +33,8 @@ dependencies = [
     "opentelemetry-api>=1.45.0",
     "opentelemetry-sdk>=1.45.0",
     "rocketmq-python-client>=5.1.2",
+    # 拉取侧要直接判 gRPC 状态码，不依赖 rocketmq 客户端传递进来的版本。
+    "grpcio>=1.84",
 ]
 
 [project.scripts]

@@ -2,6 +2,9 @@
 
 取一条、交给消费者，按执行结果确认或延长可见性。消费正确性只看数据库：
 delivery_attempt 是观测值，不能用来证明上一个 Worker 已经死了。
+
+长轮询有两种「没消息」的收尾，SDK 都不翻成空批次：到期由 proxy 结束流抛
+DEADLINE_EXCEEDED；剩余 deadline 不够跑满一轮时 proxy 直接退回并抛 40018。
 """
 
 from __future__ import annotations
@@ -12,8 +15,10 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+import grpc
 from rocketmq.v5.client.client_configuration import ClientConfiguration, Credentials
 from rocketmq.v5.consumer.simple.simple_consumer import SimpleConsumer
+from rocketmq.v5.exception import BadRequestException
 from rocketmq.v5.model.filter_expression import FilterExpression
 from rocketmq.v5.model.message import Message
 
@@ -26,6 +31,8 @@ logger = logging.getLogger("deepresearcher.service.messaging.receiver")
 _PULL_ERROR_BACKOFF_SECONDS = 0.5
 # 空轮询后让出控制权：broker 快速返回空批次时，循环里没有别的挂起点。
 _EMPTY_PULL_BACKOFF_SECONDS = 0.01
+# proxy 判「剩余 deadline 撑不完一次长轮询」时退回请求用的状态码；消息未被取走，重发即可。
+_ILLEGAL_POLLING_TIME = 40018
 
 
 @dataclass(frozen=True)
@@ -44,11 +51,7 @@ class DispatchReceiver(Protocol):
     """拉取端口：从队列取投递、确认、延长可见性。"""
 
     async def receive(self) -> DispatchDelivery | None:
-        """取一条投递；没有消息时返回 None。
-
-        可能抛瞬时的 RPC 错误：长轮询被 broker 侧移除时，SDK 抛异常而不是返回空列表。
-        调用方按「本轮没取到」重试，不当作致命错误。
-        """
+        """取一条投递；没有消息时返回 None。"""
         ...
 
     async def ack(self, delivery: DispatchDelivery) -> None:
@@ -93,6 +96,7 @@ class RocketMQDispatchReceiver:
         )
         self._consumer = consumer
         await asyncio.to_thread(consumer.startup)
+        # 创建预拉取任务，每个任务负责从 broker 拉取一条消息并放入预取队列。
         self._pulls = [
             asyncio.create_task(self._pull_forever(), name=f"dispatch-pull-{index}")
             for index in range(self._config.rocketmq_pull_fanout)
@@ -135,7 +139,18 @@ class RocketMQDispatchReceiver:
             "Future[list[Message]]",
             consumer.receive_async(1, self._config.rocketmq_invisible_seconds),
         )
-        messages = await asyncio.wrap_future(pending)
+        try:
+            messages = await asyncio.wrap_future(pending)
+        except grpc.RpcError as error:
+            # 长轮询到期由 proxy 结束流，SDK 不区分「到期」和「其他错误」，只抛 DEADLINE_EXCEEDED。
+            if error.code() is grpc.StatusCode.DEADLINE_EXCEEDED:
+                return None
+            raise
+        except BadRequestException as error:
+            # 与到期同义
+            if error.code == _ILLEGAL_POLLING_TIME:
+                return None
+            raise
         if not messages:
             return None
         receipt = messages[0]
