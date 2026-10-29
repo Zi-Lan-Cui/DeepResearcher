@@ -1,9 +1,4 @@
-"""run 准入策略：配额检查通过后把受理的工作持久为 queued。
-
-不涉及 asyncio 任务、LangGraph、checkpoint 或 worker。受理是一次「消息 + 行」的
-双写，顺序由事务消息保证：本地事务只负责写成一个可回滚的函数，发消息与回报由
-发布端完成。
-"""
+"""run 准入策略：配额检查通过后把受理的工作持久为 queued。"""
 
 from __future__ import annotations
 

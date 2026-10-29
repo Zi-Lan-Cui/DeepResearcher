@@ -1,8 +1,4 @@
-"""FastAPI 应用装配根：路由表与静态资源。
-
-运行期对象图（engine / manager / codec / limiter）由 bootstrap.lifespan 装配；
-路由、鉴权与 SSE 的实现在 service.web，本模块只做装配。
-"""
+"""FastAPI 应用装配根：路由表与静态资源。"""
 
 from pathlib import Path
 

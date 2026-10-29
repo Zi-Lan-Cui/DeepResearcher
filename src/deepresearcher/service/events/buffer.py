@@ -63,12 +63,7 @@ class RunEventBuffer:
             return run_id in self._open
 
     def close(self, run_id: str) -> None:
-        """摘除该 run 的 open 登记与缓冲。
-
-        订阅者经 DB tail + notify 判定 run 终止，close 只影响本进程 pending 缓冲。
-        未取走的 pending 一并丢弃；终结顺序 take → 最后一次 flush → close
-        由 executor 保证，正常路径走不到丢数据，走到则记 warning。
-        """
+        """摘除该 run 的 open 登记与缓冲。"""
         with self._lock:
             had_open = self._open.pop(run_id, None) is not None
             pending = self._pending.pop(run_id, None)
@@ -114,11 +109,7 @@ class RunEventBuffer:
         answer_mode: str = "",
         report_available: bool = False,
     ) -> None:
-        """写入 done 记录。
-
-        三个字段由写终态的调用方带来：它刚写过这一行，知道自己写成了什么。重复写入
-        由 dedup_key 与唯一约束在事件层丢弃，本方法不需要自己记谁发过。
-        """
+        """写入 done 记录。"""
         self.write(
             {
                 "run_id": run_id,
