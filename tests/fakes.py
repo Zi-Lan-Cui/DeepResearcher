@@ -85,7 +85,7 @@ def make_evidence(
     *,
     quote=None,
     url="https://example.com/a",
-    support="direct",
+    support="strict",
     direction="",
     retrieval="origin_fetch",
 ):
@@ -303,7 +303,7 @@ class FakeReader:
                         claim=f"{candidate['title']} 的直接事实",
                         quote="可验证原文",
                         source_url=candidate["url"],
-                        support="direct",
+                        support="strict",
                     )
                 ],
             }
@@ -336,7 +336,7 @@ class MemoryResearchMaterialStore:
         source_url: str,
         published_at: str = "",
         retrieval_method: str = RETRIEVAL_ORIGIN_FETCH,
-        support_ceiling: str = "direct",
+        support_ceiling: str = "strict",
         token_count: int = 0,
         outline: list[DocumentOutlineItem] | None = None,
         fetch_key: str = "",

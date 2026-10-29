@@ -2,9 +2,6 @@
 
 必须排在 StateRebuildMiddleware 之后：先重建 round_state 再接收，否则重建会用
 通道旧值覆盖本钩子的结果。context 提供 task_handles 与 round_state 即可挂载。
-
-住在本包而非 agents/middleware：它只读 Supervisor 的 task_handles 与 round_state
-两个上下文槽，放进共用中间件包会让那个包反向依赖单个 agent 的业务层。
 """
 
 from typing import Any

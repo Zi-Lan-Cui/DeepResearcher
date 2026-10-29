@@ -1,6 +1,6 @@
 """契约模型包：按域分文件（reporting、sections、tool_args、decisions）。
 
-外部一律 from deepresearcher.schemas import X，不直接 import 子模块。
+外部使用 from deepresearcher.schemas import X，不直接 import 子模块。
 """
 
 from deepresearcher.schemas.decisions import (

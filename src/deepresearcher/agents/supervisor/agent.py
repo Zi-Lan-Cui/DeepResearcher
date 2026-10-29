@@ -122,7 +122,7 @@ class Supervisor:
         self.research_agent = research_agent
         self.event_sink = event_sink
         self.logger = get_logger("deepresearcher.agents.supervisor")
-        self._worker_limit = asyncio.Semaphore(config.max_parallel_workers)
+        self._worker_limit = asyncio.Semaphore(config.supervisor_max_concurrent_tasks)
         self._deps = SupervisorDeps(
             config=self.config,
             research_agent=self.research_agent,
@@ -205,10 +205,10 @@ class Supervisor:
         # 快照长度必须取 State 入口处的历史长度，补入的消息才能一并持久化到上下文历史。
         history_start = len(state.get("supervisor_messages", []))
 
-        # 如果存在 review 阶段，且状态为 rejected，则需要处理 review 拒绝逻辑。超过最大恢复次数则直接结束运行，返回终止状态。
+        # 审阅否决：轮次用尽即交付最后一版草稿，未用尽则把否决意见回流给模型重新组织。
         review = section(state, "review", ReviewProgress)
         if review.status == "rejected":
-            if review.attempts > self.config.max_post_review_recovery_cycles:
+            if review.attempts >= self.config.max_review_attempts:
                 update = SupervisorStateUpdate(
                     run=RunStatus(
                         phase="rendering",

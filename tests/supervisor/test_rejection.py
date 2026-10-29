@@ -271,7 +271,7 @@ def test_supervisor_review_rejection_can_continue_research_via_tool_loop():
 
     supervisor = Supervisor(
         ReviewStateAwareLLM(),
-        AgentConfig(max_research_rounds=1, max_post_review_recovery_cycles=1),
+        AgentConfig(max_research_rounds=1, max_review_attempts=2),
         research_agent=FixedResearcher(),
     )
     result = asyncio.run(
@@ -314,7 +314,7 @@ def test_supervisor_review_rejection_can_rewrite_without_extra_research():
 
     supervisor = Supervisor(
         RewriteAwareLLM(),
-        AgentConfig(max_research_rounds=0, max_post_review_recovery_cycles=1),
+        AgentConfig(max_research_rounds=0, max_review_attempts=2),
         research_agent=object(),  # 不应被调用
     )
     result = asyncio.run(
@@ -376,7 +376,7 @@ def test_supervisor_review_recovery_limit_preserves_last_draft_for_final_render(
     """达到审阅回流上限后不调用 Agent，交给终检渲染最后一版。"""
     supervisor = Supervisor(
         object(),
-        AgentConfig(max_post_review_recovery_cycles=1),
+        AgentConfig(max_review_attempts=2),
         research_agent=object(),
     )
 

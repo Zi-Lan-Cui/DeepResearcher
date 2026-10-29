@@ -206,7 +206,7 @@ class Citation(BaseModel):
     title: str = ""
     quote: str = ""
     claim: str = ""
-    support: Support = "direct"
+    support: Support = "strict"
     published_at: str = ""
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
 

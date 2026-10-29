@@ -52,7 +52,7 @@ class Evidence(BaseModel):
     source_profile: SourceProfile = Field(default_factory=SourceProfile)
     # 使用的检索方法
     retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
-    support: Support = "direct"
+    support: Support = "strict"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
     def agent_payload(self) -> dict[str, object]:

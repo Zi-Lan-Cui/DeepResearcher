@@ -28,7 +28,7 @@ from supervisor_kit import (
 def test_supervisor_dispatches_independent_research_agents_concurrently():
     config = AgentConfig(
         max_research_rounds=2,
-        max_parallel_workers=2,
+        supervisor_max_concurrent_tasks=2,
         research_agent_max_evidences_per_task=1,
     )
     supervisor = Supervisor(
@@ -74,7 +74,7 @@ def test_concurrent_delegates_allocate_unique_task_ids_before_absorb():
             delegate_topics=["方向A的事实", "方向B的事实"],
             complete_args=COMPLETE_ARGS,
         ),
-        AgentConfig(max_research_rounds=2, max_parallel_workers=2),
+        AgentConfig(max_research_rounds=2, supervisor_max_concurrent_tasks=2),
         research_agent=InterleavedResearcher(),
     )
     result = asyncio.run(

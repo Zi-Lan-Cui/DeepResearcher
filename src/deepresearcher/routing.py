@@ -69,9 +69,10 @@ def route_after_writer(state: Mapping[str, object]) -> str:
 
 
 def route_after_reviewer(state: Mapping[str, object]) -> str:
+    # 通过、以及没跑出结论的失败，都直接去交付：后者回流只会再烧一轮审阅。
     return route_after(
         state,
         NodeName.RENDER_FINAL_REPORT
-        if _field(state, "review", "status", "pending") in {"approved", "abstained"}
+        if _field(state, "review", "status", "pending") in {"approved", "failed"}
         else NodeName.SUPERVISOR,
     )

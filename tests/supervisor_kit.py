@@ -174,7 +174,7 @@ class GatedResearcher(FixedResearcher):
 def delegate_context_for(agent, run_id: str = "run-g"):
     from deepresearcher.observability.scope import AgentScope
 
-    config = AgentConfig(max_research_rounds=3, max_parallel_workers=2)
+    config = AgentConfig(max_research_rounds=3, supervisor_max_concurrent_tasks=2)
     supervisor = Supervisor(
         SupervisorLLM(delegate_topics=["方向"], complete_args=None), config, research_agent=agent
     )

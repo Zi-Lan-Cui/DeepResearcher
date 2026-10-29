@@ -56,7 +56,7 @@ def test_reviewer_rejects_with_structured_evidence_feedback(monkeypatch):
     assert result["review"].status == "rejected"
     assert result["review"].gaps == ["缺少具体作品的文学性评价依据"]
     assert "Supervisor 报告任务书" not in captured["context"]  # 独立评审，不带上游环节
-    assert '"support": "direct"' in captured["context"]
+    assert '"support": "strict"' in captured["context"]
     assert '"source_domain": ""' in captured["context"]
 
 
@@ -185,8 +185,8 @@ async def _no_sleep(_seconds):
     return None
 
 
-def test_reviewer_abstains_when_output_length_runaways(monkeypatch):
-    """全部尝试都触发输出长度上限：写成 abstained，不冒充审阅通过。"""
+def test_reviewer_fails_when_output_length_runaways(monkeypatch):
+    """全部尝试都触发输出长度上限：写成 failed，不冒充审阅通过。"""
     from types import SimpleNamespace
 
     from openai import LengthFinishReasonError
@@ -211,5 +211,7 @@ def test_reviewer_abstains_when_output_length_runaways(monkeypatch):
     )
 
     assert len(calls) == 3  # 初次 + 2 次重试都跑飞
-    assert result["review"].status == "abstained"
+    assert result["review"].status == "failed"
     assert result["review"].issues == []
+    # 失败成因与次数写进状态：只留在日志里，详情页就只能说「未取得结论」。
+    assert result["review"].failure_reason == "审阅输出连续 3 次超出长度上限，未返回结论"

@@ -151,7 +151,7 @@ class RenderOutcome(StrEnum):
     RESEARCH_INCOMPLETE = "research_incomplete"
     REVIEW_RECOVERY_EXHAUSTED = "review_recovery_exhausted"
     REVIEW_REJECTED = "review_rejected"
-    REVIEW_ABSTAINED = "review_abstained"
+    REVIEW_FAILED = "review_failed"
     MISSING_REPORT_DRAFT = "missing_report_draft"
     REPORT_RENDERED = "report_rendered"
 
@@ -166,7 +166,7 @@ _RENDER_OUTCOME_DESCRIPTIONS: dict[RenderOutcome, str] = {
     RenderOutcome.RESEARCH_INCOMPLETE: "研究未完成。",
     RenderOutcome.REVIEW_RECOVERY_EXHAUSTED: "审阅修订次数已耗尽。",
     RenderOutcome.REVIEW_REJECTED: "整体审阅未通过。",
-    RenderOutcome.REVIEW_ABSTAINED: "审阅未给出结论，报告未经审阅校验。",
+    RenderOutcome.REVIEW_FAILED: "审阅失败，报告未经审阅校验。",
     RenderOutcome.MISSING_REPORT_DRAFT: "缺少可渲染的草稿或引用元数据。",
     RenderOutcome.REPORT_RENDERED: "报告已渲染交付。",
 }
@@ -232,11 +232,29 @@ class ReviewIssue(BaseModel):
 
 
 class ReviewProgress(BaseModel):
-    status: Literal["pending", "approved", "rejected", "abstained"] = "pending"
+    status: Literal["pending", "approved", "rejected", "failed"] = "pending"
     attempts: int = Field(default=0, ge=0)
     feedback: str = ""
     gaps: list[str] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
+    # 审阅没有结论时没有意见可写，但用户要知道为什么没审成；成因唯一（输出连续
+    # 超长），次数只有节点自己知道，不记下来详情页就只能显示「未取得结论」。
+    failure_reason: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_abstained(cls, data: object) -> object:
+        """旧 checkpoint 与旧 review_json 写的是「弃权」，语义就是审阅失败。
+
+        同一个事实换过一次名字，读旧数据时在入口统一改掉，判据分支只需认新词。
+        """
+        if isinstance(data, dict) and data.get("status") == "abstained":
+            merged = dict(data)
+            merged["status"] = "failed"
+            if not merged.get("failure_reason"):
+                merged["failure_reason"] = str(merged.get("abstain_reason") or "")
+            return merged
+        return data
 
 
 class TaskResult(BaseModel):
@@ -258,6 +276,9 @@ class TaskResult(BaseModel):
     # 方向落定时对当前状态的唯一叙述：发现、已查清与未查清、停止原因都在这一段里。
     # 不拆结构化缺口清单——缺口脱离上下文后只剩短语，下游无法据此判断。
     conclusion: str = ""
+    # 只服务任务卡展示：本方向查清了什么，两句话以内。Supervisor 读的是 conclusion，
+    # 缺口仍留在那里，不从本字段推导；旧检查点缺省为空，卡面不渲染摘要行。
+    finding: str = ""
     queries: list[str] = Field(default_factory=list)
     read_urls: list[str] = Field(default_factory=list)
     skip_reasons: list[str] = Field(default_factory=list)

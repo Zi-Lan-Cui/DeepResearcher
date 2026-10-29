@@ -18,7 +18,7 @@ class DocumentRef(BaseModel):
     source_url: str
     published_at: str = ""
     retrieval_method: str = RETRIEVAL_ORIGIN_FETCH
-    support_ceiling: str = "direct"
+    support_ceiling: str = "strict"
     content_hash: str
     line_count: int = Field(ge=0)
     token_count: int = Field(ge=0)

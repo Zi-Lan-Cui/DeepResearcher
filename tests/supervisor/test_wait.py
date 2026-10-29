@@ -218,7 +218,7 @@ def test_drain_absorbs_late_tasks_and_registers_nothing_left():
             events.append((event_type, payload))
 
         agent = FixedResearcher()
-        config = AgentConfig(max_research_rounds=3, max_parallel_workers=2)
+        config = AgentConfig(max_research_rounds=3, supervisor_max_concurrent_tasks=2)
         supervisor = Supervisor(
             SupervisorLLM(delegate_topics=["x"], complete_args=None),
             config,

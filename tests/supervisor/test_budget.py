@@ -324,7 +324,7 @@ def test_supervisor_round_limit_blocks_delegation_and_model_can_finish():
     existing = evidence("pre", task_id="r0-1")
     supervisor = Supervisor(
         _DelegateUntilBlockedLLM(),
-        AgentConfig(max_research_rounds=1, max_parallel_workers=1),
+        AgentConfig(max_research_rounds=1, supervisor_max_concurrent_tasks=1),
         research_agent=agent,
     )
     result = asyncio.run(
@@ -355,7 +355,7 @@ def test_supervisor_per_round_delegate_quota_blocks_excess_dispatches():
         AgentConfig(
             max_research_rounds=3,
             max_tasks_per_round=2,
-            max_parallel_workers=1,
+            supervisor_max_concurrent_tasks=1,
         ),
         research_agent=agent,
     )

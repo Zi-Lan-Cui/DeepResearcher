@@ -54,7 +54,7 @@ class _FakeFetcher:
             "text": f"引言\n{_QUOTE}\n结论",
             "final_url": url,
             "retrieval_method": "origin_fetch",
-            "support_ceiling": "direct",
+            "support_ceiling": "strict",
         }
 
 
@@ -112,7 +112,7 @@ class _ScriptedResearcherModel:
                             "document_id": document_id,
                             "claim": "端到端延迟为 20ms。",
                             "quote_start": _QUOTE,
-                            "support": "direct",
+                            "support": "strict",
                             "confidence": 0.9,
                         }
                     ],

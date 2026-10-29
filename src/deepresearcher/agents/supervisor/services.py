@@ -321,7 +321,7 @@ def _task_context(deps: SupervisorDeps, task: Task) -> dict[str, object]:
         "worker_index": int(task.get("worker_index", task.get("sequence", 0))),
         "parent_task_id": task.get("parent_task_id", ""),
         "operation_id": task.get("operation_id", task["id"]),
-        "concurrency_limit": deps.config.max_parallel_workers,
+        "concurrency_limit": deps.config.supervisor_max_concurrent_tasks,
     }
 
 

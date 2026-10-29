@@ -164,7 +164,7 @@ class EvidenceSubmission(_DocumentIdSanitizer):
         max_length=STRUCTURED_TEXT_HARD_LIMIT_CHARS,
         description="引用结尾的几个词，须出现在 quote_start 之后；省略时引用就是 quote_start 命中的片段本身。",
     )
-    support: Support = "direct"
+    support: Support = "strict"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
@@ -232,6 +232,14 @@ class TaskComplete(BaseModel):
             "任务级自然语言汇报，用连续文字一次说清当前状态：基于最终选中 Evidence "
             "综合出的事实、哪些局部问题已经查清、哪些仍未解决及原因、为什么在此停止。"
             "缺口写进这段叙述本身，不另开条目；不得引入未取证事实。"
+        ),
+    )
+    finding: str = Field(
+        default="",
+        description=(
+            "本方向查清了什么，供任务卡展示，两句话以内、不超过 120 字。"
+            "只写结论性事实，不写检索与读取过程，不提未解决的缺口，不给后续建议，"
+            "也不复述 conclusion 的首句。"
         ),
     )
 

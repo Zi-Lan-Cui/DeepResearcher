@@ -203,7 +203,7 @@ class SourceReaderTool:
             "source_url": str(document.get("final_url") or requested_url),
             "published_at": published_at,
             "retrieval_method": str(document.get("retrieval_method", RETRIEVAL_ORIGIN_FETCH)),
-            "support_ceiling": str(document.get("support_ceiling", "direct")),
+            "support_ceiling": str(document.get("support_ceiling", "strict")),
             "token_count": token_count,
             "outline": self._document_outline(
                 text,
@@ -276,7 +276,7 @@ class SourceReaderTool:
         raw_content = str(result.get("raw_content", "")).strip()
         snippet = str(result.get("snippet", "")).strip()
         if raw_content:
-            text, method, ceiling = raw_content, RETRIEVAL_TAVILY_RAW_CONTENT, "direct"
+            text, method, ceiling = raw_content, RETRIEVAL_TAVILY_RAW_CONTENT, "strict"
         elif snippet:
             text, method, ceiling = snippet, RETRIEVAL_SEARCH_SUMMARY, "partial"
         else:

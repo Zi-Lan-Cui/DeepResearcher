@@ -1,6 +1,6 @@
 """supervisor 崩溃恢复合同:真 AsyncPostgresSaver 上验证,可被子进程形态复用。
 
-形态:max_parallel_workers=2、supervisor_max_active_evidences=2,首轮一条 AIMessage 并发派
+形态:supervisor_max_concurrent_tasks=2、supervisor_max_active_evidences=2,首轮一条 AIMessage 并发派
 两个 ResearchDelegate(派发批只登记 pending,不等待方向完成),模型经 WaitTask 收
 A 的到达后,后台的 B 抛 BaseException 杀死节点,再同 thread 恢复。合同边界按消费划:
 WaitTask 正常返回的吸收已随内层 superstep 提交,恢复后保留;崩溃时刻仍未被消费的
@@ -167,7 +167,7 @@ def _build_app(saver, research_agent):
         AgentConfig(
             max_research_rounds=1,
             max_tasks_per_round=2,
-            max_parallel_workers=2,
+            supervisor_max_concurrent_tasks=2,
             supervisor_max_active_evidences=2,
         ),
         research_agent=research_agent,

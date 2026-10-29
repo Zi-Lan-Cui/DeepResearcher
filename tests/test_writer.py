@@ -133,12 +133,12 @@ def test_writer_filters_evidence_by_configured_minimum_support():
 
     strict_writer = Writer(
         writer_llm(draft_output),
-        AgentConfig(writer_minimum_support="direct"),
+        AgentConfig(writer_minimum_support="strict"),
         render_incomplete=lambda _state: "incomplete",
     )
     strict_result = asyncio.run(strict_writer.run(state))
     assert strict_result["answer_mode"] == "research_incomplete"
-    assert "最低支持等级 `direct`" in strict_result["report"]
+    assert "最低支持等级 `strict`" in strict_result["report"]
 
     partial_writer = Writer(
         writer_llm(draft_output),

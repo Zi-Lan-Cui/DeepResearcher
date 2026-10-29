@@ -72,7 +72,7 @@ def test_clamp_rejects_missing_or_illegal_keys():
     with pytest.raises(ValueError):
         clamp_preferences({k: v for k, v in FULL.items() if k != "max_research_rounds"})  # 缺键
     with pytest.raises(ValueError):
-        clamp_preferences({**FULL, "max_parallel_workers": 5})  # 并发不进用户面
+        clamp_preferences({**FULL, "supervisor_max_concurrent_tasks": 5})  # 并发不进用户面
 
 
 def test_frozen_snapshot_precedence_and_dirty_fallback():
@@ -103,7 +103,7 @@ async def test_preferences_roundtrip_and_validation(client):
     assert initial.status_code == 200
     body = initial.json()
     assert set(body["choices"]) == set(FULL)
-    assert "max_parallel_workers" not in str(body)  # 并发数绝不出现在用户面
+    assert "supervisor_max_concurrent_tasks" not in str(body)  # 并发数绝不出现在用户面
     assert body["preferences"] == body["server_defaults"]  # 未改过=服务器默认
 
     bad = await client.post(

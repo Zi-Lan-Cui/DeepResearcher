@@ -71,7 +71,7 @@ class ResearchMaterialStore:
         source_url: str,
         published_at: str = "",
         retrieval_method: str = RETRIEVAL_ORIGIN_FETCH,
-        support_ceiling: str = "direct",
+        support_ceiling: str = "strict",
         token_count: int = 0,
         outline: list[DocumentOutlineItem] | None = None,
         fetch_key: str = "",

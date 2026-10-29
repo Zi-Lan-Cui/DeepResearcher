@@ -105,7 +105,7 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
         except asyncio.CancelledError:
             raise
         except LengthFinishReasonError:
-            # 输出超长是模型行为，重试可能同样超长；重试耗尽仍无有效输出则转弃权。
+            # 输出超长是模型行为，重试可能同样超长；重试耗尽仍无有效输出即审阅失败。
             runaway_attempts += 1
             _logger.warning(
                 "reviewer_output_runaway attempt=%d/%d",
@@ -123,9 +123,17 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
             )
             await asyncio.sleep(agent_config.reviewer_retry_initial_seconds * (retry_index + 1))
     if decision is None:
-        # 弃权不等于通过：写成独立状态，下游按「未经审阅」交付并在事件流里可筛。
-        _logger.warning("reviewer_abstained runaway_attempts=%d", runaway_attempts)
-        return {"review": ReviewProgress(status="abstained", attempts=attempt)}
+        # 审阅失败不等于通过：写成独立状态，下游按「未经审阅」交付并在事件流里可筛。
+        # 成因只有一种（每次重发都被长度上限截断），把次数一起写进状态，
+        # 详情页才能说明为什么没有结论——否则那两次只能从日志里找。
+        _logger.warning("reviewer_failed runaway_attempts=%d", runaway_attempts)
+        return {
+            "review": ReviewProgress(
+                status="failed",
+                attempts=attempt,
+                failure_reason=f"审阅输出连续 {runaway_attempts} 次超出长度上限，未返回结论",
+            )
+        }
 
     status = (
         "rejected" if any(issue.severity == "fatal" for issue in decision.issues) else "approved"
