@@ -8,8 +8,12 @@ from deepresearcher.service.preferences import frozen_snapshot
 from deepresearcher.service.runs.admission import QuotaExceededError
 from deepresearcher.service.storage.tables import Run, User
 from deepresearcher.service.web.dependencies import app_state, current_user, owned_run
-from deepresearcher.service.web.presenters import run_summary
-from deepresearcher.service.web.projector import project_clarification
+from deepresearcher.service.web.presenters import report_kind, run_summary
+from deepresearcher.service.web.projector import (
+    project_clarification,
+    project_review,
+    project_run_error,
+)
 from deepresearcher.service.web.schemas import CreateRunBody, ResumeRunBody
 
 router = APIRouter(prefix="/api/runs")
@@ -60,7 +64,10 @@ async def get_run(
     return {
         **run_summary(run),
         "report_markdown": run.report_markdown,
+        "report_kind": report_kind(run.report_markdown),
         "citations": run.citations_json or [],
+        "error": project_run_error(run.error_json),
+        "review": project_review(run.review_json),
         "error_message": run.error_message,
         "clarification": clarification,
     }
