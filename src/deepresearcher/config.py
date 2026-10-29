@@ -107,9 +107,6 @@ class AgentConfig:
     writer_max_markdown_chars: int = 24_000
     # 单次 ReadEvidence 每轮交付量；
     writer_read_batch_size: int = 30
-    # reviewer 对内容审查抖动与坏 JSON 的额外重试次数
-    reviewer_retry_attempts: int = 1
-    reviewer_retry_initial_seconds: float = 2.0
     max_tasks_per_round: int = 12
     supervisor_max_concurrent_tasks: int = 3
     # Supervisor 当前可激活并交给研究综合稿选择的 Evidence 上限。
@@ -385,10 +382,6 @@ def _agent_config() -> AgentConfig:
         ),
         writer_max_markdown_chars=max(1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)),
         writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
-        reviewer_retry_attempts=max(0, _int_env("AGENT_REVIEWER_RETRY_ATTEMPTS", 1)),
-        reviewer_retry_initial_seconds=max(
-            0.0, _float_env("AGENT_REVIEWER_RETRY_INITIAL_SECONDS", 2.0)
-        ),
         max_tasks_per_round=max(1, _int_env("AGENT_MAX_TASKS_PER_ROUND", 12)),
         supervisor_max_concurrent_tasks=max(
             1, _int_env("AGENT_SUPERVISOR_MAX_CONCURRENT_TASKS", 3)

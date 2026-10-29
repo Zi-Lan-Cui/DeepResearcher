@@ -118,10 +118,6 @@ def test_reviewer_allows_warnings_without_rejecting_report(monkeypatch):
     assert result["review"].issues[0].severity == "warning"
 
 
-def _decision():
-    return ReviewDecision(feedback="通过", gaps=[], issues=[])
-
-
 def _review_state():
     return {
         "clarified_query": "q",
@@ -132,31 +128,10 @@ def _review_state():
     }
 
 
-def test_reviewer_retries_content_filter_then_succeeds(monkeypatch):
+def test_reviewer_sends_one_request_per_attempt(monkeypatch):
+    """审阅节点单发：同一次审阅只请求一次，重发归结构化入口与模型客户端。"""
     from openai import ContentFilterFinishReasonError
 
-    monkeypatch.setattr("asyncio.sleep", _no_sleep)
-    calls = {"n": 0}
-
-    async def flaky(llm, schema, messages):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise ContentFilterFinishReasonError()
-        return _decision()
-
-    result = asyncio.run(
-        reviewer_core(
-            _review_state(), object(), agent_config=AgentConfig(), invoke_structured=flaky
-        )
-    )
-    assert result["review"].status == "approved"
-    assert calls["n"] == 2  # 首次被内容审查拦截，重试一次成功
-
-
-def test_reviewer_exhausts_retries_and_reraises(monkeypatch):
-    from openai import ContentFilterFinishReasonError
-
-    monkeypatch.setattr("asyncio.sleep", _no_sleep)
     calls = {"n": 0}
 
     async def always_filtered(llm, schema, messages):
@@ -175,18 +150,11 @@ def test_reviewer_exhausts_retries_and_reraises(monkeypatch):
         raise AssertionError("应当抛出")
     except ContentFilterFinishReasonError:
         pass
-    # attempts=1 → 共 2 次尝试后放弃
-    from deepresearcher.config import get_settings
-
-    assert calls["n"] == get_settings().agent.reviewer_retry_attempts + 1
-
-
-async def _no_sleep(_seconds):
-    return None
+    assert calls["n"] == 1
 
 
 def test_reviewer_fails_when_output_length_runaways(monkeypatch):
-    """全部尝试都触发输出长度上限：写成 failed，不冒充审阅通过。"""
+    """输出被长度上限截断：写成 failed，不冒充审阅通过，也不重发同一请求。"""
     from types import SimpleNamespace
 
     from openai import LengthFinishReasonError
@@ -206,12 +174,12 @@ def test_reviewer_fails_when_output_length_runaways(monkeypatch):
                 "citations": [_cite("e1", claim="事实", quote="原文。")],
             },
             object(),
-            agent_config=AgentConfig(reviewer_retry_attempts=2),
+            agent_config=AgentConfig(),
         )
     )
 
-    assert len(calls) == 3  # 初次 + 2 次重试都跑飞
+    assert len(calls) == 1
     assert result["review"].status == "failed"
     assert result["review"].issues == []
-    # 失败成因与次数写进状态：只留在日志里，详情页就只能说「未取得结论」。
-    assert result["review"].failure_reason == "审阅输出连续 3 次超出长度上限，未返回结论"
+    # 失败成因写进状态：只留在日志里，详情页就只能说「未取得结论」。
+    assert result["review"].failure_reason == "审阅输出超出长度上限，未返回结论"

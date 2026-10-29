@@ -6,26 +6,13 @@ from typing import Any
 from deepresearcher.service.storage.tables import Run
 from deepresearcher.vocab import INCOMPLETE_REPORT_HEADING
 
-# 空壳页的旧标题：改词前落库的报告仍按诊断页呈现，否则存量数据会被判成完整正文。
-_LEGACY_INCOMPLETE_HEADINGS = ("研究未完成",)
-
-# 「弃权」是审阅失败的旧词：换词前落库的行仍写着它，出口统一成新词，前端只认一个。
-_LEGACY_TERMINAL_REASONS = {"review_abstained": "review_failed"}
-
-
-def _terminal_reason(value: str | None) -> str | None:
-    if not value:
-        return value
-    return _LEGACY_TERMINAL_REASONS.get(value, value)
-
 
 def report_kind(markdown: str | None) -> str:
     """报告正文形态：none=没有可读正文，full=有完整正文。"""
     text = (markdown or "").lstrip()
     if not text:
         return "none"
-    headings = (INCOMPLETE_REPORT_HEADING, *_LEGACY_INCOMPLETE_HEADINGS)
-    return "none" if any(text.startswith(f"# {item}") for item in headings) else "full"
+    return "none" if text.startswith(f"# {INCOMPLETE_REPORT_HEADING}") else "full"
 
 
 def run_summary(run: Run) -> dict[str, Any]:
@@ -41,7 +28,7 @@ def run_summary(run: Run) -> dict[str, Any]:
         "title": run.title,
         "status": run.status,
         "answer_mode": run.answer_mode,
-        "terminal_reason": _terminal_reason(run.terminal_reason),
+        "terminal_reason": run.terminal_reason,
         # 列表与详情共用的交付形态：徽章据此判定「有没有可读正文」。
         "report_kind": report_kind(run.report_markdown),
         "evidence_count": run.evidence_count,

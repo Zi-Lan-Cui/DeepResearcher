@@ -237,24 +237,7 @@ class ReviewProgress(BaseModel):
     feedback: str = ""
     gaps: list[str] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
-    # 审阅没有结论时没有意见可写，但用户要知道为什么没审成；成因唯一（输出连续
-    # 超长），次数只有节点自己知道，不记下来详情页就只能显示「未取得结论」。
     failure_reason: str = ""
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_abstained(cls, data: object) -> object:
-        """旧 checkpoint 与旧 review_json 写的是「弃权」，语义就是审阅失败。
-
-        同一个事实换过一次名字，读旧数据时在入口统一改掉，判据分支只需认新词。
-        """
-        if isinstance(data, dict) and data.get("status") == "abstained":
-            merged = dict(data)
-            merged["status"] = "failed"
-            if not merged.get("failure_reason"):
-                merged["failure_reason"] = str(merged.get("abstain_reason") or "")
-            return merged
-        return data
 
 
 class TaskResult(BaseModel):

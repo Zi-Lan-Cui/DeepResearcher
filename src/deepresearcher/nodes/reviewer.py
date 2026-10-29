@@ -1,11 +1,7 @@
 """报告语义审阅节点。"""
 
-import asyncio
-
-from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
-from openai import ContentFilterFinishReasonError, LengthFinishReasonError
-from pydantic import ValidationError
+from openai import LengthFinishReasonError
 
 from deepresearcher.config import AgentConfig
 from deepresearcher.observability.logging_config import get_logger
@@ -25,14 +21,6 @@ from deepresearcher.schemas.sources import source_domain
 from deepresearcher.state import section
 
 _logger = get_logger("deepresearcher.nodes.reviewer")
-
-# 只重试同一请求重发后结果可能不同的失败：网关内容审查有随机抖动，content_filter 曾
-# 实际发生，JSON 解析与 schema 校验失败同理。传输层超时与断连由 openai SDK 重试处理。
-_RETRYABLE_REVIEW_ERRORS = (
-    ContentFilterFinishReasonError,
-    OutputParserException,
-    ValidationError,
-)
 
 
 def reviewer_evidence_card(citation: Citation) -> dict[str, object]:
@@ -96,42 +84,17 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
         ),
     ]
 
-    decision = None
-    runaway_attempts = 0
-    for retry_index in range(agent_config.reviewer_retry_attempts + 1):
-        try:
-            decision = await invoke_structured(llm, ReviewDecision, messages)
-            break
-        except asyncio.CancelledError:
-            raise
-        except LengthFinishReasonError:
-            # 输出超长是模型行为，重试可能同样超长；重试耗尽仍无有效输出即审阅失败。
-            runaway_attempts += 1
-            _logger.warning(
-                "reviewer_output_runaway attempt=%d/%d",
-                retry_index + 1,
-                agent_config.reviewer_retry_attempts + 1,
-            )
-        except _RETRYABLE_REVIEW_ERRORS as exc:
-            if retry_index >= agent_config.reviewer_retry_attempts:
-                raise
-            _logger.warning(
-                "reviewer_retry attempt=%d/%d error=%s",
-                retry_index + 1,
-                agent_config.reviewer_retry_attempts,
-                type(exc).__name__,
-            )
-            await asyncio.sleep(agent_config.reviewer_retry_initial_seconds * (retry_index + 1))
-    if decision is None:
-        # 审阅失败不等于通过：写成独立状态，下游按「未经审阅」交付并在事件流里可筛。
-        # 成因只有一种（每次重发都被长度上限截断），把次数一起写进状态，
-        # 详情页才能说明为什么没有结论——否则那两次只能从日志里找。
-        _logger.warning("reviewer_failed runaway_attempts=%d", runaway_attempts)
+    try:
+        decision = await invoke_structured(llm, ReviewDecision, messages)
+    except LengthFinishReasonError:
+        # 输出超长是模型行为，重发同一请求大概率同样截断：写成审阅失败，
+        # 由路由按「未经审阅」交付已写好的正文，不判成研究内容缺口。
+        _logger.warning("reviewer_failed reason=output_length_limit")
         return {
             "review": ReviewProgress(
                 status="failed",
                 attempts=attempt,
-                failure_reason=f"审阅输出连续 {runaway_attempts} 次超出长度上限，未返回结论",
+                failure_reason="审阅输出超出长度上限，未返回结论",
             )
         }
 
