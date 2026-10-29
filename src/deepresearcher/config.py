@@ -30,6 +30,9 @@ SEARCH_PROVIDERS = frozenset({"aliyun", "baidu", "tavily", "serpapi", "deepseek"
 # DeepSeek 排在最前：它自带正文与权威性评分，凭据未配置时自动跳过。
 SEARCH_PROVIDER_ORDER = ("deepseek", "aliyun", "baidu", "tavily", "serpapi")
 FETCH_PROVIDERS = frozenset({"aliyun", "direct", "deepseek"})
+# Tavily 的延迟与相关度档位。ultra-fast 每个 URL 只回一条摘要，
+# 其它三档回 chunks_per_source 段可拼接片段。
+TAVILY_SEARCH_DEPTHS = frozenset({"basic", "advanced", "fast", "ultra-fast"})
 
 
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
@@ -229,6 +232,8 @@ class SearchConfig:
     # 地址，逐跳校验必然误判成内网。填了地址才走代理，此时不再校验连接对端。
     fetch_proxy: str = ""
     tavily_include_raw_content: bool = True
+    # 档位只影响 content 的相关度与切分粒度，不改变「是否返回完整正文」。
+    tavily_search_depth: Literal["basic", "advanced", "fast", "ultra-fast"] = "basic"
     # 追加拦截清单：私网与保留段由 PublicUrlGuard 的可达性基线直接拦下，这里只封堵
     # 需要额外拒绝的公网段。支持逐行或逗号分隔两种写法，网段合法性在构造时校验。
     ssrf_block_cidrs: tuple[str, ...] = ()
@@ -484,6 +489,10 @@ def _search_config() -> SearchConfig:
         max_fetch_bytes=max(1, _int_env("FETCH_MAX_BYTES", 24 * 1024 * 1024)),
         fetch_proxy=_env("FETCH_PROXY"),
         tavily_include_raw_content=_bool_env("TAVILY_INCLUDE_RAW_CONTENT", True),
+        tavily_search_depth=cast(
+            Literal["basic", "advanced", "fast", "ultra-fast"],
+            _choice_env("TAVILY_SEARCH_DEPTH", "basic", set(TAVILY_SEARCH_DEPTHS)),
+        ),
         ssrf_block_cidrs=_cidr_list_env("SSRF_BLOCK_CIDRS"),
         ssrf_allow_private_addresses=_bool_env("SSRF_ALLOW_PRIVATE_ADDRESSES", False),
     )

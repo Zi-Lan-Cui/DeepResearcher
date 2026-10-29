@@ -195,6 +195,19 @@ def test_search_parses_tavily_response_without_network():
     ]
 
 
+def test_tavily_search_depth_defaults_to_basic():
+    http = FakeHttpClient(response({"results": []}))
+    asyncio.run(SearchService(SearchConfig(tavily_api_key="test"), http).asearch("q"))
+    assert http.last_kwargs["json"]["search_depth"] == "basic"
+
+
+def test_tavily_search_depth_follows_config():
+    http = FakeHttpClient(response({"results": []}))
+    config = SearchConfig(tavily_api_key="test", tavily_search_depth="advanced")
+    asyncio.run(SearchService(config, http).asearch("q"))
+    assert http.last_kwargs["json"]["search_depth"] == "advanced"
+
+
 def test_tavily_null_raw_content_still_validates_as_result():
     """回归守卫:Tavily 对无法抽取正文的页返回 JSON null,键本身存在。
 
