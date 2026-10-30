@@ -32,9 +32,10 @@ from deepresearcher.schemas import (
 from deepresearcher.schemas.limits import SEARCH_RESULTS_PREVIEW_COUNT
 from deepresearcher.service.execution.checkpoint_serde import build_checkpointer_serde
 from deepresearcher.tools import SearchTool, SourceReaderTool
-from deepresearcher.tools.errors import SourceUnavailableError, UnsafeUrlError
+from deepresearcher.tools.errors import SourceUnavailableError, ToolRequestError, UnsafeUrlError
 from deepresearcher.tools.web.documents import DocumentRef, DocumentView
 from deepresearcher.tools.web.search.models import SearchCandidate
+from deepresearcher.vocab import RETRIEVAL_SEARCH_SUMMARY
 from fakes import (
     TASK,
     FakeReader,
@@ -1497,6 +1498,51 @@ def test_read_sources_unknown_candidates_list_available_ids():
     assert receipt["available_candidate_ids"] == ["c-real"]
 
 
+def test_read_sources_names_search_summary_documents_as_non_primary():
+    """回退摘要登记成文档时要标为非原文。"""
+
+    class SummaryReader:
+        async def arun(self, task, candidate):
+            return {
+                "task_id": task["id"],
+                "status": "completed",
+                "source_url": candidate["url"],
+                "documents": [
+                    {
+                        "document_id": "doc-summary",
+                        "source_url": candidate["url"],
+                        "title": "订阅墙章节",
+                        "content_hash": "h1",
+                        "line_count": 2,
+                        "token_count": 18,
+                        "retrieval_method": RETRIEVAL_SEARCH_SUMMARY,
+                        "support_ceiling": "partial",
+                    }
+                ],
+            }
+
+    agent = Researcher(
+        ResearcherLLM([]),
+        AgentConfig(),
+        search_tool=SearchTool(FakeSearchService()),
+        reader_tool=SummaryReader(),
+        material_store=MemoryResearchMaterialStore(),
+    )
+    task_state = ResearcherTaskState()
+    task_state.candidates["c-1"] = SearchCandidate(
+        candidate_id="c-1", url="https://paid.example/ch04", title="订阅墙章节"
+    )
+
+    receipt = asyncio.run(
+        services.read_sources(agent._deps, TASK, task_state, {}, ["c-1"], "读订阅墙")  # noqa: SLF001
+    )
+
+    notices = receipt.get("document_notices") or []
+    assert len(notices) == 1
+    assert "不能当原文引用" in str(notices[0])
+    assert RETRIEVAL_SEARCH_SUMMARY in str(notices[0])
+
+
 def test_fetch_guarded_fallback_emits_url_bearing_audit_event():
     """SSRF 守卫拦截后由搜索内容顶替登记时，落一条带 requested_url 与归因的审计事件。"""
 
@@ -1509,7 +1555,8 @@ def test_fetch_guarded_fallback_emits_url_bearing_audit_event():
 
     class GuardedFetcher:
         async def afetch(self, _url, **_kwargs):
-            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
+            # 与真实守卫一致：命中拦截段时显式标 ssrf_block。
+            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。", "ssrf_block")
 
     store = MemoryResearchMaterialStore()
     sink = Sink()
@@ -1534,3 +1581,71 @@ def test_fetch_guarded_fallback_emits_url_bearing_audit_event():
     assert payload["reason_code"] == "ssrf_block"
     assert payload["requested_url"] == "http://127.0.0.1/private"
     assert payload["fallback_retrieval_method"] == "tavily_raw_content"
+
+
+def test_fetch_http_403_is_skipped_as_access_challenge():
+    class Sink:
+        def __init__(self) -> None:
+            self.records = []
+
+        def write(self, record) -> None:
+            self.records.append(record)
+
+    class RejectedFetcher:
+        async def afetch(self, _url, **_kwargs):
+            error = ToolRequestError("HTTP 403 from url", retryable=False)
+            error.status_code = 403
+            raise error
+
+    sink = Sink()
+    tool = SourceReaderTool(
+        RejectedFetcher(), material_store=MemoryResearchMaterialStore(), event_sink=sink
+    )
+    result = asyncio.run(
+        tool.arun(
+            TASK,
+            {
+                "title": "订阅墙章节",
+                "url": "https://paid.example/ch04",
+                "snippet": "",
+                "raw_content": "",
+            },
+        )
+    )
+
+    # 订阅墙是来源级结论，不是网络故障：标 skipped，模型才不会反复重试。
+    assert result.status == "skipped"
+    assert result.reason_code == "access_challenge"
+
+
+def test_fetch_dns_failure_is_not_mislabeled_as_ssrf_block():
+    class Sink:
+        def __init__(self) -> None:
+            self.records = []
+
+        def write(self, record) -> None:
+            self.records.append(record)
+
+    class ResolveFailedFetcher:
+        async def afetch(self, _url, **_kwargs):
+            raise UnsafeUrlError("URL 主机名无法解析（DNS 查询失败：11001）。", "resolve_failed")
+
+    sink = Sink()
+    tool = SourceReaderTool(
+        ResolveFailedFetcher(), material_store=MemoryResearchMaterialStore(), event_sink=sink
+    )
+    result = asyncio.run(
+        tool.arun(
+            TASK,
+            {
+                "title": "来源",
+                "url": "https://flaky.example/a",
+                "snippet": "",
+                "raw_content": "",
+            },
+        )
+    )
+
+    assert result.status == "failed"  # 本地 DNS 故障，不是策略拒绝
+    failed = [record for record in sink.records if record.event_type == "tool_failed"]
+    assert failed[0].payload["reason_code"] == "resolve_failed"

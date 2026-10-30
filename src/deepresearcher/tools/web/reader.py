@@ -14,7 +14,6 @@ from deepresearcher.tokens import get_token_estimator
 from deepresearcher.tools.errors import (
     SourceUnavailableError,
     ToolParseError,
-    UnsafeUrlError,
 )
 from deepresearcher.tools.web.documents import (
     DocumentOutlineItem,
@@ -43,6 +42,20 @@ _SEARCH_CONTENT_METHODS: dict[str, str] = {
     "tavily": RETRIEVAL_TAVILY_RAW_CONTENT,
     "deepseek": RETRIEVAL_DEEPSEEK_SEARCH_CONTENT,
 }
+
+# 服务端明确拒绝：重试与换词都无用，回执要写清是什么墙。
+_HTTP_SOURCE_REJECTED: dict[int, str] = {
+    401: "login_required",
+    402: "access_challenge",
+    403: "access_challenge",
+    404: "empty_content",
+    451: "access_challenge",
+}
+
+# 来源级结论：命中即不可读，不进可重试失败。
+_SOURCE_LEVEL_SKIPS = frozenset(
+    {"empty_content", "login_required", "access_challenge", "ssrf_block", "invalid_url"}
+)
 
 
 class SourceReaderTool:
@@ -146,6 +159,7 @@ class SourceReaderTool:
         except Exception as exc:  # noqa: BLE001 - 抓取失败退回搜索原文
             # 抓取失败时可登记搜索提供方已经返回的原文或摘要，
             # 但仍由 Researcher 阅读后决定是否提交 Evidence。
+            reason_code = _fetch_failure_reason(exc)
             document = self._search_content_document(result)
             if document is not None and self.event_sink is not None:
                 # 改用搜索内容成功也要记录：被拦/失败的 requested_url 与原因只存在于这里，
@@ -161,9 +175,7 @@ class SourceReaderTool:
                         payload={
                             **task_context,
                             "requested_url": requested_url,
-                            "reason_code": (
-                                "ssrf_block" if isinstance(exc, UnsafeUrlError) else "fetch_failed"
-                            ),
+                            "reason_code": reason_code,
                             "fallback_retrieval_method": str(
                                 cast(dict[str, object], document).get("retrieval_method", "")
                             ),
@@ -172,14 +184,11 @@ class SourceReaderTool:
                     )
                 )
             if document is None:
-                reason_code = (
-                    exc.reason_code if isinstance(exc, SourceUnavailableError) else "fetch_failed"
-                )
                 if self.event_sink is not None:
                     self.event_sink.write(
                         make_tool_event(
                             "fetch",
-                            "skipped" if isinstance(exc, SourceUnavailableError) else "failed",
+                            "skipped" if reason_code in _SOURCE_LEVEL_SKIPS else "failed",
                             component="source_reader",
                             link=link,
                             error=str(exc),
@@ -191,7 +200,7 @@ class SourceReaderTool:
                             },
                         )
                     )
-                if isinstance(exc, SourceUnavailableError):
+                if reason_code in _SOURCE_LEVEL_SKIPS:
                     return skipped_read(
                         task,
                         source_url=requested_url,
@@ -332,3 +341,16 @@ class SourceReaderTool:
             if len(outline) >= limit:
                 break
         return outline
+
+
+def _fetch_failure_reason(error: Exception) -> str:
+    """按显式 reason_code、HTTP 状态、解析失败的顺序判定抓取失败原因。"""
+    reason = getattr(error, "reason_code", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return _HTTP_SOURCE_REJECTED.get(status, "fetch_failed")
+    if isinstance(error, ToolParseError):
+        return "parse_failed"
+    return "fetch_failed"

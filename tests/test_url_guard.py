@@ -1,4 +1,5 @@
 import asyncio
+import socket
 
 import httpx
 import pytest
@@ -368,3 +369,52 @@ def test_http_client_skips_peer_pin_when_proxy_is_configured():
     )
     response = asyncio.run(client.arequest("GET", "https://public.example/", request_kind="fetch"))
     assert response.status_code == 200
+
+
+def test_guard_retries_dns_once_before_declaring_resolve_failed(monkeypatch):
+    calls: list[str] = []
+
+    def fail(host, port, *args, **kwargs):
+        calls.append(host)
+        raise socket.gaierror(11001, "getaddrinfo failed")
+
+    monkeypatch.setattr("socket.getaddrinfo", fail)
+    guard = PublicUrlGuard(BLOCK)
+
+    with pytest.raises(UnsafeUrlError) as excinfo:
+        asyncio.run(guard.resolve("https://flaky.example/"))
+
+    assert len(calls) == 2  # 抖动重试一次，第二次仍失败才判不可达
+    assert excinfo.value.reason_code == "resolve_failed"
+
+
+def test_guard_recovers_when_second_dns_attempt_succeeds(monkeypatch):
+    calls: list[str] = []
+
+    def flaky(host, port, *args, **kwargs):
+        calls.append(host)
+        if len(calls) == 1:
+            raise socket.gaierror(11001, "getaddrinfo failed")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr("socket.getaddrinfo", flaky)
+    guard = PublicUrlGuard(BLOCK)
+
+    result = asyncio.run(guard.resolve("https://flaky.example/"))
+
+    assert len(calls) == 2
+    assert result.addresses == ("93.184.216.34",)
+
+
+def test_guard_marks_real_block_as_ssrf_not_resolve_failure(monkeypatch):
+    guard = PublicUrlGuard(BLOCK)
+
+    async def resolve(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("127.0.0.1",)
+
+    monkeypatch.setattr(guard, "_resolve_addresses", resolve)
+
+    with pytest.raises(UnsafeUrlError) as excinfo:
+        asyncio.run(guard.resolve("https://internal.example/"))
+
+    assert excinfo.value.reason_code == "ssrf_block"

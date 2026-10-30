@@ -17,6 +17,10 @@ _CARRIED_IPV4_PREFIXES = (
     ipaddress.ip_network("64:ff9b::/96"),  # NAT64
 )
 
+# DNS 查询失败重试一次：本机代理的假 DNS 会间歇超时，单次失败不代表域名不可达。
+_RESOLVE_ATTEMPTS = 2
+_RESOLVE_RETRY_SECONDS = 0.3
+
 
 @dataclass(frozen=True)
 class ResolvedPublicUrl:
@@ -61,12 +65,12 @@ class PublicUrlGuard:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         resolved = await self._resolve_addresses(ascii_hostname, port)
         if not resolved:
-            raise UnsafeUrlError("URL 主机名没有可连接的地址。")
+            raise UnsafeUrlError("URL 主机名没有可连接的地址。", "resolve_failed")
         # 双栈主机同时返回 A 与 AAAA，个别记录可能落在拦截段：存在可连接
         # 地址即允许通过并把连接固定到这些地址；全部被拦（真 SSRF）才拒绝。
         addresses = tuple(a for a in resolved if self._is_connectable(a))
         if not addresses:
-            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
+            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。", "ssrf_block")
 
         # 把 URL 与 CURLOPT_RESOLVE 使用的主机名归一到同一 ASCII 写法。
         # 保留 path/query/fragment；fragment 不会随线上请求发送。
@@ -81,16 +85,25 @@ class PublicUrlGuard:
         return ResolvedPublicUrl(normalized, ascii_hostname, port, addresses)
 
     async def _resolve_addresses(self, hostname: str, port: int) -> tuple[str, ...]:
-        try:
-            rows = await asyncio.get_running_loop().getaddrinfo(
-                hostname,
-                port,
-                family=socket.AF_UNSPEC,
-                type=socket.SOCK_STREAM,
-            )
-        except socket.gaierror as exc:
-            raise UnsafeUrlError("URL 主机名无法解析。") from exc
-        return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
+        """解析主机名；DNS 抖动时重试一次，耗尽后按 resolve_failed 抛出。"""
+        last_error: socket.gaierror | None = None
+        for attempt in range(_RESOLVE_ATTEMPTS):
+            try:
+                rows = await asyncio.get_running_loop().getaddrinfo(
+                    hostname,
+                    port,
+                    family=socket.AF_UNSPEC,
+                    type=socket.SOCK_STREAM,
+                )
+            except socket.gaierror as exc:
+                last_error = exc
+                if attempt + 1 < _RESOLVE_ATTEMPTS:
+                    await asyncio.sleep(_RESOLVE_RETRY_SECONDS)
+                continue
+            return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
+        raise UnsafeUrlError(
+            f"URL 主机名无法解析（DNS 查询失败：{last_error}）。", "resolve_failed"
+        ) from last_error
 
     def _is_connectable(self, address: str) -> bool:
         try:
@@ -115,7 +128,7 @@ class PublicUrlGuard:
         except ValueError as exc:
             raise UnsafeUrlError("目标地址不是有效的 IP 地址。") from exc
         if self._is_blocked(ip):
-            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。")
+            raise UnsafeUrlError("出于安全原因，不能访问本机、私网或保留地址。", "ssrf_block")
 
     @staticmethod
     def _parse(url: str) -> SplitResult:

@@ -41,10 +41,15 @@ class ToolRequestError(ToolError):
 
 
 class UnsafeUrlError(ToolRequestError):
-    """来源 URL 违反公网抓取策略。"""
+    """来源 URL 违反公网抓取策略；reason_code 区分策略拒绝与解析失败。"""
 
     code = "unsafe_url"
     retryable = False
+
+    def __init__(self, message: str, reason_code: str = "invalid_url"):
+        super().__init__(message)
+        # ssrf_block 命中拦截段；resolve_failed 是 DNS 查询失败；invalid_url 是格式非法。
+        self.reason_code = reason_code
 
 
 class ToolParseError(ToolError):
