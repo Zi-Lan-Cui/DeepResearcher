@@ -178,7 +178,7 @@ def test_working_set_snapshot_resolves_task_titles_both_forms() -> None:
             self.plan: list = []
             self.provider_exhausted = False
             self.research_synthesis = None
-            self.max_research_rounds = 1
+            self.max_turns = 34
             self.current_round = 1
             self.task_results = [
                 TaskResult(

@@ -144,6 +144,7 @@ def _apply_fixture() -> SupervisorRoundState:
         },
         current_round=1,
         active_evidence_limit=6,
+        max_turns=34,
     )
 
 
@@ -523,7 +524,64 @@ def test_workbench_view_shape_lock():
     }
     assert view["reserve_evidence"][0]["evidence_id"] == "e2"  # 未激活即 reserve 全卡
     assert [item["evidence_id"] for item in view["active_evidence"]] == ["e1"]
-    assert view["flags"] == {"provider_exhausted": False, "rounds_left": 0}
+    assert view["flags"] == {"provider_exhausted": False, "turns_left": 34, "max_turns": 34}
+
+
+def test_workbench_flags_report_turn_budget_not_research_rounds() -> None:
+    """余额报模型回合，不报研究轮次。"""
+    from deepresearcher.agents.supervisor.state import workbench_view
+
+    round_state = _apply_fixture()
+    view = workbench_view(round_state, turns_used=6)
+
+    assert view["flags"]["turns_left"] == 34 - 6
+    assert "rounds_left" not in view["flags"]
+    assert workbench_view(round_state, turns_used=99)["flags"]["turns_left"] == 0
+
+
+def test_read_workbench_reports_live_turn_budget() -> None:
+    """回执的 turns_left 随模型调用递减。"""
+
+    class _ReadTwiceThenEnd:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, _tools, tool_choice="any"):
+            return self
+
+        async def ainvoke(self, _messages):
+            self.calls += 1
+            if self.calls <= 2:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ReadWorkbench",
+                            "args": {"reason": "查看"},
+                            "id": f"read_{self.calls}",
+                        }
+                    ],
+                )
+            return AIMessage(content="材料不足，直接结束。")
+
+    supervisor = Supervisor(
+        _ReadTwiceThenEnd(),
+        AgentConfig(supervisor_max_turns=10),
+        research_agent=FixedResearcher(),
+    )
+    result = asyncio.run(
+        supervisor.run({"query": "研究问题", "clarified_query": "研究问题", "evidences": []})
+    )
+
+    receipts = [
+        json.loads(message.content.split("\n", 1)[1])
+        for message in result["supervisor_messages"]
+        if isinstance(message, ToolMessage) and message.name == "ReadWorkbench"
+    ]
+    assert [item["flags"] for item in receipts] == [
+        {"provider_exhausted": False, "turns_left": 9, "max_turns": 10},
+        {"provider_exhausted": False, "turns_left": 8, "max_turns": 10},
+    ]
 
 
 def test_workbench_view_keeps_direction_conclusion_readable() -> None:
@@ -542,7 +600,7 @@ def test_workbench_view_keeps_direction_conclusion_readable() -> None:
         plan=[],
         provider_exhausted=False,
         research_synthesis=None,
-        max_research_rounds=2,
+        max_turns=34,
         current_round=1,
         task_results=[
             TaskResult(

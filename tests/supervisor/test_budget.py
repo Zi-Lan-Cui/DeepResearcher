@@ -384,7 +384,7 @@ def test_supervisor_model_call_limit_no_longer_mislabeled_as_round_budget():
 
     supervisor = Supervisor(
         ReadLoopLLM(),
-        AgentConfig(max_research_rounds=3, max_tasks_per_round=1),
+        AgentConfig(max_research_rounds=3, max_tasks_per_round=1, supervisor_max_turns=4),
         research_agent=_OneEvidenceAgent(),
     )
     result = asyncio.run(

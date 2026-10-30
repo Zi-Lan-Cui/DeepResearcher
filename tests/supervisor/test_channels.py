@@ -189,7 +189,7 @@ def test_rebuild_middleware_discards_uncommitted_memory():
     context = SupervisorContext(
         scope=SimpleNamespace(),
         deps=SimpleNamespace(
-            config=SimpleNamespace(supervisor_max_active_evidences=6, max_research_rounds=1)
+            config=SimpleNamespace(supervisor_max_active_evidences=6, supervisor_max_turns=34)
         ),
         round_state=committed,
         research_query="q",

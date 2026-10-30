@@ -147,8 +147,7 @@ class Supervisor:
                             agent_name="Supervisor",
                             event_slug="supervisor",
                             model=self.llm,
-                            # 主动等待与补派发都占用模型回合，余量按派发上限翻倍再留收尾空间。
-                            max_turns=2 * config.max_tasks_per_round + 10,
+                            max_turns=config.supervisor_max_turns,
                             context_window_tokens=context_window_tokens,
                             retry_tools=[["ResearchDelegate"]],
                             serial_tools=set(SUPERVISOR_SERIAL_TOOLS),
@@ -235,7 +234,7 @@ class Supervisor:
             state,
             current_round=round_no,
             active_evidence_limit=self.config.supervisor_max_active_evidences,
-            max_research_rounds=self.config.max_research_rounds,
+            max_turns=self.config.supervisor_max_turns,
         )
         # 初始提供工作台快照
         research_query = round_state.research_query
@@ -279,7 +278,7 @@ class Supervisor:
                 research_query=research_query,
                 current_round=round_no,
                 active_evidence_limit=self.config.supervisor_max_active_evidences,
-                max_research_rounds=self.config.max_research_rounds,
+                max_turns=self.config.supervisor_max_turns,
             )
             if round_state.completed_synthesis is None and _model_call_limit_hit(generated):
                 # 真实终止原因是模型调用上限；set_stop_reason 的声明式 rank 保证它强于

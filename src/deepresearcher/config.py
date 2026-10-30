@@ -112,6 +112,8 @@ class AgentConfig:
     # 单次 ReadEvidence 每轮交付量；
     writer_read_batch_size: int = 30
     max_tasks_per_round: int = 12
+    # Supervisor 的 Agent turn 上限；每个 turn 是一次模型决策及其工具执行。
+    supervisor_max_turns: int = 34
     supervisor_max_concurrent_tasks: int = 3
     # Supervisor 当前可激活并交给研究综合稿选择的 Evidence 上限。
     supervisor_max_active_evidences: int = 30
@@ -394,6 +396,7 @@ def _agent_config() -> AgentConfig:
         writer_max_markdown_chars=max(1_000, _int_env("AGENT_WRITER_MAX_MARKDOWN_CHARS", 24_000)),
         writer_read_batch_size=max(1, _int_env("AGENT_WRITER_READ_BATCH_SIZE", 30)),
         max_tasks_per_round=max(1, _int_env("AGENT_MAX_TASKS_PER_ROUND", 12)),
+        supervisor_max_turns=max(1, _int_env("AGENT_SUPERVISOR_MAX_TURNS", 34)),
         supervisor_max_concurrent_tasks=max(
             1, _int_env("AGENT_SUPERVISOR_MAX_CONCURRENT_TASKS", 3)
         ),

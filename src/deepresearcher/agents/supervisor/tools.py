@@ -164,7 +164,11 @@ def build_supervisor_tools() -> list[BaseTool]:
     ) -> str:
         """查看工作台全景：计划、在途、各任务档案、活跃/储备证据与综合稿。"""
         del reason
-        return format_tool_receipt(workbench_view(runtime.context.round_state))
+        # 框架的模型调用计数按轮次重置，直接就是工作台要报的余额。
+        turns_used = int((runtime.state or {}).get("run_model_call_count", 0) or 0)
+        return format_tool_receipt(
+            workbench_view(runtime.context.round_state, turns_used=turns_used)
+        )
 
     return [
         research_delegate,

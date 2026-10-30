@@ -35,7 +35,7 @@ The workbench is your single state window; every turn opens with its current vie
 - `inflight` — tasks still running;
 - `tasks` — the archive of every returned task: title, status, evidence count, and its own conclusion with the gaps written into the narrative. To recall what a task found, re-read it here; never re-dispatch a theme to remember it;
 - `active_evidence` / `reserve_evidence` — cards with source provenance and confidence, never full quotes (use `ReadEvidence` for those);
-- `flags` — provider outage and remaining rounds;
+- `flags` — provider outage, and the model turns (`turns_left` / `max_turns`) this pass still allows you;
 - `research_synthesis` — your current draft (`synthesis_revision` stamps it).
 
 ### `UpdateWorkbench`

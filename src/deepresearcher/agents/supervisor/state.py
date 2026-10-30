@@ -189,7 +189,7 @@ class SupervisorContext:
             research_query=self.research_query,
             current_round=self.current_round,
             active_evidence_limit=self.deps.config.supervisor_max_active_evidences,
-            max_research_rounds=self.deps.config.max_research_rounds,
+            max_turns=self.deps.config.supervisor_max_turns,
         )
 
 
@@ -204,11 +204,11 @@ class SupervisorRoundState:
         *,
         current_round: int,
         active_evidence_limit: int,
-        max_research_rounds: int = 0,
+        max_turns: int = 0,
     ):
         # 计划清单：工作台的一个键，轮内清单不进外层持久化；dict 形态存储（PlanItem.model_dump）。
         self.plan = [dict(item) for item in (state.get("plan") or []) if isinstance(item, dict)]
-        self.max_research_rounds = max_research_rounds
+        self.max_turns = max_turns
         self.evidences = list(state.get("evidences", []))
         active_ids = state.get("active_evidence_ids")
         self.active_evidence_ids = (
@@ -266,7 +266,7 @@ class SupervisorRoundState:
         research_query: str,
         current_round: int,
         active_evidence_limit: int,
-        max_research_rounds: int = 0,
+        max_turns: int = 0,
     ) -> "SupervisorRoundState":
         """从内层通道现值重建状态对象：仅依赖标量参数与通道，不持有外层 State。
 
@@ -277,7 +277,7 @@ class SupervisorRoundState:
             {},
             current_round=current_round,
             active_evidence_limit=active_evidence_limit,
-            max_research_rounds=max_research_rounds,
+            max_turns=max_turns,
         )
         view.research_query = research_query
         if "evidences" in values:
@@ -426,8 +426,10 @@ _WORKBENCH_CONCLUSION_CHARS = 2000
 _WORKBENCH_RESERVE_CARD_LIMIT = 20
 
 
-def workbench_view(round_state: "SupervisorRoundState") -> dict[str, object]:
-    """Supervisor 工作台的唯一视图构造处。"""
+def workbench_view(
+    round_state: "SupervisorRoundState", *, turns_used: int = 0
+) -> dict[str, object]:
+    """Supervisor 工作台的唯一视图构造处；turns_used 是本轮已消耗的模型回合数。"""
     titles = _task_titles(round_state)
     active = round_state.active_evidences()
     tasks: list[dict[str, object]] = []
@@ -450,7 +452,6 @@ def workbench_view(round_state: "SupervisorRoundState") -> dict[str, object]:
         )
     active_ids = {item.evidence_id for item in active}
     reserve = [item for item in round_state.evidences if item.evidence_id not in active_ids]
-    rounds_left = max(0, round_state.max_research_rounds - round_state.current_round)
     return {
         "workbench_revision": round_state.working_set_revision,
         "plan": [dict(item) for item in round_state.plan],
@@ -473,7 +474,8 @@ def workbench_view(round_state: "SupervisorRoundState") -> dict[str, object]:
         "reserve_evidence_count": len(reserve),
         "flags": {
             "provider_exhausted": bool(round_state.provider_exhausted),
-            "rounds_left": rounds_left,
+            "turns_left": max(0, round_state.max_turns - turns_used),
+            "max_turns": round_state.max_turns,
         },
         "synthesis_revision": (
             round_state.research_synthesis.revision if round_state.research_synthesis else 0
