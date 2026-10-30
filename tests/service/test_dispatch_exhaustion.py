@@ -408,6 +408,19 @@ async def test_verify_lease_reports_three_verdicts(store_env):
     assert await store.verify_lease(work) == "lost"
 
 
+async def test_verify_lease_keeps_held_after_run_reaches_terminal(store_env):
+    """行写终态是执行自己的结果，不是被夺走：收尾帧还要写库，不能在此取消执行。"""
+    store, factory = store_env
+    await _seed(factory, "run-9", status="running", lease_owner="worker-a", fence_token=5)
+    work = RunWork(run_id="run-9", user_id=1, query="q", lease_owner="worker-a", fence_token=5)
+
+    async with factory() as session:
+        await session.execute(update(Run).where(Run.id == "run-9").values(status="completed"))
+        await session.commit()
+
+    assert await store.verify_lease(work) == "held"
+
+
 async def test_verify_lease_treats_unclaimed_work_as_lost(store_env):
     store, _factory = store_env
     assert await store.verify_lease(RunWork(run_id="run-none", user_id=1, query="q")) == "lost"

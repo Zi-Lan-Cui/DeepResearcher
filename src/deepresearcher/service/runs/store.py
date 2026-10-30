@@ -138,13 +138,15 @@ class RunStore:
         async with self._session_factory() as session:
             row = (
                 await session.execute(
-                    select(Run.status, Run.fence_token, Run.cancellation_requested_at).where(
+                    select(Run.fence_token, Run.cancellation_requested_at).where(
                         Run.id == work.run_id
                     )
                 )
             ).first()
-        if row is None or row.status != "running" or row.fence_token != work.fence_token:
+        if row is None or row.fence_token != work.fence_token:
             return "lost"
+        # 行离开 running 是执行自己写下的终态或挂起，不代表租约被夺走：收尾帧还要写库。
+        # 真被夺走时 fence 会前进，上面已判失。
         return "cancelled" if row.cancellation_requested_at is not None else "held"
 
     async def release(
