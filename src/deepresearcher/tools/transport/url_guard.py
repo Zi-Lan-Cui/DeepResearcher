@@ -141,7 +141,7 @@ class PublicUrlGuard:
 
 
 async def _resolve_once(hostname: str, port: int) -> tuple[str, ...]:
-    """一次 DNS 解析，返回去重后的地址；失败抛 socket.gaierror。"""
+    """解析一次主机名，返回去重后的地址；解析失败抛 socket.gaierror。"""
     rows = await asyncio.get_running_loop().getaddrinfo(
         hostname,
         port,

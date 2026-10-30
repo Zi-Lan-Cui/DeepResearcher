@@ -378,7 +378,7 @@ def test_guard_retries_dns_once_before_declaring_resolve_failed(monkeypatch):
         calls.append(host)
         raise socket.gaierror(11001, "getaddrinfo failed")
 
-    # 换掉单次解析而不是 socket.getaddrinfo：uvloop 走 libuv 解析器，不打桩 socket 层。
+    # 替换单次解析而非 socket.getaddrinfo：uvloop 经 libuv 解析，打桩 socket 层无效。
     monkeypatch.setattr(url_guard, "_resolve_once", fail)
     monkeypatch.setattr(url_guard, "_RESOLVE_RETRY_SECONDS", 0)
     guard = PublicUrlGuard(BLOCK)

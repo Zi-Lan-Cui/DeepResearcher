@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 # 账户级不可用（额度/鉴权）重试同 key 结果不变，冷却时长取长一些。
 _ACCOUNT_LEVEL_SECONDS = 900.0
 
-# ProviderExhaustedError 的四个 user_code：恢复前重发结果不变，按账户级不可用上报。
-# 限流（rate_limited）只冷却一段固定时长，仍按可重试的请求失败上报。
+# 账户级不可用的四个 user_code：恢复前重发同一请求结果不变，按账户级不可用上报。
+# 限流（rate_limited）冷却时长固定，仍按可重试的请求失败上报。
 _ACCOUNT_LEVEL_REASONS = frozenset(
     {"quota_exhausted", "invalid_key", "insufficient_credit", "forbidden"}
 )
@@ -97,7 +97,7 @@ class SearchService:
         exhausted = next((e for e in errors if isinstance(e, ProviderExhaustedError)), None)
         if exhausted is not None:
             raise ProviderExhaustedError(exhausted.user_code, message)
-        # 全部被本地冷却短路：手里没有原始异常，按账本记下的原因定性。
+        # 全部被本地冷却短路，没有原始异常可依，按账本记录的原因判定。
         if blocked_reasons and blocked_reasons[0] in _ACCOUNT_LEVEL_REASONS:
             raise ProviderExhaustedError(blocked_reasons[0], message)
         raise ToolRequestError(message, retryable=False)

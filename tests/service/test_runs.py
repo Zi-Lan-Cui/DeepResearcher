@@ -36,7 +36,7 @@ pytestmark = pytest.mark.asyncio
 
 USER_ID = 1
 
-# 等 run 跑到终态的上限：满负载下 PG 的领取与建表会慢，2~3 秒不够。
+# 等待 run 进入终态的上限：满负载下数据库领取与建表明显变慢，2 至 3 秒不足。
 _TERMINAL_WAIT_SECONDS = 20.0
 
 
@@ -294,7 +294,7 @@ async def _row(manager, run_id):
 
 
 async def _event_types(manager, run_id):
-    """该 run 已落库的事件类型，按 seq 排序。"""
+    """该 run 已写入的事件类型，按 seq 排序。"""
     async with manager.session_factory() as session:
         return list(
             (
@@ -663,8 +663,8 @@ async def test_worker_runs_admission_from_another_process(manager):
     await _settle(manager, run_id)
 
     assert len(graph.ainvoke_inputs) == 1
-    # 终态写入早于事件 flush（flush 在 task 收尾），跨进程受理时 task 可能已退出字典，
-    # 所以这里等事件出现而不是假设它已落库。
+    # 终态写入早于事件 flush（flush 在 task 收尾）；跨进程受理时 task 可能已从 tasks
+    # 表移除，因此以事件出现为判据，而不是假定它已写入。
     async with asyncio.timeout(5):
         while "engine_0" not in await _event_types(manager, run_id):
             await asyncio.sleep(0.02)
