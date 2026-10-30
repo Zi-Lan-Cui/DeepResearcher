@@ -36,6 +36,9 @@ pytestmark = pytest.mark.asyncio
 
 USER_ID = 1
 
+# 等 run 跑到终态的上限：满负载下 PG 的领取与建表会慢，2~3 秒不够。
+_TERMINAL_WAIT_SECONDS = 20.0
+
 
 def _settings(tmp_path) -> Settings:
     return Settings(
@@ -288,6 +291,20 @@ async def _settle(manager, run_id):
 async def _row(manager, run_id):
     async with manager.session_factory() as session:
         return await session.get(Run, run_id)
+
+
+async def _event_types(manager, run_id):
+    """该 run 已落库的事件类型，按 seq 排序。"""
+    async with manager.session_factory() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(RunEvent.event_type)
+                    .where(RunEvent.run_id == run_id)
+                    .order_by(RunEvent.seq)
+                )
+            ).all()
+        )
 
 
 async def _status_frames(manager, run_id):
@@ -640,23 +657,17 @@ async def test_worker_runs_admission_from_another_process(manager):
     run_id = await service.create(USER_ID, "external admission")
 
     await manager.execution.start()
-    async with asyncio.timeout(2):
+    async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
         while (await _row(manager, run_id)).status != "completed":
             await asyncio.sleep(0.01)
     await _settle(manager, run_id)
 
     assert len(graph.ainvoke_inputs) == 1
-    async with manager.session_factory() as session:
-        event_types = list(
-            (
-                await session.scalars(
-                    select(RunEvent.event_type)
-                    .where(RunEvent.run_id == run_id)
-                    .order_by(RunEvent.seq)
-                )
-            ).all()
-        )
-    assert "engine_0" in event_types
+    # 终态写入早于事件 flush（flush 在 task 收尾），跨进程受理时 task 可能已退出字典，
+    # 所以这里等事件出现而不是假设它已落库。
+    async with asyncio.timeout(5):
+        while "engine_0" not in await _event_types(manager, run_id):
+            await asyncio.sleep(0.02)
 
 
 async def test_takeover_retires_the_previous_fence(manager):
@@ -1053,7 +1064,7 @@ async def test_takeover_without_checkpoint_restarts_from_scratch(manager):
     manager.holder["graph"] = FakeGraph(result=_completed_result(), emit_events=1)
 
     await manager.bus.redispatch(run_id)
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
         while (await _row(manager, run_id)).status != "completed":
             await asyncio.sleep(0.01)
     await _settle(manager, run_id)
@@ -1084,7 +1095,7 @@ async def test_cancel_intent_on_running_row_settles_on_redelivery(manager):
         await session.commit()
 
     await manager.bus.redispatch(run_id)
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
         # 终态先落库、done 帧随后补发，因此等到 done 出现才算这条路径走完。
         while not await _done_frames(manager, run_id):
             await asyncio.sleep(0.01)
@@ -1169,7 +1180,7 @@ async def test_lease_hold_survives_transient_db_errors():
     task = asyncio.create_task(  # noqa: SLF001 - 直接驱动租约确认循环
         worker._hold_lease(work, None, _inbound("r1"))
     )
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
         while store.poll_calls < 3:
             await asyncio.sleep(0.01)
     task.cancel()
@@ -1187,7 +1198,7 @@ async def test_lease_hold_escalates_persistent_db_errors_to_lease_lost():
     worker = _watch_worker(store, executor)
     worker._lease_check_failure_budget = 2  # noqa: SLF001
 
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
         await worker._hold_lease(work, None, _inbound("r1"))  # noqa: SLF001
 
     assert executor.lease_lost == ["r1"]  # 预算耗尽必须降级，不许静默退场
@@ -1252,7 +1263,7 @@ async def test_receive_loop_survives_transient_pull_error(monkeypatch):
     worker = _scripted_worker(receiver)
     receive = asyncio.create_task(worker._receive_loop())  # noqa: SLF001
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
             while receiver.calls < 2:
                 await asyncio.sleep(0.01)
         assert not receive.done()  # 瞬断没有杀死循环，第二跳已发生
