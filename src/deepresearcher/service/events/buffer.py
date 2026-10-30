@@ -144,6 +144,11 @@ class RunEventBuffer:
                 logger.warning("run_event_flush_failed run_id=%s", run_id, exc_info=True)
                 self._requeue(run_id, records)
                 return False
+            except BaseException:
+                # 取消可落在 append 内（收尾会取消周期 flush），批次已摘出 pending，
+                # 不回插即永久丢失。
+                self._requeue(run_id, records)
+                raise
             # 写入 DB 后以库中副本为准：订阅者经 notify + DB tail 取帧，不经进程内直投。
             try:
                 await self._signal_bus.notify_event(run_id)

@@ -198,6 +198,35 @@ async def test_flush_requeues_head_on_store_failure(buffer, store, log):
     ]  # 回插批次在新事件之前，seq 分配顺序不乱
 
 
+async def test_flush_requeues_batch_when_cancelled_mid_append(signal):
+    """append 期间被取消同样要回插：批次已摘出 pending，随取消一起消失即静默丢帧。"""
+    started = asyncio.Event()
+
+    class HangOnceStore(FakeStore):
+        hanging = True
+
+        async def append(self, run_id, records):
+            if self.hanging:
+                self.hanging = False
+                started.set()
+                await asyncio.sleep(3600)
+            return await super().append(run_id, records)
+
+    store = HangOnceStore([])
+    buf = RunEventBuffer(store=store, signal_bus=signal)
+    buf.open("r1")
+    buf.write({"run_id": "r1", "event_type": "engine_0", "payload": {}})
+
+    task = asyncio.create_task(buf.flush("r1"))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await buf.flush("r1")
+    assert [r["event_type"] for r in store.batches[0]] == ["engine_0"]
+
+
 async def test_close_drops_seat_and_late_writes_drop(buffer, store):
     buffer.open("run-4")
     buffer.close("run-4")
