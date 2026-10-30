@@ -191,6 +191,24 @@ def test_summary_reads_run_and_sections():
     assert summary["writer_feedback"] == "补一段对比"
     assert summary["review_status"] == "approved"
     assert "review_feedback" not in summary  # 空反馈不占键
+    assert "review_summary" not in summary  # 老检查点没有展示结论时也不占键
+
+
+def test_summary_carries_review_display_sentence():
+    """审阅的展示结论要出现在 node_completed 载荷里。"""
+    summary = summarize_node_result(
+        {
+            "review": SimpleNamespace(
+                status="approved",
+                summary="核心结论均有来源支撑。",
+                feedback="报告完整回答了问题，可按此交付。",
+            )
+        },
+        max_text_chars=100,
+    )
+
+    assert summary["review_summary"] == "核心结论均有来源支撑。"
+    assert summary["review_feedback"] == "报告完整回答了问题，可按此交付。"
 
 
 def test_summary_counts_collections_and_truncates_issues():

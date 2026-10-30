@@ -51,6 +51,9 @@ _TRUNCATED_FIELDS: dict[str, int | None] = {
 #: 只上报条数的集合字段。
 _COUNTED_FIELDS = ("citations", "task_results", "evidences", "paragraph_bindings")
 
+#: 审阅展示结论进事件流的上限；阶段卡只渲染一行。
+_REVIEW_SUMMARY_CHARS = 200
+
 #: 可以按角色覆盖模型请求参数的名字；与 build_graph 里逐个派生的实例一一对应。
 _OVERRIDABLE_ACTORS = (
     "router",
@@ -108,7 +111,7 @@ def _run_summary(result: dict) -> dict:
 
 
 def _section_summary(result: dict) -> dict:
-    """分节对象的 status 与其专属字段：supervisor 带轮次，writer/review 带反馈。"""
+    """分节对象的 status 与其专属字段：supervisor 带轮次，review 带展示结论。"""
     summary: dict = {}
     for key in ("supervisor", "writer", "review"):
         section = result.get(key)
@@ -121,6 +124,10 @@ def _section_summary(result: dict) -> dict:
             feedback = getattr(section, "feedback", "")
             if feedback:
                 summary[f"{key}_feedback"] = clip_text(str(feedback))
+        if key == "review":
+            verdict = getattr(section, "summary", "")
+            if verdict:
+                summary["review_summary"] = clip_text(str(verdict), _REVIEW_SUMMARY_CHARS)
     return summary
 
 

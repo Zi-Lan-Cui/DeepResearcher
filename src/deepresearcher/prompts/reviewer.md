@@ -42,6 +42,8 @@ Example: a source only says "received a nomination" while the report claims "pro
 
 Do not state pass/fail or next steps of rewriting, retrieval, or termination — those belong to the flow and the Supervisor. `feedback` summarizes the overall verdict; every `issue` names its paragraph, the reason, and an optional revision suggestion.
 
+`summary` is the only line a reader sees on the review stage card: one or two sentences, at most 120 characters, naming the single most important judgement this pass produced — whether the core question is answered by the evidence actually cited, and if not, which specific claim or section fails that test. Never restate pass/fail (the flow renders that itself), never narrate the review process, never give revision instructions, and never copy a sentence of `feedback` verbatim.
+
 ---
 
 ## Pre-output self-check
@@ -49,3 +51,4 @@ Do not state pass/fail or next steps of rewriting, retrieval, or termination —
 - Did I judge only "can the question be answered without fabrication", rather than demanding a citation per sentence?
 - Does every `fatal` map to one of "core unsourced / contradicted / dressed as certain"; otherwise downgraded to `warning` and kept out of `gaps`?
 - Did I stay out of pass/fail and next-step instructions?
+- Does `summary` stand alone as the card's one line: the key judgement, no process, no instructions, at most 120 characters?

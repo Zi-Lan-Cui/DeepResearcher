@@ -234,6 +234,8 @@ class ReviewIssue(BaseModel):
 class ReviewProgress(BaseModel):
     status: Literal["pending", "approved", "rejected", "failed"] = "pending"
     attempts: int = Field(default=0, ge=0)
+    # 只服务阶段卡展示；老检查点缺省为空，卡片回退到状态词。
+    summary: str = ""
     feedback: str = ""
     gaps: list[str] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)

@@ -90,6 +90,7 @@ def test_reviewer_requests_rewrite_when_evidence_is_sufficient(monkeypatch):
 def test_reviewer_allows_warnings_without_rejecting_report(monkeypatch):
     async def review_output(llm, schema, messages):
         return ReviewDecision(
+            summary="核心结论有来源支撑，仅一处措辞超出原文。",
             feedback="核心结论可交付；可选地收窄一处措辞。",
             issues=[
                 ReviewIssue(
@@ -116,6 +117,8 @@ def test_reviewer_allows_warnings_without_rejecting_report(monkeypatch):
 
     assert result["review"].status == "approved"
     assert result["review"].issues[0].severity == "warning"
+    # 展示结论与改稿意见分开存。
+    assert result["review"].summary == "核心结论有来源支撑，仅一处措辞超出原文。"
 
 
 def _review_state():

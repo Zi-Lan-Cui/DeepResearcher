@@ -79,6 +79,50 @@ def test_node_completed_closes_stage_with_conclusion():
     assert "SECRET" not in json.dumps(done.data, ensure_ascii=False)
 
 
+def test_review_stage_delivers_its_own_summary_not_the_feedback():
+    """卡片读 summary，不读 feedback。"""
+    frame = project(
+        _record(
+            "node_completed",
+            {
+                "review_status": "approved",
+                "review_summary": "核心结论均有来源支撑，仅负载曲线一处为推理。",
+                "review_feedback": "报告围绕问题给出了完整回答：按目的选型……",
+            },
+            node="review",
+        )
+    )
+    assert frame is not None
+    assert frame.data["status"] == "done"
+    assert frame.data["text"] == "审阅通过；核心结论均有来源支撑，仅负载曲线一处为推理。"
+
+
+def test_review_rejection_is_warn_not_done():
+    """退回修改走 warn，不与 failed 同档。"""
+    frame = project(
+        _record(
+            "node_completed",
+            {"review_status": "rejected", "review_summary": "第 3 章的 SLI 定义缺少权威出处。"},
+            node="review",
+        )
+    )
+    assert frame is not None
+    assert frame.data["status"] == "warn"
+    assert frame.data["text"].startswith("审阅要求修改")
+
+
+def test_review_stage_falls_back_to_feedback_without_summary():
+    """老检查点没有 summary 时不能变成空卡。"""
+    frame = project(
+        _record(
+            "node_completed",
+            {"review_status": "approved", "review_feedback": "报告可交付。"},
+            node="review",
+        )
+    )
+    assert frame.data["text"] == "审阅通过；报告可交付。"
+
+
 def test_node_cancelled_closes_known_stage_block():
     frame = project(_record("node_cancelled", node="supervisor"))
     assert (frame.event, frame.data["stage"], frame.data["status"]) == (
@@ -627,6 +671,32 @@ def test_batch_search_only_reports_what_query_rows_cannot(payload, expected):
         assert frame is None
     else:
         assert frame.data["step"]["note"] == expected
+
+
+def test_search_skipped_row_tells_quota_apart_from_duplicates():
+    """被拦的检索只能靠这一行留痕。"""
+    quota = project(
+        _record(
+            "direction_search_skipped",
+            {
+                "task_id": "t1",
+                "reason": "query_quota_exhausted",
+                "queries_used": 6,
+                "query_limit": 6,
+            },
+        )
+    )
+    assert quota is not None
+    assert quota.event == "task_update"
+    assert quota.data["step"]["act"] == "检索"
+    assert quota.data["step"]["note"] == "额度已用尽 6/6"
+    assert quota.data["step"]["tone"] == "bad"
+
+    duplicated = project(
+        _record("direction_search_skipped", {"task_id": "t1", "reason": "no_novel_queries"})
+    )
+    assert duplicated is not None
+    assert duplicated.data["step"]["note"] == "与已执行查询全部重复"
 
 
 @pytest.mark.parametrize(

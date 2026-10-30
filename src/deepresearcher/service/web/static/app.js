@@ -601,10 +601,10 @@ const stageBlocks = new Map();
 let taskSeq = 0;
 
 /* 界面文案中文单语：剥除后端标题里的英文角色名后缀（"理解问题 · Router"），
-   无中文标题的节点用映射兜底。 */
+   无中文标题的节点用映射兜底；键取节点名。 */
 const STAGE_CN = {
   router: "理解问题", clarify: "澄清范围", supervisor: "研究规划",
-  writer: "撰写报告", reviewer: "审阅报告", render_final_report: "终检渲染",
+  writer: "撰写报告", review: "审阅报告", render_final_report: "终检渲染",
 };
 
 function stageLabel(stage, title) {
@@ -619,7 +619,8 @@ let instantReplay = false;
 function collapseFinishedStages(instant) {
   for (const block of stageBlocks.values()) {
     if (block.classList.contains("collapsed") || block.dataset.touched) continue;
-    if (!block.classList.contains("done")) continue;
+    // 通过（done）与退回修改（warn）都算收口；failed 的框留着摊开给人看原因。
+    if (!block.classList.contains("done") && !block.classList.contains("warn")) continue;
     const wrap = block.querySelector(".stage-collapse");
     if (instant || instantReplay) {
       wrap.style.transition = "none";
@@ -978,7 +979,9 @@ function handleFrame(event, data) {
   else if (event === "stage_done") {
     const block = ensureStage(data.stage);
     block.classList.remove("running");
-    block.classList.add(data.status === "failed" ? "failed" : "done");
+    block.classList.add(
+      data.status === "failed" ? "failed" : data.status === "warn" ? "warn" : "done",
+    );
     stageNote(data.stage, data.text);
     if (data.status !== "failed") {
       // 折叠头是 div：补键盘操作与展开态语义，保证不用鼠标也能回看旁白。
@@ -1149,14 +1152,16 @@ function settleRunningBlocks() {
    这一段折成一个点开是空的盒子。runs.review_json 是同一份结论的另一份来源，用它顶上。 */
 function fillReviewConclusion(review) {
   if (!review) return;
-  const block = stageBlocks.get("reviewer");
+  const block = stageBlocks.get("review");
   if (!block) return;
   const body = block.querySelector(".stage-body");
   if (body.querySelector(".ln")) return;
   const label = review.status === "approved" ? "审阅通过"
     : review.status === "rejected" ? "审阅要求修改"
     : review.status === "failed" ? "审阅未取得结论" : "审阅已完成";
-  const reason = (review.issues || [])[0] || review.failure_reason || review.feedback || "";
+  // 缺 summary 才退回问题列表与反馈。
+  const reason = review.summary || (review.issues || [])[0] || review.failure_reason
+    || review.feedback || "";
   renderNarration(body, reason ? label + "；" + reason : label,
                   review.status === "failed" || review.status === "rejected");
 }

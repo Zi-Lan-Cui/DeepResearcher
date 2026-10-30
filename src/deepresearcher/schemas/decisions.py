@@ -24,6 +24,8 @@ class RouteDecision(BaseModel):
 class ReviewDecision(BaseModel):
     """整体审阅只报告问题；流程根据 fatal 问题决定是否退回。"""
 
+    # 只服务阶段卡展示；改稿依据是 feedback 与 issues，不从本字段推导。
+    summary: str = ""
     feedback: str
     gaps: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
     issues: list[ReviewIssue] = Field(default_factory=list)

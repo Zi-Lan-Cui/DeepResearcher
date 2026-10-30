@@ -53,8 +53,14 @@ _SOURCE_SKIP_LABELS: dict[str, str] = {
     "empty_content": "无可读正文",
     "login_required": "需登录",
     "access_challenge": "访问被拦截",
+    "ssrf_block": "不允许访问",
+    "parse_failed": "正文解析失败",
     "fetch_failed": "网络不可达",
 }
+
+
+#: 阶段收口单行上限；卡片只渲染一行。
+_STAGE_CONCLUSION_CHARS = 160
 
 
 def _display_host(url: object) -> str:
@@ -147,6 +153,7 @@ def project_review(payload: Any) -> dict[str, Any] | None:
     return {
         "status": status,
         "attempts": _int(payload.get("attempts")),
+        "summary": _text(payload.get("summary"), _STAGE_CONCLUSION_CHARS),
         "feedback": _text(payload.get("feedback"), 300),
         "failure_reason": _text(payload.get("failure_reason"), 200),
         "issues": issues,
@@ -192,12 +199,18 @@ def _node_started(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame |
 def _node_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     """只关已开的阶段框；未登记的节点没有框可关，也不该冒出一行杂项。"""
     if isinstance(node, str) and node in _STAGE_TITLES:
+        status = "warn" if _is_review_rejection(node, payload) else "done"
         return _frame(
             "stage_done",
             seq,
-            {"stage": node, "status": "done", "text": _stage_conclusion(node, payload)},
+            {"stage": node, "status": status, "text": _stage_conclusion(node, payload)},
         )
     return None
+
+
+def _is_review_rejection(node: str, payload: Mapping[str, Any]) -> bool:
+    """审阅要求修改：只是退回重写，正文仍在，与执行失败分开显示。"""
+    return node == NodeName.REVIEWER and str(payload.get("review_status", "")) == "rejected"
 
 
 def _node_failed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
@@ -374,6 +387,25 @@ def _task_search_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> S
     )
 
 
+def _task_search_skipped(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
+    """检索在 provider 之前就被拦下：没有逐查询事件，这行是唯一痕迹。"""
+    reason = str(payload.get("reason") or "")
+    if reason == "query_quota_exhausted":
+        note = f"额度已用尽 {_int(payload.get('queries_used'))}/{_int(payload.get('query_limit'))}"
+    else:
+        note = "与已执行查询全部重复"
+    queries = payload.get("queries")
+    count = len(queries) if isinstance(queries, list) else 0
+    return _step(
+        seq,
+        payload,
+        "检索",
+        f"{count} 条查询",
+        note=note,
+        tone="bad",
+    )
+
+
 def _search_query_completed(seq: Any, node: Any, payload: Mapping[str, Any]) -> SseFrame | None:
     """一条查询一行；没搜到结果时右列留空，原因进括注，右列只放同构计数。"""
     count = _int(payload.get("candidate_count"))
@@ -466,6 +498,7 @@ _PROJECTORS: dict[str, Callable[[Any, Any, Mapping[str, Any]], SseFrame | None]]
     EventName.SOURCE_READ_FAILED: _source_read_failed,
     EventName.SOURCE_READ_SKIPPED: _source_read_skipped,
     EventName.TASK_SEARCH_COMPLETED: _task_search_completed,
+    EventName.TASK_SEARCH_SKIPPED: _task_search_skipped,
     EventName.SEARCH_QUERY_COMPLETED: _search_query_completed,
     EventName.SEARCH_QUERY_FAILED: _search_query_failed,
     EventName.RESEARCH_ROUND_COMPLETED: _research_round_completed,
@@ -507,8 +540,11 @@ def _stage_conclusion(node: str, payload: Mapping[str, Any]) -> str:
             "rejected": "审阅要求修改",
             "failed": "审阅失败",
         }.get(str(payload.get("review_status", "")), "")
-        feedback = _text(payload.get("review_feedback"), 120)
-        return "；".join(part for part in (label, feedback) if part)
+        # summary 专为卡片写；老 checkpoint 没有它，退回 feedback 首段。
+        verdict = _text(payload.get("review_summary"), _STAGE_CONCLUSION_CHARS) or _text(
+            payload.get("review_feedback"), _STAGE_CONCLUSION_CHARS
+        )
+        return "；".join(part for part in (label, verdict) if part)
     if node == NodeName.RENDER_FINAL_REPORT:
         chars = _int(payload.get("report_chars"))
         return f"报告 {chars} 字符" if chars else ""

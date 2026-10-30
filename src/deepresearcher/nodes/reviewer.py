@@ -105,6 +105,7 @@ async def reviewer(state, llm, *, agent_config: AgentConfig, invoke_structured):
         "review": ReviewProgress(
             status=status,
             attempts=attempt,
+            summary=decision.summary,
             feedback=decision.feedback,
             gaps=decision.gaps,
             issues=decision.issues,
