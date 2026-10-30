@@ -10,7 +10,7 @@
 
 ## 特性
 
-- **原文追溯**：每条结论均出自原文，并在报告末附上逐字摘录的原文与出处链接，便于复查。
+- **原文追溯**：每条结论均出自原文，并在报告末附上逐字摘录的原文与出处链接，便于溯源。
 - **异步并行**：子任务完成后结果动态注入，主任务无需等待所有子任务完成即可继续推进。
 - **组织清晰**：报告围绕核心主张展开，各章节子主题相互呼应，不是简单堆砌检索结果。
 - **状态可见**：研究过程中的每个阶段都会实时更新，用户可以随时查看任务的进展情况。
@@ -35,8 +35,8 @@ docker compose up -d --build   # 启动服务，拉起 API、Worker、Postgres�
 | 配置项 | 作用 | 必填 | 默认 |
 |---|---|---|---|
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_ID` | 模型服务，OpenAI 兼容接口均可 | 是 | 无 |
-| `BAIDU_API_KEY` / `TAVILY_API_KEY` / `SERPAPI_API_KEY` / `DEEPSEEK_API_KEY` / `ALIBABA_CLOUD_ACCESS_KEY_ID`+`SECRET` | 搜索服务，至少配一处；阿里云填充 AccessKey 即在 `auto` 下生效 | 是 | 无 |
-| `FETCH_PROVIDER_ORDER` | 网页抓取器，支持 `direct`、`aliyun` 与 `deepseek`；`direct` 容易被反爬拦截，推荐配置 | 否 | `direct` |
+| `DEEPSEEK_API_KEY` /`TAVILY_API_KEY` / `BAIDU_API_KEY` / `SERPAPI_API_KEY` /  `ALIBABA_CLOUD_ACCESS_KEY_ID`+`SECRET` | 搜索服务，至少配一处 | 是 | 无 |
+| `FETCH_PROVIDER_ORDER` | 网页抓取器，支持`deepseek` `aliyun` | 否 | 不配置默认使用本地实现，但易被爬虫拦截，推荐配置专用抓取器 |
 | `SERVICE_JWT_SECRET` | 登录令牌签名 | 正式部署必填 | 本地可留空，重启后需重新登录 |
 | `AGENT_MAX_RESEARCH_ROUNDS` | 研究轮数上限 | 否 | 2 |
 | `SERVICE_MAX_CONCURRENT_RUNS_PER_USER` | 单个用户同时进行的研究数 | 否 | 2 |
@@ -51,7 +51,7 @@ docker compose up -d --build   # 启动服务，拉起 API、Worker、Postgres�
 
 ## 使用
 
-注册登录后输入问题。问题不够明确时，系统会给出澄清选项帮助确定问题边界，保障回答方向正确性。问题确定后，点击开始研究，下方时间线会实时显示当前阶段、派发方向以及各研究方向的进展，查询哪些关键词，抓取了哪些网站。
+注册登录后输入问题。问题不够明确时，系统会给出澄清选项帮助确定问题边界。问题确定后，研究正式开始，下方时间线会实时展示当前阶段、派发方向以及各方向的进展。
 
 ![详情页：阶段时间线与研究进度实时呈现](assets/screenshots/progress.jpeg)
 
@@ -83,7 +83,7 @@ flowchart LR
     V -->|通过| F[生成报告与来源表]
 ```
 
-研究环节内部，每个方向先检索，再逐篇精读原文，摘出的证据与原文逐字比对通过后才进入证据池。
+研究环节内部，每个方向先检索，再逐篇精读原文，摘出的证据与原文逐字比对通过后才允许进入证据池。
 
 ## 项目结构
 
@@ -100,7 +100,7 @@ src/deepresearcher/
 └── evidence/、reporting/、schemas/   证据模型、引用校验与渲染、数据契约
 tests/                    单元与集成测试，运行 make test
 scripts/                  不参与 pytest 的手动验证脚本，由 make verify-service 调用
-evals/                    基于 DRB RACE 口径的质量评测，见 evals/README.md
+evals/                    基于 DRB RACE 的质量评测，见 evals/README.md
 docker/、docker-compose.yml         本地依赖与可选的自建观测栈
 env/.env.example          全部配置项与注释
 ```
