@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 # 账户级不可用（额度/鉴权）重试同 key 结果不变，冷却时长取长一些。
 _ACCOUNT_LEVEL_SECONDS = 900.0
 
+# ProviderExhaustedError 的四个 user_code：恢复前重发结果不变，按账户级不可用上报。
+# 限流（rate_limited）只冷却一段固定时长，仍按可重试的请求失败上报。
+_ACCOUNT_LEVEL_REASONS = frozenset(
+    {"quota_exhausted", "invalid_key", "insufficient_credit", "forbidden"}
+)
+
 
 def _key(name: str) -> str:
     """账本主键带命名空间，与将来 LLM 的 <base_url>:<model> 共用一张表也不撞车。"""
@@ -53,16 +59,19 @@ class SearchService:
         limit = max_results or self.config.max_results
         failures: list[str] = []
         errors: list[ToolError] = []
+        blocked_reasons: list[str] = []
         for name, provider in self._providers:
             key = _key(name)
             blocked = await self._health.unavailable(key)
             if blocked is not None:
+                blocked_reasons.append(blocked.reason)
                 failures.append(self._describe_blocked(name, blocked.reason, blocked.retry_after))
                 continue
             async with self._semaphore(name):
                 # 排队期间可能已被其它并发请求踢出。
                 blocked = await self._health.unavailable(key)
                 if blocked is not None:
+                    blocked_reasons.append(blocked.reason)
                     failures.append(
                         self._describe_blocked(name, blocked.reason, blocked.retry_after)
                     )
@@ -81,15 +90,17 @@ class SearchService:
                     continue
                 await self._health.record_success(key)
                 return results
+        message = f"所有搜索供应商都不可用 —— {'；'.join(failures)}"
         # 只有一家时保留原始异常类型与文案，配置单供应商的行为与降级前完全一致。
         if len(errors) == 1:
             raise errors[0]
         exhausted = next((e for e in errors if isinstance(e, ProviderExhaustedError)), None)
         if exhausted is not None:
-            raise ProviderExhaustedError(
-                exhausted.user_code, f"所有搜索供应商都不可用 —— {'；'.join(failures)}"
-            )
-        raise ToolRequestError(f"所有搜索供应商都不可用 —— {'；'.join(failures)}", retryable=False)
+            raise ProviderExhaustedError(exhausted.user_code, message)
+        # 全部被本地冷却短路：手里没有原始异常，按账本记下的原因定性。
+        if blocked_reasons and blocked_reasons[0] in _ACCOUNT_LEVEL_REASONS:
+            raise ProviderExhaustedError(blocked_reasons[0], message)
+        raise ToolRequestError(message, retryable=False)
 
     async def _note_failure(self, key: str, exc: ToolError) -> None:
         """按失败类型记账：429 走已知恢复点，其余计入连续失败。"""
