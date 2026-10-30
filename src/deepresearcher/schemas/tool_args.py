@@ -355,11 +355,25 @@ class WorkbenchSetPlan(BaseModel):
 
 
 class WorkbenchMoveEvidence(BaseModel):
-    """活跃证据槽位增量。"""
+    """活跃证据槽位增量：add 回填储备、remove 释放回储备。"""
 
     op: Literal["evidence"]
-    add: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
-    remove: list[str] = Field(default_factory=list, max_length=STRUCTURED_COLLECTION_HARD_LIMIT)
+    add: list[str] = Field(
+        default_factory=list,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
+        description="要恢复为活跃的 evidence_id 字符串列表；只写 id，不要提交整张证据卡。",
+    )
+    remove: list[str] = Field(
+        default_factory=list,
+        max_length=STRUCTURED_COLLECTION_HARD_LIMIT,
+        description="要释放回储备的 evidence_id 字符串列表；只写 id。",
+    )
+
+    @field_validator("add", "remove", mode="before")
+    @classmethod
+    def normalize_id_lists(cls, value: object) -> object:
+        # 模型转写长 id 会混入 \r，不剥就查不到档案、被当成空操作。
+        return normalize_evidence_ids(value)
 
 
 class WorkbenchAcknowledge(BaseModel):
@@ -424,7 +438,9 @@ class UpdateWorkbench(BaseModel):
         description=(
             '操作对象列表，每项带 op 判别字段：{"op":"upsert_aspect","aspect":{…完整 aspect}} | '
             '{"op":"remove_aspect","aspect_id":"…"} | {"op":"framing","framing":{…只带来改的字段}} | '
-            '{"op":"plan","items":[…]} | {"op":"evidence","add":[…],"remove":[…]} | '
+            '{"op":"plan","items":[…]} | '
+            '{"op":"evidence","add":["<evidence_id>"],"remove":["<evidence_id>"]}'
+            "（只传 id 字符串，不要传整张证据卡） | "
             '{"op":"acknowledge"}'
         ),
     )

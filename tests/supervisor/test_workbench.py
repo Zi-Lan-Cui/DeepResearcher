@@ -199,6 +199,46 @@ def test_workbench_rejects_unknown_op_duplicates_and_malformed_aspect():
     assert round_state.research_synthesis is None  # 拒绝批不落盘
 
 
+def test_workbench_evidence_move_rejects_ids_outside_archive():
+    round_state = _apply_fixture()
+
+    receipt = services.apply_workbench_changes(
+        round_state, [{"op": "evidence", "add": ["task-0001-ev-ghost"], "remove": []}]
+    )
+
+    # 拒绝而不是静默丢弃：空 applied 会让模型自己猜原因。
+    assert receipt["status"] == "rejected"
+    rejection = receipt["rejections"][0]
+    assert rejection["unknown_evidence_ids"] == ["task-0001-ev-ghost"]
+    assert rejection["known_evidence_ids"] == ["e1", "e2"]
+    assert round_state.active_evidence_ids == {"e1"}
+
+
+def test_workbench_evidence_move_strips_control_chars_from_ids():
+    round_state = _apply_fixture()
+
+    receipt = services.apply_workbench_changes(
+        round_state, [{"op": "evidence", "add": ["e\r\r2"], "remove": []}]
+    )
+
+    # 模型转写长 id 会混入 \r；不剥就查不到档案，等于空提交。
+    assert receipt["status"] == "applied"
+    assert "evidence" in receipt["applied"]
+    assert "e2" in round_state.active_evidence_ids
+
+
+def test_workbench_evidence_move_explains_idempotent_noop():
+    round_state = _apply_fixture()
+
+    receipt = services.apply_workbench_changes(
+        round_state, [{"op": "evidence", "add": ["e1"], "remove": []}]
+    )
+
+    assert receipt["status"] == "applied"
+    assert receipt["applied"] == []
+    assert "没有产生任何变更" in str(receipt["note"])
+
+
 def test_workbench_plan_roundtrip_and_aspect_lifecycle():
     round_state = _apply_fixture()
     applied = services.apply_workbench_changes(

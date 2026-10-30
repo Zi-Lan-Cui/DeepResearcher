@@ -472,6 +472,16 @@ _WRITABLE_OPS_HINT = (
     "evidence | acknowledge。只读段（tasks/inflight/reserve/flags）由程序维护。"
 )
 
+# 尾部证据更可能是模型正在操作的对象。
+_KNOWN_EVIDENCE_WINDOW = 12
+
+_OP_CONTRACT_HINTS: dict[str, str] = {
+    "evidence": (
+        "add/remove 的元素必须是 evidence_id 字符串（形如 task-0001-ev-<hex>），"
+        "不要提交整张证据卡对象。"
+    ),
+}
+
 
 @dataclass
 class _SubmissionEdits:
@@ -526,13 +536,15 @@ def _project_submission(
             if any(error["type"] in _TAG_ERROR_TYPES for error in errors):
                 rejections.append({"key": op, "reason": _WRITABLE_OPS_HINT})
             else:
-                rejections.append(
-                    {
-                        "key": op or "changes",
-                        "reason": f"op={op} 的参数不满足该操作的契约。",
-                        "issues": _issue_list(exc),
-                    }
-                )
+                rejection: dict[str, object] = {
+                    "key": op or "changes",
+                    "reason": f"op={op} 的参数不满足该操作的契约。",
+                    "issues": _issue_list(exc),
+                }
+                hint = _OP_CONTRACT_HINTS.get(op)
+                if hint:
+                    rejection["hint"] = hint
+                rejections.append(rejection)
             continue
         identity = _intent_identity(intent)
         if identity in seen:
@@ -576,6 +588,22 @@ def _project_intent(
                 "key": "evidence",
                 "reason": "add 与 remove 不得包含同一 evidence_id；按期望终态二选一后重发。",
                 "conflicting_evidence_ids": sorted(overlap),
+            }
+        # 查不到的 id 会被静默丢弃，先判存在性并把可用 id 一并给出。
+        archive_ids = [item.evidence_id for item in round_state.evidences]
+        known = set(archive_ids)
+        unknown = [
+            item for item in dict.fromkeys([*intent.add, *intent.remove]) if item not in known
+        ]
+        if unknown:
+            return {
+                "key": "evidence",
+                "reason": (
+                    "下列 evidence_id 不在本任务的证据档案里，恢复与释放都不会生效；"
+                    "请照 known_evidence_ids 里的原样 id 重发。"
+                ),
+                "unknown_evidence_ids": unknown,
+                "known_evidence_ids": archive_ids[-_KNOWN_EVIDENCE_WINDOW:],
             }
         edits.evidence_add = list(intent.add)
         edits.evidence_remove = list(intent.remove)
@@ -663,6 +691,10 @@ def _commit_edits(
     ]
     if slots_full_skipped:
         receipt["skipped_restore_evidence_ids"] = slots_full_skipped
+    if not applied:
+        receipt["note"] = (
+            "本次提交没有产生任何变更：add 的证据都已在活跃集，remove 的证据都不在活跃集。"
+        )
     return receipt
 
 
