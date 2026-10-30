@@ -28,7 +28,11 @@ from deepresearcher.tools.web.search.models import (
     classify_source,
     describe_source,
 )
-from deepresearcher.vocab import SUPPORT_ORDER
+from deepresearcher.vocab import (
+    RETRIEVAL_ORIGIN_FETCH,
+    RETRIEVAL_SEARCH_SUMMARY,
+    SUPPORT_ORDER,
+)
 
 
 async def search_sources(
@@ -41,16 +45,19 @@ async def search_sources(
 ) -> dict[str, object]:
     """搜索并返回候选目录；此函数不读取任何来源。"""
     del reason
-    remaining = deps.config.research_agent_max_queries - len(task_state.queries)
-    new_queries = _new_queries(deps, proposed_queries, task_state.queries)[: max(0, remaining)]
+    remaining = max(0, deps.config.research_agent_max_queries - len(task_state.queries))
+    unseen = _new_queries(deps, proposed_queries, task_state.queries)
+    new_queries = unseen[:remaining]
     if not new_queries:
-        error = "没有新的可执行检索式；请基于已有候选读取来源或调用 Complete。"
-        task_state.failures.append(f"no_novel_queries: {error}")
-        return {
-            "status": "skipped",
-            "reason": "no_novel_queries",
-            "proposed_queries": proposed_queries,
-        }
+        return _skip_search(
+            deps,
+            task,
+            task_state,
+            event_context,
+            proposed_queries=proposed_queries,
+            remaining=remaining,
+            unseen_count=len(unseen),
+        )
     task_state.queries.extend(new_queries)
     result = SearchToolResult.model_validate(
         await deps.search_tool.arun_queries(task, queries=new_queries)
@@ -275,6 +282,17 @@ async def read_sources(
         "skip_reasons": sorted(set(task_state.skipped)),
         "recent_failures": task_state.failures[-4:],
     }
+    # 回退摘要与真正文同形登记，不点名会被当成原文引用。
+    fallback_notices = [
+        f"{item.document_id}: 正文未取到，本内容是检索提供方返回的"
+        f"{'摘要' if item.retrieval_method == RETRIEVAL_SEARCH_SUMMARY else '片段'}"
+        f"（retrieval_method={item.retrieval_method}，support_ceiling={item.support_ceiling}），"
+        "只能当线索用，不能当原文引用；需要原文请改读同主题的其他来源。"
+        for item in documents
+        if item.retrieval_method != RETRIEVAL_ORIGIN_FETCH
+    ]
+    if fallback_notices:
+        receipt["document_notices"] = fallback_notices
     if unknown_ids:
         # 与 unknown 回执配对：给出可用的候选 id，模型无需回头重查搜索目录。
         receipt["available_candidate_ids"] = list(task_state.candidates)[-_AVAILABLE_IDS_WINDOW:]
@@ -592,6 +610,62 @@ def _new_queries(deps: ResearcherDeps, proposed: list[str], seen: list[str]) -> 
             if query.strip() and query.casefold().strip() not in known
         )
     )
+
+
+def _skip_search(
+    deps: ResearcherDeps,
+    task: Task,
+    task_state: ResearcherTaskState,
+    event_context: dict[str, object],
+    *,
+    proposed_queries: list[str],
+    remaining: int,
+    unseen_count: int,
+) -> dict[str, object]:
+    """检索未执行即返回；额度耗尽与全量重复分两支，给相反的下一步指令。"""
+    limit = deps.config.research_agent_max_queries
+    used = len(task_state.queries)
+    if remaining <= 0:
+        reason = "query_quota_exhausted"
+        error = (
+            f"本任务检索式额度已用尽（上限 {limit} 条，已执行 {used} 条），"
+            "系统不会再执行任何新检索；这与检索式是否重复无关。"
+        )
+        instruction = (
+            "改词、换角度、加 site: 都不会被执行。下一步只有两条：读取已有候选的正文补齐证据，"
+            "或调用 TaskComplete 收尾，并在 conclusion 里写明哪部分因检索额度耗尽而未能覆盖。"
+        )
+    else:
+        reason = "no_novel_queries"
+        error = (
+            f"提交的检索式与已执行的 {used} 条全部重复，没有可执行的新查询；"
+            f"额度还剩 {remaining} 条。"
+        )
+        instruction = "换用不同的关键词或查询角度后重发，也可以直接读取已有候选。"
+    task_state.failures.append(f"{reason}: {error}")
+    deps.emit(
+        EventName.TASK_SEARCH_SKIPPED,
+        {
+            **event_context,
+            "research_direction": task["question"],
+            "queries": proposed_queries,
+            "status": "skipped",
+            "reason": reason,
+            # 额度分支下重复数没有意义。
+            "duplicate_count": unseen_count if remaining > 0 else 0,
+            "queries_used": used,
+            "query_limit": limit,
+        },
+    )
+    return {
+        "status": "skipped",
+        "reason": reason,
+        "proposed_queries": proposed_queries,
+        "queries_used": used,
+        "query_limit": limit,
+        "error": error,
+        "instruction": instruction,
+    }
 
 
 def _candidate_cards(

@@ -416,6 +416,31 @@ def test_research_agent_replans_duplicate_queries_instead_of_mislabeling_budget_
     assert "no_novel_queries" in result.task_result.failures[0]
 
 
+def test_research_agent_names_query_quota_exhaustion_instead_of_duplication():
+    config = AgentConfig(
+        research_agent_max_turns=3,
+        research_agent_max_queries=1,
+        research_agent_max_evidences_per_task=4,
+    )
+    agent = researcher_agent(
+        config,
+        [
+            ResearcherDecision(action="search", reason="先检索", queries=["稳定术语 定义"]),
+            ResearcherDecision(
+                action="search", reason="换个全新检索式", queries=["另一组全新检索词"]
+            ),
+            ResearcherDecision(action="complete", reason="现有材料足以谨慎回答。"),
+        ],
+    )
+
+    result = asyncio.run(agent.run(TASK))
+
+    # 查询是新的，失败原因必须写成额度而不是重复。
+    assert result.task_result.queries == ["稳定术语 定义"]
+    assert any(item.startswith("query_quota_exhausted") for item in result.task_result.failures)
+    assert not any(item.startswith("no_novel_queries") for item in result.task_result.failures)
+
+
 def test_source_reader_requires_material_store_at_construction():
     class Fetcher:
         async def afetch(self, _url, **_kwargs):

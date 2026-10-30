@@ -24,6 +24,8 @@ class EventName(StrEnum):
     # projector 不在白名单，对用户界面静默，仅落事件日志供归因。
     SOURCE_READ_FALLBACK = "source_read_fallback"
     TASK_SEARCH_COMPLETED = "direction_search_completed"
+    # 检索在 provider 之前就结束：没有逐查询事件，界面只能靠本条留痕。
+    TASK_SEARCH_SKIPPED = "direction_search_skipped"
     TASK_EVIDENCE_ADDED = "direction_evidence_added"
     # 受理即发：任务已入队、可能还在等并发槽。界面据此先建一张"排队中"卡，
     # 与 RESEARCH_TASK_STARTED（真正开始跑）分开，避免排队任务对用户不可见。
