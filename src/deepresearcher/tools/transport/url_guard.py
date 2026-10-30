@@ -89,18 +89,11 @@ class PublicUrlGuard:
         last_error: socket.gaierror | None = None
         for attempt in range(_RESOLVE_ATTEMPTS):
             try:
-                rows = await asyncio.get_running_loop().getaddrinfo(
-                    hostname,
-                    port,
-                    family=socket.AF_UNSPEC,
-                    type=socket.SOCK_STREAM,
-                )
+                return await _resolve_once(hostname, port)
             except socket.gaierror as exc:
                 last_error = exc
                 if attempt + 1 < _RESOLVE_ATTEMPTS:
                     await asyncio.sleep(_RESOLVE_RETRY_SECONDS)
-                continue
-            return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
         raise UnsafeUrlError(
             f"URL 主机名无法解析（DNS 查询失败：{last_error}）。", "resolve_failed"
         ) from last_error
@@ -145,6 +138,17 @@ class PublicUrlGuard:
         if parsed.username is not None or parsed.password is not None:
             raise UnsafeUrlError("来源 URL 不允许包含用户名或密码。")
         return parsed
+
+
+async def _resolve_once(hostname: str, port: int) -> tuple[str, ...]:
+    """一次 DNS 解析，返回去重后的地址；失败抛 socket.gaierror。"""
+    rows = await asyncio.get_running_loop().getaddrinfo(
+        hostname,
+        port,
+        family=socket.AF_UNSPEC,
+        type=socket.SOCK_STREAM,
+    )
+    return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
 
 
 def _carried_ipv4(

@@ -7,7 +7,7 @@ from curl_cffi import CurlOpt
 
 from deepresearcher.config import SearchConfig
 from deepresearcher.tools.errors import UnsafeUrlError
-from deepresearcher.tools.transport import HttpClient, PublicUrlGuard, ResolvedPublicUrl
+from deepresearcher.tools.transport import HttpClient, PublicUrlGuard, ResolvedPublicUrl, url_guard
 
 # 拦截清单唯一来源是配置；测试自带一份标准清单，验证清单语义本身。
 BLOCK = (
@@ -374,11 +374,13 @@ def test_http_client_skips_peer_pin_when_proxy_is_configured():
 def test_guard_retries_dns_once_before_declaring_resolve_failed(monkeypatch):
     calls: list[str] = []
 
-    def fail(host, port, *args, **kwargs):
+    async def fail(host: str, _port: int) -> tuple[str, ...]:
         calls.append(host)
         raise socket.gaierror(11001, "getaddrinfo failed")
 
-    monkeypatch.setattr("socket.getaddrinfo", fail)
+    # 换掉单次解析而不是 socket.getaddrinfo：uvloop 走 libuv 解析器，不打桩 socket 层。
+    monkeypatch.setattr(url_guard, "_resolve_once", fail)
+    monkeypatch.setattr(url_guard, "_RESOLVE_RETRY_SECONDS", 0)
     guard = PublicUrlGuard(BLOCK)
 
     with pytest.raises(UnsafeUrlError) as excinfo:
@@ -391,13 +393,14 @@ def test_guard_retries_dns_once_before_declaring_resolve_failed(monkeypatch):
 def test_guard_recovers_when_second_dns_attempt_succeeds(monkeypatch):
     calls: list[str] = []
 
-    def flaky(host, port, *args, **kwargs):
+    async def flaky(host: str, _port: int) -> tuple[str, ...]:
         calls.append(host)
         if len(calls) == 1:
             raise socket.gaierror(11001, "getaddrinfo failed")
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+        return ("93.184.216.34",)
 
-    monkeypatch.setattr("socket.getaddrinfo", flaky)
+    monkeypatch.setattr(url_guard, "_resolve_once", flaky)
+    monkeypatch.setattr(url_guard, "_RESOLVE_RETRY_SECONDS", 0)
     guard = PublicUrlGuard(BLOCK)
 
     result = asyncio.run(guard.resolve("https://flaky.example/"))
