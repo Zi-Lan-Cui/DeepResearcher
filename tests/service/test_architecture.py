@@ -25,6 +25,7 @@ ALLOWED_KERNEL_IMPORTS = frozenset(
         "deepresearcher.config",  # Settings / get_settings / LLMConfig / project_path_env
         "deepresearcher.graph",  # build_graph
         "deepresearcher.llm",  # classify_llm_error
+        "deepresearcher.backoff",  # delay_seconds：执行器与抓取侧共用同一条退避曲线
         # 观测与追踪
         "deepresearcher.observability",  # JsonlSink（包口导出）
         "deepresearcher.observability.logging_config",  # get_logger
