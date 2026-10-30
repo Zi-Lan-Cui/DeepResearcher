@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 import traceback
@@ -647,8 +648,9 @@ async def test_two_store_instances_serialize_claims_on_the_same_row(manager):
     assert owners[0].fence_token == 2
 
 
-async def test_worker_runs_admission_from_another_process(manager):
+async def test_worker_runs_admission_from_another_process(manager, caplog):
     """独立 Worker 不依赖调用方唤醒，受理落库后的消息由它自己拉取。"""
+    caplog.set_level(logging.WARNING)
     graph = FakeGraph(result=_completed_result(), emit_events=1)
     manager.holder["graph"] = graph
     service = RunAdmission(
@@ -665,9 +667,18 @@ async def test_worker_runs_admission_from_another_process(manager):
     assert len(graph.ainvoke_inputs) == 1
     # 终态写入早于事件 flush（flush 在 task 收尾）；跨进程受理时 task 可能已从 tasks
     # 表移除，因此以事件出现为判据，而不是假定它已写入。
-    async with asyncio.timeout(5):
-        while "engine_0" not in await _event_types(manager, run_id):
-            await asyncio.sleep(0.02)
+    try:
+        async with asyncio.timeout(_TERMINAL_WAIT_SECONDS):
+            while "engine_0" not in await _event_types(manager, run_id):
+                await asyncio.sleep(0.02)
+    except TimeoutError:
+        row = await _row(manager, run_id)
+        pytest.fail(
+            f"engine 事件未写入：status={row.status} event_seq={row.event_seq} "
+            f"open={manager.buffer.is_open(run_id)} "
+            f"pending={manager.buffer._pending.get(run_id, [])!r} "  # noqa: SLF001
+            f"tasks={sorted(manager.execution.tasks)}\n{caplog.text}"
+        )
 
 
 async def test_takeover_retires_the_previous_fence(manager):
